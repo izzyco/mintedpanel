@@ -17,6 +17,7 @@ const VALUES = {
   "provider.npi": "1999999984",
   "facility.state": "nc",
   "provider.dob": "1980-04-09",
+  "group.tin": "12-3456789",
 };
 
 describe("applyRegistryTransform", () => {
@@ -58,6 +59,30 @@ describe("applyRegistryTransform", () => {
     expect(applyRegistryTransform("9195557461", "phone_e164")).toBe("+19195557461");
   });
 
+  it("shapes TIN to 9 digits or dashed format, and preserves invalid values", () => {
+    // 9 digits (no dash)
+    expect(applyRegistryTransform("12-3456789", "tin_digits")).toBe("123456789");
+    expect(applyRegistryTransform("123456789", "tin_digits")).toBe("123456789");
+    expect(applyRegistryTransform(" 12-3456789 ", "tin_digits")).toBe("123456789");
+    expect(applyRegistryTransform("12 3456789", "tin_digits")).toBe("123456789");
+    expect(applyRegistryTransform("123-45-6789", "tin_digits")).toBe("123456789");
+
+    // Dashed (XX-XXXXXXX)
+    expect(applyRegistryTransform("123456789", "tin_dashed")).toBe("12-3456789");
+    expect(applyRegistryTransform("12-3456789", "tin_dashed")).toBe("12-3456789");
+    expect(applyRegistryTransform(" 123456789 ", "tin_dashed")).toBe("12-3456789");
+    expect(applyRegistryTransform("12 3456789", "tin_dashed")).toBe("12-3456789");
+    expect(applyRegistryTransform("123-45-6789", "tin_dashed")).toBe("12-3456789");
+
+    // Invalid / malformed TINs pass through unchanged
+    expect(applyRegistryTransform("12-3456", "tin_digits")).toBe("12-3456");
+    expect(applyRegistryTransform("12-3456", "tin_dashed")).toBe("12-3456");
+    expect(applyRegistryTransform("1234567890", "tin_digits")).toBe("1234567890");
+    expect(applyRegistryTransform("1234567890", "tin_dashed")).toBe("1234567890");
+    expect(applyRegistryTransform("ABC-1234567", "tin_digits")).toBe("ABC-1234567");
+    expect(applyRegistryTransform("ABC-1234567", "tin_dashed")).toBe("ABC-1234567");
+  });
+
   it("is a no-op for no transform and for one it does not know", () => {
     expect(applyRegistryTransform("nc", null)).toBe("nc");
     expect(applyRegistryTransform("nc", "shout")).toBe("nc");
@@ -75,10 +100,16 @@ describe("planPayerFormFill", () => {
 
   it("applies the row's transform to the resolved value", () => {
     const plan = planPayerFormFill(
-      [row({ token: "facility.state", transform: "state_abbrev", selector: "St" })],
+      [
+        row({ token: "facility.state", transform: "state_abbrev", selector: "St" }),
+        row({ id: "id-tin-1", token: "group.tin", transform: "tin_digits", selector: "TinBare" }),
+        row({ id: "id-tin-2", token: "group.tin", transform: "tin_dashed", selector: "TinDashed" }),
+      ],
       VALUES,
     );
     expect(plan.fill[0].value).toBe("NC");
+    expect(plan.fill[1].value).toBe("123456789");
+    expect(plan.fill[2].value).toBe("12-3456789");
   });
 
   it("writes a hardcoded row's literal, with no token involved", () => {
