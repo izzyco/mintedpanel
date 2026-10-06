@@ -92,6 +92,15 @@ function normalizeUsPhone(value: string): string | null {
   return /^[2-9]\d{2}[2-9]\d{6}$/.test(digits) ? digits : null;
 }
 
+function normalizeUsTin(value: string): string | null {
+  const trimmed = value.trim();
+  if (!/^(\d{9}|\d{2}[-\s]\d{7}|\d{3}[-\s]\d{2}[-\s]\d{4})$/.test(trimmed)) {
+    return null;
+  }
+  const digits = trimmed.replace(/\D/g, "");
+  return digits.length === 9 ? digits : null;
+}
+
 const STATE_ABBREVS: Readonly<Record<string, string>> = {
   alabama: "AL",
   alaska: "AK",
@@ -178,6 +187,15 @@ function reshapeRegistryValue(value: string, transform: string | null): string {
       return `(1) ${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
     }
     return `+1${digits}`;
+  }
+  if (transform.startsWith("tin_")) {
+    const digits = normalizeUsTin(raw);
+    if (!digits) return value;
+    if (transform === "tin_digits") return digits;
+    if (transform === "tin_dashed") {
+      return `${digits.slice(0, 2)}-${digits.slice(2)}`;
+    }
+    return value;
   }
   return value;
 }

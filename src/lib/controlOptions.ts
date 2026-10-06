@@ -20,6 +20,8 @@ export const AUTHORABLE_TRANSFORMS = [
   "phone_dashed",
   "phone_country_dashed",
   "phone_e164",
+  "tin_digits",
+  "tin_dashed",
 ] as const;
 export type AuthorableTransform = (typeof AUTHORABLE_TRANSFORMS)[number];
 
@@ -39,6 +41,8 @@ export const AUTHORABLE_TRANSFORM_OPTIONS: readonly {
   { value: "phone_dashed", label: "Phone → XXX-XXX-XXXX" },
   { value: "phone_country_dashed", label: "Phone → (1) XXX-XXX-XXXX" },
   { value: "phone_e164", label: "Phone → +1XXXXXXXXXX" },
+  { value: "tin_digits", label: "TIN → 9 digits" },
+  { value: "tin_dashed", label: "TIN → XX-XXXXXXX" },
 ];
 
 export const CONTROL_TYPE_LABELS: Record<string, string> = {

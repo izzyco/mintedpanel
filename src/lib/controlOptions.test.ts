@@ -78,6 +78,8 @@ describe("isAuthorableTransform", () => {
     expect(isAuthorableTransform("phone_dashed")).toBe(true);
     expect(isAuthorableTransform("phone_country_dashed")).toBe(true);
     expect(isAuthorableTransform("phone_e164")).toBe(true);
+    expect(isAuthorableTransform("tin_digits")).toBe(true);
+    expect(isAuthorableTransform("tin_dashed")).toBe(true);
     expect(isAuthorableTransform("uppercase")).toBe(false);
     expect(AUTHORABLE_TRANSFORM_OPTIONS.map(({ value }) => value)).toEqual(AUTHORABLE_TRANSFORMS);
   });
