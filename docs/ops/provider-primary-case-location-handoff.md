@@ -20,16 +20,16 @@ Some of the desired behavior already exists. `resolveCaseFacilityId` selects the
 
 ## Required behavior
 
-| Situation | Expected result |
-| --- | --- |
-| Provider has exactly one assigned location | Treat that assignment as the provider's primary, even if its stored primary flag was previously missing. Default cases to it when eligible. |
-| Provider has multiple assigned locations and an eligible primary | Default new cases to that primary. |
-| Case group has exactly one eligible assigned location | Preserve the existing sole-location default for that group. This does not change the provider's primary across other groups. |
-| Several eligible locations and no eligible primary | Require a choice; do not select an arbitrary row. |
-| No eligible assigned locations | Keep the case unresolved and explain the missing eligible location. |
-| Case already has an explicit location or location set | Preserve it. Provider defaults do not replace case choices. |
-| Coordinator changes the case location later | Use the updated case primary in Details, extension cards, handoff, and autofill. |
-| Provider primary changes later | Use the new primary for future defaults. Preserve existing case locations. |
+| Situation                                                        | Expected result                                                                                                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider has exactly one assigned location                       | Treat that assignment as the provider's primary, even if its stored primary flag was previously missing. Default cases to it when eligible. |
+| Provider has multiple assigned locations and an eligible primary | Default new cases to that primary.                                                                                                          |
+| Case group has exactly one eligible assigned location            | Preserve the existing sole-location default for that group. This does not change the provider's primary across other groups.                |
+| Several eligible locations and no eligible primary               | Require a choice; do not select an arbitrary row.                                                                                           |
+| No eligible assigned locations                                   | Keep the case unresolved and explain the missing eligible location.                                                                         |
+| Case already has an explicit location or location set            | Preserve it. Provider defaults do not replace case choices.                                                                                 |
+| Coordinator changes the case location later                      | Use the updated case primary in Details, extension cards, handoff, and autofill.                                                            |
+| Provider primary changes later                                   | Use the new primary for future defaults. Preserve existing case locations.                                                                  |
 
 An eligible default must belong to the authenticated organization, be assigned to the provider, be active, and belong to the case's group. Retain the existing group and tenant boundaries. Do not introduce a new state-matching rule: case state still controls license selection. A sole assignment to an inactive or otherwise ineligible location does not authorize defaulting a case to it.
 
@@ -45,16 +45,16 @@ An eligible default must belong to the authenticated organization, be assigned t
 
 ## Code entry points
 
-| Area | Starting point |
-| --- | --- |
-| Default selection and eligibility | [`src/lib/caseFacility.ts`](../../src/lib/caseFacility.ts) and its tests |
-| Provider primary rules and writes | [`src/lib/assignmentScope.ts`](../../src/lib/assignmentScope.ts), [`src/services/providerAssignments.ts`](../../src/services/providerAssignments.ts) |
-| Creation callers | [`src/components/cases/ManualCaseModal.tsx`](../../src/components/cases/ManualCaseModal.tsx), [`src/hooks/useGenerationPreview.ts`](../../src/hooks/useGenerationPreview.ts) |
-| Creation and case location writes | [`src/services/cases.ts`](../../src/services/cases.ts), the latest `create_case_with_tasks` RPC and applicable triggers |
-| Imports and assignment additions | [`src/services/importRuns.ts`](../../src/services/importRuns.ts), launch and roster assignment writers |
-| Case editor | [`src/components/cases/CaseLocationsSection.tsx`](../../src/components/cases/CaseLocationsSection.tsx) |
-| Extension data sources | [`src/services/providerProfile.ts`](../../src/services/providerProfile.ts), [`src/services/caseContext.ts`](../../src/services/caseContext.ts) |
-| Extension consumers | `minted-extension/src/background/index.ts`, `src/sidepanel/main.ts`, and the profile/facility wire types |
+| Area                              | Starting point                                                                                                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Default selection and eligibility | [`src/lib/caseFacility.ts`](../../src/lib/caseFacility.ts) and its tests                                                                                                     |
+| Provider primary rules and writes | [`src/lib/assignmentScope.ts`](../../src/lib/assignmentScope.ts), [`src/services/providerAssignments.ts`](../../src/services/providerAssignments.ts)                         |
+| Creation callers                  | [`src/components/cases/ManualCaseModal.tsx`](../../src/components/cases/ManualCaseModal.tsx), [`src/hooks/useGenerationPreview.ts`](../../src/hooks/useGenerationPreview.ts) |
+| Creation and case location writes | [`src/services/cases.ts`](../../src/services/cases.ts), the latest `create_case_with_tasks` RPC and applicable triggers                                                      |
+| Imports and assignment additions  | [`src/services/importRuns.ts`](../../src/services/importRuns.ts), launch and roster assignment writers                                                                       |
+| Case editor                       | [`src/components/cases/CaseLocationsSection.tsx`](../../src/components/cases/CaseLocationsSection.tsx)                                                                       |
+| Extension data sources            | [`src/services/providerProfile.ts`](../../src/services/providerProfile.ts), [`src/services/caseContext.ts`](../../src/services/caseContext.ts)                               |
+| Extension consumers               | `minted-extension/src/background/index.ts`, `src/sidepanel/main.ts`, and the profile/facility wire types                                                                     |
 
 Table trace: read `providers`, `facilities`, `provider_facility_assignments`, `credential_cases`, and `case_facilities`; write primary assignment normalization, case creation/location relationships, and corresponding `audit_log` records. Preserve tasks and case status history except for normal case creation. Use additive migrations only and update `docs/data-model/table-register.md` for schema changes. Keep extension and server contracts aligned if any response shape changes.
 
