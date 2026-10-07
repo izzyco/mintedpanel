@@ -180,14 +180,29 @@ function definitionToInsert(
     typeof definition.dueOffsetDays === "number"
       ? offsetDate(baseDateIso, definition.dueOffsetDays)
       : null;
+  const authoredStepIds = definition.steps.map((step) => {
+    const id = (step as { id?: unknown }).id;
+    return typeof id === "string" ? id.trim() : "";
+  });
+  const reservedStepIds = new Set(authoredStepIds.filter(Boolean));
+  const usedStepIds = new Set<string>();
   const steps: SOPStep[] = definition.steps.map((step, idx) => {
     const stepType: SOPStepType = step.stepType ?? "online_form";
     const emailTemplate: ResolvedSOPEmailTemplate | undefined =
       stepType === "draft_email" && step.emailTemplate
         ? resolveEmailTemplate(step.emailTemplate, tokens)
         : undefined;
+    let stepId = authoredStepIds[idx];
+    if (!stepId || usedStepIds.has(stepId)) {
+      stepId = `step-${idx}`;
+      let suffix = 1;
+      while (usedStepIds.has(stepId) || reservedStepIds.has(stepId)) {
+        stepId = `step-${idx}-${suffix++}`;
+      }
+    }
+    usedStepIds.add(stepId);
     return {
-      id: `step-${idx}`,
+      id: stepId,
       order: idx,
       label: interpolate(step.label, tokens),
       detail: step.detail ? interpolate(step.detail, tokens) : undefined,
