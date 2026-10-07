@@ -1,0 +1,65 @@
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm production release'
+        required: true
+        default: "deploy"
+
+concurrency:
+  group: minted-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy to Vercel Production
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'deploy'
+    runs-on: ubuntu-latest
+    environment: Production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify build locally
+        env:
+          VITE_MINTED_EXTENSION_ID: dppfnbikpojpgdiobckgcknmkjlfoinh
+        run: npm run build
+
+      - name: Deploy to Vercel Production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: team_230fpJ9MgCj9ssW3LiIckfyA
+          VERCEL_PROJECT_ID: prj_ILhPJbkyaiptdVA8DtsmNyw3tiub
+          VITE_MINTED_EXTENSION_ID: dppfnbikpojpgdiobckgcknmkjlfoinh
+        run: |
+          npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          npx vercel build --prod --token="$VERCEL_TOKEN"
+          npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+      - name: Verify live production endpoints
+        run: |
+          echo "Waiting 5 seconds for edge routing..."
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://www.mintedpanel.com/api/health)
+          echo "https://www.mintedpanel.com/api/health status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "Expected 200 from api/health, got $STATUS"
+            exit 1
+          fi
+
+          HOME_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://www.mintedpanel.com/)
+          echo "https://www.mintedpanel.com/ status: $HOME_STATUS"
+          if [ "$HOME_STATUS" != "200" ]; then
+            echo "Expected 200 from home page, got $HOME_STATUS"
+            exit 1
+          fi
+
+          echo "Production deployment verified successfully!"
