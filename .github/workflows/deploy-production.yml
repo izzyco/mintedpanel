@@ -49,11 +49,19 @@ jobs:
           DEPLOY_OUTPUT=$(npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
           echo "$DEPLOY_OUTPUT"
           DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -o 'https://[^ ]*vercel\.app' | tail -n 1)
-          echo "Detected deployment URL: $DEPLOY_URL"
-          if [ -n "$DEPLOY_URL" ]; then
-            npx vercel promote "$DEPLOY_URL" --yes --token="$VERCEL_TOKEN" || true
-            npx vercel alias set "$DEPLOY_URL" www.mintedpanel.com --token="$VERCEL_TOKEN"
-            npx vercel alias set "$DEPLOY_URL" mintedpanel.vercel.app --token="$VERCEL_TOKEN"
+          DEPLOY_HOST=$(echo "$DEPLOY_URL" | sed -e 's|^https://||' -e 's|/$||')
+          echo "Detected deployment host: $DEPLOY_HOST"
+          if [ -n "$DEPLOY_HOST" ]; then
+            echo "Assigning www.mintedpanel.com..."
+            curl -f -s -X POST "https://api.vercel.com/v2/deployments/${DEPLOY_HOST}/aliases?teamId=${VERCEL_ORG_ID}" \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{"alias":"www.mintedpanel.com"}' || npx vercel alias set "$DEPLOY_HOST" www.mintedpanel.com --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
+            echo "Assigning mintedpanel.vercel.app..."
+            curl -f -s -X POST "https://api.vercel.com/v2/deployments/${DEPLOY_HOST}/aliases?teamId=${VERCEL_ORG_ID}" \
+              -H "Authorization: Bearer ${VERCEL_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{"alias":"mintedpanel.vercel.app"}' || npx vercel alias set "$DEPLOY_HOST" mintedpanel.vercel.app --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           fi
 
       - name: Verify live production endpoints
