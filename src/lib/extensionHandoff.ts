@@ -139,9 +139,18 @@ export function isExtensionMessagingAvailable(): boolean {
   return typeof chromeRuntime()?.sendMessage === "function";
 }
 
-function extensionConfiguration():
+export const STORE_EXTENSION_ID = "dppfnbikpojpgdiobckgcknmkjlfoinh";
+export const DEPRECATED_EXTENSION_IDS = new Set([
+  "cocojeipdknhfhmkoefhgnkljbehggje",
+]);
+
+export function extensionConfiguration():
   { status: "valid"; extensionId: string } | { status: "missing" } | { status: "invalid" } {
-  const raw = import.meta.env.VITE_MINTED_EXTENSION_ID;
+  const configured = import.meta.env.VITE_MINTED_EXTENSION_ID;
+  const raw =
+    configured && DEPRECATED_EXTENSION_IDS.has(configured)
+      ? STORE_EXTENSION_ID
+      : (configured ?? STORE_EXTENSION_ID);
   if (typeof raw !== "string" || raw === "") return { status: "missing" };
   if (!CHROME_EXTENSION_ID_RE.test(raw)) return { status: "invalid" };
   return { status: "valid", extensionId: raw };
@@ -181,7 +190,9 @@ function workReceiptResult(
   const row = response as Record<string, unknown>;
   if (row.ok === false) {
     if (row.code === "UPDATE_REQUIRED") return { status: "update_required" };
-    if (row.code === "STALE_CONTEXT") return { status: "invalid", reason: "invalid_context" };
+    if (row.code === "STALE_CONTEXT" || row.code === "CONTEXT_STALE") {
+      return { status: "invalid", reason: "invalid_context" };
+    }
     return { status: "rejected" };
   }
   const { type: _type, portalUrl: _portalUrl, ...request } = message;

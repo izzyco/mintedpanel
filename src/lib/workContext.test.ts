@@ -35,6 +35,11 @@ describe("work context v2 request parser", () => {
     expect(workContextTuple(parsed.request)).toEqual(expectedTuple);
   });
 
+  it("accepts sequential step ids like step-0 and step-1 produced by SOP resolver", () => {
+    expect(parseWorkContextValidationRequest({ ...caseRequest, stepId: "step-0" }).ok).toBe(true);
+    expect(parseWorkContextValidationRequest({ ...caseRequest, stepId: "step-1" }).ok).toBe(true);
+  });
+
   it("accepts the Contract selector shape with zero-based indexes", () => {
     const { taskId: _taskId, stepId: _stepId, ...common } = caseRequest;
     const parsed = parseWorkContextValidationRequest({

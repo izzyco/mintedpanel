@@ -82,6 +82,7 @@ export type ParseWorkContextTupleResult =
   { ok: true; tuple: WorkContextTuple } | { ok: false; message: string };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const STEP_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const PORTAL_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 const MAPPING_FINGERPRINT_RE = /^sha256:[0-9a-f]{64}$/;
 const COMMON_KEYS = [
@@ -110,6 +111,10 @@ function recordOf(value: unknown): Record<string, unknown> | null {
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_RE.test(value);
+}
+
+function isStepId(value: unknown): value is string {
+  return typeof value === "string" && STEP_ID_RE.test(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -185,8 +190,8 @@ export function parseWorkContextValidationRequest(value: unknown): ParseWorkCont
   }
 
   if (row.ownerKind === "case") {
-    if (!isUuid(row.taskId) || !isUuid(row.stepId)) {
-      return { ok: false, message: "Case work requires taskId and stepId UUIDs." };
+    if (!isUuid(row.taskId) || !isStepId(row.stepId)) {
+      return { ok: false, message: "Case work requires taskId UUID and valid stepId." };
     }
     return { ok: true, request: row as unknown as WorkContextValidationRequest };
   }

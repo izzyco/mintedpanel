@@ -15,7 +15,9 @@ import {
 } from "@/testFixtures/extensionHandoff";
 import {
   WORK_HANDOFF_RECEIPT_TIMEOUT_MS,
+  STORE_EXTENSION_ID,
   buildSetActiveWorkMessage,
+  extensionConfiguration,
   sendSetActiveWork,
   type SetActiveWorkInput,
 } from "./extensionHandoff";
@@ -377,5 +379,34 @@ describe("SET_ACTIVE_WORK exact tab bridge", () => {
     const result = sendSetActiveWork(WORK_INPUT);
     await vi.advanceTimersByTimeAsync(WORK_HANDOFF_RECEIPT_TIMEOUT_MS);
     await expect(result).resolves.toEqual({ status: "timeout" });
+  });
+
+  it("handles CONTEXT_STALE code from extension as invalid_context", async () => {
+    vi.stubEnv("VITE_MINTED_EXTENSION_ID", EXTENSION_ID);
+    const sendMessage = vi.fn((_extensionId, _message, callback) => {
+      (callback as (response: unknown) => void)({ ok: false, code: "CONTEXT_STALE" });
+    });
+    installSendMessage(sendMessage);
+    await expect(sendSetActiveWork(WORK_INPUT)).resolves.toEqual({
+      status: "invalid",
+      reason: "invalid_context",
+    });
+  });
+
+  it("compiled extension ID matches the production Chrome Web Store identity", () => {
+    expect(STORE_EXTENSION_ID).toBe("dppfnbikpojpgdiobckgcknmkjlfoinh");
+    vi.unstubAllEnvs();
+    expect(extensionConfiguration()).toEqual({
+      status: "valid",
+      extensionId: "dppfnbikpojpgdiobckgcknmkjlfoinh",
+    });
+  });
+
+  it("overrides known deprecated/decommissioned extension ID with the production Store ID", () => {
+    vi.stubEnv("VITE_MINTED_EXTENSION_ID", "cocojeipdknhfhmkoefhgnkljbehggje");
+    expect(extensionConfiguration()).toEqual({
+      status: "valid",
+      extensionId: STORE_EXTENSION_ID,
+    });
   });
 });

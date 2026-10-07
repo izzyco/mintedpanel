@@ -186,8 +186,13 @@ function definitionToInsert(
       stepType === "draft_email" && step.emailTemplate
         ? resolveEmailTemplate(step.emailTemplate, tokens)
         : undefined;
+    const stepWithId = step as { id?: string };
+    const stepId =
+      typeof stepWithId.id === "string" && stepWithId.id.trim()
+        ? stepWithId.id.trim()
+        : `step-${idx}`;
     return {
-      id: `step-${idx}`,
+      id: stepId,
       order: idx,
       label: interpolate(step.label, tokens),
       detail: step.detail ? interpolate(step.detail, tokens) : undefined,
