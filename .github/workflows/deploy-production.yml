@@ -6,7 +6,7 @@ on:
       confirm:
         description: 'Type "deploy" to confirm production release'
         required: true
-        default: 'deploy'
+        default: "deploy"
 
 concurrency:
   group: minted-production-deploy
