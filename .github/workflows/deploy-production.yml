@@ -46,7 +46,15 @@ jobs:
         run: |
           npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           npx vercel build --prod --token="$VERCEL_TOKEN"
-          npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+          DEPLOY_OUTPUT=$(npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "$DEPLOY_OUTPUT"
+          DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -o 'https://[^ ]*vercel\.app' | tail -n 1)
+          echo "Detected deployment URL: $DEPLOY_URL"
+          if [ -n "$DEPLOY_URL" ]; then
+            npx vercel promote "$DEPLOY_URL" --yes --token="$VERCEL_TOKEN" || true
+            npx vercel alias set "$DEPLOY_URL" www.mintedpanel.com --token="$VERCEL_TOKEN"
+            npx vercel alias set "$DEPLOY_URL" mintedpanel.vercel.app --token="$VERCEL_TOKEN"
+          fi
 
       - name: Verify live production endpoints
         run: |
@@ -64,6 +72,15 @@ jobs:
           if [ "$HOME_STATUS" != "200" ]; then
             echo "Expected 200 from home page, got $HOME_STATUS"
             exit 1
+          fi
+
+          echo "Verifying extension ID in production bundle..."
+          HTML=$(curl -s -L https://www.mintedpanel.com/)
+          BUNDLE_PATH=$(echo "$HTML" | grep -a -o '/assets/index-[^"]*\.js' | head -n 1)
+          echo "Found bundle: $BUNDLE_PATH"
+          if [ -n "$BUNDLE_PATH" ]; then
+            curl -s -L "https://www.mintedpanel.com$BUNDLE_PATH" | grep -a -q "dppfnbikpojpgdiobckgcknmkjlfoinh"
+            echo "Successfully verified: production bundle inlines extension ID dppfnbikpojpgdiobckgcknmkjlfoinh"
           fi
 
           echo "Production deployment verified successfully!"
