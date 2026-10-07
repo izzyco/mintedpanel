@@ -84,11 +84,18 @@ jobs:
 
           echo "Verifying extension ID in production bundle..."
           HTML=$(curl -s -L https://www.mintedpanel.com/)
-          BUNDLE_PATH=$(echo "$HTML" | grep -a -o '/assets/index-[^"]*\.js' | head -n 1)
-          echo "Found bundle: $BUNDLE_PATH"
-          if [ -n "$BUNDLE_PATH" ]; then
-            curl -s -L "https://www.mintedpanel.com$BUNDLE_PATH" | grep -a -q "dppfnbikpojpgdiobckgcknmkjlfoinh"
-            echo "Successfully verified: production bundle inlines extension ID dppfnbikpojpgdiobckgcknmkjlfoinh"
+          FOUND=""
+          for JS in $(echo "$HTML" | grep -a -o -E '/assets/[a-zA-Z0-9_\.-]+\.js' | sort -u); do
+            echo "Checking asset $JS..."
+            if curl -s -L "https://www.mintedpanel.com$JS" | grep -a -q "dppfnbikpojpgdiobckgcknmkjlfoinh"; then
+              FOUND="$JS"
+              break
+            fi
+          done
+          if [ -z "$FOUND" ]; then
+            echo "Failed to find extension ID dppfnbikpojpgdiobckgcknmkjlfoinh across homepage bundles"
+            exit 1
           fi
+          echo "Successfully verified: production bundle $FOUND inlines extension ID dppfnbikpojpgdiobckgcknmkjlfoinh"
 
           echo "Production deployment verified successfully!"
