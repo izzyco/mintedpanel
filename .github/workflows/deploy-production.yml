@@ -31,6 +31,8 @@ jobs:
       - name: Verify build locally
         env:
           VITE_MINTED_EXTENSION_ID: dppfnbikpojpgdiobckgcknmkjlfoinh
+          NITRO_PRESET: vercel
+          VERCEL: "1"
         run: npm run build
 
       - name: Deploy to Vercel Production
@@ -39,6 +41,8 @@ jobs:
           VERCEL_ORG_ID: team_230fpJ9MgCj9ssW3LiIckfyA
           VERCEL_PROJECT_ID: prj_ILhPJbkyaiptdVA8DtsmNyw3tiub
           VITE_MINTED_EXTENSION_ID: dppfnbikpojpgdiobckgcknmkjlfoinh
+          NITRO_PRESET: vercel
+          VERCEL: "1"
         run: |
           npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           npx vercel build --prod --token="$VERCEL_TOKEN"
