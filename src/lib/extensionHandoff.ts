@@ -140,9 +140,7 @@ export function isExtensionMessagingAvailable(): boolean {
 }
 
 export const STORE_EXTENSION_ID = "dppfnbikpojpgdiobckgcknmkjlfoinh";
-export const DEPRECATED_EXTENSION_IDS = new Set([
-  "cocojeipdknhfhmkoefhgnkljbehggje",
-]);
+export const DEPRECATED_EXTENSION_IDS = new Set(["cocojeipdknhfhmkoefhgnkljbehggje"]);
 
 export function extensionConfiguration():
   { status: "valid"; extensionId: string } | { status: "missing" } | { status: "invalid" } {

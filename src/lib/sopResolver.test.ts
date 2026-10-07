@@ -6,6 +6,7 @@ import {
   resolveTemplate,
 } from "./sopResolver";
 import type { Facility, Provider, ProviderGroup, SOPTemplate } from "@/types";
+import { planStepCompletion } from "./sopStepCompletion";
 
 function provider(over: Partial<Provider> = {}): Provider {
   return {
@@ -110,6 +111,44 @@ function template(steps: SOPTemplate["taskDefinitions"][number]["steps"]): SOPTe
 }
 
 describe("resolveTemplate step typing", () => {
+  it.each([
+    [{ id: "step-1", label: "First action" }, { label: "Second action" }],
+    [{ label: "First action" }, { id: "step-0", label: "Second action" }],
+    [
+      { id: "authored", label: "First action" },
+      { id: "authored", label: "Second action" },
+    ],
+    [
+      { id: " authored ", label: "First action" },
+      { id: "authored", label: "Second action" },
+    ],
+  ])("keeps completion scoped to one action when IDs collide: %j", (...steps) => {
+    const [task] = resolveTemplate(template(steps), provider(), GROUP, FACILITY);
+    expect(new Set(task.sopContent.map((step) => step.id)).size).toBe(steps.length);
+    const completion = planStepCompletion(
+      task.sopContent,
+      task.sopContent[0].id,
+      "operator",
+      "2026-10-07T00:00:00Z",
+    );
+    expect(completion).toMatchObject({ ok: true, allDone: false });
+    if (completion.ok) {
+      expect(completion.nextSteps.filter((step) => step.isCompleted)).toHaveLength(1);
+    }
+  });
+
+  it("preserves unique authored IDs and reserves them before generating fallback IDs", () => {
+    const steps = [
+      { label: "First action" },
+      { id: "step-0", label: "Second action" },
+      { id: " authored ", label: "Third action" },
+    ];
+    const [task] = resolveTemplate(template(steps), provider(), GROUP, FACILITY);
+    expect(task.sopContent[0].id).not.toBe("step-0");
+    expect(task.sopContent[1].id).toBe("step-0");
+    expect(task.sopContent[2].id).toBe("authored");
+  });
+
   it("defaults a step with no stepType to online_form and no emailTemplate", () => {
     const tpl = template([{ label: "Log into CAQH with {{provider.caqhId}}" }]);
     const [task] = resolveTemplate(tpl, provider(), GROUP, FACILITY);

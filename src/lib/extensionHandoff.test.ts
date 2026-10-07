@@ -395,11 +395,16 @@ describe("SET_ACTIVE_WORK exact tab bridge", () => {
 
   it("compiled extension ID matches the production Chrome Web Store identity", () => {
     expect(STORE_EXTENSION_ID).toBe("dppfnbikpojpgdiobckgcknmkjlfoinh");
-    vi.unstubAllEnvs();
+    vi.stubEnv("VITE_MINTED_EXTENSION_ID", undefined);
     expect(extensionConfiguration()).toEqual({
       status: "valid",
       extensionId: "dppfnbikpojpgdiobckgcknmkjlfoinh",
     });
+  });
+
+  it("honors an explicitly configured unpacked extension ID", () => {
+    vi.stubEnv("VITE_MINTED_EXTENSION_ID", EXTENSION_ID);
+    expect(extensionConfiguration()).toEqual({ status: "valid", extensionId: EXTENSION_ID });
   });
 
   it("overrides known deprecated/decommissioned extension ID with the production Store ID", () => {
