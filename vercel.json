@@ -5,7 +5,8 @@
   "build": {
     "env": {
       "DANGEROUSLY_DEPLOY_VULNERABLE_TANSTACK_START_XSS": "1",
-      "VITE_MINTED_EXTENSION_ID": "dppfnbikpojpgdiobckgcknmkjlfoinh"
+      "VITE_MINTED_EXTENSION_ID": "dppfnbikpojpgdiobckgcknmkjlfoinh",
+      "NITRO_PRESET": "vercel"
     }
   }
 }
