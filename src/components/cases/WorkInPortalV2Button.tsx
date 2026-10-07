@@ -106,18 +106,32 @@ export function WorkInPortalV2Button({
   const receiptText = receiptMessage(visibleReceipt);
   return (
     <div className="basis-full space-y-1.5">
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        className="h-7 px-2 text-[12px] shadow-none"
-        onClick={launch}
-        disabled={launchDisabled || !globalThis.crypto?.randomUUID}
-        title={launchDisabledReason ?? `Send this exact step to ${portalName}`}
-      >
-        Work in portal
-        <ExternalLink className="ml-1.5 h-3 w-3" aria-hidden />
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-[12px] shadow-none"
+          onClick={launch}
+          disabled={launchDisabled || !globalThis.crypto?.randomUUID}
+          title={launchDisabledReason ?? `Send this exact step to ${portalName}`}
+        >
+          Work in portal
+          <ExternalLink className="ml-1.5 h-3 w-3" aria-hidden />
+        </Button>
+        {portalUrl ? (
+          <a
+            href={portalUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-[11px] text-[#1B4D3E] underline-offset-2 hover:underline"
+            title={`Open ${portalName} directly in a new tab`}
+          >
+            Open portal directly
+            <ExternalLink className="h-3 w-3" aria-hidden />
+          </a>
+        ) : null}
+      </div>
       {launchDisabledReason ? (
         <p className="text-[11px] text-muted-foreground">{launchDisabledReason}</p>
       ) : null}
