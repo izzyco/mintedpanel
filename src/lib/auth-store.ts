@@ -7,7 +7,11 @@ import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/externalClient";
 import { selectActiveOrgId } from "@/lib/landing";
 import type { LifecycleState } from "@/types";
-import { fetchEnrollmentContext, selectEnrollmentContext } from "@/lib/clientAccessApi";
+import {
+  ClientAccessApiError,
+  fetchEnrollmentContext,
+  selectEnrollmentContext,
+} from "@/lib/clientAccessApi";
 import {
   beginContextRefresh,
   registerContextRevisionObserver,
@@ -21,12 +25,33 @@ let accessContextAbortController: AbortController | null = null;
 let revisionObserverRegistered = false;
 let lifecycleListenersRegistered = false;
 
+export const FOCUS_REFRESH_COOLDOWN_MS = 30_000;
+let lastContextRefreshTime = 0;
+
+export function getLastContextRefreshTime(): number {
+  return lastContextRefreshTime;
+}
+
+export function resetContextRefreshCooldownForTest(): void {
+  lastContextRefreshTime = 0;
+}
+
+interface InFlightAccessContextRequest {
+  promise: Promise<EnrollmentContext | null>;
+  audience?: Exclude<EnrollmentAudience, null>;
+  orgId?: string | null;
+  epoch: number;
+  authGeneration: number;
+}
+let activeAccessContextRequest: InFlightAccessContextRequest | null = null;
+
 function invalidateProtectedWork({
   resetRevision = false,
   clearQueryCache = false,
 }: { resetRevision?: boolean; clearQueryCache?: boolean } = {}): void {
   accessContextAbortController?.abort();
   accessContextAbortController = null;
+  activeAccessContextRequest = null;
   void registeredQueryClient?.cancelQueries();
   if (clearQueryCache) {
     registeredQueryClient?.clear();
@@ -89,6 +114,7 @@ interface AuthState {
     audience?: Exclude<EnrollmentAudience, null>;
     orgId?: string | null;
     expectedRevision?: string;
+    force?: boolean;
   }) => Promise<EnrollmentContext | null>;
   selectAccessContext: (input: {
     audience: Exclude<EnrollmentAudience, null>;
@@ -171,7 +197,13 @@ export const useAuthStore = create<AuthState>()(
           lifecycleListenersRegistered = true;
           const refresh = () => {
             const state = useAuthStore.getState();
-            if (state.session && !state.accessContextLoading) {
+            const now = Date.now();
+            if (
+              state.session &&
+              !state.accessContextLoading &&
+              now - lastContextRefreshTime > FOCUS_REFRESH_COOLDOWN_MS
+            ) {
+              lastContextRefreshTime = now;
               void state.loadAccessContext().catch(() => undefined);
             }
           };
@@ -272,7 +304,28 @@ export const useAuthStore = create<AuthState>()(
         });
       },
 
-      loadAccessContext: async (options) => {
+      loadAccessContext: (options) => {
+        if (activeAccessContextRequest && !options?.force) {
+          const activeAudience = activeAccessContextRequest.audience;
+          const activeOrgId = activeAccessContextRequest.orgId ?? null;
+          const requestedAudience = options?.audience;
+          const requestedOrgId = options?.orgId ?? null;
+
+          const isSameAudience =
+            requestedAudience === undefined || requestedAudience === activeAudience;
+          const isSameOrg = requestedOrgId === activeOrgId;
+
+          const isCompatible =
+            isSameAudience &&
+            isSameOrg &&
+            get().contextEpoch === activeAccessContextRequest.epoch &&
+            get().authGeneration === activeAccessContextRequest.authGeneration;
+
+          if (isCompatible) {
+            return activeAccessContextRequest.promise;
+          }
+        }
+
         const epoch = get().contextEpoch + 1;
         const previous = get().accessContext;
         const selectionHint = get().selectionHint;
@@ -288,87 +341,125 @@ export const useAuthStore = create<AuthState>()(
           accessContextError: null,
           contextEpoch: epoch,
         });
-        try {
-          let context: EnrollmentContext;
-          if (options?.audience && options.orgId) {
-            let revision = expectedRevision;
-            if (!revision) {
-              const discovery = await fetchEnrollmentContext({ signal });
-              revision = discovery.contextRevision;
-            }
-            context = await selectEnrollmentContext(
-              {
-                audience: options.audience,
-                orgId: options.orgId,
-                contextRevision: revision,
-              },
-              { signal },
-            );
-          } else {
-            const discovery = await fetchEnrollmentContext({ signal });
-            const preservedAudience = previous?.audience ?? selectionHint?.audience;
-            const preservedOrgId =
-              previous?.selectedOrgId ?? selectionHint?.orgId ?? get().activeOrgId;
-            const canPreserveStaff =
-              preservedAudience === "staff" &&
-              !!preservedOrgId &&
-              discovery.staffOrgs.some((org) => org.orgId === preservedOrgId);
-            const canPreserveClient =
-              preservedAudience === "client" &&
-              !!preservedOrgId &&
-              discovery.clientOrgs.some((org) => org.orgId === preservedOrgId);
-            if (canPreserveStaff || canPreserveClient) {
-              context = await selectEnrollmentContext(
-                {
-                  audience: preservedAudience as Exclude<EnrollmentAudience, null>,
-                  orgId: preservedOrgId as string,
-                  contextRevision: discovery.contextRevision,
-                },
-                { signal },
-              );
+
+        const runLoad = (async (): Promise<EnrollmentContext | null> => {
+          try {
+            let context: EnrollmentContext;
+            if (options?.audience && options.orgId) {
+              let revision = expectedRevision;
+              if (!revision) {
+                const discovery = await fetchEnrollmentContext({ signal });
+                revision = discovery.contextRevision;
+              }
+              try {
+                context = await selectEnrollmentContext(
+                  {
+                    audience: options.audience,
+                    orgId: options.orgId,
+                    contextRevision: revision,
+                  },
+                  { signal },
+                );
+              } catch (error) {
+                if (
+                  error instanceof ClientAccessApiError &&
+                  error.status === 409 &&
+                  expectedRevision
+                ) {
+                  const discovery = await fetchEnrollmentContext({ signal });
+                  context = await selectEnrollmentContext(
+                    {
+                      audience: options.audience,
+                      orgId: options.orgId,
+                      contextRevision: discovery.contextRevision,
+                    },
+                    { signal },
+                  );
+                } else {
+                  throw error;
+                }
+              }
             } else {
-              context = discovery;
+              const discovery = await fetchEnrollmentContext({ signal });
+              const preservedAudience = previous?.audience ?? selectionHint?.audience;
+              const preservedOrgId =
+                previous?.selectedOrgId ?? selectionHint?.orgId ?? get().activeOrgId;
+              const canPreserveStaff =
+                preservedAudience === "staff" &&
+                !!preservedOrgId &&
+                discovery.staffOrgs.some((org) => org.orgId === preservedOrgId);
+              const canPreserveClient =
+                preservedAudience === "client" &&
+                !!preservedOrgId &&
+                discovery.clientOrgs.some((org) => org.orgId === preservedOrgId);
+              if (canPreserveStaff || canPreserveClient) {
+                context = await selectEnrollmentContext(
+                  {
+                    audience: preservedAudience as Exclude<EnrollmentAudience, null>,
+                    orgId: preservedOrgId as string,
+                    contextRevision: discovery.contextRevision,
+                  },
+                  { signal },
+                );
+              } else {
+                context = discovery;
+              }
+            }
+            if (get().contextEpoch !== epoch || get().authGeneration !== requestAuthGeneration)
+              return null;
+            if (requestUserId && context.actorUserId !== requestUserId) return null;
+            if (
+              options?.audience &&
+              options.orgId &&
+              (context.audience !== options.audience || context.selectedOrgId !== options.orgId)
+            ) {
+              throw new Error("The selected access context was not returned by the server");
+            }
+            const isReplacement =
+              previous !== null &&
+              (previous.contextRevision !== context.contextRevision ||
+                previous.audience !== context.audience);
+
+            if (isReplacement) {
+              void registeredQueryClient?.cancelQueries();
+              registeredQueryClient?.clear();
+            }
+
+            setContextRevision(context.contextRevision);
+            set({
+              accessContext: context,
+              accessContextLoading: false,
+              accessContextError: null,
+            });
+            return context;
+          } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") return null;
+            if (get().contextEpoch === epoch && get().authGeneration === requestAuthGeneration) {
+              set({
+                accessContext: null,
+                accessContextLoading: false,
+                accessContextError:
+                  error instanceof Error ? error.message : "Unable to resolve access context",
+              });
+            }
+            throw error;
+          } finally {
+            if (activeAccessContextRequest?.epoch === epoch) {
+              activeAccessContextRequest = null;
             }
           }
-          if (get().contextEpoch !== epoch || get().authGeneration !== requestAuthGeneration)
-            return null;
-          if (requestUserId && context.actorUserId !== requestUserId) return null;
-          if (
-            options?.audience &&
-            options.orgId &&
-            (context.audience !== options.audience || context.selectedOrgId !== options.orgId)
-          ) {
-            throw new Error("The selected access context was not returned by the server");
-          }
-          const isReplacement =
-            previous !== null &&
-            (previous.contextRevision !== context.contextRevision ||
-              previous.audience !== context.audience);
+        })();
 
-          if (isReplacement) {
-            void registeredQueryClient?.cancelQueries();
-            registeredQueryClient?.clear();
-          }
+        const currentPromise = runLoad;
+        activeAccessContextRequest = {
+          promise: currentPromise,
+          audience: options?.audience,
+          orgId: options?.orgId ?? null,
+          epoch,
+          authGeneration: requestAuthGeneration,
+        };
 
-          setContextRevision(context.contextRevision);
-          set({
-            accessContext: context,
-            accessContextLoading: false,
-            accessContextError: null,
-          });
-          return context;
-        } catch (error) {
-          if (error instanceof DOMException && error.name === "AbortError") return null;
-          if (get().contextEpoch === epoch && get().authGeneration === requestAuthGeneration) {
-            set({
-              accessContext: null,
-              accessContextLoading: false,
-              accessContextError:
-                error instanceof Error ? error.message : "Unable to resolve access context",
-            });
-          }
-          throw error;
-        }
+        return currentPromise;
       },
 
       selectAccessContext: async (input) => {
@@ -419,6 +510,7 @@ export const useAuthStore = create<AuthState>()(
 
       signOut: async () => {
         invalidateProtectedWork({ resetRevision: true, clearQueryCache: true });
+        lastContextRefreshTime = 0;
         await supabase.auth.signOut();
         set({
           session: null,
@@ -487,6 +579,9 @@ export async function applyAuthStateChange(
   const sameActor = Boolean(previousUserId && nextUserId && previousUserId === nextUserId);
   const clearingCache = !session || !sameActor;
   invalidateProtectedWork({ resetRevision: !sameActor, clearQueryCache: clearingCache });
+  if (!sameActor) {
+    lastContextRefreshTime = 0;
+  }
   const previousContext = current.accessContext;
   const targetOrgId = previousContext?.selectedOrgId ?? current.activeOrgId;
   const selectionHint =

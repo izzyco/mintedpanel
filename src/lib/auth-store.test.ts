@@ -12,10 +12,22 @@ vi.mock("@/integrations/supabase/externalClient", () => ({
     from: vi.fn(),
   },
 }));
-vi.mock("@/lib/clientAccessApi", () => ({
-  fetchEnrollmentContext: vi.fn(),
-  selectEnrollmentContext: vi.fn(),
-}));
+vi.mock("@/lib/clientAccessApi", () => {
+  class ClientAccessApiError extends Error {
+    constructor(
+      readonly status: number,
+      message: string,
+    ) {
+      super(message);
+      this.name = "ClientAccessApiError";
+    }
+  }
+  return {
+    ClientAccessApiError,
+    fetchEnrollmentContext: vi.fn(),
+    selectEnrollmentContext: vi.fn(),
+  };
+});
 vi.mock("@/lib/contextRevision", () => ({
   beginContextRefresh: vi.fn(),
   registerContextRevisionObserver: vi.fn(),
@@ -83,7 +95,7 @@ describe("auth-store access context lifecycle", () => {
     fetchContextMock.mockReturnValueOnce(first.promise).mockResolvedValueOnce(context("new"));
 
     const stale = useAuthStore.getState().loadAccessContext();
-    const current = useAuthStore.getState().loadAccessContext();
+    const current = useAuthStore.getState().loadAccessContext({ force: true });
     await expect(current).resolves.toMatchObject({ contextRevision: "new" });
 
     first.resolve(context("old"));
@@ -255,5 +267,107 @@ describe("auth-store access context lifecycle", () => {
       membershipsLoading: false,
       selectionHint: null,
     });
+  });
+  it("deduplicates concurrent in-flight requests with compatible parameters", async () => {
+    const first = deferred<EnrollmentContext>();
+    fetchContextMock.mockReturnValueOnce(first.promise);
+
+    const call1 = useAuthStore.getState().loadAccessContext();
+    const call2 = useAuthStore.getState().loadAccessContext();
+
+    expect(call1).toBe(call2);
+    expect(fetchContextMock).toHaveBeenCalledOnce();
+
+    first.resolve(context("deduped"));
+    await expect(call1).resolves.toMatchObject({ contextRevision: "deduped" });
+    await expect(call2).resolves.toMatchObject({ contextRevision: "deduped" });
+  });
+
+  it("aborts in-flight request on incompatible org switch", async () => {
+    const first = deferred<EnrollmentContext>();
+    fetchContextMock.mockReturnValueOnce(first.promise);
+
+    const orgA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const orgB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    selectContextMock.mockResolvedValueOnce({
+      ...context("org-b"),
+      audience: "staff",
+      selectedOrgId: orgB,
+    });
+
+    const callA = useAuthStore.getState().loadAccessContext({ audience: "staff", orgId: orgA });
+    const callB = useAuthStore
+      .getState()
+      .loadAccessContext({ audience: "staff", orgId: orgB, expectedRevision: "rev-1" });
+
+    expect(callA).not.toBe(callB);
+    await expect(callB).resolves.toMatchObject({ contextRevision: "org-b", selectedOrgId: orgB });
+    first.resolve(context("org-a"));
+    await expect(callA).resolves.toBeNull();
+  });
+
+  it("directly selects context when audience, orgId, and expectedRevision are known", async () => {
+    const orgId = "55555555-5555-4555-8555-555555555555";
+    selectContextMock.mockResolvedValueOnce({
+      ...context("rev-direct"),
+      audience: "staff",
+      selectedOrgId: orgId,
+    });
+
+    const result = await useAuthStore.getState().loadAccessContext({
+      audience: "staff",
+      orgId,
+      expectedRevision: "rev-known",
+    });
+
+    expect(fetchContextMock).not.toHaveBeenCalled();
+    expect(selectContextMock).toHaveBeenCalledWith(
+      { audience: "staff", orgId, contextRevision: "rev-known" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(result).toMatchObject({ contextRevision: "rev-direct", selectedOrgId: orgId });
+  });
+
+  it("falls back to discovery when direct selection fails with 409 stale revision", async () => {
+    const orgId = "66666666-6666-4666-8666-666666666666";
+    const { ClientAccessApiError } = await import("@/lib/clientAccessApi");
+    selectContextMock
+      .mockRejectedValueOnce(new ClientAccessApiError(409, "Access context changed"))
+      .mockResolvedValueOnce({
+        ...context("rev-fresh"),
+        audience: "staff",
+        selectedOrgId: orgId,
+      });
+    fetchContextMock.mockResolvedValueOnce({
+      ...context("rev-fresh"),
+      staffOrgs: [
+        { orgId, orgName: "Org", role: "admin", reportStaff: false, clientManage: false },
+      ],
+    });
+
+    const result = await useAuthStore.getState().loadAccessContext({
+      audience: "staff",
+      orgId,
+      expectedRevision: "rev-stale",
+    });
+
+    expect(fetchContextMock).toHaveBeenCalledOnce();
+    expect(selectContextMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ contextRevision: "rev-fresh", selectedOrgId: orgId });
+  });
+
+  it("does not consume focus cooldown on a normal context load", async () => {
+    const {
+      FOCUS_REFRESH_COOLDOWN_MS,
+      getLastContextRefreshTime,
+      resetContextRefreshCooldownForTest,
+    } = await import("./auth-store");
+    expect(FOCUS_REFRESH_COOLDOWN_MS).toBe(30_000);
+    resetContextRefreshCooldownForTest();
+    expect(getLastContextRefreshTime()).toBe(0);
+
+    fetchContextMock.mockResolvedValueOnce(context("rev-1"));
+    await useAuthStore.getState().loadAccessContext();
+    expect(getLastContextRefreshTime()).toBe(0);
   });
 });
