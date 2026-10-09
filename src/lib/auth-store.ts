@@ -7,7 +7,11 @@ import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/externalClient";
 import { selectActiveOrgId } from "@/lib/landing";
 import type { LifecycleState } from "@/types";
-import { ClientAccessApiError, fetchEnrollmentContext, selectEnrollmentContext } from "@/lib/clientAccessApi";
+import {
+  ClientAccessApiError,
+  fetchEnrollmentContext,
+  selectEnrollmentContext,
+} from "@/lib/clientAccessApi";
 import {
   beginContextRefresh,
   registerContextRevisionObserver,

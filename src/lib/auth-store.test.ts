@@ -295,9 +295,7 @@ describe("auth-store access context lifecycle", () => {
       selectedOrgId: orgB,
     });
 
-    const callA = useAuthStore
-      .getState()
-      .loadAccessContext({ audience: "staff", orgId: orgA });
+    const callA = useAuthStore.getState().loadAccessContext({ audience: "staff", orgId: orgA });
     const callB = useAuthStore
       .getState()
       .loadAccessContext({ audience: "staff", orgId: orgB, expectedRevision: "rev-1" });
@@ -342,7 +340,9 @@ describe("auth-store access context lifecycle", () => {
       });
     fetchContextMock.mockResolvedValueOnce({
       ...context("rev-fresh"),
-      staffOrgs: [{ orgId, orgName: "Org", role: "admin", reportStaff: false, clientManage: false }],
+      staffOrgs: [
+        { orgId, orgName: "Org", role: "admin", reportStaff: false, clientManage: false },
+      ],
     });
 
     const result = await useAuthStore.getState().loadAccessContext({
@@ -357,8 +357,11 @@ describe("auth-store access context lifecycle", () => {
   });
 
   it("respects focus refresh cooldown window", async () => {
-    const { FOCUS_REFRESH_COOLDOWN_MS, getLastContextRefreshTime, resetContextRefreshCooldownForTest } =
-      await import("./auth-store");
+    const {
+      FOCUS_REFRESH_COOLDOWN_MS,
+      getLastContextRefreshTime,
+      resetContextRefreshCooldownForTest,
+    } = await import("./auth-store");
     expect(FOCUS_REFRESH_COOLDOWN_MS).toBe(30_000);
     resetContextRefreshCooldownForTest();
     expect(getLastContextRefreshTime()).toBe(0);
