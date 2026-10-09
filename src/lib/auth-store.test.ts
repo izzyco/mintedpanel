@@ -356,7 +356,7 @@ describe("auth-store access context lifecycle", () => {
     expect(result).toMatchObject({ contextRevision: "rev-fresh", selectedOrgId: orgId });
   });
 
-  it("respects focus refresh cooldown window", async () => {
+  it("does not consume focus cooldown on a normal context load", async () => {
     const {
       FOCUS_REFRESH_COOLDOWN_MS,
       getLastContextRefreshTime,
@@ -368,6 +368,6 @@ describe("auth-store access context lifecycle", () => {
 
     fetchContextMock.mockResolvedValueOnce(context("rev-1"));
     await useAuthStore.getState().loadAccessContext();
-    expect(getLastContextRefreshTime()).toBeGreaterThan(0);
+    expect(getLastContextRefreshTime()).toBe(0);
   });
 });

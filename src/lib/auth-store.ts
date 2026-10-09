@@ -426,7 +426,6 @@ export const useAuthStore = create<AuthState>()(
             }
 
             setContextRevision(context.contextRevision);
-            lastContextRefreshTime = Date.now();
             set({
               accessContext: context,
               accessContextLoading: false,
