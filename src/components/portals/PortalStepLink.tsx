@@ -164,8 +164,7 @@ export function PortalStepLink({
       !configuration.mappingGeneration ||
       !configuration.effectiveMappingFingerprint);
   const invalidPortalUrl = Boolean(configuration.formUrl) && portalUrl === null;
-  const isAutomatedWorkflowEnabled =
-    import.meta.env.VITE_ENABLE_EXACT_WORK_V2 === "true";
+  const isAutomatedWorkflowEnabled = import.meta.env.VITE_ENABLE_EXACT_WORK_V2 === "true";
   const useExactWorkflow =
     isAutomatedWorkflowEnabled && Boolean(configuration.requiresExplicitSelection);
   const showLegacyDirectLink = Boolean(portalUrl && !useExactWorkflow);
