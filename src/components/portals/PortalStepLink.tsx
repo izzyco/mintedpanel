@@ -164,7 +164,10 @@ export function PortalStepLink({
       !configuration.mappingGeneration ||
       !configuration.effectiveMappingFingerprint);
   const invalidPortalUrl = Boolean(configuration.formUrl) && portalUrl === null;
-  const showLegacyDirectLink = Boolean(portalUrl && !configuration.requiresExplicitSelection);
+  const isAutomatedWorkflowEnabled = import.meta.env.VITE_ENABLE_EXACT_WORK_V2 === "true";
+  const useExactWorkflow =
+    isAutomatedWorkflowEnabled && Boolean(configuration.requiresExplicitSelection);
+  const showLegacyDirectLink = Boolean(portalUrl && !useExactWorkflow);
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#E8E5E0] bg-[#FAFAF9] px-2.5 py-1.5 text-[12px]">
@@ -202,7 +205,7 @@ export function PortalStepLink({
         </div>
       ) : null}
 
-      {portalUrl && handoff && configuration.requiresExplicitSelection ? (
+      {portalUrl && handoff && useExactWorkflow ? (
         <>
           {workTuple ? (
             <WorkInPortalV2Button
@@ -218,9 +221,23 @@ export function PortalStepLink({
             />
           ) : (
             <div className="basis-full space-y-1">
-              <Button type="button" size="sm" variant="outline" disabled>
-                Work in portal
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button type="button" size="sm" variant="outline" disabled>
+                  Work in portal
+                </Button>
+                {portalUrl ? (
+                  <a
+                    href={portalUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-[#1B4D3E] underline-offset-2 hover:underline"
+                    title={`Open ${portalName} directly in a new tab`}
+                  >
+                    Open portal directly
+                    <ExternalLink className="h-3 w-3" aria-hidden />
+                  </a>
+                ) : null}
+              </div>
               <p className="text-[11px] text-muted-foreground">
                 {facilityResolution?.status === "blocked"
                   ? facilityBlockMessage(facilityResolution.reason)
@@ -235,7 +252,7 @@ export function PortalStepLink({
             </div>
           )}
         </>
-      ) : configuration.requiresExplicitSelection ? (
+      ) : useExactWorkflow ? (
         <span className="text-muted-foreground">
           {handoff
             ? "Portal URL or exact work context is unavailable."
