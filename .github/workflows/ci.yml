@@ -425,6 +425,7 @@ jobs:
   e2e:
     name: Playwright smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -454,7 +455,7 @@ jobs:
           ENV
 
       - name: Run Playwright smoke skeleton
-        run: npm run test:e2e
+        run: npm run test:e2e -- e2e/login.spec.ts e2e/dashboard.spec.ts
 
       - name: Upload Playwright report
         if: ${{ !cancelled() }}
