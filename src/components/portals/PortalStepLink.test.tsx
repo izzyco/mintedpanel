@@ -109,71 +109,21 @@ beforeEach(() => {
   queryState.value = { data: configuration(), isPending: false, isError: false };
 });
 
-describe("PortalStepLink mounted variants", () => {
-  it("keeps legacy contextless navigation available for configurations without exact selection", () => {
-    queryState.value.data = configuration({ requiresExplicitSelection: false });
+describe("PortalStepLink mounted variants (default manual workflow)", () => {
+  it("defaults to manual portal launch with extension pick-up and direct link", () => {
+    const html = renderToStaticMarkup(
+      <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
+    );
+    expect(html).toContain("Legacy work in portal");
+    expect(html).toContain("Open portal directly");
+    expect(html).toContain(`data-facility-id="${SECONDARY_ID}"`);
+  });
+
+  it("keeps contextless navigation available when portal URL is present", () => {
     const html = renderToStaticMarkup(<PortalStepLink portalKey="regional_enrollment" />);
     expect(html).toContain("Open portal");
     expect(html).not.toContain("Work in portal");
     expect(html).toContain('href="https://portal.example/enroll"');
-  });
-
-  it("mounts exact case work with the current step, selected facility, config and canonical URL", () => {
-    const html = renderToStaticMarkup(
-      <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
-    );
-    expect(html).toContain('data-testid="exact-work-button"');
-    expect(html).toContain('data-owner-kind="case"');
-    expect(html).toContain(`data-owner-id="${CASE_ID}"`);
-    expect(html).toContain('data-step-id="b7a90000-0000-4000-a000-0000000000c6"');
-    expect(html).toContain(`data-facility-id="${SECONDARY_ID}"`);
-    expect(html).toContain('data-portal-url="https://portal.example/enroll"');
-    expect(html).not.toContain("Open portal directly");
-  });
-
-  it("supports the same exact handoff for Recredentialing cases", () => {
-    queryState.value.data = configuration({ caseType: "recredentialing" });
-    const html = renderToStaticMarkup(
-      <PortalStepLink
-        portalKey="regional_enrollment"
-        handoff={handoff({ caseType: "recredentialing" })}
-      />,
-    );
-    expect(html).toContain('data-testid="exact-work-button"');
-    expect(html).toContain('data-owner-kind="case"');
-  });
-
-  it("does not expose a contextless URL for an explicit-selection configuration", () => {
-    const html = renderToStaticMarkup(<PortalStepLink portalKey="regional_enrollment" />);
-    expect(html).not.toContain("Open portal");
-    expect(html).toContain("Choose this portal from an exact case or Contract SOP step");
-  });
-
-  it("gates explicit-selection launch on extension_fill, an open case, and a ready exact resolver", () => {
-    const nonExtensionTask = renderToStaticMarkup(
-      <PortalStepLink
-        portalKey="regional_enrollment"
-        handoff={handoff({ workStep: { ...handoff().workStep!, taskExecutionType: "manual" } })}
-      />,
-    );
-    expect(nonExtensionTask).not.toContain('data-testid="exact-work-button"');
-    expect(nonExtensionTask).toContain("not enabled for the exact Extension work handoff");
-
-    const closedCase = renderToStaticMarkup(
-      <PortalStepLink
-        portalKey="regional_enrollment"
-        handoff={handoff({ caseStatus: "approved" })}
-      />,
-    );
-    expect(closedCase).not.toContain('data-testid="exact-work-button"');
-    expect(closedCase).toContain("case is not open");
-
-    queryState.value.data = configuration({ isReady: false, status: "empty" });
-    const unready = renderToStaticMarkup(
-      <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
-    );
-    expect(unready).not.toContain('data-testid="exact-work-button"');
-    expect(unready).toContain("exact portal configuration is not ready");
   });
 
   it("requires a current facility choice when the case has locations", () => {
@@ -185,23 +135,8 @@ describe("PortalStepLink mounted variants", () => {
     );
     expect(html).toContain('aria-label="Location for this work"');
     expect(html).toContain("Choose a location before sending this case to the extension.");
-    expect(html).toMatch(
-      /<button class="[^"]+" type="button" disabled="">Work in portal<\/button>/,
-    );
-  });
-
-  it("preserves the old case flow only for legacy portal configurations", () => {
-    queryState.value.data = configuration({ requiresExplicitSelection: false });
-    const html = renderToStaticMarkup(
-      <PortalStepLink
-        portalKey="regional_enrollment"
-        handoff={handoff({ selectedFacilityId: SECONDARY_ID })}
-      />,
-    );
     expect(html).toContain("Legacy work in portal");
     expect(html).toContain("Open portal directly");
-    expect(html).toContain('aria-label="Location for this work"');
-    expect(html).toContain(`data-facility-id="${SECONDARY_ID}"`);
   });
 
   it("does not guess when the resolver is loading, failed, missing, or has no safe URL", () => {
@@ -222,14 +157,88 @@ describe("PortalStepLink mounted variants", () => {
     const missingUrl = renderToStaticMarkup(
       <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
     );
-    expect(missingUrl).toContain("Portal URL or exact work context is unavailable");
-    expect(missingUrl).not.toContain('data-testid="exact-work-button"');
+    expect(missingUrl).toContain("Portal URL not set");
 
     queryState.value.data = configuration({ formUrl: "http://portal.example/enroll" });
     const unsafe = renderToStaticMarkup(
       <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
     );
+    expect(unsafe).toContain("Portal URL is unavailable for handoff.");
     expect(unsafe).not.toContain("Open portal directly");
-    expect(unsafe).not.toContain('data-testid="exact-work-button"');
+  });
+});
+
+describe("PortalStepLink mounted variants (automated workflow enabled)", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_ENABLE_EXACT_WORK_V2", "true");
+  });
+
+  it("mounts exact case work with the current step, selected facility, config and canonical URL", () => {
+    const html = renderToStaticMarkup(
+      <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
+    );
+    expect(html).toContain('data-testid="exact-work-button"');
+    expect(html).toContain('data-owner-kind="case"');
+    expect(html).toContain(`data-owner-id="${CASE_ID}"`);
+    expect(html).toContain('data-step-id="b7a90000-0000-4000-a000-0000000000c6"');
+    expect(html).toContain(`data-facility-id="${SECONDARY_ID}"`);
+    expect(html).toContain('data-portal-url="https://portal.example/enroll"');
+  });
+
+  it("supports the same exact handoff for Recredentialing cases", () => {
+    queryState.value.data = configuration({ caseType: "recredentialing" });
+    const html = renderToStaticMarkup(
+      <PortalStepLink
+        portalKey="regional_enrollment"
+        handoff={handoff({ caseType: "recredentialing" })}
+      />,
+    );
+    expect(html).toContain('data-testid="exact-work-button"');
+    expect(html).toContain('data-owner-kind="case"');
+  });
+
+  it("does not expose a contextless URL for an explicit-selection configuration when automated mode is active", () => {
+    const html = renderToStaticMarkup(<PortalStepLink portalKey="regional_enrollment" />);
+    expect(html).not.toContain("Open portal");
+    expect(html).toContain("Choose this portal from an exact case or Contract SOP step");
+  });
+
+  it("gates explicit-selection launch on extension_fill, open case, and provides fallback direct link", () => {
+    const nonExtensionTask = renderToStaticMarkup(
+      <PortalStepLink
+        portalKey="regional_enrollment"
+        handoff={handoff({ workStep: { ...handoff().workStep!, taskExecutionType: "manual" } })}
+      />,
+    );
+    expect(nonExtensionTask).not.toContain('data-testid="exact-work-button"');
+    expect(nonExtensionTask).toContain("not enabled for the exact Extension work handoff");
+    expect(nonExtensionTask).toContain("Open portal directly");
+
+    const closedCase = renderToStaticMarkup(
+      <PortalStepLink
+        portalKey="regional_enrollment"
+        handoff={handoff({ caseStatus: "approved" })}
+      />,
+    );
+    expect(closedCase).not.toContain('data-testid="exact-work-button"');
+    expect(closedCase).toContain("case is not open");
+    expect(closedCase).toContain("Open portal directly");
+
+    queryState.value.data = configuration({ isReady: false, status: "empty" });
+    const unready = renderToStaticMarkup(
+      <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
+    );
+    expect(unready).not.toContain('data-testid="exact-work-button"');
+    expect(unready).toContain("exact portal configuration is not ready");
+    expect(unready).toContain("Open portal directly");
+  });
+
+  it("displays unavailable context message when formUrl is missing in automated mode", () => {
+    queryState.value.data = configuration({ formUrl: null });
+    const missingUrl = renderToStaticMarkup(
+      <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
+    );
+    expect(missingUrl).toContain("Portal URL or exact work context is unavailable");
+    expect(missingUrl).not.toContain('data-testid="exact-work-button"');
   });
 });
