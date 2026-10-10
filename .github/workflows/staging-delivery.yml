@@ -25,6 +25,7 @@ jobs:
     if: >-
       github.ref == 'refs/heads/main' && github.run_attempt == 1
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: staging
     permissions:
       contents: write
