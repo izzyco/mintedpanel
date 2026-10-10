@@ -20,6 +20,7 @@ jobs:
   prepare:
     if: github.ref == 'refs/heads/main' && github.run_attempt == 1
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -51,6 +52,7 @@ jobs:
     name: Approve and execute production release
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: Production
     permissions:
       contents: write

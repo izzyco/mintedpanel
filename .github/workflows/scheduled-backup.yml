@@ -35,7 +35,7 @@ jobs:
     name: Execute Nightly Backup
     runs-on: ubuntu-latest
     environment: Production Backup
-    timeout-minutes: 30
+    timeout-minutes: 10
 
     steps:
       - name: Checkout full repository history
