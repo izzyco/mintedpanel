@@ -8,10 +8,16 @@
 // PHI note: the token values passed here (SSN last-4, DOB, addresses) stay in the
 // browser — they are written into the local PDF and never logged or persisted.
 import { mapPdfFields, resolvePdfValues, type PdfFillPlan } from "@/lib/pdfFill";
+import { isXlsxPayerForm } from "@/lib/payerForms";
+import {
+  fillXlsxTemplateBytes,
+  inspectXlsxTemplate,
+  type XlsxColumnMapping,
+} from "@/lib/xlsxTemplateFill";
 import type { FieldDictionaryEntry } from "@/types";
 
 export interface PdfAnalysis extends PdfFillPlan {
-  /** Every AcroForm field name found in the uploaded PDF. */
+  /** Every form field or column header found in the uploaded document. */
   fieldNames: string[];
 }
 
@@ -23,13 +29,19 @@ async function loadForm(file: File) {
   return { doc, form };
 }
 
-// Read the uploaded PDF's field names and run the pure mapping/resolution so the
-// UI can preview what will and won't fill BEFORE the user commits to generating.
+// Read the uploaded document's field/column names and run pure mapping/resolution
+// so the UI can preview what will and won't fill BEFORE the user commits to generating.
 export async function analyzePdfForm(
   file: File,
   dictionary: FieldDictionaryEntry[],
   tokenValues: Record<string, string>,
 ): Promise<PdfAnalysis> {
+  if (isXlsxPayerForm(file.name)) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const inspection = inspectXlsxTemplate(bytes);
+    const plan = resolvePdfValues(mapPdfFields(inspection.headers, dictionary), tokenValues);
+    return { fieldNames: inspection.headers, ...plan };
+  }
   const { form } = await loadForm(file);
   const fieldNames = form.getFields().map((f) => f.getName());
   const plan = resolvePdfValues(mapPdfFields(fieldNames, dictionary), tokenValues);
@@ -55,11 +67,31 @@ export async function preparePdfFill(
   file: File,
   dictionary: FieldDictionaryEntry[],
   tokenValues: Record<string, string>,
-): Promise<{ analysis: PdfAnalysis; output: Uint8Array }> {
-  const { PDFDocument, PDFTextField, PDFDropdown, PDFCheckBox } = await import("pdf-lib");
+): Promise<{ analysis: PdfAnalysis; output: Uint8Array; isXlsx?: boolean }> {
+  if (isXlsxPayerForm(file.name)) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const inspection = inspectXlsxTemplate(bytes);
+    const plan = resolvePdfValues(mapPdfFields(inspection.headers, dictionary), tokenValues);
+    const mappings: XlsxColumnMapping[] = inspection.headers.map((h) => {
+      const match = plan.fill.find((f) => f.field === h);
+      return {
+        header: h,
+        fixedValue: match ? match.value : null,
+      };
+    });
+    const result = fillXlsxTemplateBytes(bytes, [tokenValues], mappings, {
+      targetSheetName: inspection.targetSheet,
+    });
+    return {
+      analysis: { fieldNames: inspection.headers, ...plan },
+      output: result.output,
+      isXlsx: true,
+    };
+  }
+
+  const { PDFTextField, PDFDropdown, PDFCheckBox } = await import("pdf-lib");
   const bytes = await file.arrayBuffer();
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
-  const form = doc.getForm();
+  const { doc, form } = await loadForm(file);
 
   const fieldNames = form.getFields().map((f) => f.getName());
   const plan = resolvePdfValues(mapPdfFields(fieldNames, dictionary), tokenValues);
@@ -81,15 +113,23 @@ export async function preparePdfFill(
   }
 
   const output = await doc.save();
-  return { analysis: { fieldNames, ...plan }, output };
+  return { analysis: { fieldNames, ...plan }, output, isXlsx: false };
 }
 
-export function downloadPdfOutput(output: Uint8Array, fileStem: string): void {
-  triggerDownload(output, `${fileStem}-filled.pdf`);
+export function downloadPdfOutput(output: Uint8Array, fileStem: string, isXlsx?: boolean): void {
+  if (isXlsx) {
+    triggerDownload(
+      output,
+      `${fileStem}-filled.xlsx`,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+  } else {
+    triggerDownload(output, `${fileStem}-filled.pdf`, "application/pdf");
+  }
 }
 
-function triggerDownload(bytes: Uint8Array, fileName: string) {
-  const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+function triggerDownload(bytes: Uint8Array, fileName: string, mimeType = "application/pdf") {
+  const blob = new Blob([bytes as BlobPart], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

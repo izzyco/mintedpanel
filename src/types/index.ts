@@ -1766,7 +1766,7 @@ export interface CaseDetail extends CredentialCase {
 
 export type PortalFieldMapSource = "token" | "manual" | "manual_partial" | "hardcoded";
 export type PortalFieldMapStatus = "proposed" | "approved" | "retired";
-export type FillMode = "web" | "pdf";
+export type FillMode = "web" | "pdf" | "xlsx";
 
 export interface PortalFieldMap {
   id: string;

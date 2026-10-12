@@ -219,7 +219,7 @@ export function PayerFormStepPanel({
               <Input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="PT Credentialing Supplement"
+                placeholder="PT Credentialing Supplement / Roster Template"
                 disabled={upload.isPending || importFields.isPending}
               />
             </div>
@@ -228,7 +228,7 @@ export function PayerFormStepPanel({
             <Input
               ref={fileRef}
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx"
               className="h-9 max-w-[260px] text-[12px]"
               disabled={upload.isPending || importFields.isPending}
               onChange={(e) => setPending(e.target.files?.[0] ?? null)}

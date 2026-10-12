@@ -382,8 +382,8 @@ function RegistryRowEditor({
         </details>
       ) : isStructured && !checkboxBoolean ? (
         <p className="text-[11px] text-muted-foreground">
-          {row.mapType === "pdf"
-            ? "This PDF does not list accepted values for this control. Check the source form."
+          {row.mapType === "pdf" || row.mapType === "xlsx"
+            ? `This ${row.mapType === "xlsx" ? "spreadsheet" : "PDF"} does not list accepted values for this control. Check the source form.`
             : "No captured options — re-capture this page to read what the control accepts."}
         </p>
       ) : null}

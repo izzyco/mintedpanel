@@ -24,9 +24,11 @@ export type { AuthoredPayerFormPointer, ResolvedPayerFormPointer };
 export const PAYER_FORM_BUCKET = "payer-forms";
 /** Mirrored by the bucket's file_size_limit in 20260824170000_payer_forms.sql. */
 export const PAYER_FORM_MAX_BYTES = 25 * 1024 * 1024; // 25 MiB
-/** PDF only — a payer form is a form, not a scan. Mirrored by the bucket's
- * allowed_mime_types and the payer_forms_mime_pdf CHECK. */
-export const PAYER_FORM_MIME_TYPES = ["application/pdf"] as const;
+/** PDF and XLSX roster forms. Mirrored by bucket allowed MIME types. */
+export const PAYER_FORM_MIME_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+] as const;
 /** Signed download URLs are short-lived, matching DOWNLOAD_URL_TTL_SECONDS. */
 export const PAYER_FORM_URL_TTL_SECONDS = 120;
 /** A label has to fit a checklist row without becoming the row. */
@@ -116,15 +118,25 @@ export function payerFormLabelError(raw: string): string | null {
   return null;
 }
 
-export function payerFormFileError(file: { size: number; type: string }): string | null {
-  if (!(PAYER_FORM_MIME_TYPES as readonly string[]).includes(file.type)) {
-    return "Payer forms must be PDF files";
+export function payerFormFileError(file: {
+  size: number;
+  type: string;
+  name?: string;
+}): string | null {
+  const isAllowedMime = (PAYER_FORM_MIME_TYPES as readonly string[]).includes(file.type);
+  const isAllowedExt = typeof file.name === "string" && /\.(pdf|xlsx)$/i.test(file.name);
+  if (!isAllowedMime && !isAllowedExt) {
+    return "Payer forms must be PDF or Excel (.xlsx) files";
   }
   if (file.size <= 0) return "That file is empty";
   if (file.size > PAYER_FORM_MAX_BYTES) {
     return `Files are limited to ${Math.floor(PAYER_FORM_MAX_BYTES / (1024 * 1024))} MB`;
   }
   return null;
+}
+
+export function isXlsxPayerForm(fileName: string | null | undefined): boolean {
+  return typeof fileName === "string" && fileName.toLowerCase().endsWith(".xlsx");
 }
 
 // ---------------------------------------------------------------------------
