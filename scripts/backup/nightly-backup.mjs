@@ -124,7 +124,10 @@ async function verifyDatabaseIdentity({ connection, environment, psqlBin, execFi
       ],
       { env: environment, encoding: "utf8", maxBuffer: 64 * 1024 },
     );
-  } catch {
+  } catch (err) {
+    console.error(
+      `Database connection failed: host=${connection.host} port=${connection.port} user=${connection.user} db=${connection.database}: ${err?.message || err}`,
+    );
     throw new Error("Backup database identity verification failed");
   }
 
@@ -140,6 +143,9 @@ async function verifyDatabaseIdentity({ connection, environment, psqlBin, execFi
     sessionUser !== connection.expectedRole ||
     !["f", "false"].includes(recovery)
   ) {
+    console.error(
+      `Database identity mismatch: db=${database} (expected ${connection.database}), currentUser=${currentUser}, sessionUser=${sessionUser} (expected ${connection.expectedRole}), recovery=${recovery}`,
+    );
     throw new Error("Backup database identity verification failed");
   }
 }

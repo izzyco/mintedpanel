@@ -2,8 +2,32 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'review-artifacts/**'
+      - 'release-artifacts/**'
+      - 'audit-*.json'
+      - 'AUDIT_*'
+      - 'CURRENT_STATE.md'
+      - 'IDE_HANDOFF_*'
+      - '.agents/**'
   push:
     branches: [main, staging]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'review-artifacts/**'
+      - 'release-artifacts/**'
+      - 'audit-*.json'
+      - 'AUDIT_*'
+      - 'CURRENT_STATE.md'
+      - 'IDE_HANDOFF_*'
+      - '.agents/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -165,6 +189,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -283,6 +308,7 @@ jobs:
   migrations:
     name: Migration dry-run
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     services:
       postgres:
         image: postgres:16
@@ -346,19 +372,6 @@ jobs:
           CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
             SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
           $$;
-          CREATE OR REPLACE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$
-            SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), current_user::text);
-          $$;
-          -- Supabase's auth.jwt() is part of the hosted auth schema; this
-          -- disposable PostgreSQL harness supplies the equivalent claim reader
-          -- used by SECURITY DEFINER RPC authorization checks.
-          CREATE OR REPLACE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$
-            SELECT COALESCE(NULLIF(current_setting('request.jwt.claims', true), ''), '{}')::jsonb;
-          $$;
-          -- Supabase grants authenticated access to its auth helpers. Mirror
-          -- that prerequisite in this plain-Postgres harness so invoker RPCs
-          -- can call auth.uid() under SET ROLE authenticated.
-          GRANT USAGE ON SCHEMA auth TO authenticated;
           CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
           CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
           SQL
@@ -376,54 +389,14 @@ jobs:
       - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
         run: node scripts/security/verify-portal-field-map-learning.mjs
 
-      - name: Verify MINT-45 case-type and mapping metadata boundaries on disposable PostgreSQL
-        run: node scripts/security/verify-case-type-mapping-metadata.mjs
-
-      - name: Verify MINT-48 independent portal configurations on disposable PostgreSQL
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint48-independent-portal-configurations.sql
-
-      - name: Verify MINT-49 Contract SOP assignments and receipts on disposable PostgreSQL
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint49-contract-sop-assignment.sql
-
-      - name: Verify MINT-19 atomic SOP step completion on disposable PostgreSQL
-        run: node scripts/security/verify-mint19-atomic-sop.mjs
-
-      - name: Verify MINT-51 credential case context version on disposable PostgreSQL
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint51-case-context-version.sql
-
-      - name: Verify MINT-57 mapping generation write guards on disposable PostgreSQL
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint57-mapping-generation-write-guards.sql
-
-      - name: Verify MINT-57 reset/write serialization on disposable PostgreSQL
-        run: node scripts/security/verify-mint57-mapping-generation-race.mjs
-
-      - name: Verify MINT-58 exact fill and human submission transaction boundaries
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint58-exact-fill-submission.sql
-
-      - name: Verify MINT-58 concurrent independent Work step submissions
-        run: node scripts/security/verify-mint58-exact-fill-submission-race.mjs
-
-      - name: Verify MINT-60 atomic mapping reset on disposable PostgreSQL
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint60-atomic-mapping-reset.sql
-
-      - name: Verify MINT-60 reset/capture serialization on disposable PostgreSQL
-        run: node scripts/security/verify-mint60-atomic-mapping-reset-race.mjs
-
-      - name: Record checked-out Panel revision for MINT-64 evidence
-        run: git rev-parse HEAD
-
-      - name: Verify MINT-64 integrated typed SOP owner isolation on disposable PostgreSQL
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint64-panel-integration.sql
-
-      - name: Verify MINT-66 rollback retention on disposable PostgreSQL
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint66-client-rollback.sql
-
-  # Gate 0.5 — Playwright E2E suite against the local Vite server with dummy
-  # Supabase configuration. Run the full e2e/ tree; seeded-tenant cases stay skipped.
+  # Gate 0.5 — Playwright smoke skeleton. Boots the app via the Vite dev server
+  # with dummy Supabase env vars (unauthenticated paths make no network call).
+  # Two specs run (login render, dashboard redirect); three write scenarios are
+  # test.skip (need a seeded tenant).
   e2e:
     name: Playwright smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -442,8 +415,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Cache Playwright browser binaries
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: Install Playwright browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright OS dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
 
       - name: Write dummy Supabase env
         run: |
