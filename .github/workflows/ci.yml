@@ -3,27 +3,27 @@ name: CI
 on:
   pull_request:
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'review-artifacts/**'
-      - 'release-artifacts/**'
-      - 'audit-*.json'
-      - 'AUDIT_*'
-      - 'CURRENT_STATE.md'
-      - 'IDE_HANDOFF_*'
-      - '.agents/**'
+      - "**.md"
+      - "docs/**"
+      - "review-artifacts/**"
+      - "release-artifacts/**"
+      - "audit-*.json"
+      - "AUDIT_*"
+      - "CURRENT_STATE.md"
+      - "IDE_HANDOFF_*"
+      - ".agents/**"
   push:
     branches: [main, staging]
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'review-artifacts/**'
-      - 'release-artifacts/**'
-      - 'audit-*.json'
-      - 'AUDIT_*'
-      - 'CURRENT_STATE.md'
-      - 'IDE_HANDOFF_*'
-      - '.agents/**'
+      - "**.md"
+      - "docs/**"
+      - "review-artifacts/**"
+      - "release-artifacts/**"
+      - "audit-*.json"
+      - "AUDIT_*"
+      - "CURRENT_STATE.md"
+      - "IDE_HANDOFF_*"
+      - ".agents/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
