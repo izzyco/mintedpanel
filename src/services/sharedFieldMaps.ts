@@ -30,7 +30,6 @@ import type { PortalFieldMap } from "@/types";
 const FIELD_TYPES = new Set(["text", "select", "radio", "checkbox", "date", "file"]);
 
 export interface SharedProposeBody {
-  expected_mapping_generation?: unknown;
   portal_key?: unknown;
   selector?: unknown;
   field_label?: unknown;
@@ -38,11 +37,16 @@ export interface SharedProposeBody {
   page_step?: unknown;
   field_type?: unknown;
   sort_order?: unknown;
+  notes?: unknown;
+  map_type?: unknown;
+  mapType?: unknown;
   control_options?: unknown;
+  expected_mapping_generation?: unknown;
+  expectedMappingGeneration?: unknown;
 }
 
 export type SharedProposeResult =
-  { kind: "ok"; map: PortalFieldMap } | { kind: "rejected"; status: 409 | 422; message: string };
+  { kind: "ok"; map: PortalFieldMap } | { kind: "rejected"; status: number; message: string };
 
 const asOptionalString = (value: unknown): string | null => {
   if (value == null) return null;
@@ -68,18 +72,6 @@ export async function proposeSharedFieldMap(
 ): Promise<SharedProposeResult> {
   const portalKey = normalizePortalKey(asOptionalString(body?.portal_key) ?? "");
   if (!portalKey) return { kind: "rejected", status: 422, message: "portal_key is required" };
-  if (
-    body.expected_mapping_generation != null &&
-    (typeof body.expected_mapping_generation !== "number" ||
-      !Number.isInteger(body.expected_mapping_generation) ||
-      body.expected_mapping_generation < 1)
-  ) {
-    return {
-      kind: "rejected",
-      status: 422,
-      message: "expected_mapping_generation must be a positive integer",
-    };
-  }
 
   const rawSelector = asOptionalString(body?.selector) ?? "";
   const selector = rawSelector.trim();
@@ -115,6 +107,31 @@ export async function proposeSharedFieldMap(
   const controlOptions =
     optionsCheck.options && optionsCheck.options.length > 0 ? optionsCheck.options : null;
 
+  const rawExpectedGen =
+    body?.expected_mapping_generation ?? (body as Record<string, unknown>)?.expectedMappingGeneration;
+  let expectedMappingGen: number | null =
+    typeof rawExpectedGen === "number" && Number.isInteger(rawExpectedGen) && rawExpectedGen >= 1
+      ? rawExpectedGen
+      : null;
+
+  if (expectedMappingGen == null) {
+    const { data: portalRow } = (await db
+      .from("portals")
+      .select("mapping_generation" as never)
+      .is("org_id", null)
+      .eq("portal_key", portalKey)
+      .maybeSingle()) as { data: { mapping_generation?: number | null } | null };
+    if (portalRow?.mapping_generation != null) {
+      expectedMappingGen = portalRow.mapping_generation;
+    }
+  }
+
+  const rawNotes = asOptionalString(body?.notes);
+  const notes = rawNotes && rawNotes.trim() ? rawNotes.trim() : null;
+
+  const rawMapType = asOptionalString(body?.map_type ?? body?.mapType);
+  const mapType = rawMapType && rawMapType.trim() ? rawMapType.trim().toLowerCase() : "web";
+
   const rpc = db.rpc.bind(db);
   const { data, error } = await rpc("propose_shared_field_map", {
     p_portal_key: portalKey,
@@ -127,8 +144,10 @@ export async function proposeSharedFieldMap(
     p_page_step: (asOptionalString(body?.page_step)?.trim() || null) as unknown as string,
     p_field_type: fieldType,
     p_sort_order: (typeof sortOrderRaw === "number" ? sortOrderRaw : null) as unknown as number,
+    p_notes: notes as unknown as string,
     p_control_options: (controlOptions as unknown as string) ?? null,
-    p_expected_mapping_generation: (body.expected_mapping_generation ?? null) as unknown as number,
+    p_map_type: mapType,
+    p_expected_mapping_generation: expectedMappingGen as unknown as number,
   });
   if (error) {
     if (error.message.includes("mapping_generation_token_required")) {
@@ -144,6 +163,13 @@ export async function proposeSharedFieldMap(
         status: 409,
         message:
           "The form mapping changed. Reload the configuration before capturing fields again.",
+      };
+    }
+    if (error.message.includes("portal_configuration_not_found")) {
+      return {
+        kind: "rejected",
+        status: 404,
+        message: `Portal configuration not found for key: ${portalKey}`,
       };
     }
     if (error.message.includes("portal_selector_collision")) {
