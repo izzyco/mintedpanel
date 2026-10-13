@@ -2,23 +2,23 @@
 -- 1. Drop the 11-argument function with default parameter that was introduced with ambiguous default values.
 DROP FUNCTION IF EXISTS public.propose_shared_field_map(text, text, text, text, text, text, integer, text, jsonb, text, integer);
 
--- 2. Recreate the 10-argument overload supporting web, pdf, and xlsx.
+-- 2. Recreate the 10-argument overload supporting web, pdf, and xlsx with exact e612 behavior.
 CREATE OR REPLACE FUNCTION public.propose_shared_field_map(
   p_portal_key text,
   p_selector text,
-  p_field_label text DEFAULT NULL::text,
-  p_form_section text DEFAULT NULL::text,
-  p_page_step text DEFAULT NULL::text,
-  p_field_type text DEFAULT 'text'::text,
-  p_sort_order integer DEFAULT NULL::integer,
-  p_notes text DEFAULT 'Captured for the shared form library'::text,
-  p_control_options jsonb DEFAULT NULL::jsonb,
-  p_map_type text DEFAULT 'web'::text
+  p_field_label text DEFAULT NULL,
+  p_form_section text DEFAULT NULL,
+  p_page_step text DEFAULT NULL,
+  p_field_type text DEFAULT 'text',
+  p_sort_order integer DEFAULT NULL,
+  p_notes text DEFAULT NULL,
+  p_control_options jsonb DEFAULT NULL,
+  p_map_type text DEFAULT 'web'
 )
 RETURNS public.portal_field_maps
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = public
 AS $$
 DECLARE
   v_key text := lower(btrim(coalesce(p_portal_key, '')));
@@ -74,43 +74,53 @@ BEGIN
     END IF;
   END IF;
 
-  SELECT * INTO v_row
-    FROM public.portal_field_maps
-   WHERE org_id IS NULL
-     AND portal_key = v_key
-     AND selector = v_selector
-     AND map_type = v_map_type
-   FOR UPDATE;
-
-  IF FOUND THEN
-    UPDATE public.portal_field_maps
-       SET field_label = coalesce(nullif(btrim(coalesce(p_field_label, '')), ''), field_label),
-           form_section = coalesce(nullif(btrim(coalesce(p_form_section, '')), ''), form_section),
-           page_step = coalesce(nullif(btrim(coalesce(p_page_step, '')), ''), page_step),
-           field_type = v_type,
-           notes = coalesce(nullif(btrim(coalesce(p_notes, '')), ''), notes),
-           control_options = COALESCE(v_options, control_options),
-           updated_at = now()
-     WHERE id = v_row.id
-     RETURNING * INTO v_row;
-    RETURN v_row;
-  END IF;
-
   INSERT INTO public.portal_field_maps (
     org_id, portal_key, selector, field_label, form_section, page_step,
-    field_type, sort_order, notes, control_options, map_type, status, source
-  ) VALUES (
-    NULL, v_key, v_selector, nullif(btrim(coalesce(p_field_label, '')), ''),
-    nullif(btrim(coalesce(p_form_section, '')), ''), nullif(btrim(coalesce(p_page_step, '')), ''),
-    v_type, p_sort_order, nullif(btrim(coalesce(p_notes, '')), ''),
-    v_options, v_map_type, 'proposed', 'manual'
+    field_type, map_type, status, source, notes, token, sort_order,
+    control_options
   )
-  RETURNING * INTO v_row;
+  VALUES (
+    NULL, v_key, v_selector,
+    nullif(btrim(coalesce(p_field_label, '')), ''),
+    nullif(btrim(coalesce(p_form_section, '')), ''),
+    nullif(btrim(coalesce(p_page_step, '')), ''),
+    v_type, v_map_type, 'proposed', 'manual',
+    coalesce(nullif(btrim(coalesce(p_notes, '')), ''), 'Captured for the shared form library'),
+    NULL, p_sort_order,
+    v_options
+  )
+  ON CONFLICT DO NOTHING;
+
+  SELECT * INTO v_row
+    FROM public.portal_field_maps
+   WHERE org_id IS NULL AND portal_key = v_key AND selector = v_selector
+   FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Could not resolve the shared field map after insert';
+  END IF;
+
+  UPDATE public.portal_field_maps
+     SET field_label = coalesce(nullif(btrim(coalesce(p_field_label, '')), ''), field_label),
+         form_section = coalesce(nullif(btrim(coalesce(p_form_section, '')), ''), form_section),
+         page_step = coalesce(nullif(btrim(coalesce(p_page_step, '')), ''), page_step),
+         sort_order = CASE
+                        WHEN p_sort_order IS NOT NULL THEN p_sort_order
+                        ELSE sort_order
+                      END,
+         control_options = CASE
+                             WHEN v_options IS NOT NULL THEN v_options
+                             ELSE control_options
+                           END,
+         updated_at = now()
+   WHERE id = v_row.id AND org_id IS NULL
+   RETURNING * INTO v_row;
+
   RETURN v_row;
 END;
 $$;
 
--- 3. Recreate the 11-argument overload without defaults so that 10-argument invocations never collide.
+-- 3. Recreate the 11-argument overload without defaults so that 10-argument invocations never collide in PostgREST.
 CREATE OR REPLACE FUNCTION public.propose_shared_field_map(
   p_portal_key text,
   p_selector text,
@@ -188,6 +198,7 @@ BEGIN
    WHERE org_id IS NULL AND portal_key = lower(btrim(p_portal_key))
      AND selector = btrim(p_selector) AND map_type = coalesce(p_map_type, 'web') FOR UPDATE;
   IF FOUND AND v_existing.mapping_generation IS DISTINCT FROM v_generation THEN
+    PERFORM set_config('minted.mapping_recapture_refresh', v_existing.id::text, true);
     UPDATE public.portal_field_maps
        SET mapping_generation = v_generation,
            field_label = nullif(btrim(coalesce(p_field_label, '')), ''),
