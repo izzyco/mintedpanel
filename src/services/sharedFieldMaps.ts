@@ -108,7 +108,8 @@ export async function proposeSharedFieldMap(
     optionsCheck.options && optionsCheck.options.length > 0 ? optionsCheck.options : null;
 
   const rawExpectedGen =
-    body?.expected_mapping_generation ?? (body as Record<string, unknown>)?.expectedMappingGeneration;
+    body?.expected_mapping_generation ??
+    (body as Record<string, unknown>)?.expectedMappingGeneration;
   let expectedMappingGen: number | null =
     typeof rawExpectedGen === "number" && Number.isInteger(rawExpectedGen) && rawExpectedGen >= 1
       ? rawExpectedGen

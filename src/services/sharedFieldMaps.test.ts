@@ -107,7 +107,9 @@ describe("proposeSharedFieldMap service", () => {
         select: vi.fn(() => ({
           is: vi.fn(() => ({
             eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({ data: { mapping_generation: 1 }, error: null }),
+              maybeSingle: vi
+                .fn()
+                .mockResolvedValue({ data: { mapping_generation: 1 }, error: null }),
             })),
           })),
         })),
