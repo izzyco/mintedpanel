@@ -13,6 +13,20 @@
 import type { PayerFormFillPlan } from "@/lib/payerFormFill";
 import { createPayerPdfFillEventV2, type PdfWriterDisposition } from "@/lib/payerPdfFillOutcomes";
 import type { FillEventV2Metadata } from "@/types/fillEventV2";
+import { isXlsxPayerForm } from "@/lib/payerForms";
+import {
+  fillXlsxTemplateBytes,
+  inspectXlsxTemplate,
+  type XlsxColumnMapping,
+} from "@/lib/xlsxTemplateFill";
+
+export interface PreparedPayerFormFill {
+  output: Uint8Array;
+  written: number;
+  rejected: string[];
+  event: FillEventV2Metadata;
+  isXlsx?: boolean;
+}
 
 const CHECKED = /^(y|yes|true|x|on|1|checked)$/i;
 
@@ -90,25 +104,70 @@ export async function fillPayerFormBytes(
   return { output, written, rejected, outcomes };
 }
 
-export interface PreparedPayerFormFill {
-  output: Uint8Array;
-  written: number;
-  rejected: string[];
-  event: FillEventV2Metadata;
-}
-
 /** Fill bytes and prepare bounded outcomes without triggering a download. */
 export async function preparePayerFormFill(
   bytes: ArrayBuffer,
   plan: PayerFormFillPlan,
+  fileName?: string,
 ): Promise<PreparedPayerFormFill> {
+  const isXlsx =
+    (typeof fileName === "string" && isXlsxPayerForm(fileName)) ||
+    (bytes.byteLength >= 4 &&
+      new Uint8Array(bytes)[0] === 0x50 &&
+      new Uint8Array(bytes)[1] === 0x4b);
+
+  if (isXlsx) {
+    const rawBytes = new Uint8Array(bytes);
+    const inspection = inspectXlsxTemplate(rawBytes);
+    const mappings: XlsxColumnMapping[] = inspection.headers.map((h) => {
+      const match = plan.fill.find((f) => f.selector === h);
+      return {
+        header: h,
+        fixedValue: match ? match.value : null,
+      };
+    });
+    const rowValues: Record<string, string> = {};
+    for (const item of plan.fill) {
+      if (item.value !== null) {
+        rowValues[item.selector] = item.value;
+      }
+    }
+    const fillResult = fillXlsxTemplateBytes(rawBytes, [rowValues], mappings, {
+      targetSheetName: inspection.targetSheet,
+    });
+    const outcomes: PdfWriterDisposition[] = plan.fill.map((f) => ({
+      mapId: f.mapId,
+      kind: "accepted",
+    }));
+    const event = createPayerPdfFillEventV2(plan, outcomes);
+    return {
+      output: fillResult.output,
+      written: fillResult.fieldsFilled,
+      rejected: [],
+      event,
+      isXlsx: true,
+    };
+  }
+
   const { output, written, rejected, outcomes } = await fillPayerFormBytes(bytes, plan);
   const event = createPayerPdfFillEventV2(plan, outcomes);
-  return { output, written, rejected, event };
+  return { output, written, rejected, event, isXlsx: false };
 }
 
-export function downloadPayerFormOutput(output: Uint8Array, fileStem: string): void {
-  triggerDownload(output, `${fileStem}.pdf`);
+export function downloadPayerFormOutput(
+  output: Uint8Array,
+  fileStem: string,
+  isXlsx = false,
+): void {
+  if (isXlsx) {
+    triggerDownload(
+      output,
+      `${fileStem}.xlsx`,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+  } else {
+    triggerDownload(output, `${fileStem}.pdf`, "application/pdf");
+  }
 }
 
 /** Fill the blank form's bytes from the plan and trigger a local download. */
@@ -116,10 +175,15 @@ export async function fillAndDownloadPayerForm(
   bytes: ArrayBuffer,
   plan: PayerFormFillPlan,
   fileStem: string,
+  fileName?: string,
 ): Promise<Omit<PreparedPayerFormFill, "output">> {
-  const { output, written, rejected, event } = await preparePayerFormFill(bytes, plan);
-  downloadPayerFormOutput(output, fileStem);
-  return { written, rejected, event };
+  const { output, written, rejected, event, isXlsx } = await preparePayerFormFill(
+    bytes,
+    plan,
+    fileName,
+  );
+  downloadPayerFormOutput(output, fileStem, isXlsx);
+  return { written, rejected, event, isXlsx };
 }
 
 // A payer's option vocabulary rarely matches our value byte-for-byte ("NC" vs
@@ -131,8 +195,8 @@ function matchOption(options: readonly string[], value: string): string | null {
   return options.find((option) => option.trim().toLowerCase() === wanted) ?? null;
 }
 
-function triggerDownload(bytes: Uint8Array, fileName: string) {
-  const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+function triggerDownload(bytes: Uint8Array, fileName: string, mimeType = "application/pdf") {
+  const blob = new Blob([bytes as BlobPart], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

@@ -215,14 +215,17 @@ async function resolvePortalMapSnapshot(
   const orgConfig = ctx.orgId
     ? scopedConfigs.find((config) => config.orgId === ctx.orgId)
     : undefined;
-  // PDF maps use `payer-form:<family-id>` keys and intentionally have no
+  // PDF/XLSX maps use `payer-form:<family-id>` keys and intentionally have no
   // portals row. Keep their legacy generation-1 reader working while making
   // all registered web/configuration reads depend on an exact portal row.
   const hasLegacyPdfConfig =
-    (mapType === "pdf" || mapType === "all") &&
+    (mapType === "pdf" || mapType === "xlsx" || mapType === "all") &&
     key.startsWith("payer-form:") &&
     snapshot.maps.some(
-      (map) => map.portalKey === key && map.mapType === "pdf" && (map.mappingGeneration ?? 1) === 1,
+      (map) =>
+        map.portalKey === key &&
+        (map.mapType === "pdf" || map.mapType === "xlsx") &&
+        (map.mappingGeneration ?? 1) === 1,
     );
   const syntheticPdfConfig: EffectivePortalConfig | undefined = hasLegacyPdfConfig
     ? {
@@ -278,7 +281,9 @@ async function resolvePortalMapSnapshot(
     if (map.orgId === null) {
       return globalConfig !== undefined
         ? generation === sharedGeneration
-        : hasLegacyPdfConfig && map.mapType === "pdf" && generation === 1;
+        : hasLegacyPdfConfig &&
+          (map.mapType === "pdf" || map.mapType === "xlsx") &&
+          generation === 1;
     }
     if (!ctx.orgId || map.orgId !== ctx.orgId || generation !== orgGeneration) return false;
     return globalConfig
@@ -371,7 +376,11 @@ async function loadPortalMapResolutionBatch(
           ...new Set([
             ...snapshot.configs.map((config) => config.portalKey),
             ...snapshot.maps
-              .filter((map) => map.portalKey.startsWith("payer-form:") && map.mapType === "pdf")
+              .filter(
+                (map) =>
+                  map.portalKey.startsWith("payer-form:") &&
+                  (map.mapType === "pdf" || map.mapType === "xlsx"),
+              )
               .map((map) => map.portalKey),
           ]),
         ].sort();

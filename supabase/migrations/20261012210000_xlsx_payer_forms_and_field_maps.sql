@@ -37,6 +37,8 @@ BEGIN
 END $$;
 
 -- 4. Update propose_shared_field_map to treat xlsx as a payer-form family
+DROP FUNCTION IF EXISTS public.propose_shared_field_map(text, text, text, text, text, text, integer, text, jsonb, text);
+
 CREATE OR REPLACE FUNCTION public.propose_shared_field_map(
   p_portal_key text,
   p_selector text,
@@ -176,6 +178,9 @@ BEGIN
 END;
 $function$;
 
+REVOKE ALL ON FUNCTION public.propose_shared_field_map(text, text, text, text, text, text, integer, text, jsonb, text, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.propose_shared_field_map(text, text, text, text, text, text, integer, text, jsonb, text, integer) TO authenticated, service_role;
+
 -- 5. Update update_shared_field_registry to treat xlsx as a payer-form family
 CREATE OR REPLACE FUNCTION public.update_shared_field_registry(p_entries jsonb)
  RETURNS SETOF portal_field_maps
@@ -237,3 +242,7 @@ BEGIN
       AND id IN (SELECT (entry->>'id')::uuid FROM jsonb_array_elements(p_entries) entry);
 END;
 $function$;
+
+REVOKE ALL ON FUNCTION public.update_shared_field_registry(jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.update_shared_field_registry(jsonb) TO authenticated, service_role;
+

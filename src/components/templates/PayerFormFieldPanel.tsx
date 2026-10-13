@@ -47,6 +47,7 @@ import { createFillRunGuard } from "@/lib/fillRunGuard";
 import { registryCoverage, sectionRenamePatches, type RegistryRow } from "@/lib/fieldRegistry";
 import { groupTokens } from "@/lib/tokenGroups";
 import { filterPdfMappingTokens, isPdfFillableToken } from "@/lib/fillTokenReach";
+import { isXlsxPayerForm } from "@/lib/payerForms";
 import type { GlobalTrainPatch } from "@/services/portalFieldMaps";
 import { FieldRegistryList, type RegistryDecision } from "./FieldRegistryList";
 
@@ -55,11 +56,18 @@ interface PayerFormFieldPanelProps {
   familyId: string;
   /** The attached form ROW: the exact blank whose fields get imported. */
   formId: string;
+  fileName?: string;
   canEdit: boolean;
 }
 
-export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFieldPanelProps) {
+export function PayerFormFieldPanel({
+  familyId,
+  formId,
+  fileName,
+  canEdit,
+}: PayerFormFieldPanelProps) {
   const [open, setOpen] = useState(false);
+  const isXlsx = useMemo(() => isXlsxPayerForm(fileName), [fileName]);
   const portalKey = useMemo(() => pdfFormPortalKey(familyId), [familyId]);
   const orgId = useActiveOrgId() ?? "no-org";
   const qc = useQueryClient();
@@ -125,27 +133,33 @@ export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFiel
       if (result.failed > 0) {
         setOpen(true);
         toast.error(
-          `Imported ${result.imported} of ${result.rows.length} fillable PDF fields. ${result.failed} failed; retry the import to finish.`,
+          `Imported ${result.imported} of ${result.rows.length} fillable ${isXlsx ? "columns" : "PDF fields"}. ${result.failed} failed; retry the import to finish.`,
         );
         return;
       }
       if (result.totalFields === 0) {
         toast.error(
-          "This PDF has no fillable fields — it is a flat scan, so there is nothing to map yet.",
+          isXlsx
+            ? "This spreadsheet has no column headers in row 1 — nothing to map yet."
+            : "This PDF has no fillable fields — it is a flat scan, so there is nothing to map yet.",
         );
         return;
       }
       if (result.imported === 0) {
         toast.error(
-          `Found ${result.totalFields} field${result.totalFields === 1 ? "" : "s"}, but none can be filled (buttons and signature boxes only).`,
+          isXlsx
+            ? "No valid columns found to map in this spreadsheet."
+            : `Found ${result.totalFields} field${result.totalFields === 1 ? "" : "s"}, but none can be filled (buttons and signature boxes only).`,
         );
         return;
       }
       setOpen(true);
       toast.success(
-        `Imported ${result.imported} field${result.imported === 1 ? "" : "s"}${
-          result.skipped > 0 ? ` · skipped ${result.skipped} (buttons, signatures)` : ""
-        }${result.unclearLabels > 0 ? ` · ${result.unclearLabels} need label review` : ""}`,
+        isXlsx
+          ? `Imported ${result.imported} column${result.imported === 1 ? "" : "s"} from roster template`
+          : `Imported ${result.imported} field${result.imported === 1 ? "" : "s"}${
+              result.skipped > 0 ? ` · skipped ${result.skipped} (buttons, signatures)` : ""
+            }${result.unclearLabels > 0 ? ` · ${result.unclearLabels} need label review` : ""}`,
       );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not read the fields from that form.");
@@ -297,12 +311,14 @@ export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFiel
       }
       // The mutation already planned the fill to run it — reuse that instead
       // of recomputing the same plan from the same inputs a second time.
-      const base = `PDF writer accepted ${result.written} field${result.written === 1 ? "" : "s"}; ${result.rejectedCount} rejected or unresolved; ${result.needsReviewCount} still need review. Writer acceptance is not readback-verified. Synthetic sample; do not send.`;
+      const base = isXlsx
+        ? `Excel writer populated ${result.written} column${result.written === 1 ? "" : "s"}; ${result.needsReviewCount} still need review. Synthetic sample; do not send.`
+        : `PDF writer accepted ${result.written} field${result.written === 1 ? "" : "s"}; ${result.rejectedCount} rejected or unresolved; ${result.needsReviewCount} still need review. Writer acceptance is not readback-verified. Synthetic sample; do not send.`;
       // A real case cannot resolve these either. Saying so on the sample is
       // the whole point of DYN-TOKEN-01.
       if (unreachableSampleCount > 0) {
         toast.warning(
-          `${base}. ${unreachableSampleCount} mapped ${unreachableSampleCount === 1 ? "field is" : "fields are"} outside what a payer-PDF fill can resolve and will be blank on a real case.`,
+          `${base}. ${unreachableSampleCount} mapped ${unreachableSampleCount === 1 ? "field is" : "fields are"} outside what a ${isXlsx ? "payer-roster" : "payer-PDF"} fill can resolve and will be blank on a real case.`,
         );
       } else {
         toast.success(base);
@@ -314,7 +330,7 @@ export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFiel
         const review = summary?.needsReviewCount ?? 0;
         const rejected = summary?.rejectedCount ?? 0;
         toast.error(
-          `The sample PDF was downloaded, but its outcome record is pending${review > 0 ? `; ${review} field${review === 1 ? " still needs" : "s still need"} review` : ""}${rejected > 0 ? `, including ${rejected} writer rejection${rejected === 1 ? "" : "s"}` : ""}. Retry recording; this will not generate another PDF.`,
+          `The sample ${isXlsx ? "Excel roster" : "PDF"} was downloaded, but its outcome record is pending${review > 0 ? `; ${review} field${review === 1 ? " still needs" : "s still need"} review` : ""}${rejected > 0 ? `, including ${rejected} writer rejection${rejected === 1 ? "" : "s"}` : ""}. Retry recording; this will not generate another file.`,
         );
       } else {
         toast.error(err instanceof Error ? err.message : "Could not run the sample fill");
@@ -352,13 +368,14 @@ export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFiel
         <CollapsibleContent>
           <div className="space-y-3 border-t border-[#E8E5E0] px-3 py-3">
             <p className="text-[12px] text-muted-foreground">
-              Map this form&rsquo;s fields to the data the panel already holds, once. Every case
-              generated from this template fills them from the provider, group, facility and the
-              user running the fill. What a person must still write stays listed as theirs.
+              {isXlsx
+                ? "Map this roster template’s columns to the data the panel already holds, once. Every case generated from this template fills them from the provider, group, facility and the user running the fill."
+                : "Map this form’s fields to the data the panel already holds, once. Every case generated from this template fills them from the provider, group, facility and the user running the fill. What a person must still write stays listed as theirs."}
             </p>
             <p className="text-[12px] text-muted-foreground">
-              Import reads interactive PDF fields only. Printed lines and boxes without PDF form
-              controls still need review in the original form. Unlabeled fields are grouped by page.
+              {isXlsx
+                ? "Import reads column headers from row 1 of the spreadsheet (.xlsx). Mapped tokens fill directly into doctor rows."
+                : "Import reads interactive PDF fields only. Printed lines and boxes without PDF form controls still need review in the original form. Unlabeled fields are grouped by page."}
             </p>
 
             {maps.length > 0 ? (
@@ -381,14 +398,21 @@ export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFiel
                 ) : (
                   <FileDown className="mr-1.5 h-3.5 w-3.5" />
                 )}
-                {maps.length === 0 ? "Import fields from the PDF" : "Re-import fields"}
+                {maps.length === 0
+                  ? isXlsx
+                    ? "Import columns from Excel roster"
+                    : "Import fields from the PDF"
+                  : isXlsx
+                    ? "Re-import columns"
+                    : "Re-import fields"}
               </Button>
             ) : null}
 
             {maps.length === 0 && !busy ? (
               <p className="text-[12px] text-muted-foreground">
-                No interactive fields are mapped yet. Import reads the PDF's embedded fields; it
-                changes nothing in the file.
+                {isXlsx
+                  ? "No columns are mapped yet. Import reads the Excel template’s column headers; it changes nothing in the file."
+                  : "No interactive fields are mapped yet. Import reads the PDF's embedded fields; it changes nothing in the file."}
               </p>
             ) : null}
 
@@ -409,8 +433,8 @@ export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFiel
                   Retry sample recording
                 </Button>
                 <p className="mt-1 text-[12px] text-muted-foreground">
-                  The sample PDF is already downloaded. Retry saves its value-free outcome record;
-                  it will not generate another copy.
+                  The sample {isXlsx ? "Excel roster" : "PDF"} is already downloaded. Retry saves its
+                  value-free outcome record; it will not generate another copy.
                 </p>
               </div>
             ) : null}
@@ -446,12 +470,18 @@ export function PayerFormFieldPanel({ familyId, formId, canEdit }: PayerFormFiel
                       ) : (
                         <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
                       )}
-                      {sampleRecordingPending ? "Retry sample recording" : "Download a sample fill"}
+                      {sampleRecordingPending
+                        ? "Retry sample recording"
+                        : isXlsx
+                          ? "Download sample filled Excel (.xlsx)"
+                          : "Download a sample fill"}
                     </Button>
                     <p className="mt-1 text-[12px] text-muted-foreground">
                       {sampleRecordingPending
-                        ? `The sample PDF is already downloaded. ${samplePendingSummary?.needsReviewCount ?? 0} field${samplePendingSummary?.needsReviewCount === 1 ? " still needs" : "s still need"} review${(samplePendingSummary?.rejectedCount ?? 0) > 0 ? `, including ${samplePendingSummary?.rejectedCount} writer rejection${samplePendingSummary?.rejectedCount === 1 ? "" : "s"}` : ""}. Retry saves its value-free outcome record without generating another copy.`
-                        : "Fills this exact blank with made-up sample data so you can see where every value lands. Writer acceptance is not readback-verified. Never send it to a payer."}
+                        ? `The sample ${isXlsx ? "Excel roster" : "PDF"} is already downloaded. ${samplePendingSummary?.needsReviewCount ?? 0} field${samplePendingSummary?.needsReviewCount === 1 ? " still needs" : "s still need"} review${(samplePendingSummary?.rejectedCount ?? 0) > 0 ? `, including ${samplePendingSummary?.rejectedCount} writer rejection${samplePendingSummary?.rejectedCount === 1 ? "" : "s"}` : ""}. Retry saves its value-free outcome record without generating another copy.`
+                        : isXlsx
+                          ? "Fills this exact template with made-up sample provider data so you can verify how columns are populated. Never send it to a payer."
+                          : "Fills this exact blank with made-up sample data so you can see where every value lands. Writer acceptance is not readback-verified. Never send it to a payer."}
                     </p>
                   </div>
                 ) : null}

@@ -277,7 +277,7 @@ export const AUTHORING_ACTION_MODES: readonly {
 }[] = [
   { value: "online_form", label: "Portal" },
   { value: "draft_email", label: "Email" },
-  { value: "pdf", label: "Payer PDF" },
+  { value: "pdf", label: "Payer Form / Roster" },
   { value: "custom", label: "Custom" },
 ] as const;
 

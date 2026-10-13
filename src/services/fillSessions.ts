@@ -936,7 +936,7 @@ export interface TestFillInput {
   /** E6.11 — a payer-PDF sample fill is a `pdf` run. Defaults to `web` so the
    * online-form runner's calls are unchanged; without this every PDF test fill
    * would be logged as a portal fill and misread by the readers. */
-  fillMode?: "web" | "pdf";
+  fillMode?: FillMode;
   /** Stable id supplied by an in-memory recording retry, if present. */
   id?: string;
   startedAt?: string;
