@@ -310,6 +310,44 @@ describe("exact effective portal maps", () => {
     expect(global.maps.map((row) => row.id)).toEqual(["legacy-shared-pdf-map"]);
   });
 
+  it("resolves generation-1 XLSX payer form maps without requiring a registered portal row", async () => {
+    const xlsx = map("legacy-xlsx-map", "org-a", "payer-form:family-2", "Provider NPI", {
+      map_type: "xlsx",
+      mapping_generation: 1,
+      shared_base_generation: null,
+    });
+    const sharedXlsx = map("legacy-shared-xlsx-map", null, "payer-form:family-2", "First Name", {
+      map_type: "xlsx",
+      mapping_generation: 1,
+      shared_base_generation: null,
+    });
+    const { db } = fakeDb([], [xlsx, sharedXlsx]);
+    const resolution = await resolveEffectivePortalMaps(
+      { db, orgId: "org-a" },
+      { portalKey: "payer-form:family-2", mapType: "all" },
+    );
+    expect(resolution).toMatchObject({
+      portalId: "legacy-pdf:payer-form:family-2",
+      ownerScope: "organization",
+      mappingGeneration: 1,
+      activeFieldCount: 2,
+      isReady: true,
+      isVerified: false,
+    });
+    expect(resolution.maps.map((row) => row.id)).toEqual([
+      "legacy-shared-xlsx-map",
+      "legacy-xlsx-map",
+    ]);
+    const xlsxFiltered = await resolveEffectivePortalMaps(
+      { db, orgId: "org-a" },
+      { portalKey: "payer-form:family-2", mapType: "xlsx" },
+    );
+    expect(xlsxFiltered.maps.map((row) => row.id)).toEqual([
+      "legacy-shared-xlsx-map",
+      "legacy-xlsx-map",
+    ]);
+  });
+
   it("fingerprints executable map changes and generations but ignores labels and timestamps", async () => {
     const fixture = generationFixture();
     const original = await resolveEffectivePortalMaps(

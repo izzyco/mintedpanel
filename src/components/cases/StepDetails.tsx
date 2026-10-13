@@ -417,7 +417,7 @@ function PdfStep({
             prepare: () => preparePdfFill(file, dictionary, freshValues),
             download: (prepared) => {
               if (prepared.analysis.fill.length > 0) {
-                downloadPdfOutput(prepared.output, pdfFillFileStem(step.label));
+                downloadPdfOutput(prepared.output, pdfFillFileStem(step.label), prepared.isXlsx);
               }
             },
           });
@@ -439,23 +439,28 @@ function PdfStep({
         toast.error("No mapped fields have current values. Complete the form manually.");
         return;
       }
-      toast.success("Filled PDF downloaded");
+      toast.success(
+        file?.name.toLowerCase().endsWith(".xlsx")
+          ? "Filled Excel roster downloaded"
+          : "Filled PDF downloaded",
+      );
     } catch (error) {
       if (!isCurrent()) return;
-      toast.error(error instanceof Error ? error.message : "Could not generate the filled PDF");
+      toast.error(error instanceof Error ? error.message : "Could not generate the filled form");
     }
   };
 
   return (
     <div className="space-y-3">
       <p className="text-[13px] text-muted-foreground">
-        Upload the payer&apos;s fillable PDF. Fields are matched to your saved form dictionary and
-        filled from this provider&apos;s data — review and submit it yourself.
+        Upload the payer&apos;s fillable PDF or Excel (.xlsx) roster template. Fields are matched to
+        your saved form dictionary and filled from this provider&apos;s data — review and submit it
+        yourself.
       </p>
 
       <Input
         type="file"
-        accept="application/pdf,.pdf"
+        accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx"
         className="text-[13px]"
         onChange={(e) => setFile(e.target.files?.[0] ?? null)}
       />
@@ -516,7 +521,7 @@ function PdfStep({
           ) : (
             <Download className="h-3.5 w-3.5" />
           )}
-          Generate PDF
+          {file?.name.toLowerCase().endsWith(".xlsx") ? "Generate Excel (.xlsx)" : "Generate Form"}
         </Button>
         <span className="text-[12px] text-muted-foreground">
           Downloads locally — nothing is submitted.

@@ -24,8 +24,15 @@ import { markPortalVerified } from "@/services/portals";
 import { normalizeTokenKey } from "@/lib/tokenFormat";
 import type { PortalFieldMap } from "@/types";
 import { newManualSelector } from "@/lib/fieldRegistry";
-import { proposePdfImportRows, summarizePdfImport } from "@/lib/pdfFieldImport";
+import {
+  proposePdfImportRows,
+  summarizePdfImport,
+  pdfFormPortalKey,
+  type PdfFieldImportRow,
+} from "@/lib/pdfFieldImport";
 import { fetchPdfBytes, readPdfAcroFields } from "@/lib/pdfFieldImportClient";
+import { isXlsxPayerForm } from "@/lib/payerForms";
+import { inspectXlsxTemplate } from "@/lib/xlsxTemplateFill";
 
 const STATIC = { staleTime: Infinity, gcTime: Infinity } as const;
 
@@ -174,6 +181,43 @@ export function useImportPdfFormFields() {
         expectedMappingGeneration?: number | null;
       } & ({ signedUrl: string } | { file: File }),
     ) => {
+      const isXlsx =
+        ("file" in input && isXlsxPayerForm(input.file.name)) ||
+        ("signedUrl" in input && isXlsxPayerForm(input.signedUrl));
+
+      if (isXlsx) {
+        const bytes = new Uint8Array(
+          "file" in input ? await input.file.arrayBuffer() : await fetchPdfBytes(input.signedUrl),
+        );
+        const inspection = inspectXlsxTemplate(bytes);
+        const rows: PdfFieldImportRow[] = inspection.headers.map((h, idx) => ({
+          portalKey: pdfFormPortalKey(input.familyId),
+          selector: h,
+          fieldLabel: h,
+          formSection: inspection.targetSheet,
+          pageStep: null,
+          fieldType: "text",
+          sortOrder: idx + 1,
+          controlOptions: null,
+          notes: "Imported from payer roster template (.xlsx)",
+        }));
+        const outcome = await proposePdfImportRows(rows, (row) =>
+          proposeSharedFieldMap({
+            ...row,
+            mapType: "xlsx",
+            expectedMappingGeneration: input.expectedMappingGeneration,
+          }),
+        );
+        return {
+          familyId: input.familyId,
+          totalFields: rows.length,
+          skipped: 0,
+          unclearLabels: 0,
+          rows,
+          ...outcome,
+        };
+      }
+
       const bytes =
         "file" in input ? await input.file.arrayBuffer() : await fetchPdfBytes(input.signedUrl);
       const descriptors = await readPdfAcroFields(bytes);

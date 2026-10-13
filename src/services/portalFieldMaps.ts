@@ -215,14 +215,17 @@ async function resolvePortalMapSnapshot(
   const orgConfig = ctx.orgId
     ? scopedConfigs.find((config) => config.orgId === ctx.orgId)
     : undefined;
-  // PDF maps use `payer-form:<family-id>` keys and intentionally have no
+  // PDF/XLSX maps use `payer-form:<family-id>` keys and intentionally have no
   // portals row. Keep their legacy generation-1 reader working while making
   // all registered web/configuration reads depend on an exact portal row.
   const hasLegacyPdfConfig =
-    (mapType === "pdf" || mapType === "all") &&
+    (mapType === "pdf" || mapType === "xlsx" || mapType === "all") &&
     key.startsWith("payer-form:") &&
     snapshot.maps.some(
-      (map) => map.portalKey === key && map.mapType === "pdf" && (map.mappingGeneration ?? 1) === 1,
+      (map) =>
+        map.portalKey === key &&
+        (map.mapType === "pdf" || map.mapType === "xlsx") &&
+        (map.mappingGeneration ?? 1) === 1,
     );
   const syntheticPdfConfig: EffectivePortalConfig | undefined = hasLegacyPdfConfig
     ? {
@@ -278,7 +281,9 @@ async function resolvePortalMapSnapshot(
     if (map.orgId === null) {
       return globalConfig !== undefined
         ? generation === sharedGeneration
-        : hasLegacyPdfConfig && map.mapType === "pdf" && generation === 1;
+        : hasLegacyPdfConfig &&
+            (map.mapType === "pdf" || map.mapType === "xlsx") &&
+            generation === 1;
     }
     if (!ctx.orgId || map.orgId !== ctx.orgId || generation !== orgGeneration) return false;
     return globalConfig
@@ -371,7 +376,11 @@ async function loadPortalMapResolutionBatch(
           ...new Set([
             ...snapshot.configs.map((config) => config.portalKey),
             ...snapshot.maps
-              .filter((map) => map.portalKey.startsWith("payer-form:") && map.mapType === "pdf")
+              .filter(
+                (map) =>
+                  map.portalKey.startsWith("payer-form:") &&
+                  (map.mapType === "pdf" || map.mapType === "xlsx"),
+              )
               .map((map) => map.portalKey),
           ]),
         ].sort();
@@ -1184,10 +1193,10 @@ export interface SharedProposeInput {
   notes?: string | null;
   controlOptions?: { value: string; label: string }[] | null;
   /** E6.11 — the tier the row belongs to. Omitted means `'web'`, which is what
-   * the RPC defaults to, so the argument is SENT ONLY for a PDF import: a
+   * the RPC defaults to, so the argument is SENT ONLY for a PDF/XLSX import: a
    * hosted signature without the E6.11 migration keeps serving web capture
    * (an unknown named arg is a PGRST202 400, not an ignored extra). */
-  mapType?: "web" | "pdf";
+  mapType?: FillMode;
 }
 
 /** Create (or resolve, if capture already saw it) a shared registry row.
@@ -1196,9 +1205,9 @@ export interface SharedProposeInput {
  * (sort order, payer label/section/page) when the DOM drifted. */
 export async function proposeSharedFieldMap(input: SharedProposeInput): Promise<PortalFieldMap> {
   const rpc = supabase.rpc.bind(supabase);
-  const pdfArg = input.mapType === "pdf" ? { p_map_type: "pdf" } : {};
+  const typeArg = input.mapType && input.mapType !== "web" ? { p_map_type: input.mapType } : {};
   const { data, error } = await rpc("propose_shared_field_map", {
-    ...pdfArg,
+    ...typeArg,
     p_portal_key: input.portalKey,
     p_selector: input.selector,
     p_field_label: (input.fieldLabel ?? null) as unknown as string,

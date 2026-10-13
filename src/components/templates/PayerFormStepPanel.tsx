@@ -201,13 +201,14 @@ export function PayerFormStepPanel({
           <PayerFormFieldPanel
             familyId={attached.familyId}
             formId={attached.id}
+            fileName={attached.fileName}
             canEdit={canEdit}
           />
         </div>
       ) : (
         <p className="text-[12px] text-muted-foreground">
-          No form on this action yet. Upload the payer&rsquo;s PDF and give it a name the team will
-          recognise on the case.
+          No form on this action yet. Upload the payer&rsquo;s PDF or Excel (.xlsx) roster template
+          and give it a name the team will recognise on the case.
         </p>
       )}
 
@@ -215,11 +216,11 @@ export function PayerFormStepPanel({
         <div className="space-y-2">
           {attached ? null : (
             <div>
-              <Label className="text-xs">Form name</Label>
+              <Label className="text-xs">Form or roster name</Label>
               <Input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="PT Credentialing Supplement"
+                placeholder="PT Credentialing Supplement / Roster Template"
                 disabled={upload.isPending || importFields.isPending}
               />
             </div>
@@ -228,7 +229,7 @@ export function PayerFormStepPanel({
             <Input
               ref={fileRef}
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx"
               className="h-9 max-w-[260px] text-[12px]"
               disabled={upload.isPending || importFields.isPending}
               onChange={(e) => setPending(e.target.files?.[0] ?? null)}
@@ -244,7 +245,7 @@ export function PayerFormStepPanel({
               ) : (
                 <Upload className="mr-2 h-4 w-4" />
               )}
-              {attached ? "Replace" : "Add form"}
+              {attached ? "Replace" : "Add form / roster"}
             </Button>
           </div>
           {attached ? (

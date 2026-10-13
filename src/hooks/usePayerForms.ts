@@ -233,12 +233,12 @@ export function useFillPayerForm() {
       assertCurrent();
       const bytes = await fetchPdfBytes(signed.url);
       assertCurrent();
-      const result = await preparePayerFormFill(bytes, plan);
+      const result = await preparePayerFormFill(bytes, plan, signed.fileName);
       assertCurrent();
       // No await or event-loop turn separates this context check from the
       // browser download, so a stale run cannot hand a generated file to a
       // different case, organization, or user.
-      downloadPayerFormOutput(result.output, vars.fileStem);
+      downloadPayerFormOutput(result.output, vars.fileStem, result.isXlsx);
       const portalKey = pdfFormPortalKey(vars.familyId);
       const completedAt = new Date().toISOString();
       const record: PendingPdfFillRecord = {
@@ -268,7 +268,7 @@ export function useFillPayerForm() {
           portalKey,
           fieldsFilled: 0,
           fieldsSkipped: [],
-          fillMode: "pdf",
+          fillMode: result.isXlsx ? "xlsx" : "pdf",
           startedAt,
           completedAt,
           event: result.event,

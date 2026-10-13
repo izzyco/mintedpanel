@@ -121,7 +121,7 @@ function validateLabelAndFile(input: {
   const labelError = payerFormLabelError(input.label);
   if (labelError) return { status: 422, message: labelError };
   if (!(PAYER_FORM_MIME_TYPES as readonly string[]).includes(input.mimeType)) {
-    return { status: 422, message: "Payer forms must be PDF files" };
+    return { status: 422, message: "Payer forms must be PDF or Excel (.xlsx) files" };
   }
   if (input.fileSize <= 0 || input.fileSize > PAYER_FORM_MAX_BYTES) {
     return {
