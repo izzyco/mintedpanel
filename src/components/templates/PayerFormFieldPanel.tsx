@@ -433,8 +433,8 @@ export function PayerFormFieldPanel({
                   Retry sample recording
                 </Button>
                 <p className="mt-1 text-[12px] text-muted-foreground">
-                  The sample {isXlsx ? "Excel roster" : "PDF"} is already downloaded. Retry saves its
-                  value-free outcome record; it will not generate another copy.
+                  The sample {isXlsx ? "Excel roster" : "PDF"} is already downloaded. Retry saves
+                  its value-free outcome record; it will not generate another copy.
                 </p>
               </div>
             ) : null}

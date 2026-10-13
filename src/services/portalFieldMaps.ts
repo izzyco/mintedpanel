@@ -282,8 +282,8 @@ async function resolvePortalMapSnapshot(
       return globalConfig !== undefined
         ? generation === sharedGeneration
         : hasLegacyPdfConfig &&
-          (map.mapType === "pdf" || map.mapType === "xlsx") &&
-          generation === 1;
+            (map.mapType === "pdf" || map.mapType === "xlsx") &&
+            generation === 1;
     }
     if (!ctx.orgId || map.orgId !== ctx.orgId || generation !== orgGeneration) return false;
     return globalConfig
