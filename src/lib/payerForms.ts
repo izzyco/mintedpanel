@@ -136,7 +136,10 @@ export function payerFormFileError(file: {
 }
 
 export function isXlsxPayerForm(fileName: string | null | undefined): boolean {
-  return typeof fileName === "string" && fileName.toLowerCase().endsWith(".xlsx");
+  if (typeof fileName !== "string") return false;
+  // Signed download URLs keep the object name, then append ?token= (or #).
+  const path = fileName.split(/[?#]/, 1)[0] ?? "";
+  return path.toLowerCase().endsWith(".xlsx");
 }
 
 // ---------------------------------------------------------------------------

@@ -44,19 +44,67 @@ function cellColumnName(colIndex: number): string {
   return out;
 }
 
+/** One-pass XML text decode. Named entities are not decoded twice (`&amp;lt;` stays `&lt;`). */
+function decodeXmlText(value: string): string {
+  return value.replace(/&(#x[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos);/g, (entity) => {
+    const body = entity.slice(1, -1);
+    switch (body) {
+      case "amp":
+        return "&";
+      case "lt":
+        return "<";
+      case "gt":
+        return ">";
+      case "quot":
+        return '"';
+      case "apos":
+        return "'";
+      default: {
+        const hex = /^#x([0-9a-fA-F]+)$/.exec(body);
+        if (hex) return String.fromCodePoint(parseInt(hex[1], 16));
+        const dec = /^#(\d+)$/.exec(body);
+        if (dec) return String.fromCodePoint(parseInt(dec[1], 10));
+        return entity;
+      }
+    }
+  });
+}
+
 /**
- * Extracts plain text from an XML element or inline string tag `<is><t>...</t></is>`.
+ * Visible text of a cell or shared-string item. Rich-text headers are several
+ * `<t>` runs; phonetic `<rPh>` runs are not part of the displayed header.
  */
-function extractCellText(cellXml: string): string {
-  const match = /<t[^>]*>([^<]*)<\/t>/.exec(cellXml);
-  return match
-    ? match[1]
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
-    : "";
+function visibleText(xml: string): string {
+  const withoutPhonetic = xml.replace(/<rPh\b[^>]*>.*?<\/rPh>/gs, "");
+  const parts: string[] = [];
+  const re = /<t\b[^>]*>([^<]*)<\/t>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(withoutPhonetic)) !== null) {
+    parts.push(decodeXmlText(match[1]));
+  }
+  return parts.join("");
+}
+
+/** Excel stores most cell text in `xl/sharedStrings.xml` and cells hold an index. */
+function parseSharedStrings(xml: string | null): string[] {
+  if (!xml) return [];
+  const items: string[] = [];
+  const re = /<si\b[^>]*>(.*?)<\/si>/gs;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(xml)) !== null) {
+    items.push(visibleText(match[1]));
+  }
+  return items;
+}
+
+function extractCellText(cellXml: string, sharedStrings: readonly string[]): string {
+  const type = /\bt=["']([^"']+)["']/.exec(cellXml)?.[1];
+  if (type === "s") {
+    const index = Number(/<v[^>]*>(\d+)<\/v>/.exec(cellXml)?.[1]);
+    if (!Number.isInteger(index) || index < 0 || index >= sharedStrings.length) return "";
+    return sharedStrings[index];
+  }
+  return visibleText(cellXml);
 }
 
 /**
@@ -120,6 +168,7 @@ export function inspectXlsxTemplate(
   const sheets = Array.from(workbookXml.matchAll(/<sheet[^>]*name=["']([^"']+)["']/gi)).map(
     (m) => m[1],
   );
+  const sharedStrings = parseSharedStrings(zip.readText("xl/sharedStrings.xml"));
 
   const { path: sheetPath, resolvedName: targetSheet } = resolveSheetPath(zip, targetSheetName);
   const sheetXml = zip.readText(sheetPath) ?? "";
@@ -130,7 +179,7 @@ export function inspectXlsxTemplate(
     const cellRegex = /<c\s+r=["']([A-Z]+)1["'][^>]*>(.*?)<\/c>/gs;
     let match: RegExpExecArray | null;
     while ((match = cellRegex.exec(rowMatch[1])) !== null) {
-      const text = extractCellText(match[2]).trim();
+      const text = extractCellText(match[0], sharedStrings).trim();
       if (text) headers.push(text);
     }
   }
@@ -151,6 +200,7 @@ export function fillXlsxTemplateBytes(
   options?: { targetSheetName?: string },
 ): XlsxFillResult {
   const zip = readZip(templateBytes);
+  const sharedStrings = parseSharedStrings(zip.readText("xl/sharedStrings.xml"));
   const { path: sheetPath, resolvedName } = resolveSheetPath(zip, options?.targetSheetName);
   const sheetXml = zip.readText(sheetPath);
 
@@ -181,8 +231,7 @@ export function fillXlsxTemplateBytes(
   let match: RegExpExecArray | null;
   while ((match = cellRegex.exec(headerRowInner)) !== null) {
     const colLetter = match[1];
-    const cellContent = match[2];
-    const headerText = extractCellText(cellContent).trim();
+    const headerText = extractCellText(match[0], sharedStrings).trim();
 
     // Convert col letter to index (A -> 1, B -> 2, etc.)
     let colNum = 0;

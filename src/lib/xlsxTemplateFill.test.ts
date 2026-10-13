@@ -138,6 +138,134 @@ function createBcbskcTemplateFixture(): Uint8Array {
   return buildZip(files, true);
 }
 
+function putXml(files: Map<string, Uint8Array>, path: string, xml: string): void {
+  files.set(path, new TextEncoder().encode(xml));
+}
+
+/** One-sheet workbook whose header cells are shared-string indexes, as Excel writes them. */
+function createSharedStringRoster(): Uint8Array {
+  const files = new Map<string, Uint8Array>();
+  putXml(
+    files,
+    "[Content_Types].xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`,
+  );
+  putXml(
+    files,
+    "_rels/.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  );
+  putXml(
+    files,
+    "xl/_rels/workbook.xml.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>`,
+  );
+  putXml(
+    files,
+    "xl/workbook.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Roster" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  );
+  putXml(
+    files,
+    "xl/sharedStrings.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
+  <si><t>Provider NPI</t></si>
+  <si><t>Last Name</t></si>
+</sst>`,
+  );
+  putXml(
+    files,
+    "xl/worksheets/sheet1.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:B1"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s"><v>0</v></c>
+      <c r="B1" t="s"><v>1</v></c>
+    </row>
+  </sheetData>
+</worksheet>`,
+  );
+  return buildZip(files, true);
+}
+
+/** Header is inline rich text: two runs, the second holding a numeric newline. */
+function createRichTextHeaderRoster(): Uint8Array {
+  const files = new Map<string, Uint8Array>();
+  putXml(
+    files,
+    "[Content_Types].xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`,
+  );
+  putXml(
+    files,
+    "_rels/.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+  );
+  putXml(
+    files,
+    "xl/_rels/workbook.xml.rels",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`,
+  );
+  putXml(
+    files,
+    "xl/workbook.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Roster" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`,
+  );
+  putXml(
+    files,
+    "xl/worksheets/sheet1.xml",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:A1"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><r><t>Provider Type</t></r><r><t xml:space="preserve">&#10;(P = PCP)</t></r></is></c>
+    </row>
+  </sheetData>
+</worksheet>`,
+  );
+  return buildZip(files, true);
+}
+
 describe("xlsxTemplateFill", () => {
   const standardMappings: XlsxColumnMapping[] = [
     { header: "Provider NPI", token: "provider.npi" },
@@ -346,5 +474,52 @@ describe("xlsxTemplateFill", () => {
     expect(payerFormFileError(unsupportedDoc)).toBe(
       "Payer forms must be PDF or Excel (.xlsx) files",
     );
+
+    // Risk: stored-form reimport classifies the file from the signed URL.
+    // Supabase signed URLs keep the object name, then append ?token=.
+    expect(
+      isXlsxPayerForm(
+        "https://example.supabase.co/storage/v1/object/sign/payer-forms/org/roster.xlsx?token=abc.def",
+      ),
+    ).toBe(true);
+    expect(
+      isXlsxPayerForm(
+        "https://example.supabase.co/storage/v1/object/sign/payer-forms/org/form.pdf?token=roster.xlsx",
+      ),
+    ).toBe(false);
+  });
+
+  it("reads header text stored in the shared-string table (Excel's default)", () => {
+    const bytes = createSharedStringRoster();
+    const inspection = inspectXlsxTemplate(bytes);
+    expect(inspection.headers).toEqual(["Provider NPI", "Last Name"]);
+
+    const result = fillXlsxTemplateBytes(
+      bytes,
+      [{ "provider.npi": "1234567890", "provider.lastName": "Doe" }],
+      [
+        { header: "Provider NPI", token: "provider.npi" },
+        { header: "Last Name", token: "provider.lastName" },
+      ],
+    );
+    expect(result.fieldsFilled).toBe(2);
+    const sheet = readZip(result.output).readText("xl/worksheets/sheet1.xml")!;
+    expect(sheet).toContain("<t>1234567890</t>");
+    expect(sheet).toContain("<t>Doe</t>");
+  });
+
+  it("joins every text run in a wrapped header, including numeric character references", () => {
+    const bytes = createRichTextHeaderRoster();
+    const inspection = inspectXlsxTemplate(bytes);
+    expect(inspection.headers).toEqual(["Provider Type\n(P = PCP)"]);
+
+    const result = fillXlsxTemplateBytes(
+      bytes,
+      [{ "provider.practitionerType": "Medical Doctor" }],
+      [{ header: "Provider Type\n(P = PCP)", token: "provider.practitionerType" }],
+    );
+    expect(result.fieldsFilled).toBe(1);
+    const sheet = readZip(result.output).readText("xl/worksheets/sheet1.xml")!;
+    expect(sheet).toContain("<t>Medical Doctor</t>");
   });
 });
