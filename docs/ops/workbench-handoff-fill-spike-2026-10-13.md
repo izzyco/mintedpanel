@@ -6,11 +6,11 @@ v0.1.6, production panel (`mintedpanel.vercel.app`).
 
 ## TL;DR
 
-| # | Symptom in the video | Root cause | Where |
-| - | -------------------- | ---------- | ----- |
-| 1 | Side panel opens on the Aetna tab showing only "Select an organization…". No case, no banner. User has to copy the case number and search. | Multi-org account with no org stored in the worker. The handoff IS received and stored. The "A case was handed off in Kansas Fitness Physio · Switch to…" prompt is rendered inside `#case-work`, which is hidden until an org resolves. The user never sees it. Picking the wrong org from the dropdown then wipes the stored handoff. | extension `sidepanel.html` (`#handoff-banner` inside `#case-work`), `renderModeSurfaces`, `loadOrgs`, `maybeApplyHandoff`; worker `SET_ACTIVE_ORG` → `clearOrgScopedState` |
-| 2 | On the Aetna form, with provider + case + location selected, "Fill this page" is grey and the hint reads "Open a registered payer portal in the current tab to fill it." | The Aetna portal row is `requires_explicit_selection = true` (MINT-48 independent configuration). `GET /api/portals` deliberately hides every such row from the legacy extension path, so the registry the Workbench matches the tab URL against does not contain Aetna. The only path that can use that row (Exact Work v2, `SET_ACTIVE_WORK`) is behind `VITE_ENABLE_EXACT_WORK_V2`, which is not on in the production build. The row is unreachable from both paths. | panel `src/services/portals.ts` `listPortalsForApi` (`legacyBlockedKeys`), `src/server/extensionRoutes.ts` `filterLegacyPortalRows`, `src/components/portals/PortalStepLink.tsx` (`useExactWorkflow`) |
-| 3 (found on the way) | Even once the page is recognized, the fill would write nothing from provider data. | The new key `aetna-direct-enrollment-enrollment-e170b03a3b65` has 3 approved maps, all `hardcoded` with `token = null` (the three "I am interested in / applying for / joining" selects). The 73 approved maps trained for Aetna live under the old key `aetna_direct`, which has no `portals` row at all. | `portal_field_maps` on production |
+| #                    | Symptom in the video                                                                                                                                                     | Root cause                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Where                                                                                                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1                    | Side panel opens on the Aetna tab showing only "Select an organization…". No case, no banner. User has to copy the case number and search.                               | Multi-org account with no org stored in the worker. The handoff IS received and stored. The "A case was handed off in Kansas Fitness Physio · Switch to…" prompt is rendered inside `#case-work`, which is hidden until an org resolves. The user never sees it. Picking the wrong org from the dropdown then wipes the stored handoff.                                                                                                                                 | extension `sidepanel.html` (`#handoff-banner` inside `#case-work`), `renderModeSurfaces`, `loadOrgs`, `maybeApplyHandoff`; worker `SET_ACTIVE_ORG` → `clearOrgScopedState`                            |
+| 2                    | On the Aetna form, with provider + case + location selected, "Fill this page" is grey and the hint reads "Open a registered payer portal in the current tab to fill it." | The Aetna portal row is `requires_explicit_selection = true` (MINT-48 independent configuration). `GET /api/portals` deliberately hides every such row from the legacy extension path, so the registry the Workbench matches the tab URL against does not contain Aetna. The only path that can use that row (Exact Work v2, `SET_ACTIVE_WORK`) is behind `VITE_ENABLE_EXACT_WORK_V2`, which is not on in the production build. The row is unreachable from both paths. | panel `src/services/portals.ts` `listPortalsForApi` (`legacyBlockedKeys`), `src/server/extensionRoutes.ts` `filterLegacyPortalRows`, `src/components/portals/PortalStepLink.tsx` (`useExactWorkflow`) |
+| 3 (found on the way) | Even once the page is recognized, the fill would write nothing from provider data.                                                                                       | The new key `aetna-direct-enrollment-enrollment-e170b03a3b65` has 3 approved maps, all `hardcoded` with `token = null` (the three "I am interested in / applying for / joining" selects). The 73 approved maps trained for Aetna live under the old key `aetna_direct`, which has no `portals` row at all.                                                                                                                                                              | `portal_field_maps` on production                                                                                                                                                                     |
 
 Bug 1 is an extension UX/state bug. Bug 2 is a panel product gap: the new
 "Form setup" registration flow produces configurations the shipped fill path is
@@ -18,16 +18,16 @@ designed not to see.
 
 ## What the video shows (timeline)
 
-| t | Event |
-| - | ----- |
-| 0:05 | Case page. One task "Fill online Join Provider Network form on Aetna website" (Auto-fill), step portal key `aetna-direct-enrollment-enrollment-e170b03a3b65`, chip "Verified". |
-| 0:07 | "Work in portal" clicked. Drawer text afterwards: "Portal tab requested… Extension received the case. Sign-in and access are checked there." This is the LEGACY `WorkInPortalButton` wording, so the panel sent `SET_ACTIVE_CASE`, not the v2 `SET_ACTIVE_WORK`. |
-| 0:09 | Aetna tab opens at `https://extaz-oci.aetna.com/pocui/join-the-aetna-network`. |
-| 0:13 | Side panel opened. Mode = Work cases. Org select = "Select an organization…". Nothing else. |
-| 0:17–0:21 | Second "Work in portal" click opens a second Aetna tab. Panel still empty. |
-| 0:25 | User picks "BEST Physical Therapy LLC" from the org dropdown (wrong org), then "Kansas Fitness Physio". Queue renders. No handoff banner. |
-| 0:33–0:37 | User copies C-1090, searches, selects Joseph Knapp. Case "Aetna - KS - Not Started", location "Fitness Physio - West Central". |
-| 0:41–0:48 | On the Aetna tab: hint "Open a registered payer portal in the current tab to fill it." Fill button disabled. |
+| t         | Event                                                                                                                                                                                                                                                            |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0:05      | Case page. One task "Fill online Join Provider Network form on Aetna website" (Auto-fill), step portal key `aetna-direct-enrollment-enrollment-e170b03a3b65`, chip "Verified".                                                                                   |
+| 0:07      | "Work in portal" clicked. Drawer text afterwards: "Portal tab requested… Extension received the case. Sign-in and access are checked there." This is the LEGACY `WorkInPortalButton` wording, so the panel sent `SET_ACTIVE_CASE`, not the v2 `SET_ACTIVE_WORK`. |
+| 0:09      | Aetna tab opens at `https://extaz-oci.aetna.com/pocui/join-the-aetna-network`.                                                                                                                                                                                   |
+| 0:13      | Side panel opened. Mode = Work cases. Org select = "Select an organization…". Nothing else.                                                                                                                                                                      |
+| 0:17–0:21 | Second "Work in portal" click opens a second Aetna tab. Panel still empty.                                                                                                                                                                                       |
+| 0:25      | User picks "BEST Physical Therapy LLC" from the org dropdown (wrong org), then "Kansas Fitness Physio". Queue renders. No handoff banner.                                                                                                                        |
+| 0:33–0:37 | User copies C-1090, searches, selects Joseph Knapp. Case "Aetna - KS - Not Started", location "Fitness Physio - West Central".                                                                                                                                   |
+| 0:41–0:48 | On the Aetna tab: hint "Open a registered payer portal in the current tab to fill it." Fill button disabled.                                                                                                                                                     |
 
 ## Facts pulled from production (`fkvuhfsqcmujywzgczmc`)
 
@@ -49,13 +49,13 @@ Chain, with file pointers (extension repo):
 
 Browser confirmation (built v0.1.6 bundle loaded into Chromium, local mock of the panel API serving two memberships, `minted.activeCase` seeded with the handoff record, active tab faked to the Aetna URL):
 
-| Scenario | `#case-work` hidden | Banner text | Visible to user | Stored handoff after |
-| -------- | ------------------- | ----------- | --------------- | -------------------- |
-| Handoff, no org stored (the video) | yes | "A case was handed off in Kansas Fitness Physio. Switch to Kansas Fitness Physio" | **no** | present |
-| … then user picks BEST | no | "" | — | **null (wiped)** |
-| … then user picks Kansas | no | "" | — | null |
-| Handoff, no org stored, user picks Kansas directly | no | "Working from a Minted Panel handoff. Return to case ↗" | yes | present, applied |
-| Handoff, org already stored (control) | no | "Working from a Minted Panel handoff. Return to case ↗" | yes | present, applied |
+| Scenario                                           | `#case-work` hidden | Banner text                                                                       | Visible to user | Stored handoff after |
+| -------------------------------------------------- | ------------------- | --------------------------------------------------------------------------------- | --------------- | -------------------- |
+| Handoff, no org stored (the video)                 | yes                 | "A case was handed off in Kansas Fitness Physio. Switch to Kansas Fitness Physio" | **no**          | present              |
+| … then user picks BEST                             | no                  | ""                                                                                | —               | **null (wiped)**     |
+| … then user picks Kansas                           | no                  | ""                                                                                | —               | null                 |
+| Handoff, no org stored, user picks Kansas directly | no                  | "Working from a Minted Panel handoff. Return to case ↗"                           | yes             | present, applied     |
+| Handoff, org already stored (control)              | no                  | "Working from a Minted Panel handoff. Return to case ↗"                           | yes             | present, applied     |
 
 So the designed explicit-switch path works, but only if the user can see it. Any
 wrong guess from the dropdown is destructive.
@@ -78,10 +78,10 @@ Chain, with file pointers (panel repo unless noted):
 
 Browser confirmation (same harness, org stored, active tab faked to the Aetna URL):
 
-| `/api/portals` rows served | `#portal-status` |
-| -------------------------- | ---------------- |
+| `/api/portals` rows served                                      | `#portal-status`                                                |
+| --------------------------------------------------------------- | --------------------------------------------------------------- |
 | Production registry as the route serves it today (no Aetna row) | "Open a registered payer portal in the current tab to fill it." |
-| Same + the Aetna row with the flag cleared | "aetna-direct-enrollment form detected in the current tab." |
+| Same + the Aetna row with the flag cleared                      | "aetna-direct-enrollment form detected in the current tab."     |
 
 Fix directions:
 
