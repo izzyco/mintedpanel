@@ -243,6 +243,12 @@ before any schema work.
   sign-off. Never agent-apply.**
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,
   never applied. Do not resurrect.
+- `20261014120000_fill_sessions_case_step_key.sql` — additive
+  `fill_sessions.case_step_key text`; the fill-insert guard and
+  `record_typed_enrollment_submission` compare SOP step ids as text. Verify
+  with `information_schema.columns` (`fill_sessions.case_step_key`). Until it
+  is applied, every typed case Work fill is refused and the extension cannot
+  close the step out.
 
 Object-verified applied and dropped from this list (2026-09-22):
 `20260903210000_delete_case_rpc.sql` (`pg_proc.proname = 'delete_case'`),
@@ -377,19 +383,20 @@ group_id, payer_id, state)` on `credential_cases`. Legacy NULL-group rows
 
 ### Frozen mirrors and deprecated columns (read, never write)
 
-| Column / table                                                                | State                                                                                                                                            |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `providers.group_id`                                                          | frozen mirror of the primary group assignment — no new readers                                                                                   |
-| `sop_templates.state`                                                         | frozen mirror of `states[0]`; resolution goes through `templateStates()`                                                                         |
-| `profiles.full_name`                                                          | frozen mirror composed from first/last on save                                                                                                   |
-| `credential_cases.credentialing_status_id`, `payer_pipeline_state`            | read-only dual-write mirrors of `case_status`                                                                                                    |
-| `payers.payer_slug`, `last_synced_at`, `avg_decision_days`, `resolution_id_*` | deprecated in place — no writer                                                                                                                  |
-| `providers.license_*` (number/state/issue/expiration)                         | **never written; null for every provider.** `state_licenses` is the real grain and what provider create/update writes — `license.*` is canonical |
-| `launches` table, `providers.launch_id`                                       | legacy; nothing reads or writes them                                                                                                             |
-| `notes` table                                                                 | dormant for case/task (moved to `touches`); **still live for provider notes**                                                                    |
-| `msos`, `mso_routing_rules`                                                   | dormant — routing engine deleted app-side                                                                                                        |
-| `org_payer_settings`, `next_best_action_configs`, `payer_catalog_changes`     | dormant                                                                                                                                          |
-| `org_payer_assignments.starter`                                               | dormant                                                                                                                                          |
+| Column / table                                                                | State                                                                                                                                                  |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `providers.group_id`                                                          | frozen mirror of the primary group assignment — no new readers                                                                                         |
+| `sop_templates.state`                                                         | frozen mirror of `states[0]`; resolution goes through `templateStates()`                                                                               |
+| `profiles.full_name`                                                          | frozen mirror composed from first/last on save                                                                                                         |
+| `credential_cases.credentialing_status_id`, `payer_pipeline_state`            | read-only dual-write mirrors of `case_status`                                                                                                          |
+| `payers.payer_slug`, `last_synced_at`, `avg_decision_days`, `resolution_id_*` | deprecated in place — no writer                                                                                                                        |
+| `providers.license_*` (number/state/issue/expiration)                         | **never written; null for every provider.** `state_licenses` is the real grain and what provider create/update writes — `license.*` is canonical       |
+| `launches` table, `providers.launch_id`                                       | legacy; nothing reads or writes them                                                                                                                   |
+| `notes` table                                                                 | dormant for case/task (moved to `touches`); **still live for provider notes**                                                                          |
+| `msos`, `mso_routing_rules`                                                   | dormant — routing engine deleted app-side                                                                                                              |
+| `org_payer_settings`, `next_best_action_configs`, `payer_catalog_changes`     | dormant                                                                                                                                                |
+| `org_payer_assignments.starter`                                               | dormant                                                                                                                                                |
+| `fill_sessions.case_step_id`                                                  | deprecated in place (uuid) — SOP step ids are text; `case_step_key` is the step column. No writer; the insert guard copies a legacy value into the key |
 
 ## Cross-cutting subsystems
 

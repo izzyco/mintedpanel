@@ -1050,6 +1050,7 @@ export type Database = {
         Row: {
           case_id: string | null;
           case_step_id: string | null;
+          case_step_key: string | null;
           case_task_id: string | null;
           completed_at: string | null;
           context_version: number | null;
@@ -1087,6 +1088,7 @@ export type Database = {
         Insert: {
           case_id?: string | null;
           case_step_id?: string | null;
+          case_step_key?: string | null;
           case_task_id?: string | null;
           completed_at?: string | null;
           context_version?: number | null;
@@ -1124,6 +1126,7 @@ export type Database = {
         Update: {
           case_id?: string | null;
           case_step_id?: string | null;
+          case_step_key?: string | null;
           case_task_id?: string | null;
           completed_at?: string | null;
           context_version?: number | null;

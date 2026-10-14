@@ -209,7 +209,8 @@ function sameReceiptTuple(
     row.task_index == null &&
     row.step_index == null &&
     row.case_task_id === tuple.taskId &&
-    row.case_step_id === tuple.stepId &&
+    // The selected SOP step is the text key; the uuid case_step_id is deprecated.
+    row.case_step_key === tuple.stepId &&
     row.step_identity === tuple.stepIdentity &&
     row.context_version === tuple.contextVersion &&
     row.sop_template_id === tuple.sopTemplateId &&
@@ -337,7 +338,7 @@ async function recordTypedEnrollmentSubmission(
     const { data: receipt, error: receiptError } = await ctx.db
       .from("fill_sessions")
       .select(
-        "id, org_id, case_id, contract_id, contract_sop_assignment_id, task_index, step_index, case_task_id, case_step_id, step_identity, context_version, sop_template_id, sop_version, portal_id, portal_key, launch_receipt_id, mapping_generation, effective_mapping_fingerprint, provider_id, facility_id, fill_mode, is_test, event_schema_version, did_auto_start_case",
+        "id, org_id, case_id, contract_id, contract_sop_assignment_id, task_index, step_index, case_task_id, case_step_key, step_identity, context_version, sop_template_id, sop_version, portal_id, portal_key, launch_receipt_id, mapping_generation, effective_mapping_fingerprint, provider_id, facility_id, fill_mode, is_test, event_schema_version, did_auto_start_case",
       )
       .eq("id", input.fill_session_id as string)
       .eq("org_id", ctx.orgId)

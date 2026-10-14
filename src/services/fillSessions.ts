@@ -20,6 +20,7 @@ import {
   type FillEventV2Metadata,
 } from "@/types/fillEventV2";
 import {
+  isStepId,
   parseWorkContextTuple,
   type WorkContextTuple,
   type WorkContextValidationRequest,
@@ -83,6 +84,14 @@ export type RecordFillEventResult =
 
 const FILL_SESSION_COLUMNS =
   "id, org_id, case_id, contract_id, contract_sop_assignment_id, sop_template_id, sop_version, task_index, step_index, case_task_id, case_step_id, step_identity, facility_id, portal_id, context_version, launch_receipt_id, mapping_generation, shared_mapping_generation, effective_mapping_fingerprint, provider_id, portal_key, fill_mode, started_at, completed_at, fields_filled, fields_skipped, docs_attached, performed_by, is_test, event_schema_version, fields_attempted, fields_verified, fields_rejected, field_outcomes";
+// A typed case Work receipt keys its selected SOP step by the text column
+// case_step_key (SOP step ids are "step-0", not UUIDs; case_step_id is the
+// deprecated uuid column and is never written). Only typed case reads and
+// writes name the key, so legacy, test, and Contract fills keep working on a
+// database that predates migration 20261014120000. The list is passed as a
+// plain string (the supabase-js select parser cannot type a list this long), so
+// rows are read as untyped records, as everywhere else in this service.
+const TYPED_CASE_FILL_SESSION_COLUMNS = `${FILL_SESSION_COLUMNS}, case_step_key`;
 const FILL_EVENT_V2_COLUMNS =
   "event_schema_version, fields_attempted, fields_verified, fields_rejected, field_outcomes";
 
@@ -102,6 +111,10 @@ function isValidTimestamp(value: unknown): boolean {
   return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
+function storedCaseStepId(row: Record<string, unknown>): string | null {
+  return ((row.case_step_key ?? row.case_step_id) as string | null | undefined) ?? null;
+}
+
 // camelizeRow walks nested objects, which would rewrite keys INSIDE jsonb
 // payloads; restore the bounded telemetry projections verbatim.
 function toFillSession(row: Record<string, unknown>): FillSession {
@@ -113,7 +126,10 @@ function toFillSession(row: Record<string, unknown>): FillSession {
   session.docsAttached = row.docs_attached ?? null;
   session.isTest = Boolean(row.is_test);
   session.caseTaskId = (row.case_task_id as string | null | undefined) ?? null;
-  session.caseStepId = (row.case_step_id as string | null | undefined) ?? null;
+  // The wire field stays caseStepId: the SOP step id the client sent, read from
+  // the text key (or the frozen uuid of a pre-key receipt).
+  session.caseStepId = storedCaseStepId(row);
+  delete (session as unknown as Record<string, unknown>).caseStepKey;
   session.stepIdentity = (row.step_identity as string | null | undefined) ?? null;
   session.eventSchemaVersion =
     row.event_schema_version == null ? null : (row.event_schema_version as 1 | 2);
@@ -157,7 +173,7 @@ function sameStoredFill(
     (row.task_index ?? null) === (input.taskIndex ?? null) &&
     (row.step_index ?? null) === (input.stepIndex ?? null) &&
     (row.case_task_id ?? null) === (input.caseTaskId ?? null) &&
-    (row.case_step_id ?? null) === (input.caseStepId ?? null) &&
+    storedCaseStepId(row) === (input.caseStepId ?? null) &&
     (row.step_identity ?? null) === (input.stepIdentity ?? null) &&
     (row.facility_id ?? null) === (input.facilityId ?? null) &&
     (row.portal_id ?? null) === (input.portalId ?? null) &&
@@ -574,14 +590,21 @@ export async function recordFillEvent(
     input.facilityId,
     input.launchReceiptId,
     input.caseTaskId,
-    input.caseStepId,
   ];
   if (ownerContextIds.some((value) => value != null && !UUID_RE.test(value))) {
     return reject(422, "Work owner context IDs must be UUIDs");
   }
+  // A SOP step id is a short text key ("step-0"), the same rule the Work
+  // launch and validator use, not a UUID.
+  if (input.caseStepId != null && !isStepId(input.caseStepId)) {
+    return reject(422, "caseStepId must be a SOP step id");
+  }
   const isContractReceipt = input.contractId != null;
   const isTypedCaseReceipt = workTuple?.ownerKind === "case";
   const isTypedWorkReceipt = workTuple !== null;
+  const sessionColumns: string = isTypedCaseReceipt
+    ? TYPED_CASE_FILL_SESSION_COLUMNS
+    : FILL_SESSION_COLUMNS;
   const hasUnownedContext =
     (input.contractSopAssignmentId != null && !isContractReceipt) ||
     ((input.sopTemplateId != null ||
@@ -736,12 +759,12 @@ export async function recordFillEvent(
   if (isTypedWorkReceipt && v2Metadata) {
     const { data: existing, error: existingErr } = await ctx.db
       .from("fill_sessions")
-      .select(FILL_SESSION_COLUMNS)
+      .select(sessionColumns)
       .eq("id", input.id)
       .eq("org_id", ctx.orgId)
       .maybeSingle();
     if (existingErr) throw existingErr;
-    if (existing) return replay(existing as Record<string, unknown>);
+    if (existing) return replay(existing as unknown as Record<string, unknown>);
 
     // A primary-key collision from another org is deliberately reported as a
     // generic idempotency conflict without revealing its row or organization.
@@ -788,12 +811,12 @@ export async function recordFillEvent(
   if (!typedReplayChecked) {
     const { data: existing, error: existingErr } = await ctx.db
       .from("fill_sessions")
-      .select(FILL_SESSION_COLUMNS)
+      .select(sessionColumns)
       .eq("id", input.id)
       .eq("org_id", ctx.orgId)
       .maybeSingle();
     if (existingErr) throw existingErr;
-    if (existing) return replay(existing as Record<string, unknown>);
+    if (existing) return replay(existing as unknown as Record<string, unknown>);
   }
 
   // ---- insert; org + performer come from the authenticated ctx only ----
@@ -808,7 +831,6 @@ export async function recordFillEvent(
     task_index: input.taskIndex ?? null,
     step_index: input.stepIndex ?? null,
     case_task_id: input.caseTaskId ?? null,
-    case_step_id: input.caseStepId ?? null,
     step_identity: input.stepIdentity ?? null,
     facility_id: input.facilityId ?? null,
     portal_id: input.portalId ?? null,
@@ -837,13 +859,16 @@ export async function recordFillEvent(
     row.fields_rejected = v2Metadata.fieldsRejected;
     row.field_outcomes = v2Metadata.fieldOutcomes;
   }
+  // Only a typed case receipt carries a selected SOP step. It is stored as the
+  // text key; the deprecated uuid case_step_id is never written.
+  if (isTypedCaseReceipt) row.case_step_key = input.caseStepId;
   // Omit started_at when absent so the column default (now()) applies.
   if (input.startedAt != null) row.started_at = input.startedAt;
 
   const { data, error } = await ctx.db
     .from("fill_sessions")
     .insert(row as never)
-    .select(FILL_SESSION_COLUMNS)
+    .select(sessionColumns)
     .single();
   if (error) {
     // Unique violation after the org-scoped lookup missed. Two cases: a
@@ -854,17 +879,17 @@ export async function recordFillEvent(
     if ((error as { code?: string }).code === "23505") {
       const { data: raced, error: racedErr } = await ctx.db
         .from("fill_sessions")
-        .select(FILL_SESSION_COLUMNS)
+        .select(sessionColumns)
         .eq("id", input.id)
         .eq("org_id", ctx.orgId)
         .maybeSingle();
       if (racedErr) throw racedErr;
-      if (raced) return replay(raced);
+      if (raced) return replay(raced as unknown as Record<string, unknown>);
       return reject(409, "Idempotency id already used");
     }
     throw error;
   }
-  const session = toFillSession(data);
+  const session = toFillSession(data as unknown as Record<string, unknown>);
 
   if (!v2Metadata) {
     await ctx.writeAudit({

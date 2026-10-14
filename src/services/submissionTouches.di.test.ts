@@ -82,7 +82,8 @@ const ORG_UUID = "12345678-1234-4234-8234-123456789012";
 const PROVIDER_ID = "dddddddd-eeee-4fff-8000-111111111111";
 const SOP_TEMPLATE_ID = "eeeeeeee-ffff-4000-8000-111111111111";
 const PORTAL_ID = "ffffffff-aaaa-4000-8000-111111111111";
-const STEP_ID = "abababab-cdcd-4efe-8a8a-123456789012";
+// Production SOP steps carry short text ids, never UUIDs.
+const STEP_ID = "step-0";
 const STEP_IDENTITY = `${CASE_ID}:${TASK_ID}:${SOP_TEMPLATE_ID}:1:${STEP_ID}`;
 const workContext = {
   launchReceiptId: "abababab-cdcd-4efe-8a8a-123456789013",
@@ -123,7 +124,7 @@ const typedReceiptRow = {
   task_index: null,
   step_index: null,
   case_task_id: TASK_ID,
-  case_step_id: STEP_ID,
+  case_step_key: STEP_ID,
   step_identity: STEP_IDENTITY,
   context_version: 1,
   sop_template_id: SOP_TEMPLATE_ID,
@@ -225,6 +226,8 @@ describe("recordSubmissionTouch — exact M56 Enrollment work", () => {
       "fill_sessions",
       "record_typed_enrollment_submission",
     ]);
+    expect(captures[1]?.selectCols).toContain("case_step_key");
+    expect(captures[1]?.selectCols).not.toContain("case_step_id");
     expect(captures[2]?.payload).toMatchObject({
       p_org_id: ORG_UUID,
       p_case_id: CASE_ID,
@@ -326,7 +329,7 @@ describe("recordSubmissionTouch — exact M56 Enrollment work", () => {
     vi.mocked(validateWorkContextForFillReceipt).mockResolvedValue(validContext);
     const wrongReceipt = makeFakeDb([
       { data: null },
-      { data: { ...typedReceiptRow, case_step_id: "bbbbbbbb-cccc-4ddd-8eee-123456789012" } },
+      { data: { ...typedReceiptRow, case_step_key: "step-1" } },
     ]);
     const wrongReceiptResult = await recordSubmissionTouch(
       typedCtx(wrongReceipt.db).ctx,
@@ -488,7 +491,9 @@ describe("recordSubmissionTouch — org validation rejects before any write", ()
         data: {
           id: FILL_SESSION_ID,
           case_task_id: TASK_ID,
-          case_step_id: STEP_ID,
+          // A keyed receipt never writes the deprecated uuid column; the
+          // typed-receipt refusal does not depend on it.
+          case_step_id: null,
           step_identity: STEP_IDENTITY,
         },
       },
