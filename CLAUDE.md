@@ -131,8 +131,14 @@ screens to `/api`.
    org rows = overrides.
 6. **The extension never submits portal forms.** The human submits; the
    extension logs. No implicit status change from the extension.
-7. Case selection is required before a fill (the sandbox test-provider path is
-   the one exception — it attaches to no case by construction).
+7. Case selection is required before a fill, with two exceptions that attach
+   to no case by construction: the sandbox test profile, and an ad hoc fill
+   ("No case · Ad hoc fill") on a regular form. Neither writes a touch or moves
+   a status; an ad hoc fill saves its fill record under the provider
+   (`recordFillEvent` accepts a provider with no case, and a task requires a
+   case). Case-only (Work-only) forms are never filled ad hoc:
+   `GET /api/portals` hides them from manual mode, and coordinators launch
+   them from the case (PM, Oct 14).
 8. Profile endpoint reads are audited: one `READ` audit row per read, never the
    body.
 
