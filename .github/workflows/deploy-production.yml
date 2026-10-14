@@ -31,6 +31,7 @@ jobs:
       - name: Verify build locally
         env:
           VITE_MINTED_EXTENSION_ID: dppfnbikpojpgdiobckgcknmkjlfoinh
+          VITE_ENABLE_EXACT_WORK_V2: "true"
           NITRO_PRESET: vercel
           VERCEL: "1"
         run: npm run build
@@ -41,11 +42,19 @@ jobs:
           VERCEL_ORG_ID: team_230fpJ9MgCj9ssW3LiIckfyA
           VERCEL_PROJECT_ID: prj_ILhPJbkyaiptdVA8DtsmNyw3tiub
           VITE_MINTED_EXTENSION_ID: dppfnbikpojpgdiobckgcknmkjlfoinh
+          VITE_ENABLE_EXACT_WORK_V2: "true"
           NITRO_PRESET: vercel
           VERCEL: "1"
         run: |
           npx vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           npx vercel build --prod --token="$VERCEL_TOKEN"
+          # vercel.json build.env does not reach `vercel build`; the flag must come
+          # from this step's env. Fail before deploy if the Exact Work v2 launch
+          # branch was compiled out of PortalStepLink.
+          if ! grep -rqF "The exact case step context is incomplete" .vercel/output/static/assets; then
+            echo "Exact Work v2 launch path missing from the build (VITE_ENABLE_EXACT_WORK_V2 not applied)"
+            exit 1
+          fi
           DEPLOY_OUTPUT=$(npx vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
           echo "$DEPLOY_OUTPUT"
           DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -o 'https://[^ ]*vercel\.app' | tail -n 1)
