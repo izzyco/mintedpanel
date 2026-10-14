@@ -253,23 +253,19 @@ before any schema work.
   sign-off. Never agent-apply.**
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,
   never applied. Do not resurrect.
-- `20261014120000_fill_sessions_case_step_key.sql` — additive
-  `fill_sessions.case_step_key text`; the fill-insert guard and
-  `record_typed_enrollment_submission` compare SOP step ids as text. Verify
-  with `information_schema.columns` (`fill_sessions.case_step_key`). Until it
-  is applied, every typed case Work fill is refused and the extension cannot
-  close the step out.
-- `20261014120100_typed_submission_without_fill_record.sql` — apply after the
-  step-key migration. `record_typed_enrollment_submission` accepts a NULL
-  `p_fill_session_id` and `touches_submission_request_fingerprint_check` no
-  longer requires a receipt. Verify with
-  `pg_get_constraintdef` on that CHECK (no `fill_session_id`). Until it is
-  applied, a typed submission without a fill record returns 422.
 
 Object-verified applied and dropped from this list (2026-09-22):
 `20260903210000_delete_case_rpc.sql` (`pg_proc.proname = 'delete_case'`),
 `20260921220000_fix_case_generation_run_rows_created_case_check.sql`
 (CHECK dropped; `trg_case_generation_run_rows_created_case_check` present).
+
+Object-verified applied and dropped from this list (2026-10-14):
+`20261014120000_fill_sessions_case_step_key.sql` (`fill_sessions.case_step_key`
+text; both function bodies md5-match the repo) and
+`20261014120100_typed_submission_without_fill_record.sql`
+(`touches_submission_request_fingerprint_check` no longer names
+`fill_session_id`). Ledger versions are MCP-minted (`20261014154315`,
+`20261014154527`), not the filenames.
 
 Because some are unapplied, a `types.ts` regen may **delete** types for columns
 the repo just added. Check before regenerating.
