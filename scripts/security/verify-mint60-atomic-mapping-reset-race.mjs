@@ -18,7 +18,6 @@ const ids = Object.fromEntries(
     "template",
     "case",
     "task",
-    "step",
     "fillResetFirst",
     "fillFillFirst",
     "touchAfterReset",
@@ -28,7 +27,9 @@ const portalKey = `mint60_race_${ids.org.replaceAll("-", "").slice(0, 16)}`;
 const workPortalKey = `mint60_work_${ids.org.replaceAll("-", "").slice(0, 16)}`;
 const actorClaims = JSON.stringify({ sub: ids.actor, role: "service_role" });
 const fingerprint = `sha256:${"a".repeat(64)}`;
-const stepIdentity = `${ids.case}:${ids.task}:${ids.template}:1:${ids.step}`;
+// SOP step ids are short text keys, never UUIDs (src/lib/workContext.ts STEP_ID_RE).
+const stepId = "step-0";
+const stepIdentity = `${ids.case}:${ids.task}:${ids.template}:1:${stepId}`;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -109,14 +110,14 @@ function workFillInsert(fillId, pin, applicationName, sleep = false) {
     SET LOCAL request.jwt.claims = '${actorClaims}';
     SET LOCAL ROLE service_role;
     INSERT INTO public.fill_sessions (
-      id, org_id, case_id, case_task_id, case_step_id, step_identity,
+      id, org_id, case_id, case_task_id, case_step_key, step_identity,
       sop_template_id, sop_version, context_version, launch_receipt_id,
       mapping_generation, shared_mapping_generation, effective_mapping_fingerprint,
       portal_id, provider_id, portal_key, fill_mode, fields_filled, fields_skipped,
       is_test, event_schema_version, fields_attempted, fields_verified,
       fields_rejected, field_outcomes, performed_by
     ) VALUES (
-      '${fillId}', '${ids.org}', '${ids.case}', '${ids.task}', '${ids.step}',
+      '${fillId}', '${ids.org}', '${ids.case}', '${ids.task}', '${stepId}',
       '${stepIdentity}', '${ids.template}', 1, 1, '${fillId}',
       1, ${pin}, '${fingerprint}', '${ids.workOrgPortal}', '${ids.provider}',
       '${workPortalKey}', 'web', 0, '[]'::jsonb, false, 2, 0, 0, 0,
@@ -145,7 +146,7 @@ function workTuple(fillId) {
     'facilityId', NULL,
     'stepIdentity', '${stepIdentity}',
     'taskId', '${ids.task}'::uuid,
-    'stepId', '${ids.step}'::uuid
+    'stepId', '${stepId}'
   )`;
 }
 
@@ -250,7 +251,7 @@ const setup = await runPsql(`
   ) VALUES (
     '${ids.task}', '${ids.org}', '${ids.case}', '${ids.provider}', 'MINT-60 Work step',
     jsonb_build_array(jsonb_build_object(
-      'id', '${ids.step}', 'label', 'Form', 'stepType', 'online_form',
+      'id', '${stepId}', 'label', 'Form', 'stepType', 'online_form',
       'portalKey', '${workPortalKey}', 'order', 0, 'isCompleted', false
     )),
     'not_started', 1, '${ids.template}', 1, 'extension_fill'

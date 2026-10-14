@@ -92,7 +92,8 @@ const SOP_TEMPLATE_ID = "61616161-4242-4535-8686-797979797979";
 const LAUNCH_RECEIPT_ID = "71717171-4242-4535-8686-797979797979";
 const FACILITY_ID = "81818181-4242-4535-8686-797979797979";
 const PORTAL_ID = "91919191-4242-4535-8686-797979797979";
-const STEP_ID = "a1a1a1a1-1111-4111-8111-111111111111";
+// Production SOP steps carry short text ids, never UUIDs.
+const STEP_ID = "step-0";
 const STEP_IDENTITY = `${CASE_ID}:${TASK_ID}:${SOP_TEMPLATE_ID}:3:${STEP_ID}`;
 const CASE_WORK_CONTEXT: WorkContextTuple = {
   launchReceiptId: LAUNCH_RECEIPT_ID,
@@ -190,7 +191,8 @@ const storedCaseWorkRow = {
   task_index: null,
   step_index: null,
   case_task_id: TASK_ID,
-  case_step_id: STEP_ID,
+  case_step_id: null,
+  case_step_key: STEP_ID,
   step_identity: STEP_IDENTITY,
   facility_id: FACILITY_ID,
   portal_id: PORTAL_ID,
@@ -777,7 +779,7 @@ describe("recordFillEvent — exact case Work receipts", () => {
       { data: null },
       { data: { id: CASE_ID } },
       { data: { id: PROVIDER_ID } },
-      { data: { ...storedRow, case_id: CASE_ID, provider_id: PROVIDER_ID } },
+      { data: storedCaseWorkRow },
     ]);
     const { ctx, writeAudit } = ctxWith(db);
     ctx.orgId = CASE_WORK_CONTEXT.orgId;
@@ -785,6 +787,10 @@ describe("recordFillEvent — exact case Work receipts", () => {
     const result = await recordFillEvent(ctx, CASE_WORK_V2_INPUT);
 
     expect(result.kind).toBe("created");
+    if (result.kind !== "created") throw new Error("expected a created receipt");
+    // The response shape is unchanged: caseStepId echoes the SOP step id sent.
+    expect(result.session.caseStepId).toBe(STEP_ID);
+    expect(result.session).not.toHaveProperty("caseStepKey");
     expect(validateWorkContextMock).toHaveBeenCalledWith(
       { db, orgId: CASE_WORK_CONTEXT.orgId },
       { protocolVersion: 2, ...CASE_WORK_CONTEXT },
@@ -796,13 +802,16 @@ describe("recordFillEvent — exact case Work receipts", () => {
       case_id: CASE_ID,
       contract_id: null,
       case_task_id: TASK_ID,
-      case_step_id: STEP_ID,
+      case_step_key: STEP_ID,
       step_identity: STEP_IDENTITY,
       portal_id: PORTAL_ID,
       mapping_generation: 4,
       shared_mapping_generation: 6,
       effective_mapping_fingerprint: `sha256:${"a".repeat(64)}`,
     });
+    // The deprecated uuid column is never written.
+    expect(insert?.payload).not.toHaveProperty("case_step_id");
+    expect(insert?.selectCols).toContain("case_step_key");
     expect(captures.some((capture) => capture.table === "tasks" && capture.op === "update")).toBe(
       false,
     );
@@ -828,6 +837,107 @@ describe("recordFillEvent — exact case Work receipts", () => {
 
     expectRejected(result, 422);
     expect(captures).toHaveLength(0);
+  });
+
+  it.each([
+    ["a space", "step 0"],
+    ["a slash", "step/0"],
+    ["an empty id", ""],
+    ["65 characters", "s".repeat(65)],
+    ["a non-string", 7],
+  ])("rejects a Work step id with %s before any database call", async (_label, stepId) => {
+    const { db, captures } = makeFakeDb([]);
+    const { ctx } = ctxWith(db);
+    ctx.orgId = CASE_WORK_CONTEXT.orgId;
+
+    const result = await recordFillEvent(ctx, {
+      ...CASE_WORK_V2_INPUT,
+      workContext: { ...CASE_WORK_CONTEXT, stepId },
+    });
+
+    expectRejected(result, 422);
+    expect(captures).toHaveLength(0);
+  });
+
+  it.each([
+    ["malformed flat caseStepId", { caseStepId: "step 0" }],
+    ["non-UUID flat caseTaskId", { caseTaskId: "task-1" }],
+    ["non-UUID Contract owner", { contractId: "contract-1" }],
+    ["non-UUID launch receipt", { launchReceiptId: "receipt-1" }],
+    ["non-UUID selected config", { portalId: "portal-1" }],
+  ])("rejects a %s before any database call", async (_label, override) => {
+    const { db, captures } = makeFakeDb([]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordFillEvent(ctx, { ...V2_INPUT, ...override });
+
+    expectRejected(result, 422);
+    expect(captures).toHaveLength(0);
+  });
+
+  it("rejects a retry whose stored receipt selected a different SOP step", async () => {
+    validateWorkContextMock.mockReset();
+    const { db, captures } = makeFakeDb([
+      { data: { ...storedCaseWorkRow, case_step_key: "step-1" } },
+    ]);
+    const { ctx } = ctxWith(db);
+    ctx.orgId = CASE_WORK_CONTEXT.orgId;
+
+    const result = await recordFillEvent(ctx, CASE_WORK_V2_INPUT);
+
+    expectRejected(result, 409);
+    expect(validateWorkContextMock).not.toHaveBeenCalled();
+    expect(captures.some((capture) => capture.op === "insert")).toBe(false);
+  });
+
+  it("replays a pre-key receipt whose step id survives only in the frozen uuid column", async () => {
+    validateWorkContextMock.mockReset();
+    const legacyStep = "a1a1a1a1-1111-4111-8111-111111111111";
+    const legacyContext = {
+      ...CASE_WORK_CONTEXT,
+      stepId: legacyStep,
+      stepIdentity: `${CASE_ID}:${TASK_ID}:${SOP_TEMPLATE_ID}:3:${legacyStep}`,
+    };
+    const { db } = makeFakeDb([
+      {
+        data: {
+          ...storedCaseWorkRow,
+          case_step_id: legacyStep,
+          case_step_key: undefined,
+          step_identity: legacyContext.stepIdentity,
+        },
+      },
+    ]);
+    const { ctx } = ctxWith(db);
+    ctx.orgId = CASE_WORK_CONTEXT.orgId;
+
+    const result = await recordFillEvent(ctx, {
+      ...CASE_WORK_V2_INPUT,
+      workContext: legacyContext,
+    });
+
+    expect(result.kind).toBe("duplicate");
+    if (result.kind !== "duplicate") throw new Error("expected an exact replay");
+    expect(result.session.caseStepId).toBe(legacyStep);
+  });
+
+  it("names the step key only on typed case reads, never on legacy fills", async () => {
+    const { db, captures } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: null },
+      { data: storedRow },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordFillEvent(ctx, baseInput);
+
+    expect(result.kind).toBe("created");
+    const fillReads = captures.filter((capture) => capture.table === "fill_sessions");
+    expect(fillReads.length).toBeGreaterThan(0);
+    for (const capture of fillReads) expect(capture.selectCols).not.toContain("case_step_key");
+    const insert = captures.find((capture) => capture.op === "insert");
+    expect(insert?.payload).not.toHaveProperty("case_step_key");
+    expect(insert?.payload).not.toHaveProperty("case_step_id");
   });
 
   it.each(["sharedMappingGeneration", "shared_mapping_generation"])(

@@ -29,8 +29,6 @@ const keys = [
   "caseB",
   "taskA",
   "taskB",
-  "stepA",
-  "stepB",
   "fillA",
   "fillB",
   "receiptA",
@@ -39,6 +37,9 @@ const keys = [
   "touchB",
 ];
 const ids = Object.fromEntries(keys.map((key) => [key, randomUUID()]));
+// SOP step ids are short text keys, never UUIDs (src/lib/workContext.ts STEP_ID_RE).
+ids.stepA = "step-0";
+ids.stepB = "step-0";
 const portalKey = `m58_race_${ids.org.replaceAll("-", "").slice(0, 20)}`;
 const appA = `m58-a-${ids.org.slice(0, 8)}`;
 const appB = `m58-b-${ids.org.slice(0, 8)}`;
@@ -140,7 +141,7 @@ const tuple = (caseKey, taskKey, stepKey, receiptKey) => `jsonb_build_object(
   'facilityId', NULL,
   'stepIdentity', ${quote(`${ids[caseKey]}:${ids[taskKey]}:${ids.template}:1:${ids[stepKey]}`)},
   'taskId', ${quote(ids[taskKey])}::uuid,
-  'stepId', ${quote(ids[stepKey])}::uuid
+  'stepId', ${quote(ids[stepKey])}
 )`;
 
 const touchCall = (caseKey, taskKey, stepKey, fillKey, receiptKey, touchKey, appName) => `
@@ -302,7 +303,7 @@ INSERT INTO public.portals (
   true, now(), now(), 1
 );
 INSERT INTO public.fill_sessions (
-  id, org_id, case_id, case_task_id, case_step_id, step_identity,
+  id, org_id, case_id, case_task_id, case_step_key, step_identity,
   sop_template_id, sop_version, context_version, launch_receipt_id,
   mapping_generation, effective_mapping_fingerprint, portal_id, provider_id,
   portal_key, fill_mode, fields_filled, fields_skipped, is_test,

@@ -113,7 +113,9 @@ function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_RE.test(value);
 }
 
-function isStepId(value: unknown): value is string {
+/** A SOP step id is a short text key such as "step-0"; it is not a UUID. The
+ * one rule for every case Work step id the panel accepts. */
+export function isStepId(value: unknown): value is string {
   return typeof value === "string" && STEP_ID_RE.test(value);
 }
 
