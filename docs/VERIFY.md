@@ -160,6 +160,14 @@ subsequent `npx playwright test` invocation attaches to the running server
 instead of paying the ~90s Vite boot again. One server per session; iterate
 focused specs against it.
 
+A server you start yourself does **not** get `playwright.config.ts`'s
+`webServer.env`. Start it with the same mocked-browser value, or the extension
+handoff specs send to the real Store ID and fail:
+
+```sh
+VITE_MINTED_EXTENSION_ID=abcdefghijklmnopabcdefghijklmnop npm run dev &
+```
+
 ## 5. Sandbox notes
 
 - **Chromium path:** the repo's Playwright pin is newer than the sandbox

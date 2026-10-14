@@ -3,9 +3,12 @@
 //
 // Slice E (payer-and-cases screen 6): ONE list — the step-at-a-time wizard is
 // retired. Each task shows its execution type and due date, and its ordered
-// steps render beneath it; the CURRENT step (the first incomplete step of the
-// first unfinished task) carries the "Open step" affordance that opens the
-// drawer, where the step bodies and Mark-step-done live.
+// steps render beneath it. The CURRENT step (the first incomplete step of the
+// first unfinished task) is marked with an amber dot; on an Auto-fill task whose
+// step is a configured portal it also carries an inline "Work in portal" — the
+// same launch the drawer offers, one click from the list. Everything else
+// (step bodies, Mark-step-done, recovery guidance) lives in the drawer, which
+// opens on a row click.
 import { useRef, useState } from "react";
 import { differenceInDays, parseISO } from "date-fns";
 import { toast } from "sonner";
@@ -29,12 +32,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
-import { CheckCircle2, Circle, Lock } from "lucide-react";
+import { CheckCircle2, Circle, Lock, Zap } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { useUpdateTaskStatus } from "@/hooks/useTasks";
 import { useCanWrite } from "@/lib/permissions";
 import { TaskDrawer } from "@/components/cases/TaskDrawer";
-import type { PortalHandoffContext } from "@/components/portals/PortalStepLink";
+import { PortalStepLink, type PortalHandoffContext } from "@/components/portals/PortalStepLink";
 import { PayerFormActionRow } from "@/components/cases/PayerFormActionRow";
 import { isPayerFormRemoved, taskPayerFormPointer } from "@/lib/payerForms";
 import {
@@ -47,6 +50,7 @@ import { EXECUTION_TYPE_LABELS, resolveExecutionType } from "@/lib/executionType
 import {
   resolveHandoffFacility,
   shouldShowCaseFacilityPicker,
+  stepPortalHandoff,
   type HandoffFacilityLoadState,
   type HandoffFacilityOption,
 } from "@/lib/casePortals";
@@ -66,6 +70,28 @@ export interface CasePortalHandoffData {
   facilities: HandoffFacilityOption[];
   selectedFacilityId: string | undefined;
   onSelectFacility: (facilityId: string) => void;
+}
+
+function ExecutionTypeLabel({ executionType }: { executionType: Task["executionType"] }) {
+  const type = resolveExecutionType(executionType);
+  const label = EXECUTION_TYPE_LABELS[type];
+  if (type !== "extension_fill") {
+    return <span className="text-[12px] font-medium text-muted-foreground">{label}</span>;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          className="inline-flex items-center gap-1 rounded-sm text-[12px] font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Zap className="h-3 w-3" aria-hidden />
+          {label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>The Minted extension can fill this form.</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function taskStatusIcon(status: Task["status"], locked: boolean) {
@@ -301,11 +327,10 @@ export function CaseTasksPanel({
                         <span className={t.status === "completed" ? "line-through" : ""}>
                           {t.title}
                         </span>
-                        {/* Screen 6 — the E4.2 execution type rides every task
-                            row (captured configuration; nothing runs here). */}
-                        <span className="rounded-[4px] border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          {EXECUTION_TYPE_LABELS[resolveExecutionType(t.executionType)]}
-                        </span>
+                        {/* The execution type rides every task row as a plain
+                            label — no border or fill, so it can't read as a
+                            button. Auto-fill explains itself on hover/focus. */}
+                        <ExecutionTypeLabel executionType={t.executionType} />
                         {t.status === "blocked" ? (
                           <StatusPill status="red" label="Blocked" />
                         ) : null}
@@ -347,7 +372,7 @@ export function CaseTasksPanel({
                     ) : null}
                     {!payerFormPointer && steps.length > 0 && !locked ? (
                       <ul className="space-y-1.5 px-3 pb-3 pl-11">
-                        {steps.map((s) => {
+                        {steps.map((s, stepIndex) => {
                           const isCurrent =
                             currentStep?.taskId === t.id && currentStep?.stepId === s.id;
                           return (
@@ -372,18 +397,20 @@ export function CaseTasksPanel({
                               >
                                 {s.label}
                               </span>
-                              {isCurrent ? (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-6 px-2 text-[12px]"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openDrawer(t);
-                                  }}
-                                >
-                                  Open step
-                                </Button>
+                              {isCurrent &&
+                              resolveExecutionType(t.executionType) === "extension_fill" ? (
+                                <PortalStepLink
+                                  portalKey={s.portalKey}
+                                  handoff={stepPortalHandoff(
+                                    drawerPortalHandoff,
+                                    t,
+                                    steps,
+                                    stepIndex,
+                                    locked,
+                                  )}
+                                  presentation="inline"
+                                  onOpenTask={() => openDrawer(t)}
+                                />
                               ) : null}
                             </li>
                           );

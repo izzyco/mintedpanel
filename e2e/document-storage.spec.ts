@@ -1060,9 +1060,9 @@ test("TS-90: case detail has no document card; active TaskDrawer downloads use s
   // rail. Its legacy W-9 expiration must not make it appear expired, and the
   // actual cross-origin download response must carry the standardized name.
   await page.goto(`/cases/${CASE_ID}`);
-  const openStep = page.getByRole("button", { name: "Open step" });
-  await expect(openStep).toBeVisible({ timeout: 30000 });
-  await openStep.click();
+  const taskRow = page.getByText("Submit enrollment packet", { exact: true });
+  await expect(taskRow).toBeVisible({ timeout: 30000 });
+  await taskRow.click();
   const taskDrawer = page.getByRole("dialog", { name: "Submit enrollment packet" });
   await expect(taskDrawer).toBeVisible();
   const requiredDocuments = taskDrawer.locator("section", { hasText: "Required documents" }).last();

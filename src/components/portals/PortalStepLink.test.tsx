@@ -13,13 +13,21 @@ vi.mock("@/components/cases/WorkInPortalButton", () => ({
     facilityId?: string;
     disabled?: boolean;
     disabledReason?: string;
+    presentation?: string;
     target: { name: string; url: string };
   }) => (
     <>
-      <button type="button" disabled={props.disabled} data-facility-id={props.facilityId ?? "none"}>
+      <button
+        type="button"
+        disabled={props.disabled}
+        data-facility-id={props.facilityId ?? "none"}
+        data-presentation={props.presentation ?? "panel"}
+      >
         Legacy work in portal
       </button>
-      <a href={props.target.url}>Open portal directly</a>
+      {props.presentation === "inline" ? null : (
+        <a href={props.target.url}>Open without extension</a>
+      )}
       {props.disabledReason ? <span>{props.disabledReason}</span> : null}
     </>
   ),
@@ -30,9 +38,11 @@ vi.mock("@/components/cases/WorkInPortalV2Button", () => ({
     portalUrl: string;
     disabled?: boolean;
     disabledReason?: string;
+    presentation?: string;
   }) => (
     <div
       data-testid="exact-work-button"
+      data-presentation={props.presentation ?? "panel"}
       data-owner-kind={props.tuple.ownerKind}
       data-owner-id={props.tuple.ownerId}
       data-step-id={props.tuple.stepId}
@@ -115,7 +125,7 @@ describe("PortalStepLink mounted variants (default manual workflow)", () => {
       <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
     );
     expect(html).toContain("Legacy work in portal");
-    expect(html).toContain("Open portal directly");
+    expect(html).toContain("Open without extension");
     expect(html).toContain(`data-facility-id="${SECONDARY_ID}"`);
   });
 
@@ -136,7 +146,7 @@ describe("PortalStepLink mounted variants (default manual workflow)", () => {
     expect(html).toContain('aria-label="Location for this work"');
     expect(html).toContain("Choose a location before sending this case to the extension.");
     expect(html).toContain("Legacy work in portal");
-    expect(html).toContain("Open portal directly");
+    expect(html).toContain("Open without extension");
   });
 
   it("does not guess when the resolver is loading, failed, missing, or has no safe URL", () => {
@@ -164,7 +174,51 @@ describe("PortalStepLink mounted variants (default manual workflow)", () => {
       <PortalStepLink portalKey="regional_enrollment" handoff={handoff()} />,
     );
     expect(unsafe).toContain("Portal URL is unavailable for handoff.");
-    expect(unsafe).not.toContain("Open portal directly");
+    expect(unsafe).not.toContain("Open without extension");
+  });
+});
+
+describe("PortalStepLink inline presentation (default manual workflow)", () => {
+  it("renders only the launch button, without portal name, pill, or fallback link", () => {
+    const html = renderToStaticMarkup(
+      <PortalStepLink
+        portalKey="regional_enrollment"
+        handoff={handoff()}
+        presentation="inline"
+        onOpenTask={() => undefined}
+      />,
+    );
+    expect(html).toContain('data-presentation="inline"');
+    expect(html).not.toContain("Regional Enrollment");
+    expect(html).not.toContain("Verified");
+    expect(html).not.toContain("Open without extension");
+    expect(html).not.toContain("Location for this work");
+  });
+
+  it("renders nothing when there is no launchable, configured portal", () => {
+    const inline = (h?: PortalHandoffContext) =>
+      renderToStaticMarkup(
+        <PortalStepLink
+          portalKey="regional_enrollment"
+          handoff={h}
+          presentation="inline"
+          onOpenTask={() => undefined}
+        />,
+      );
+    expect(inline(undefined)).toBe("");
+
+    queryState.value = { data: null, isPending: false, isError: true };
+    expect(inline(handoff())).toBe("");
+
+    queryState.value = { data: null, isPending: false, isError: false };
+    expect(inline(handoff())).toBe("");
+
+    queryState.value = {
+      data: configuration({ formUrl: null }),
+      isPending: false,
+      isError: false,
+    };
+    expect(inline(handoff())).toBe("");
   });
 });
 
@@ -212,7 +266,7 @@ describe("PortalStepLink mounted variants (automated workflow enabled)", () => {
     );
     expect(nonExtensionTask).not.toContain('data-testid="exact-work-button"');
     expect(nonExtensionTask).toContain("not enabled for the exact Extension work handoff");
-    expect(nonExtensionTask).toContain("Open portal directly");
+    expect(nonExtensionTask).toContain("Open without extension");
 
     const closedCase = renderToStaticMarkup(
       <PortalStepLink
@@ -222,7 +276,7 @@ describe("PortalStepLink mounted variants (automated workflow enabled)", () => {
     );
     expect(closedCase).not.toContain('data-testid="exact-work-button"');
     expect(closedCase).toContain("case is not open");
-    expect(closedCase).toContain("Open portal directly");
+    expect(closedCase).toContain("Open without extension");
 
     queryState.value.data = configuration({ isReady: false, status: "empty" });
     const unready = renderToStaticMarkup(
@@ -230,7 +284,37 @@ describe("PortalStepLink mounted variants (automated workflow enabled)", () => {
     );
     expect(unready).not.toContain('data-testid="exact-work-button"');
     expect(unready).toContain("exact portal configuration is not ready");
-    expect(unready).toContain("Open portal directly");
+    expect(unready).toContain("Open without extension");
+  });
+
+  it("inline: mounts the exact-work button in inline presentation", () => {
+    const html = renderToStaticMarkup(
+      <PortalStepLink
+        portalKey="regional_enrollment"
+        handoff={handoff()}
+        presentation="inline"
+        onOpenTask={() => undefined}
+      />,
+    );
+    expect(html).toContain('data-testid="exact-work-button"');
+    expect(html).toContain('data-presentation="inline"');
+    expect(html).not.toContain("Verified");
+  });
+
+  it("inline: a not-ready exact context still offers a button that opens the task", () => {
+    queryState.value.data = configuration({ isReady: false, status: "empty" });
+    const html = renderToStaticMarkup(
+      <PortalStepLink
+        portalKey="regional_enrollment"
+        handoff={handoff()}
+        presentation="inline"
+        onOpenTask={() => undefined}
+      />,
+    );
+    expect(html).not.toContain('data-testid="exact-work-button"');
+    expect(html).toContain("Work in portal");
+    expect(html).not.toMatch(/\sdisabled=""/);
+    expect(html).not.toContain("Open without extension");
   });
 
   it("displays unavailable context message when formUrl is missing in automated mode", () => {

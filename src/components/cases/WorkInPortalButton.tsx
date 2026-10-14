@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useEffect, useId, useRef, useState } from "react";
+import { PortalLaunchControls } from "@/components/cases/PortalLaunchControls";
+import {
+  OPEN_WITHOUT_EXTENSION,
+  announceInlineLaunch,
+  type PortalLaunchFeedback,
+  type PortalLaunchPresentation,
+} from "@/components/cases/portalLaunchFeedback";
 import { useActiveOrgId, useAuthStore } from "@/lib/auth-store";
 import type { ExtensionHandoffResult } from "@/lib/extensionHandoff";
 import type { CasePortalTarget } from "@/lib/casePortals";
@@ -18,40 +23,46 @@ interface LaunchUiState {
   receipt: ReceiptStatus;
 }
 
-function receiptMessage(receipt: ReceiptStatus): string | null {
+/** Receipt → what the coordinator sees. Failure lines name what went wrong;
+ * the manual-recovery instruction rides alongside them (never up front). */
+function receiptFeedback(receipt: ReceiptStatus): PortalLaunchFeedback | null {
   if (receipt.status === "idle") return null;
-  if (receipt.status === "pending") return "Waiting for the extension receipt…";
+  if (receipt.status === "pending") {
+    return { tone: "pending", text: "Waiting for the extension receipt…" };
+  }
   if (receipt.status === "received") {
-    return "Extension received the case. Sign-in and access are checked there.";
+    return {
+      tone: "success",
+      text: "Extension received the case. Sign-in and access are checked there.",
+    };
   }
   if (receipt.status === "ready") {
-    return "Extension opened a validated work tab for this step.";
+    return { tone: "success", text: "Extension opened a validated work tab for this step." };
   }
+  const failure = (text: string): PortalLaunchFeedback => ({
+    tone: "failure",
+    text,
+    recovery: true,
+  });
   if (receipt.status === "update_required") {
-    return "Update the extension before starting this exact work step.";
+    return failure("Update the extension before starting this exact work step.");
   }
-  if (receipt.status === "rejected") {
-    return "Extension rejected the handoff. Open it and use case search.";
-  }
-  if (receipt.status === "timeout") {
-    return "Extension receipt timed out. Open it and use case search.";
-  }
-  if (receipt.status === "failed") {
-    return "Extension handoff failed. Open it and use case search.";
-  }
+  if (receipt.status === "rejected") return failure("Extension rejected the handoff.");
+  if (receipt.status === "timeout") return failure("Extension receipt timed out.");
+  if (receipt.status === "failed") return failure("Extension handoff failed.");
   if (receipt.status === "unavailable" && receipt.reason === "missing_configuration") {
-    return "Extension handoff is not configured for this web environment.";
+    return failure("Extension handoff is not configured for this web environment.");
   }
   if (receipt.status === "unavailable" && receipt.reason === "invalid_configuration") {
-    return "This web environment has an invalid extension handoff configuration.";
+    return failure("This web environment has an invalid extension handoff configuration.");
   }
   if (receipt.status === "unavailable" && receipt.reason === "messaging_unavailable") {
-    return "Extension messaging is unavailable in this browser. Open it and use case search.";
+    return failure("Extension messaging is unavailable in this browser.");
   }
   if (receipt.status === "invalid" && receipt.reason === "invalid_context") {
-    return "The case context is invalid, so it was not sent to the extension.";
+    return failure("The case context is invalid, so it was not sent to the extension.");
   }
-  return "Extension returned an unreadable receipt. Open it and use case search.";
+  return failure("Extension returned an unreadable receipt.");
 }
 
 export function WorkInPortalButton({
@@ -62,6 +73,8 @@ export function WorkInPortalButton({
   facilityId,
   disabled = false,
   disabledReason,
+  presentation = "panel",
+  onOpenTask,
 }: {
   caseId: string;
   providerId: string;
@@ -70,7 +83,12 @@ export function WorkInPortalButton({
   facilityId?: string;
   disabled?: boolean;
   disabledReason?: string;
+  presentation?: PortalLaunchPresentation;
+  /** Opens the task drawer — the inline variant's way out when a launch is
+   * blocked or fails. */
+  onOpenTask?: () => void;
 }) {
+  const toastId = `portal-launch-${useId()}`;
   const activeOrgId = useActiveOrgId();
   const authUserId = useAuthStore((state) => state.session?.user.id ?? null);
   const authSessionExpiresAt = useAuthStore((state) => state.session?.expires_at ?? null);
@@ -142,6 +160,21 @@ export function WorkInPortalButton({
     // Both calls happen inside this original click. beginPortalLaunch starts
     // messaging, then requests one portal tab before any receipt await.
     const started = beginPortalLaunch(snapshot);
+    if (presentation === "inline") {
+      if (started.portalStatus === "failed") {
+        announceInlineLaunch(
+          {
+            tone: "failure",
+            text: `Portal tab could not be requested. Use ${OPEN_WITHOUT_EXTENSION} in the task.`,
+            recovery: false,
+          },
+          toastId,
+          onOpenTask,
+        );
+      } else {
+        announceInlineLaunch(receiptFeedback({ status: "pending" })!, toastId, onOpenTask);
+      }
+    }
     setLaunchState((current) =>
       current?.contextKey === launchContextKey
         ? { ...current, portalStatus: started.portalStatus }
@@ -153,59 +186,35 @@ export function WorkInPortalButton({
         activeContextKeyRef.current !== launchContextKey
       )
         return;
+      if (presentation === "inline" && started.portalStatus !== "failed") {
+        const feedback = receiptFeedback(result);
+        if (feedback) announceInlineLaunch(feedback, toastId, onOpenTask);
+      }
       setLaunchState((current) =>
         current?.contextKey === launchContextKey ? { ...current, receipt: result } : current,
       );
     });
   };
 
-  const receiptText = receiptMessage(receipt);
-
   return (
-    <div className="basis-full space-y-1.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 px-2 text-[12px] shadow-none"
-          onClick={launch}
-          disabled={launchDisabled}
-          title={launchDisabledReason ?? `Send this case to ${target.name} workbench`}
-        >
-          Work in portal
-          <ExternalLink className="ml-1.5 h-3 w-3" aria-hidden />
-        </Button>
-        <a
-          href={target.url}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 text-[#1B4D3E] underline-offset-2 hover:underline"
-        >
-          Open portal directly
-          <ExternalLink className="h-3 w-3" aria-hidden />
-        </a>
-      </div>
-      {launchDisabledReason ? (
-        <p className="text-[11px] text-muted-foreground">{launchDisabledReason}</p>
-      ) : null}
-      {portalStatus === "requested" ? (
-        <p className="text-[11px] text-muted-foreground">
-          Portal tab requested. If the browser blocked it, use Open portal directly.
-        </p>
-      ) : portalStatus === "failed" ? (
-        <p className="text-[11px] text-muted-foreground">
-          Portal tab could not be requested. Use Open portal directly.
-        </p>
-      ) : null}
-      {receiptText ? (
-        <p role="status" aria-live="polite" className="text-[11px] text-muted-foreground">
-          {receiptText}
-        </p>
-      ) : null}
-      <p className="text-[11px] text-muted-foreground">
-        Manual recovery: open the extension and use case search.
-      </p>
-    </div>
+    <PortalLaunchControls
+      presentation={presentation}
+      portalName={target.name}
+      portalUrl={target.url}
+      helperText={`Sends this case to the Minted extension and opens the ${target.name} portal.`}
+      onLaunch={launch}
+      disabled={launchDisabled}
+      disabledReason={launchDisabledReason}
+      title={`Send this case to ${target.name} workbench`}
+      note={
+        portalStatus === "requested"
+          ? `Portal tab requested. If the browser blocked it, use ${OPEN_WITHOUT_EXTENSION}.`
+          : portalStatus === "failed"
+            ? `Portal tab could not be requested. Use ${OPEN_WITHOUT_EXTENSION}.`
+            : null
+      }
+      feedback={receiptFeedback(receipt)}
+      onOpenTask={onOpenTask}
+    />
   );
 }

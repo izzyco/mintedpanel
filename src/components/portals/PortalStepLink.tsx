@@ -6,7 +6,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
+import { PortalLaunchControls } from "@/components/cases/PortalLaunchControls";
+import type { PortalLaunchPresentation } from "@/components/cases/portalLaunchFeedback";
 import { WorkInPortalButton } from "@/components/cases/WorkInPortalButton";
 import { WorkInPortalV2Button } from "@/components/cases/WorkInPortalV2Button";
 import { useExactPortalConfiguration } from "@/hooks/useExactPortalConfiguration";
@@ -68,15 +69,23 @@ function displayPortalName(key: string): string {
 export function PortalStepLink({
   portalKey,
   handoff,
+  presentation = "panel",
+  onOpenTask,
 }: {
   portalKey: string | null | undefined;
   handoff?: PortalHandoffContext;
+  /** "inline" renders only the launch button (the case page's current step);
+   * anything that is not a launchable, configured portal renders nothing. */
+  presentation?: PortalLaunchPresentation;
+  onOpenTask?: () => void;
 }) {
+  const inline = presentation === "inline";
   const key = normalizePortalKey(portalKey);
   const portalsQ = useExactPortalConfiguration(key);
   if (!key) return null;
   if (portalsQ.isPending) return null;
   if (portalsQ.isError) {
+    if (inline) return null;
     return (
       <div className="rounded-md border border-[#E8E5E0] bg-[#F5F5F4] px-2.5 py-1.5 text-[12px] text-[#57534E]">
         Portal configuration unavailable. No launch target was selected.
@@ -90,6 +99,7 @@ export function PortalStepLink({
     configuration.status === "configuration_missing" ||
     !configuration.portalId
   ) {
+    if (inline) return null;
     return (
       <div className="rounded-md border border-[#E8E5E0] bg-[#F5F5F4] px-2.5 py-1.5 text-[12px] text-[#57534E]">
         Portal not set up in this org. Register it from the payer&apos;s SOP template (Form setup on
@@ -168,6 +178,50 @@ export function PortalStepLink({
   const useExactWorkflow =
     isAutomatedWorkflowEnabled && Boolean(configuration.requiresExplicitSelection);
   const showLegacyDirectLink = Boolean(portalUrl && !useExactWorkflow);
+  const facilityDisabled = facilityResolution?.status !== "ready";
+  const facilityDisabledReason =
+    facilityResolution?.status === "blocked"
+      ? facilityBlockMessage(facilityResolution.reason)
+      : undefined;
+
+  if (inline) {
+    if (!portalUrl || !handoff) return null;
+    if (useExactWorkflow) {
+      return workTuple ? (
+        <WorkInPortalV2Button
+          tuple={workTuple}
+          portalUrl={portalUrl}
+          portalName={portalName}
+          disabled={facilityDisabled}
+          disabledReason={facilityDisabledReason}
+          presentation="inline"
+          onOpenTask={onOpenTask}
+        />
+      ) : (
+        <PortalLaunchControls
+          presentation="inline"
+          portalName={portalName}
+          portalUrl={portalUrl}
+          helperText=""
+          disabled
+          onOpenTask={onOpenTask}
+        />
+      );
+    }
+    return (
+      <WorkInPortalButton
+        caseId={handoff.caseId}
+        providerId={handoff.providerId}
+        orgId={handoff.orgId}
+        target={{ portalKey: key, name: portalName, url: portalUrl }}
+        facilityId={currentFacilityId}
+        disabled={facilityDisabled}
+        disabledReason={facilityDisabledReason}
+        presentation="inline"
+        onOpenTask={onOpenTask}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-[#E8E5E0] bg-[#FAFAF9] px-2.5 py-1.5 text-[12px]">
@@ -212,34 +266,18 @@ export function PortalStepLink({
               tuple={workTuple}
               portalUrl={portalUrl}
               portalName={portalName}
-              disabled={facilityResolution?.status !== "ready"}
-              disabledReason={
-                facilityResolution?.status === "blocked"
-                  ? facilityBlockMessage(facilityResolution.reason)
-                  : undefined
-              }
+              disabled={facilityDisabled}
+              disabledReason={facilityDisabledReason}
             />
           ) : (
-            <div className="basis-full space-y-1">
-              <div className="flex items-center gap-2">
-                <Button type="button" size="sm" variant="outline" disabled>
-                  Work in portal
-                </Button>
-                {portalUrl ? (
-                  <a
-                    href={portalUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[11px] text-[#1B4D3E] underline-offset-2 hover:underline"
-                    title={`Open ${portalName} directly in a new tab`}
-                  >
-                    Open portal directly
-                    <ExternalLink className="h-3 w-3" aria-hidden />
-                  </a>
-                ) : null}
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                {facilityResolution?.status === "blocked"
+            <PortalLaunchControls
+              presentation="panel"
+              portalName={portalName}
+              portalUrl={portalUrl}
+              helperText=""
+              disabled
+              disabledReason={
+                facilityResolution?.status === "blocked"
                   ? facilityBlockMessage(facilityResolution.reason)
                   : explicitConfigUnavailable
                     ? "This exact portal configuration is not ready for this case type."
@@ -247,9 +285,9 @@ export function PortalStepLink({
                       ? "This task is not enabled for the exact Extension work handoff."
                       : !caseIsOpen
                         ? "This case is not open for new work."
-                        : "The exact case step context is incomplete; refresh before launching."}
-              </p>
-            </div>
+                        : "The exact case step context is incomplete; refresh before launching."
+              }
+            />
           )}
         </>
       ) : useExactWorkflow ? (
@@ -265,12 +303,8 @@ export function PortalStepLink({
           orgId={handoff.orgId}
           target={{ portalKey: key, name: portalName, url: portalUrl }}
           facilityId={currentFacilityId}
-          disabled={facilityResolution?.status !== "ready"}
-          disabledReason={
-            facilityResolution?.status === "blocked"
-              ? facilityBlockMessage(facilityResolution.reason)
-              : undefined
-          }
+          disabled={facilityDisabled}
+          disabledReason={facilityDisabledReason}
         />
       ) : portalUrl ? null : (
         <span className="text-muted-foreground">

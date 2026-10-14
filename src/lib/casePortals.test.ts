@@ -8,6 +8,7 @@ import {
   resolveHandoffFacility,
   resolvePortalTargets,
   shouldShowCaseFacilityPicker,
+  stepPortalHandoff,
 } from "./casePortals";
 import type { Facility, Portal, Task } from "@/types";
 
@@ -336,5 +337,63 @@ describe("isPortalHandoffStepEligible", () => {
       isPortalHandoffStepEligible({ ...onlineStep, isCompleted: true }, 0, 1, false, "in_progress"),
     ).toBe(false);
     expect(isPortalHandoffStepEligible(second, 1, 1, false, "in_progress")).toBe(true);
+  });
+});
+
+describe("stepPortalHandoff", () => {
+  const handoff = { caseId: "case-1", providerId: "prov-1", orgId: "org-1" };
+  const task = {
+    id: "task-1",
+    caseId: "case-1",
+    providerId: "prov-1",
+    status: "not_started",
+    executionType: "extension_fill",
+    sopTemplateId: "tpl-1",
+    sopVersion: 3,
+  } as Task;
+  const steps = [
+    {
+      id: "s1",
+      label: "Fill form",
+      order: 1,
+      isCompleted: false,
+      stepType: "online_form",
+      portalKey: "aetna",
+    },
+    {
+      id: "s2",
+      label: "Upload",
+      order: 2,
+      isCompleted: false,
+      stepType: "online_form",
+      portalKey: "aetna",
+    },
+  ] as Task["sopContent"];
+
+  it("carries the exact work-step identity for the current portal step", () => {
+    const r = stepPortalHandoff(handoff, task, steps, 0, false);
+    expect(r?.orgId).toBe("org-1");
+    expect(r?.workStep).toEqual({
+      taskId: "task-1",
+      taskExecutionType: "extension_fill",
+      sopTemplateId: "tpl-1",
+      sopVersion: 3,
+      stepId: "s1",
+      stepIdentity: "case-1:task-1:tpl-1:3:s1",
+    });
+  });
+
+  it("is undefined for a non-current step, a locked task, or another case", () => {
+    expect(stepPortalHandoff(handoff, task, steps, 1, false)).toBeUndefined();
+    expect(stepPortalHandoff(handoff, task, steps, 0, true)).toBeUndefined();
+    expect(
+      stepPortalHandoff({ ...handoff, caseId: "case-2" }, task, steps, 0, false),
+    ).toBeUndefined();
+    expect(stepPortalHandoff(undefined, task, steps, 0, false)).toBeUndefined();
+  });
+
+  it("leaves the step identity null when the SOP version is unknown", () => {
+    const r = stepPortalHandoff(handoff, { ...task, sopVersion: null }, steps, 0, false);
+    expect(r?.workStep.stepIdentity).toBeNull();
   });
 });

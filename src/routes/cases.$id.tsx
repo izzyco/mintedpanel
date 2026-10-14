@@ -47,8 +47,8 @@ import { TrackingIdField } from "@/components/cases/pipeline/TrackingIdField";
 import { isTerminalCaseStatus } from "@/lib/caseStatus";
 import { CaseDetailsPanel } from "@/components/cases/CaseDetailsPanel";
 import { ReapplyCaseAction } from "@/components/cases/ReapplyCaseAction";
-import { ChangeCaseSopAction } from "@/components/cases/ChangeCaseSopAction";
-import { DeleteCaseAction } from "@/components/cases/DeleteCaseAction";
+import { CaseActionsMenu } from "@/components/cases/CaseActionsMenu";
+import { CaseTypeNotice } from "@/components/cases/ChangeCaseSopAction";
 import { CaseTasksPanel } from "@/components/cases/CaseTasksPanel";
 import { CaseTouchesPanel } from "@/components/cases/CaseTouchesPanel";
 import {
@@ -347,6 +347,7 @@ function CaseDetailPage() {
               isAdmin={isAdmin}
             />
           }
+          actions={<CaseActionsMenu c={c} canEdit={canEdit} isAdmin={isAdmin} />}
           trackingId={
             <TrackingIdField
               value={c.payerReferenceId}
@@ -375,8 +376,7 @@ function CaseDetailPage() {
         ) : null}
 
         <ReapplyCaseAction c={c} canEdit={canEdit} />
-        <ChangeCaseSopAction c={c} canEdit={canEdit} />
-        <DeleteCaseAction c={c} isAdmin={isAdmin} />
+        <CaseTypeNotice c={c} canEdit={canEdit} />
 
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
           <div className="lg:col-span-3 space-y-6">

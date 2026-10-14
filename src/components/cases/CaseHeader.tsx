@@ -4,7 +4,7 @@
 // · owning group, the copyable Case # (C-<caseNumber>, the immutable global
 // sequence — see 20260722120000_case_number.sql), and the inline-editable
 // tracking ID — with the ONE unified status control + its attribution on the
-// right. The dual credentialing + payer-pipeline pills and the separate
+// right, followed by the case ⋯ menu (CaseActionsMenu) when it has items. The dual credentialing + payer-pipeline pills and the separate
 // contract pill are long gone (E6.0); the duplicate tracking-ID warning is
 // deliberately not surfaced here (handoff §2.7 — a collision is only ever a
 // data-entry error).
@@ -18,6 +18,7 @@ export function CaseHeader({
   c,
   statusControl,
   trackingId,
+  actions,
 }: {
   c: CaseDetail;
   /** E6.0 — the unified status control (pill + attribution + legal-moves
@@ -25,6 +26,8 @@ export function CaseHeader({
   statusControl?: React.ReactNode;
   /** E4.0 F4.0.2 — the copyable, inline-editable Reference/Tracking ID. */
   trackingId?: React.ReactNode;
+  /** The case ⋯ menu, beside the status control. */
+  actions?: React.ReactNode;
 }) {
   const providerName = c.provider
     ? `${c.provider.firstName} ${c.provider.lastName}${c.provider.credentials ? `, ${c.provider.credentials}` : ""}`
@@ -83,7 +86,10 @@ export function CaseHeader({
           {trackingId ? <div className="mt-2">{trackingId}</div> : null}
         </div>
 
-        <div className="flex flex-none items-start">{statusControl}</div>
+        <div className="flex flex-none items-start gap-2">
+          {statusControl}
+          {actions}
+        </div>
       </CardContent>
     </Card>
   );
