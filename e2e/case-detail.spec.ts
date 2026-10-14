@@ -665,7 +665,13 @@ async function installHandoffRecorder(context: BrowserContext) {
         },
       },
     });
-    Object.defineProperty(root, "chrome", { configurable: true, value: chromeObject });
+    // Chromium ships `window.chrome` as non-configurable, so redefining it
+    // throws and (init-script errors are silent) skips the window.open stub
+    // below. The runtime stub above already lives on that object; only install
+    // our own when the browser provides none.
+    if (root.chrome !== chromeObject) {
+      Object.defineProperty(root, "chrome", { configurable: true, value: chromeObject });
+    }
     window.open = ((url?: string | URL, target?: string, features?: string) => {
       events.push({
         kind: "open",
