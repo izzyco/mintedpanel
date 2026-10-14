@@ -29,12 +29,12 @@ import { EmptyState } from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
 import { StepBody } from "@/components/cases/StepDetails";
 import type { PortalHandoffContext } from "@/components/portals/PortalStepLink";
+import { stepPortalHandoff } from "@/lib/casePortals";
 import { CaseRequiredDocuments } from "@/components/documents/CaseRequiredDocuments";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { useCompleteSOPStep, useTask, useUpdateTaskStatus } from "@/hooks/useTasks";
 import { useLogNote, useTaskTouchlog } from "@/hooks/useTouches";
 import { useCanWrite } from "@/lib/permissions";
-import { isPortalHandoffStepEligible } from "@/lib/casePortals";
 import type { RefreshPdfTokenValues } from "@/hooks/useFreshPdfTokenValues";
 import type { SOPStep, Task, TaskStatus } from "@/types";
 
@@ -301,38 +301,13 @@ export function TaskDrawer({
                       const isChecked = step.isCompleted;
                       const isActive = !isChecked && index === firstIncompleteIndex;
                       const isLocked = !isChecked && !isActive;
-                      const stepPortalHandoff =
-                        portalHandoff &&
-                        task.caseId === portalHandoff.caseId &&
-                        task.providerId === portalHandoff.providerId &&
-                        isPortalHandoffStepEligible(
-                          step,
-                          index,
-                          firstIncompleteIndex,
-                          locked,
-                          task.status,
-                        )
-                          ? {
-                              ...portalHandoff,
-                              workStep: {
-                                taskId: task.id,
-                                taskExecutionType: task.executionType ?? null,
-                                sopTemplateId: task.sopTemplateId,
-                                sopVersion: task.sopVersion,
-                                stepId: step.id,
-                                stepIdentity:
-                                  task.sopTemplateId && task.sopVersion != null
-                                    ? [
-                                        portalHandoff.caseId,
-                                        task.id,
-                                        task.sopTemplateId,
-                                        task.sopVersion,
-                                        step.id,
-                                      ].join(":")
-                                    : null,
-                              },
-                            }
-                          : undefined;
+                      const stepPortalHandoffContext = stepPortalHandoff(
+                        portalHandoff,
+                        task,
+                        steps,
+                        index,
+                        locked,
+                      );
                       return (
                         <div key={step.id} className="flex items-start gap-3 p-3">
                           {isLocked ? (
@@ -380,7 +355,7 @@ export function TaskDrawer({
                                 groupId={groupId}
                                 providerName={providerName}
                                 groupName={groupName}
-                                portalHandoff={stepPortalHandoff}
+                                portalHandoff={stepPortalHandoffContext}
                               />
                             )}
                           </div>

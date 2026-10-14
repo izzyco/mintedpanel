@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useEffect, useId, useRef, useState } from "react";
+import { PortalLaunchControls } from "@/components/cases/PortalLaunchControls";
+import {
+  announceInlineLaunch,
+  type PortalLaunchFeedback,
+  type PortalLaunchPresentation,
+} from "@/components/cases/portalLaunchFeedback";
 import { useActiveOrgId, useAuthStore } from "@/lib/auth-store";
 import {
   beginWorkPortalLaunch,
@@ -15,22 +19,40 @@ type WorkReceiptState =
   | { status: "pending"; contextKey: string }
   | (ExtensionHandoffResult & { contextKey: string });
 
-function receiptMessage(receipt: WorkReceiptState): string | null {
+/** Receipt → what the coordinator sees. The exact-work path has no legacy
+ * case-search fallback, so its failures carry their own guidance and no
+ * manual-recovery line. */
+function receiptFeedback(receipt: WorkReceiptState): PortalLaunchFeedback | null {
   if (receipt.status === "idle") return null;
-  if (receipt.status === "pending") return "Waiting for exact work-tab validation…";
-  if (receipt.status === "ready")
-    return "The extension validated this step and opened its exact work tab.";
+  if (receipt.status === "pending") {
+    return { tone: "pending", text: "Waiting for exact work-tab validation…" };
+  }
+  if (receipt.status === "ready") {
+    return {
+      tone: "success",
+      text: "The extension validated this step and opened its exact work tab.",
+    };
+  }
+  const failure = (text: string): PortalLaunchFeedback => ({
+    tone: "failure",
+    text,
+    recovery: false,
+  });
   if (receipt.status === "update_required")
-    return "Update the extension before starting this exact work step.";
+    return failure("Update the extension before starting this exact work step.");
   if (receipt.status === "timeout")
-    return "No exact work-tab acknowledgement arrived. Refresh this step before retrying.";
+    return failure("No exact work-tab acknowledgement arrived. Refresh this step before retrying.");
   if (receipt.status === "rejected")
-    return "The extension did not accept this work context. Refresh and review the step configuration.";
+    return failure(
+      "The extension did not accept this work context. Refresh and review the step configuration.",
+    );
   if (receipt.status === "invalid")
-    return "The exact work context or acknowledgement was invalid; no work tab was confirmed.";
+    return failure(
+      "The exact work context or acknowledgement was invalid; no work tab was confirmed.",
+    );
   if (receipt.status === "unavailable")
-    return "The versioned extension handoff is unavailable in this browser.";
-  return "The extension handoff failed before it could confirm the exact work tab.";
+    return failure("The versioned extension handoff is unavailable in this browser.");
+  return failure("The extension handoff failed before it could confirm the exact work tab.");
 }
 
 /** MINT-56 exact-tab launch. This path never opens a Panel-owned tab and has
@@ -41,13 +63,20 @@ export function WorkInPortalV2Button({
   portalName,
   disabled = false,
   disabledReason,
+  presentation = "panel",
+  onOpenTask,
 }: {
   tuple: WorkContextLaunchTuple;
   portalUrl: string;
   portalName: string;
   disabled?: boolean;
   disabledReason?: string;
+  presentation?: PortalLaunchPresentation;
+  /** Opens the task drawer — the inline variant's way out when a launch is
+   * blocked or fails. */
+  onOpenTask?: () => void;
 }) {
+  const toastId = `portal-launch-${useId()}`;
   const activeOrgId = useActiveOrgId();
   const authUserId = useAuthStore((state) => state.session?.user.id ?? null);
   const authSessionExpiresAt = useAuthStore((state) => state.session?.expires_at ?? null);
@@ -91,6 +120,13 @@ export function WorkInPortalV2Button({
     const launchContextKey = contextKey;
     const generation = guardRef.current.begin();
     setReceipt({ status: "pending", contextKey: launchContextKey });
+    if (presentation === "inline") {
+      announceInlineLaunch(
+        receiptFeedback({ status: "pending", contextKey: launchContextKey })!,
+        toastId,
+        onOpenTask,
+      );
+    }
     const started: WorkPortalLaunchStart = beginWorkPortalLaunch({
       ...tuple,
       launchReceiptId: globalThis.crypto.randomUUID(),
@@ -99,47 +135,26 @@ export function WorkInPortalV2Button({
     void started.receipt.then((result) => {
       if (!guardRef.current.isCurrent(generation) || currentContextKey.current !== launchContextKey)
         return;
+      if (presentation === "inline") {
+        const feedback = receiptFeedback({ ...result, contextKey: launchContextKey });
+        if (feedback) announceInlineLaunch(feedback, toastId, onOpenTask);
+      }
       setReceipt({ ...result, contextKey: launchContextKey });
     });
   };
 
-  const receiptText = receiptMessage(visibleReceipt);
   return (
-    <div className="basis-full space-y-1.5">
-      <div className="flex items-center gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 px-2 text-[12px] shadow-none"
-          onClick={launch}
-          disabled={launchDisabled || !globalThis.crypto?.randomUUID}
-          title={launchDisabledReason ?? `Send this exact step to ${portalName}`}
-        >
-          Work in portal
-          <ExternalLink className="ml-1.5 h-3 w-3" aria-hidden />
-        </Button>
-        {portalUrl ? (
-          <a
-            href={portalUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 text-[11px] text-[#1B4D3E] underline-offset-2 hover:underline"
-            title={`Open ${portalName} directly in a new tab`}
-          >
-            Open portal directly
-            <ExternalLink className="h-3 w-3" aria-hidden />
-          </a>
-        ) : null}
-      </div>
-      {launchDisabledReason ? (
-        <p className="text-[11px] text-muted-foreground">{launchDisabledReason}</p>
-      ) : null}
-      {receiptText ? (
-        <p role="status" aria-live="polite" className="text-[11px] text-muted-foreground">
-          {receiptText}
-        </p>
-      ) : null}
-    </div>
+    <PortalLaunchControls
+      presentation={presentation}
+      portalName={portalName}
+      portalUrl={portalUrl}
+      helperText={`Sends this step to the Minted extension, which opens the ${portalName} portal.`}
+      onLaunch={launch}
+      disabled={launchDisabled || !globalThis.crypto?.randomUUID}
+      disabledReason={launchDisabledReason}
+      title={`Send this exact step to ${portalName}`}
+      feedback={receiptFeedback(visibleReceipt)}
+      onOpenTask={onOpenTask}
+    />
   );
 }

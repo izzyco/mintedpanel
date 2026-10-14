@@ -698,6 +698,17 @@ control silently dates a break to a fill that never touched it.**
   `/ssn-intake/$token`, `/contact`). The list lives in `__root.tsx`.
   `/privacy` is the Chrome Web Store policy URL — it mirrors
   `docs/privacy-policy.md` and is a business document; don't reword it.
+- **Case page affordances.** Rare case actions live in the header ⋯ menu
+  (`CaseActionsMenu`): Change checklist template (writers, only when
+  `changeCaseSopOptions` in `src/lib/changeCaseSop.ts` finds another matching
+  SOP on an untouched open case) and Delete case (admin). No item → no button;
+  no "unavailable" banners. The task list's execution type is a plain label,
+  never a chip. The current step of an Auto-fill task carries an inline
+  **Work in portal** (`PortalStepLink presentation="inline"`) — the same launch
+  as the drawer; a blocked launch opens the drawer instead. Every launch
+  renders through `PortalLaunchControls`; manual-recovery text appears only
+  after a failed handoff. `stepPortalHandoff` (`src/lib/casePortals.ts`) is the
+  one builder of the work-step identity both surfaces send.
 - **`TemplateTaskRow` is `React.memo` and every handler passed to it is a
   `useCallback`.** Keep both, or typing in any Step 3 field re-renders every
   task card (measured ~270ms per keystroke vs ~50ms). Pinned by a latency e2e.

@@ -192,3 +192,58 @@ export function isPortalHandoffStepEligible(
     normalizePortalKey(step.portalKey) !== null
   );
 }
+
+/** The work-step identity a portal launch carries. */
+export interface PortalHandoffWorkStep {
+  taskId: string;
+  taskExecutionType: string | null;
+  sopTemplateId: string | null;
+  sopVersion: number | null;
+  stepId: string;
+  stepIdentity: string | null;
+}
+
+/** The handoff for one step, or undefined when the step is not the task's
+ * launchable current step. Shared by the task drawer and the case page's
+ * inline launcher so both send exactly the same work-step identity.
+ * `steps` must be the task's steps in display order. */
+export function stepPortalHandoff<H extends { caseId: string; providerId: string }>(
+  handoff: H | undefined,
+  task: Pick<
+    Task,
+    "id" | "caseId" | "providerId" | "status" | "executionType" | "sopTemplateId" | "sopVersion"
+  >,
+  steps: readonly SOPStep[],
+  stepIndex: number,
+  taskLocked: boolean,
+): (H & { workStep: PortalHandoffWorkStep }) | undefined {
+  const step = steps[stepIndex];
+  if (
+    !handoff ||
+    !step ||
+    task.caseId !== handoff.caseId ||
+    task.providerId !== handoff.providerId
+  ) {
+    return undefined;
+  }
+  const firstIncompleteIndex = steps.findIndex((s) => !s.isCompleted);
+  if (
+    !isPortalHandoffStepEligible(step, stepIndex, firstIncompleteIndex, taskLocked, task.status)
+  ) {
+    return undefined;
+  }
+  return {
+    ...handoff,
+    workStep: {
+      taskId: task.id,
+      taskExecutionType: task.executionType ?? null,
+      sopTemplateId: task.sopTemplateId ?? null,
+      sopVersion: task.sopVersion ?? null,
+      stepId: step.id,
+      stepIdentity:
+        task.sopTemplateId && task.sopVersion != null
+          ? [handoff.caseId, task.id, task.sopTemplateId, task.sopVersion, step.id].join(":")
+          : null,
+    },
+  };
+}

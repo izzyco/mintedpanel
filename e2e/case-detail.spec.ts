@@ -6,6 +6,7 @@
 // touchlog composer/entries, the Details card (case facts incl. the facility's
 // full address · identifiers incl. the payer-issued IDs · provenance), the
 // unified status timeline with its evidence link, and the §2.7 removals.
+import type { BrowserContext } from "@playwright/test";
 import { expect, test, type Route } from "./fixtures/legacy-access-context";
 import {
   HANDOFF_CASE_ID_FIXTURE,
@@ -572,18 +573,18 @@ test("Slice E: the case screen is header + two columns — identity, the ONE sta
   await expect(approveDialog).toContainText("IDs Banner Health Plans issues");
   await approveDialog.getByRole("button", { name: "Cancel" }).click();
 
-  // TASKS: one list — execution type per task, ordered steps beneath, and the
-  // CURRENT step (first incomplete step of the first unfinished task) carrying
-  // "Open step", which opens the drawer where the step bodies live.
+  // TASKS: one list — execution type per task (a plain label, never a
+  // button), ordered steps beneath, and a row click opening the drawer where
+  // the step bodies live. There is no separate "Open step" button.
   await expect(page.getByText("1 of 2 completed", { exact: false })).toBeVisible();
   // The label comes from the shared EXECUTION_TYPE_LABELS map — since Slice F
   // swept extension naming out of user copy, `extension_fill` reads Auto-fill.
   await expect(page.getByText("Auto-fill")).toBeVisible();
   await expect(page.getByText("Complete Banner PNM enrollment")).toBeVisible();
   await expect(page.getByText("Capture the confirmation number")).toBeVisible();
-  const openStep = page.getByRole("button", { name: "Open step" });
-  await expect(openStep).toHaveCount(1);
-  await openStep.click();
+  await expect(page.getByRole("button", { name: "Open step" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Auto-fill" })).toHaveCount(0);
+  await page.getByText("Complete the enrollment form in the portal", { exact: true }).click();
   const drawer = page.getByRole("dialog");
   await expect(
     drawer.getByText("Complete the enrollment form in the portal").first(),
@@ -631,37 +632,10 @@ test("Slice E: the case screen is header + two columns — identity, the ONE sta
   await expect(page.getByText("Legacy status history")).toHaveCount(0);
 });
 
-test("P05: mounted task click sends the explicit secondary to the addressed extension and requests one portal tab", async ({
-  context,
-  page,
-}) => {
-  const fixtures = makeFixtures();
-  (fixtures.case_facilities as unknown as Record<string, unknown>[]).push({
-    id: "22222222-3333-4444-8555-666666666666",
-    org_id: ORG_ID,
-    case_id: CASE_ID,
-    facility_id: SECONDARY_FACILITY_ID,
-    is_primary: false,
-    created_at: "2026-07-20T00:00:00Z",
-    created_by: USER_ID,
-  });
-  (fixtures.portals as Record<string, unknown>[]).push({
-    id: "77777777-8888-4999-8aaa-bbbbbbbbbbbb",
-    org_id: ORG_ID,
-    portal_key: "regional_enrollment",
-    name: "Regional Enrollment",
-    payer_id: "pay-banner",
-    form_url: "https://portal.example/enroll",
-    is_verified: true,
-    last_verified_at: "2026-09-18T00:00:00Z",
-    proven_at: "2026-09-18T00:00:00Z",
-    url_changed_at: null,
-    created_at: "2026-09-18T00:00:00Z",
-    updated_at: "2026-09-18T00:00:00Z",
-  });
-  const onlineStep = fixtures.tasks[1].sop_content[0] as Record<string, unknown>;
-  onlineStep.portalKey = "regional_enrollment";
-
+/** P05 — a fake addressed extension that records every handoff send and
+ * portal-tab open, and holds each receipt until the test releases it via
+ * `__resolveP05Receipt`. */
+async function installHandoffRecorder(context: BrowserContext) {
   await context.addInitScript((expectedExtensionId) => {
     type HandoffEvent =
       | { kind: "send"; extensionId: string; message: unknown; argumentCount: number }
@@ -705,18 +679,61 @@ test("P05: mounted task click sends the explicit secondary to the addressed exte
       throw new Error("Invalid fixture extension ID");
     }
   }, EXTENSION_ID);
+}
+
+/** P05 — the case's current Auto-fill step points at a registered portal, and
+ * the case carries a second location so a launch needs a location choice. */
+function withRegionalPortal(fixtures: ReturnType<typeof makeFixtures>) {
+  (fixtures.case_facilities as unknown as Record<string, unknown>[]).push({
+    id: "22222222-3333-4444-8555-666666666666",
+    org_id: ORG_ID,
+    case_id: CASE_ID,
+    facility_id: SECONDARY_FACILITY_ID,
+    is_primary: false,
+    created_at: "2026-07-20T00:00:00Z",
+    created_by: USER_ID,
+  });
+  (fixtures.portals as Record<string, unknown>[]).push({
+    id: "77777777-8888-4999-8aaa-bbbbbbbbbbbb",
+    org_id: ORG_ID,
+    portal_key: "regional_enrollment",
+    name: "Regional Enrollment",
+    payer_id: "pay-banner",
+    form_url: "https://portal.example/enroll",
+    is_verified: true,
+    last_verified_at: "2026-09-18T00:00:00Z",
+    proven_at: "2026-09-18T00:00:00Z",
+    url_changed_at: null,
+    created_at: "2026-09-18T00:00:00Z",
+    updated_at: "2026-09-18T00:00:00Z",
+  });
+  const onlineStep = fixtures.tasks[1].sop_content[0] as Record<string, unknown>;
+  onlineStep.portalKey = "regional_enrollment";
+}
+
+test("P05: mounted task click sends the explicit secondary to the addressed extension and requests one portal tab", async ({
+  context,
+  page,
+}) => {
+  const fixtures = makeFixtures();
+  withRegionalPortal(fixtures);
+
+  await installHandoffRecorder(context);
 
   const { handler } = makeHandler(fixtures);
   await context.route(/\/(rest|auth)\/v1\//, handler);
   await seedAuth(context);
   await page.goto(`/cases/${CASE_ID}`);
 
-  await page.getByRole("button", { name: "Open step" }).click();
+  await page.getByText("Complete the enrollment form in the portal", { exact: true }).click();
   const drawer = page.getByRole("dialog");
-  await expect(drawer.getByText("Regional Enrollment")).toBeVisible({ timeout: 30000 });
+  await expect(drawer.getByText("Regional Enrollment", { exact: true })).toBeVisible({
+    timeout: 30000,
+  });
   await drawer.getByRole("combobox", { name: "Location for this work" }).click();
   await page.getByRole("option", { name: "Denver Uptown Clinic" }).click();
-  await expect(drawer.getByRole("link", { name: "Open portal directly" })).toHaveAttribute(
+  await expect(drawer.getByText(/Manual recovery/)).toHaveCount(0);
+  await expect(drawer.getByRole("link", { name: "Open without extension" })).toHaveAttribute(
     "href",
     "https://portal.example/enroll",
   );
@@ -857,6 +874,77 @@ test("P05: mounted task click sends the explicit secondary to the addressed exte
   await expect(
     drawer.getByText("Extension received the case. Sign-in and access are checked there."),
   ).toHaveCount(0);
+});
+
+test("CASE-UX-4: the current Auto-fill step launches inline with the same handoff, and a needed location choice opens the task instead", async ({
+  context,
+  page,
+}) => {
+  const fixtures = makeFixtures();
+  withRegionalPortal(fixtures);
+  // No primary mirror: with two locations and none chosen, a launch must ask.
+  (fixtures.credential_cases[0] as Record<string, unknown>).facility_id = null;
+  await installHandoffRecorder(context);
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+  await page.goto(`/cases/${CASE_ID}`);
+
+  const inline = page.getByRole("button", { name: "Work in portal" });
+  await expect(inline).toHaveCount(1, { timeout: 30000 });
+
+  // Two locations, none chosen: the inline button opens the task, where the
+  // location picker lives, instead of launching.
+  await inline.click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer.getByRole("combobox", { name: "Location for this work" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  let sends = await page.evaluate(
+    () =>
+      (
+        globalThis as typeof globalThis & { __p05HandoffEvents?: Array<{ kind: string }> }
+      ).__p05HandoffEvents?.filter((event) => event.kind === "send").length ?? 0,
+  );
+  expect(sends).toBe(0);
+
+  // Choose the location in the Tasks header, then launch from the list.
+  await page.getByRole("combobox", { name: "Fill location" }).click();
+  await page.getByRole("option", { name: "Denver Uptown Clinic" }).click();
+  await inline.click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText("Waiting for the extension receipt…")).toBeVisible();
+  await page.evaluate(() => {
+    const root = globalThis as typeof globalThis & { __resolveP05Receipt?: () => void };
+    const resolve = root.__resolveP05Receipt;
+    root.__resolveP05Receipt = undefined;
+    resolve?.();
+  });
+  await expect(
+    page.getByText("Extension received the case. Sign-in and access are checked there."),
+  ).toBeVisible();
+
+  const events = await page.evaluate(
+    () =>
+      (globalThis as typeof globalThis & { __p05HandoffEvents?: Array<Record<string, unknown>> })
+        .__p05HandoffEvents,
+  );
+  sends = events?.filter((event) => event.kind === "send").length ?? 0;
+  expect(sends).toBe(1);
+  expect(events?.[0]).toEqual({
+    kind: "send",
+    extensionId: EXTENSION_ID,
+    argumentCount: 3,
+    message: {
+      type: "SET_ACTIVE_CASE",
+      caseId: CASE_ID,
+      providerId: PROVIDER_ID,
+      orgId: ORG_ID,
+      portalUrl: "https://portal.example/enroll",
+      portalKey: "regional_enrollment",
+      facilityId: SECONDARY_FACILITY_ID,
+    },
+  });
 });
 
 test("P05: a task-level lock keeps the ordinary portal link but does not mount Work in portal", async ({
