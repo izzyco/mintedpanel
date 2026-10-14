@@ -179,7 +179,7 @@ function touchInserts(captures: Captured[]) {
   return captures.filter((c) => c.table === "touches" && c.op === "insert");
 }
 
-function expectRejected(result: RecordSubmissionTouchResult, status: 404 | 409 | 422): void {
+function expectRejected(result: RecordSubmissionTouchResult, status: 403 | 404 | 409 | 422): void {
   expect(result.kind).toBe("rejected");
   if (result.kind !== "rejected") throw new Error("expected a rejected result");
   expect(result.status).toBe(status);
@@ -341,6 +341,172 @@ describe("recordSubmissionTouch — exact M56 Enrollment work", () => {
       "touches",
       "fill_sessions",
     ]);
+  });
+
+  describe("without a saved fill record (PM decision)", () => {
+    const { fill_session_id: _omitted, ...noFillInput } = typedInput;
+    const noFillTouchRow = { ...typedTouchRow, fill_session_id: null };
+
+    it.each([
+      ["omitted", noFillInput],
+      ["null", { ...noFillInput, fill_session_id: null }],
+    ])(
+      "logs the exact step when fill_session_id is %s, without reading fill_sessions",
+      async (_label, input) => {
+        vi.mocked(validateWorkContextForFillReceipt).mockReset();
+        vi.mocked(validateWorkContextForFillReceipt).mockResolvedValue(validContext);
+        const { db, captures } = makeFakeDb([
+          { data: null },
+          { data: { kind: "created", touch: noFillTouchRow } },
+        ]);
+        const { ctx, writeAudit } = typedCtx(db);
+
+        const result = await recordSubmissionTouch(ctx, CASE_ID, input);
+
+        expect(result.kind).toBe("created");
+        if (result.kind !== "created") throw new Error("expected a typed submission touch");
+        expect(result.touch.fillSessionId).toBeNull();
+        expect(result.bump).toBeUndefined();
+        // No receipt means no auto-start allowance: the context must be exact.
+        expect(validateWorkContextForFillReceipt).toHaveBeenCalledWith(
+          { db, orgId: ORG_UUID },
+          { protocolVersion: 2, ...workContext },
+          false,
+        );
+        expect(captures.map((capture) => capture.table)).toEqual([
+          "touches",
+          "record_typed_enrollment_submission",
+        ]);
+        expect(captures[1]?.payload).toMatchObject({
+          p_org_id: ORG_UUID,
+          p_actor_id: "87654321-4321-4321-8321-210987654321",
+          p_case_id: CASE_ID,
+          p_touch_id: TOUCH_ID,
+          p_fill_session_id: null,
+          p_work_context: workContext,
+        });
+        expect(captures.some((capture) => capture.op === "insert" || capture.op === "update")).toBe(
+          false,
+        );
+        expect(writeAudit).not.toHaveBeenCalled();
+      },
+    );
+
+    it("honors bump_status by reporting what the touch trigger did, org-scoped", async () => {
+      vi.mocked(validateWorkContextForFillReceipt).mockResolvedValue(validContext);
+      const { db, captures } = makeFakeDb([
+        { data: null },
+        { data: { kind: "created", touch: noFillTouchRow } },
+        { data: { case_status: "submitted" } },
+      ]);
+
+      const result = await recordSubmissionTouch(typedCtx(db).ctx, CASE_ID, {
+        ...noFillInput,
+        bump_status: true,
+      });
+
+      expect(result.kind).toBe("created");
+      if (result.kind !== "created") throw new Error("expected a typed submission touch");
+      expect(result.bump).toEqual({ applied: true });
+      const statusRead = captures[2];
+      expect(statusRead).toMatchObject({ table: "credential_cases", op: "select" });
+      expect(statusRead?.filters).toContainEqual(["id", CASE_ID]);
+      expect(statusRead?.filters).toContainEqual(["org_id", ORG_UUID]);
+    });
+
+    it("returns the stored touch on a replay without validation or a status read", async () => {
+      vi.mocked(validateWorkContextForFillReceipt).mockReset();
+      const { db, captures } = makeFakeDb([
+        { data: { id: TOUCH_ID } },
+        { data: { kind: "duplicate", touch: noFillTouchRow } },
+      ]);
+
+      const result = await recordSubmissionTouch(typedCtx(db).ctx, CASE_ID, {
+        ...noFillInput,
+        bump_status: true,
+      });
+
+      expect(result.kind).toBe("duplicate");
+      expect(validateWorkContextForFillReceipt).not.toHaveBeenCalled();
+      expect(captures.map((capture) => capture.table)).toEqual([
+        "touches",
+        "record_typed_enrollment_submission",
+      ]);
+      expect(captures[1]?.payload).toMatchObject({ p_fill_session_id: null });
+    });
+
+    it.each([
+      ["a different case", { ...workContext, ownerId: FILL_SESSION_ID }, 404],
+      [
+        "another organization",
+        { ...workContext, orgId: "ffffffff-ffff-4fff-8fff-ffffffffffff" },
+        404,
+      ],
+      ["a malformed step id", { ...workContext, stepId: "step 0" }, 422],
+      ["a non-UUID task", { ...workContext, taskId: "task-1" }, 422],
+    ])("refuses %s before any database call", async (_label, context, status) => {
+      const { db, captures } = makeFakeDb([]);
+
+      const result = await recordSubmissionTouch(typedCtx(db).ctx, CASE_ID, {
+        ...noFillInput,
+        work_context: context,
+      });
+
+      expectRejected(result, status as 404 | 422);
+      expect(captures).toHaveLength(0);
+    });
+
+    it.each([
+      ["a malformed receipt id", "not-a-uuid"],
+      ["a non-string receipt id", 42],
+    ])("refuses %s before any database call", async (_label, fillSessionId) => {
+      const { db, captures } = makeFakeDb([]);
+
+      const result = await recordSubmissionTouch(typedCtx(db).ctx, CASE_ID, {
+        ...noFillInput,
+        fill_session_id: fillSessionId as never,
+      });
+
+      expectRejected(result, 422);
+      expect(captures).toHaveLength(0);
+    });
+
+    it("refuses a stale or mismatched Work step before the RPC", async () => {
+      vi.mocked(validateWorkContextForFillReceipt).mockResolvedValue({
+        kind: "mismatch",
+        message: "The requested step is not an online-form step on this task.",
+      });
+      const { db, captures } = makeFakeDb([{ data: null }]);
+
+      const result = await recordSubmissionTouch(typedCtx(db).ctx, CASE_ID, noFillInput);
+
+      expectRejected(result, 409);
+      expect(captures.map((capture) => capture.table)).toEqual(["touches"]);
+      expect(captures.some((capture) => capture.op === "rpc")).toBe(false);
+    });
+
+    it.each([
+      [404, "Case work task not found"],
+      [409, "Enrollment SOP step is stale or already complete"],
+      [403, "Your role cannot submit portal work"],
+    ])(
+      "surfaces the RPC's locked re-validation (%s) without a status read",
+      async (status, message) => {
+        vi.mocked(validateWorkContextForFillReceipt).mockResolvedValue(validContext);
+        const { db, captures } = makeFakeDb([
+          { data: null },
+          { data: { kind: "rejected", status, message } },
+        ]);
+
+        const result = await recordSubmissionTouch(typedCtx(db).ctx, CASE_ID, {
+          ...noFillInput,
+          bump_status: true,
+        });
+
+        expect(result).toEqual({ kind: "rejected", status, message });
+        expect(captures.some((capture) => capture.table === "credential_cases")).toBe(false);
+      },
+    );
   });
 
   it("rejects Contract tuples and conflicting flat tuple/payload aliases", async () => {

@@ -289,6 +289,16 @@ function hasConflictingWorkAliases(
   });
 }
 
+// A typed Enrollment submission names its exact Work step through work_context.
+// fill_session_id is optional (PM decision): the coordinator who submitted on
+// the portal can log it even when the extension's fill record failed to save.
+// The receipt is evidence, not authorization (its launch receipt id is minted
+// in the browser and verified nowhere), so without one every other guard still
+// applies: writer membership, org and case ownership, the live Work context
+// (exact context version, current task, current incomplete SOP step, portal
+// configuration, mapping generation and fingerprint), the RPC's locked
+// re-validation, and idempotency on idempotency_id. The touch's NULL
+// fill_session_id (with its request fingerprint set) marks the missing record.
 async function recordTypedEnrollmentSubmission(
   ctx: SubmissionTouchServiceCtx,
   caseId: string,
@@ -298,9 +308,11 @@ async function recordTypedEnrollmentSubmission(
   if (tuple.orgId !== ctx.orgId || tuple.ownerId !== caseId) {
     return reject(404, "Case not found");
   }
+  const fillSessionId: unknown = input.fill_session_id ?? null;
   if (
     input.kind !== "portal_submission" ||
-    !UUID_RE.test(input.fill_session_id ?? "") ||
+    (fillSessionId !== null &&
+      (typeof fillSessionId !== "string" || !UUID_RE.test(fillSessionId))) ||
     input.portal_key !== tuple.portalKey ||
     hasConflictingWorkAliases(input, caseId, ctx, tuple)
   ) {
@@ -324,8 +336,9 @@ async function recordTypedEnrollmentSubmission(
   }
 
   // Skip mutable current-step validation for a known anchor. The SQL RPC still
-  // checks membership, fill link, exact tuple, and payload digest before an
-  // exact historical retry can return after completion or mapping reset.
+  // checks membership, fill link (or its absence), exact tuple, and payload
+  // digest before an exact historical retry can return after completion or
+  // mapping reset.
   const { data: existing, error: existingError } = await ctx.db
     .from("touches")
     .select("id")
@@ -335,24 +348,31 @@ async function recordTypedEnrollmentSubmission(
   if (existingError) throw existingError;
 
   if (!existing) {
-    const { data: receipt, error: receiptError } = await ctx.db
-      .from("fill_sessions")
-      .select(
-        "id, org_id, case_id, contract_id, contract_sop_assignment_id, task_index, step_index, case_task_id, case_step_key, step_identity, context_version, sop_template_id, sop_version, portal_id, portal_key, launch_receipt_id, mapping_generation, effective_mapping_fingerprint, provider_id, facility_id, fill_mode, is_test, event_schema_version, did_auto_start_case",
-      )
-      .eq("id", input.fill_session_id as string)
-      .eq("org_id", ctx.orgId)
-      .maybeSingle();
-    if (receiptError) throw receiptError;
-    if (!receipt) return reject(404, "Fill receipt not found");
-    if (!sameReceiptTuple(receipt as Record<string, unknown>, tuple)) {
-      return reject(409, "The fill receipt does not match this Enrollment Work step");
+    // Only a receipt that itself auto-started the case may excuse the one
+    // context-version bump that caused; with no receipt the context must be
+    // exactly current.
+    let didAutoStartCase = false;
+    if (fillSessionId !== null) {
+      const { data: receipt, error: receiptError } = await ctx.db
+        .from("fill_sessions")
+        .select(
+          "id, org_id, case_id, contract_id, contract_sop_assignment_id, task_index, step_index, case_task_id, case_step_key, step_identity, context_version, sop_template_id, sop_version, portal_id, portal_key, launch_receipt_id, mapping_generation, effective_mapping_fingerprint, provider_id, facility_id, fill_mode, is_test, event_schema_version, did_auto_start_case",
+        )
+        .eq("id", fillSessionId as string)
+        .eq("org_id", ctx.orgId)
+        .maybeSingle();
+      if (receiptError) throw receiptError;
+      if (!receipt) return reject(404, "Fill receipt not found");
+      if (!sameReceiptTuple(receipt as Record<string, unknown>, tuple)) {
+        return reject(409, "The fill receipt does not match this Enrollment Work step");
+      }
+      didAutoStartCase = (receipt as Record<string, unknown>).did_auto_start_case === true;
     }
 
     const validation = await validateWorkContextForFillReceipt(
       { db: ctx.db, orgId: ctx.orgId },
       workContextRequest(tuple),
-      (receipt as Record<string, unknown>).did_auto_start_case === true,
+      didAutoStartCase,
     );
     if (validation.kind !== "ok") {
       if (validation.kind === "not_found") return reject(404, validation.message);
@@ -375,7 +395,9 @@ async function recordTypedEnrollmentSubmission(
     p_actor_id: ctx.userId,
     p_case_id: caseId,
     p_touch_id: input.idempotency_id,
-    p_fill_session_id: input.fill_session_id as string,
+    // NULL when no fill record was saved. The generated type marks every RPC
+    // argument non-null, so the nullable cast lives here at the call site.
+    p_fill_session_id: fillSessionId as string,
     p_work_context: tuple as never,
     p_payload: payload as never,
   });
@@ -401,10 +423,12 @@ async function recordTypedEnrollmentSubmission(
   ) {
     throw new Error("Invalid typed submission result");
   }
-  return {
-    kind: result.kind,
-    touch: camelizeRow<Touch>(result.touch as Record<string, unknown>),
-  };
+  const touch = camelizeRow<Touch>(result.touch as Record<string, unknown>);
+  if (result.kind === "duplicate") return { kind: "duplicate", touch };
+  // The RPC's anchor touch fired trg_case_status_on_touch in the same
+  // transaction; report what it did when asked, exactly as the legacy path does.
+  const bump = input.bump_status ? await reportCaseStatusAfterTouch(ctx, caseId) : undefined;
+  return { kind: "created", touch, bump };
 }
 
 // Human label for a portal_key. There is no server-side portal catalog yet
@@ -531,11 +555,12 @@ export async function recordSubmissionTouch(
     payers?: { name?: string | null } | null;
   };
   // Typed cases may only record a portal submission against the exact selected
-  // Work receipt. Without this guard, omitting both work_context and
-  // fill_session_id would fall through to the legacy whole-task/status path.
-  // Null case_type remains the explicitly supported legacy workflow.
+  // Work step (work_context; the fill receipt is optional there). Without this
+  // guard, omitting work_context would fall through to the legacy
+  // whole-task/status path. Null case_type remains the explicitly supported
+  // legacy workflow.
   if (ownedCase.case_type != null) {
-    return reject(422, "Exact Work context and fill receipt are required for typed cases");
+    return reject(422, "Exact Work context is required for typed cases");
   }
   const payerName = ownedCase.payers?.name ?? null;
 

@@ -207,7 +207,17 @@ User-scoped (`authenticateUser()`, no org resolution):
   trigger fires on the touch and moves the case; the route only reads back and
   reports what the trigger did, via `meta.status_bump`. Calling
   `set_case_status` here can never succeed — the trigger already moved it, and
-  the RPC rejects a same-state transition.
+  the RPC rejects a same-state transition. The typed Work path reports it the
+  same way.
+- **A typed case submission does not need a fill record.** A
+  `portal_submission` touch with `work_context` may omit `fill_session_id`
+  (or send null) when the extension's fill record failed to save; every other
+  guard (writer role, org, case, exact current task + SOP step, portal config
+  and mapping generation, idempotency) still applies, and the exact context
+  version is required (only a receipt can excuse its own auto-start bump). The
+  touch's NULL `fill_session_id` with `submission_request_fingerprint` set is
+  the "no fill record" marker; the audit row carries `fillRecordSaved`.
+  A named `fill_session_id` is still matched exactly.
 - **Profile facility selection never guesses.** `?facilityId` must be in the
   provider's set (else 404); sole facility auto-selects; several with no param
   → facility/assignment tokens come back null with `meta.needs_facility`.
@@ -249,6 +259,12 @@ before any schema work.
   with `information_schema.columns` (`fill_sessions.case_step_key`). Until it
   is applied, every typed case Work fill is refused and the extension cannot
   close the step out.
+- `20261014120100_typed_submission_without_fill_record.sql` — apply after the
+  step-key migration. `record_typed_enrollment_submission` accepts a NULL
+  `p_fill_session_id` and `touches_submission_request_fingerprint_check` no
+  longer requires a receipt. Verify with
+  `pg_get_constraintdef` on that CHECK (no `fill_session_id`). Until it is
+  applied, a typed submission without a fill record returns 422.
 
 Object-verified applied and dropped from this list (2026-09-22):
 `20260903210000_delete_case_rpc.sql` (`pg_proc.proname = 'delete_case'`),
