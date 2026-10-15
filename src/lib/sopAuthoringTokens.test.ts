@@ -64,7 +64,7 @@ describe("filterAuthoringTokens", () => {
     }
   });
 
-  it("keeps fill-only computed/contact values out of SOP authoring", () => {
+  it("allows computed name and address values in SOP authoring", () => {
     const kept = filterAuthoringTokens(CATALOG).map((e) => e.token);
     for (const token of [
       "provider.fullName",
@@ -72,10 +72,11 @@ describe("filterAuthoringTokens", () => {
       "provider.lastFirst",
       "facility.streetAddress",
       "facility.fullAddress",
-      "billingContact.fullName",
     ]) {
-      expect(kept).not.toContain(token);
+      expect(kept).toContain(token);
     }
+    // Org contact tokens remain fill-time only
+    expect(kept).not.toContain("billingContact.fullName");
   });
 
   it("keeps resolvable catalog tokens, including the TE-7 aliases", () => {

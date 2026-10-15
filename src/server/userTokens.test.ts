@@ -76,12 +76,13 @@ describe("resolveUserTokens", () => {
     expect(notes).toEqual([]);
   });
 
-  it("emits exactly the five keys, and never a user.fullName synonym", async () => {
+  it("emits the user keys including user.name and user.fullName", async () => {
     const { tokens } = await resolveUserTokens(
       ctxWith({ email: "s@minted.com", userMetadata: null, profile: EMPTY_PROFILE }),
     );
     expect(tokens.map((t) => t.token)).toEqual([
       "user.name",
+      "user.fullName",
       "user.firstName",
       "user.lastName",
       "user.title",

@@ -14,6 +14,8 @@
 import {
   buildEntityTokenValues,
   composeFacilityAddressTokens,
+  composeGroupAddressTokens,
+  composeProviderAddressTokens,
   composeProviderNameTokens,
 } from "@/lib/entityTokens";
 import { normalizeFieldLabel } from "@/lib/tokenFormat";
@@ -144,7 +146,9 @@ export function buildProviderTokenValues(
     groupInsurance,
   });
   Object.assign(out, composeProviderNameTokens(provider));
+  Object.assign(out, composeProviderAddressTokens(provider));
   Object.assign(out, composeFacilityAddressTokens(facility));
+  Object.assign(out, composeGroupAddressTokens(group));
   return out;
 }
 

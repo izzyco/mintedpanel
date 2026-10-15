@@ -62,6 +62,29 @@ export const CONTACT_TOKEN_FIELDS: ReadonlyArray<{
   { field: "state", read: (p) => p.state },
   { field: "postalCode", read: (p) => p.postalCode },
   { field: "country", read: (p) => p.country },
+  {
+    field: "cityStateZip",
+    read: (p) => {
+      const city = p.city?.trim();
+      const state = p.state?.trim();
+      const zip = p.postalCode?.trim();
+      if (city && state && zip) return `${city}, ${state} ${zip}`;
+      return null;
+    },
+  },
+  {
+    field: "fullAddress",
+    read: (p) => {
+      const line1 = p.addressLine1?.trim();
+      const line2 = p.addressLine2?.trim();
+      const street = line2 ? `${line1}, ${line2}` : line1;
+      const city = p.city?.trim();
+      const state = p.state?.trim();
+      const zip = p.postalCode?.trim();
+      if (street && city && state && zip) return `${street}, ${city}, ${state} ${zip}`;
+      return null;
+    },
+  },
 ];
 
 export interface ResolvedToken {

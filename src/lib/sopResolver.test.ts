@@ -443,6 +443,36 @@ describe("resolveTemplate draft-email recipients (E1.7b F1.7b.5)", () => {
     expect(email?.to).toBeUndefined();
     expect(email?.cc).toBeUndefined();
   });
+
+  it("interpolates computed address and name tokens in draft email templates", () => {
+    const tpl = template([
+      {
+        label: "Email with composite tokens",
+        stepType: "draft_email",
+        emailTemplate: {
+          subject: "Update for {{provider.fullName}}",
+          body: "Provider {{provider.fullName}} at {{facility.cityStateZip}} under {{group.billingFullName}} in {{group.billingCityStateZip}}.",
+        },
+      },
+    ]);
+    const g: ProviderGroup = {
+      ...GROUP,
+      billingCity: "Austin",
+      billingState: "TX",
+      billingZip: "78701",
+      billingContactName: "Jane Billing",
+    };
+    const f: Facility = {
+      ...FACILITY,
+      city: "Austin",
+      state: "TX",
+      zip: "78701",
+    };
+    const [task] = resolveTemplate(tpl, provider({ firstName: "Jordan", lastName: "Rivera" }), g, f);
+    const email = task.sopContent[0].emailTemplate;
+    expect(email?.subject).toBe("Update for Jordan Rivera");
+    expect(email?.body).toBe("Provider Jordan Rivera at Austin, TX 78701 under Jane Billing in Austin, TX 78701.");
+  });
 });
 
 describe("isEmailValuedToken (E1.7b F1.7b.5 / TE-14)", () => {
@@ -481,10 +511,14 @@ describe("isResolvableToken", () => {
       "provider.licenseNumber",
       "license.licenseNumber",
       "facility.address",
+      "facility.cityStateZip",
       "facility.street",
       "facility.city",
       "facility.state",
       "facility.zip",
+      "provider.fullName",
+      "group.billingCityStateZip",
+      "group.billingFullName",
       "group.tin",
       "mso.portalUrl",
     ]) {

@@ -38,7 +38,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/integrations/supabase/types";
 import { camelizeRow } from "@/lib/case";
-import { composeFacilityAddressTokens, composeProviderNameTokens } from "@/lib/entityTokens";
+import {
+  composeFacilityAddressTokens,
+  composeGroupAddressTokens,
+  composeProviderAddressTokens,
+  composeProviderNameTokens,
+} from "@/lib/entityTokens";
 import { pickGroupInsurancePolicy } from "@/lib/groupInsurancePick";
 import { pickLicenseForState } from "@/lib/licensePick";
 import { normalizeTokenKey } from "@/lib/tokenFormat";
@@ -48,7 +53,7 @@ import {
   type ExpectedContractSopContext,
   type ContractOwnerContext,
 } from "@/services/contractFormContext";
-import type { Provider } from "@/types";
+import type { Provider, ProviderGroup } from "@/types";
 
 export interface ProviderProfileServiceCtx {
   db: SupabaseClient<Database>;
@@ -170,25 +175,75 @@ const CONTRACT_GROUP_CONTACT_TOKENS = new Set([
   "group.contractingContactTitle",
   "group.contractingContactEmail",
 ]);
-const COMPUTED_PROFILE_TOKENS = new Set([
+export const COMPUTED_PROFILE_TOKENS = new Set([
   "provider.fullName",
   "provider.fullNameWithCredentials",
   "provider.lastFirst",
+  "provider.homeCityStateZip",
+  "provider.homeAddress",
+  "provider.homeFullAddress",
   "facility.address",
   "facility.cityStateZip",
   "facility.streetAddress",
   "facility.fullAddress",
+  "facility.contactFullName",
+  "group.billingCityStateZip",
+  "group.billingStreetAddress",
+  "group.billingAddress",
+  "group.billingFullAddress",
+  "group.billingFullName",
+  "group.billingContactFullName",
+  "group.correspondenceCityStateZip",
+  "group.correspondenceStreetAddress",
+  "group.correspondenceAddress",
+  "group.correspondenceFullAddress",
+  "group.correspondenceFullName",
+  "group.correspondenceContactFullName",
+  "group.credentialingCityStateZip",
+  "group.credentialingStreetAddress",
+  "group.credentialingAddress",
+  "group.credentialingFullAddress",
+  "group.credentialingFullName",
+  "group.credentialingContactFullName",
+  "group.contractingFullName",
+  "group.contractingContactFullName",
+  "group.contractSignerFullName",
   "group.payerIssuedId",
 ]);
 
-const COMPUTED_PROFILE_TOKEN_KEYS = [
+export const COMPUTED_PROFILE_TOKEN_KEYS = [
   "provider.fullName",
   "provider.fullNameWithCredentials",
   "provider.lastFirst",
+  "provider.homeCityStateZip",
+  "provider.homeAddress",
+  "provider.homeFullAddress",
   "facility.address",
   "facility.cityStateZip",
   "facility.streetAddress",
   "facility.fullAddress",
+  "facility.contactFullName",
+  "group.billingCityStateZip",
+  "group.billingStreetAddress",
+  "group.billingAddress",
+  "group.billingFullAddress",
+  "group.billingFullName",
+  "group.billingContactFullName",
+  "group.correspondenceCityStateZip",
+  "group.correspondenceStreetAddress",
+  "group.correspondenceAddress",
+  "group.correspondenceFullAddress",
+  "group.correspondenceFullName",
+  "group.correspondenceContactFullName",
+  "group.credentialingCityStateZip",
+  "group.credentialingStreetAddress",
+  "group.credentialingAddress",
+  "group.credentialingFullAddress",
+  "group.credentialingFullName",
+  "group.credentialingContactFullName",
+  "group.contractingFullName",
+  "group.contractingContactFullName",
+  "group.contractSignerFullName",
 ] as const;
 
 interface CatalogEntry {
@@ -727,8 +782,9 @@ export async function getProviderProfile(
     }
   }
 
-  const computedValues = {
+  const computedValues: Record<string, string | null | undefined> = {
     ...composeProviderNameTokens(camelizeRow<Provider>(provider)),
+    ...composeProviderAddressTokens(camelizeRow<Provider>(provider)),
     ...composeFacilityAddressTokens(
       selectedFacilityRow as unknown as {
         street?: string | null;
@@ -736,8 +792,11 @@ export async function getProviderProfile(
         city?: string | null;
         state?: string | null;
         zip?: string | null;
+        contactName?: string | null;
+        contact_name?: string | null;
       } | null,
     ),
+    ...composeGroupAddressTokens(group ? (camelizeRow<ProviderGroup>(group) as unknown as ProviderGroup) : null),
   };
   for (const token of COMPUTED_PROFILE_TOKEN_KEYS) {
     const value = computedValues[token];

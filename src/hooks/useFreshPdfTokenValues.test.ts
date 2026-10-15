@@ -54,6 +54,7 @@ describe("mergeCurrentUserAndContactTokens", () => {
     expect(result).toMatchObject({
       "provider.npi": "1003456701",
       "user.name": "Casey Ng",
+      "user.fullName": "Casey Ng",
       "user.firstName": "Casey",
       "user.lastName": "Ng",
       "user.title": "Coordinator",
@@ -62,7 +63,6 @@ describe("mergeCurrentUserAndContactTokens", () => {
       "billingContact.phoneOffice": "555-0102",
     });
     expect(result).not.toHaveProperty("credentialingContact.email");
-    expect(result).not.toHaveProperty("user.fullName");
   });
 });
 

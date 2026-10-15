@@ -23,11 +23,6 @@ import { isEmailValuedToken, isResolvableToken } from "@/lib/sopResolver";
  * email bodies, so only tokens actually supported there are authorable. */
 export const AUTHORING_EXCLUDED_TOKENS: readonly string[] = [
   "provider.ssnLast4",
-  "provider.fullName",
-  "provider.fullNameWithCredentials",
-  "provider.lastFirst",
-  "facility.streetAddress",
-  "facility.fullAddress",
 ];
 
 export function filterAuthoringTokens<T extends { token: string }>(catalog: T[]): T[] {

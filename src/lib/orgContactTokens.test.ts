@@ -79,6 +79,10 @@ describe("resolveOrgContactTokens", () => {
     const { tokens } = resolveOrgContactTokens(map);
     const full = tokens.find((t) => t.token === "billingContact.fullName");
     expect(full?.value).toBe("Dana Reyes");
+    const cityStateZip = tokens.find((t) => t.token === "billingContact.cityStateZip");
+    expect(cityStateZip?.value).toBe("Charlotte, NC 28280");
+    const fullAddress = tokens.find((t) => t.token === "billingContact.fullAddress");
+    expect(fullAddress?.value).toBe("101 S Tryon St, Suite 400, Charlotte, NC 28280");
   });
 
   it("falls back to the stored display name for a party predating the split", () => {
