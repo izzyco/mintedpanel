@@ -207,6 +207,14 @@ User-scoped (`authenticateUser()`, no org resolution):
   `normalizeTokenKey`), so the field-map → profile-token join is a literal
   string match. The extension never strips braces. Pinned by
   `src/server/profileFieldMapJoin.test.ts`.
+- **`control_options` is capped at 1000 entries on BOTH sides** —
+  `CONTROL_OPTIONS_CAP` in `src/lib/controlOptions.ts` here and in the
+  extension's `src/content/captureScan.ts`. Both propose routes 422 a longer
+  list through `validateControlOptionsInput` (rejected, never truncated); the
+  SQL RPCs impose no limit of their own. Raise it panel-first: an extension
+  that sends more than the deployed panel accepts 422s every long list it
+  proposes. Past 25 options the registry's fixed-value picker is searchable
+  (`ControlOptionPicker`).
 - **Touches body is snake_case** (locked); fill-events is camelCase. Do not
   "fix" either.
 - **`bump_status: true` on a touch does not perform a transition.** A DB

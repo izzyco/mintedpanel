@@ -924,3 +924,53 @@ test("TS-160 — a fixed value is picked from the portal's captured options", as
   expect(npiRow?.transform).toBe("state_abbrev");
   expect(npiRow?.token).toBe("provider.npi");
 });
+
+test("TS-160b — a fixed value deep in a long captured list is found by search", async ({
+  page,
+}) => {
+  // BlueKC's specialty list: Physical Therapist is #121 of 146 — past the old
+  // 50-option cap, and too long to scroll a plain Select for.
+  seedMaps = [
+    {
+      id: "m-specialty",
+      selector: "#specialty",
+      label: "Specialty",
+      status: "proposed",
+      source: "manual",
+      section: "Identity",
+      sortOrder: 1,
+      fieldType: "select",
+      controlOptions: Array.from({ length: 146 }, (_, i) => ({
+        value: String(i + 1),
+        label: i === 120 ? "Physical Therapist" : `Specialty ${i + 1}`,
+      })),
+    },
+    // openRegistry waits for this row to know the registry has loaded.
+    {
+      id: "m-npi",
+      selector: "#npi",
+      label: "NPI Number",
+      status: "approved",
+      source: "token",
+      token: "provider.npi",
+      section: "Identity",
+      sortOrder: 2,
+    },
+  ];
+  await openRegistry(page);
+
+  const specialty = rowFor(page, "Specialty");
+  await expect(specialty.getByText("146 options this control accepts")).toBeVisible();
+
+  await specialty.getByRole("combobox", { name: "Fixed value for Specialty" }).click();
+  const menu = page.getByRole("listbox", { name: "Captured options" });
+  await expect(menu.getByText("Showing 100 of 146. Type to narrow.")).toBeVisible();
+  await page.getByLabel("Search options").fill("physical");
+  await expect(menu.getByRole("option")).toHaveCount(1);
+  await menu.getByRole("option", { name: "121 — Physical Therapist" }).click();
+
+  await expect(pillIn(specialty, "Fixed value")).toBeVisible({ timeout: 15000 });
+  const trained = (db?.portal_field_maps ?? []).find((m) => m.id === "m-specialty");
+  expect(trained?.hardcoded_value).toBe("121");
+  expect(trained?.source).toBe("hardcoded");
+});

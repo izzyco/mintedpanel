@@ -25,9 +25,12 @@ import {
 } from "@/components/ui/select";
 import { StatusPill, type StatusColor } from "@/components/StatusPill";
 import { TokenPicker } from "@/components/templates/TokenPicker";
+import { ControlOptionPicker } from "@/components/templates/ControlOptionPicker";
 import {
   AUTHORABLE_TRANSFORM_OPTIONS,
+  SEARCHABLE_OPTIONS_THRESHOLD,
   STRUCTURED_FIELD_TYPES,
+  controlOptionText,
   controlTypeLabel,
   hardcodedValueMissingFromOptions,
   parseControlOptions,
@@ -245,6 +248,7 @@ function RegistryRowEditor({
   const [draftName, setDraftName] = useState("");
   const [fixedOpen, setFixedOpen] = useState(false);
   const [fixedDraft, setFixedDraft] = useState("");
+  const [optionsOpen, setOptionsOpen] = useState(false);
 
   const name = displayNameOf(row);
   // Only worth showing when it differs — otherwise it is the same string twice.
@@ -258,6 +262,7 @@ function RegistryRowEditor({
   const checkboxBoolean = (row.fieldType ?? "") === "checkbox" && capturedOptions.length === 0;
   const pickerOptions =
     capturedOptions.length > 0 ? capturedOptions : checkboxBoolean ? CHECKBOX_BOOLEAN_OPTIONS : [];
+  const fixedChoices = pickerOptions.filter((opt) => opt.value !== "");
 
   function startRename() {
     setDraftName(row.displayLabel?.trim() ?? "");
@@ -366,19 +371,23 @@ function RegistryRowEditor({
         </div>
       ) : null}
       {capturedOptions.length > 0 ? (
-        <details className="text-[11px] text-muted-foreground">
+        // A vocabulary can run to the write-boundary cap (1000), so the list
+        // mounts only while open and scrolls instead of stretching the row.
+        <details
+          className="text-[11px] text-muted-foreground"
+          onToggle={(e) => setOptionsOpen(e.currentTarget.open)}
+        >
           <summary className="cursor-pointer">
             {capturedOptions.length} option{capturedOptions.length === 1 ? "" : "s"} this control
             accepts
           </summary>
-          <ul className="mt-1 space-y-0.5 pl-4">
-            {capturedOptions.map((opt) => (
-              <li key={`${opt.value}:${opt.label}`}>
-                {opt.value}
-                {opt.label && opt.label !== opt.value ? ` — ${opt.label}` : ""}
-              </li>
-            ))}
-          </ul>
+          {optionsOpen ? (
+            <ul className="mt-1 max-h-60 space-y-0.5 overflow-y-auto pl-4">
+              {capturedOptions.map((opt, i) => (
+                <li key={`${i}:${opt.value}`}>{controlOptionText(opt)}</li>
+              ))}
+            </ul>
+          ) : null}
         </details>
       ) : isStructured && !checkboxBoolean ? (
         <p className="text-[11px] text-muted-foreground">
@@ -402,7 +411,14 @@ function RegistryRowEditor({
             onValueChange={(token) => void onDecide(row, { kind: "token", token })}
           />
 
-          {pickerOptions.length > 0 ? (
+          {fixedChoices.length > SEARCHABLE_OPTIONS_THRESHOLD ? (
+            <ControlOptionPicker
+              aria-label={`Fixed value for ${name}`}
+              value={row.hardcodedValue ?? null}
+              options={fixedChoices}
+              onValueChange={(value) => void onDecide(row, { kind: "fixed", value })}
+            />
+          ) : pickerOptions.length > 0 ? (
             <Select
               value={row.hardcodedValue ?? undefined}
               onValueChange={(value) => void onDecide(row, { kind: "fixed", value })}
@@ -414,15 +430,11 @@ function RegistryRowEditor({
                 <SelectValue placeholder="Fixed value…" />
               </SelectTrigger>
               <SelectContent>
-                {pickerOptions
-                  .filter((opt) => opt.value !== "")
-                  .map((opt) => (
-                    <SelectItem key={`${opt.value}:${opt.label}`} value={opt.value}>
-                      {opt.label && opt.label !== opt.value
-                        ? `${opt.value} — ${opt.label}`
-                        : opt.value}
-                    </SelectItem>
-                  ))}
+                {fixedChoices.map((opt, i) => (
+                  <SelectItem key={`${i}:${opt.value}`} value={opt.value}>
+                    {controlOptionText(opt)}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           ) : fixedOpen ? (

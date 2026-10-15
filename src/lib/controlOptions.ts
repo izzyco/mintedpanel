@@ -56,8 +56,24 @@ export const CONTROL_TYPE_LABELS: Record<string, string> = {
 
 export const STRUCTURED_FIELD_TYPES = new Set(["select", "radio", "checkbox"]);
 
-/** Max options stored per field. Capture and the write boundary share this. */
-export const CONTROL_OPTIONS_CAP = 50;
+/**
+ * Max options stored per field. Capture and the write boundary share this —
+ * the extension's scanner (`CONTROL_OPTIONS_CAP` in `captureScan.ts`) must
+ * never send more than this or the proposal 422s. 1000 holds every real
+ * vocabulary seen so far: a US-state list (50 states + DC + territories), a
+ * 146-entry specialty list, an 856-entry taxonomy menu. A longer list is
+ * rejected here, never truncated — a cut list silently drops real choices.
+ */
+export const CONTROL_OPTIONS_CAP = 1000;
+
+/**
+ * Above this many options the fixed-value picker becomes searchable: a plain
+ * Select mounts every item and makes the trainer scroll to #121 of 146.
+ */
+export const SEARCHABLE_OPTIONS_THRESHOLD = 25;
+
+/** Rows a searchable option list renders at once; typing narrows the rest. */
+export const OPTION_RENDER_LIMIT = 100;
 
 /** Sample size for skip-reason lines (F6.10.6 / OQ-3). */
 export const OPTION_SAMPLE_SIZE = 3;
@@ -143,6 +159,28 @@ export function optionSample(
   const extra = options.length - shown.length;
   const body = shown.join(", ");
   return extra > 0 ? `${body}; ${extra} more` : body;
+}
+
+/** How a picker or list names one option: "KS — Kansas", or just "KS". */
+export function controlOptionText(opt: ControlOption): string {
+  return opt.label && opt.label !== opt.value ? `${opt.value} — ${opt.label}` : opt.value;
+}
+
+/**
+ * Case-insensitive substring match on value or label, in captured order,
+ * rendering at most `limit` rows. `matched` counts every hit so the picker
+ * can say how many more a narrower query would reveal.
+ */
+export function filterControlOptions(
+  options: readonly ControlOption[],
+  query: string,
+  limit = OPTION_RENDER_LIMIT,
+): { shown: ControlOption[]; matched: number } {
+  const q = query.trim().toLowerCase();
+  const hits = q
+    ? options.filter((o) => o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
+    : options;
+  return { shown: hits.slice(0, limit), matched: hits.length };
 }
 
 export function transformEffectCopy(transform: string | null | undefined): string | null {
