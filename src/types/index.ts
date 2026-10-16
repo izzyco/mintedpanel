@@ -1764,7 +1764,11 @@ export interface CaseDetail extends CredentialCase {
   createdByName?: string | null;
 }
 
-export type PortalFieldMapSource = "token" | "manual" | "manual_partial" | "hardcoded";
+/** `leave_blank` is a reviewed decision that the field stays empty: approved,
+ * no token, no literal, nothing fills it, and it never lands on the
+ * specialist's post-fill list. Mirrored in the extension's apiTypes. */
+export type PortalFieldMapSource =
+  "token" | "manual" | "manual_partial" | "hardcoded" | "leave_blank";
 export type PortalFieldMapStatus = "proposed" | "approved" | "retired";
 export type FillMode = "web" | "pdf" | "xlsx";
 

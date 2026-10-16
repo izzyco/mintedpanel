@@ -1061,6 +1061,33 @@ export async function markFieldMapManual(
   return row;
 }
 
+// Approve a row as deliberately blank: reviewed, nothing fills it, and it is
+// NOT a person's to complete. Clears token, literal and transform so the row
+// can never half-carry an earlier decision. Unlike 'manual', 'leave_blank' is
+// not under notes_required, so no note is synthesized.
+export async function markFieldMapLeaveBlank(
+  id: string,
+  expectedMappingGeneration: number | null | undefined,
+  fieldLabel?: string | null,
+): Promise<PortalFieldMap> {
+  const orgId = requireActiveOrg();
+  const row = await updateFieldMapRow(orgId, id, expectedMappingGeneration, {
+    status: "approved",
+    source: "leave_blank",
+    token: null,
+    hardcoded_value: null,
+    transform: null,
+  });
+  await writeAudit({
+    actionType: "UPDATE",
+    entityType: "portal_field_map",
+    entityId: id,
+    after: { source: "leave_blank", status: "approved" },
+    description: `Marked "${fieldLabel ?? row.fieldLabel ?? id}" leave blank`,
+  });
+  return row;
+}
+
 /** E6.10 F6.10.4 — org-tier fixed value. Shared rows use train_global_field_map. */
 export async function setFieldMapHardcoded(
   id: string,

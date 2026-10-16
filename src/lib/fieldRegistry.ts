@@ -20,6 +20,9 @@ export type FieldDecision =
   | "fixed"
   /** Decided: a person types this one. Never autofills, never counts as mapped. */
   | "human"
+  /** Decided: the field stays empty on purpose. Never autofills, never counts
+   * as mapped, and is NOT a person's to fill — it is simply done. */
+  | "leave_blank"
   /** The payer's form no longer shows this field (drift). */
   | "stale"
   /** The row's (status, source, payload) triple is not a state we define. */
@@ -98,6 +101,11 @@ export function classifyFieldMap(
       case "manual":
         // Decided, deliberately unmapped. Not a failure and not a gap.
         return RESULT("human", false, false, false, "A person fills this");
+      case "leave_blank":
+        // Decided, deliberately empty. Reviewed, so never "Needs a decision";
+        // not mapped, so never counted as autofill coverage; and not a
+        // person's job, so never on the post-fill checklist.
+        return RESULT("leave_blank", false, false, false, "Left blank on purpose");
       default:
         return RESULT("invalid", false, false, true, "Unrecognized source");
     }

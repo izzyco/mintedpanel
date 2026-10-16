@@ -9,6 +9,8 @@
 //     worth showing, not a silent blank);
 //   * approved + hardcoded → writes its literal, always;
 //   * approved + manual → listed as the person's to write, and NOT a gap;
+//   * approved + leave_blank → reviewed and left empty: not written, not a
+//     gap, and NOT the person's to write either;
 //   * proposed / invalid → a gap (nobody decided, so nothing may be assumed);
 //   * retired → skipped entirely.
 import { classifyFieldMap, displayNameOf, type RegistryRow } from "@/lib/fieldRegistry";
@@ -17,7 +19,7 @@ import type { ControlOption } from "@/lib/controlOptions";
 import type { FillSkippedField } from "@/types";
 
 export type PayerFormFillOutcome =
-  "token" | "fixed" | "empty_token" | "manual" | "undecided" | "stale";
+  "token" | "fixed" | "empty_token" | "manual" | "leave_blank" | "undecided" | "stale";
 
 export interface PayerFormFillEntry {
   mapId: string;
@@ -227,6 +229,10 @@ export function planPayerFormFill(
     }
     if (classification.decision === "human") {
       entries.push({ ...base, value: null, outcome: "manual" });
+      continue;
+    }
+    if (classification.decision === "leave_blank") {
+      entries.push({ ...base, value: null, outcome: "leave_blank" });
       continue;
     }
     if (classification.decision === "fixed") {

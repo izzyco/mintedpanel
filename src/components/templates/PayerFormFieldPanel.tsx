@@ -2,8 +2,8 @@
 // upload panel.
 //
 // Deliberately NOT a second trainer: it renders the same FieldRegistryList,
-// token picker, coverage read-out and three decisions (map to a token / fixed
-// value / a person fills this) the online-form trainer renders. The only
+// token picker, coverage read-out and four decisions (map to a token / fixed
+// value / a person fills this / leave blank) the online-form trainer renders. The only
 // differences are where the rows come from — imported from the blank PDF's
 // AcroForm fields instead of captured by the extension — and what they are
 // keyed on.
@@ -166,7 +166,7 @@ export function PayerFormFieldPanel({
     }
   }
 
-  // Every PDF row is shared-tier, so all three decisions route through the
+  // Every PDF row is shared-tier, so every decision routes through the
   // global training RPC — the same patch shapes the online-form trainer sends.
   async function decideRegistry(row: RegistryRow, decision: RegistryDecision) {
     const map = maps.find((m) => m.id === row.id);
@@ -187,14 +187,16 @@ export function PayerFormFieldPanel({
           ? { status: "approved", source: "hardcoded", hardcodedValue: decision.value }
           : decision.kind === "human"
             ? { status: "approved", source: "manual" }
-            : decision.kind === "transform"
-              ? {
-                  status: "approved",
-                  source: "token",
-                  token: map.token,
-                  transform: decision.transform,
-                }
-              : { status: "proposed", source: "manual" };
+            : decision.kind === "leave_blank"
+              ? { status: "approved", source: "leave_blank" }
+              : decision.kind === "transform"
+                ? {
+                    status: "approved",
+                    source: "token",
+                    token: map.token,
+                    transform: decision.transform,
+                  }
+                : { status: "proposed", source: "manual" };
     try {
       await trainMut.mutateAsync({
         id: map.id,

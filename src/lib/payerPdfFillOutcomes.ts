@@ -25,6 +25,10 @@ function outcomeForPlannedEntry(
       return null;
     case "manual":
       return { ...base, attempted: false, outcome: "manual", reasonCode: "manual_required" };
+    case "leave_blank":
+      // Reviewed and deliberately left as it is: considered, never attempted,
+      // and not a person's — so not "manual", and not a gap.
+      return { ...base, attempted: false, outcome: "unchanged", reasonCode: "unchanged_value" };
     case "undecided":
       return {
         ...base,

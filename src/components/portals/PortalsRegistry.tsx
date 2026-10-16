@@ -60,8 +60,8 @@ interface PortalRow {
   payerName: string;
   mapped: number;
   proposed: number;
-  // Non-retired maps with a live selector but no token/hardcoded/manual source
-  // — they stay blank on every fill until someone links them.
+  // Non-retired maps with a live selector but no token/hardcoded/manual/
+  // leave-blank source — they stay blank on every fill until someone links them.
   unlinked: number;
   lastFill: FillSession | null;
   sopRefs: number;
@@ -493,6 +493,8 @@ function ViewFieldsDialog({
                       <span className="inline-flex items-center rounded-md border border-[#E8E5E0] bg-[#F5F5F4] px-2 py-0.5 text-[12px] text-[#78716C] font-mono">
                         manual
                       </span>
+                    ) : f.source === "leave_blank" ? (
+                      <StatusPill status="blue" label="Leave blank" />
                     ) : isUnlinkedFieldMap(f) ? (
                       <span
                         className="inline-flex items-center rounded-md border border-[#FDE68A] bg-[#FEF3C7] px-2 py-0.5 text-[12px] text-[#92400E]"

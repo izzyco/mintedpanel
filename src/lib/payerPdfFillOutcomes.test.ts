@@ -23,6 +23,12 @@ function plan(): PayerFormFillPlan {
       { ...base, mapId: MAP_ID_1, outcome: "token" },
       { ...base, mapId: MAP_ID_2, outcome: "fixed" },
       { ...base, mapId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", outcome: "manual", value: null },
+      {
+        ...base,
+        mapId: "cccccccc-dddd-4eee-8fff-000000000000",
+        outcome: "leave_blank",
+        value: null,
+      },
     ],
     fieldsFilled: 2,
     fieldsSkipped: [],
@@ -48,6 +54,7 @@ describe("createPayerPdfFillEventV2", () => {
       "unverified",
       "option_mismatch",
       "manual",
+      "unchanged",
     ]);
     const serialized = JSON.stringify(metadata);
     expect(serialized).not.toContain("synthetic label");

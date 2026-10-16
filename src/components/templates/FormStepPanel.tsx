@@ -39,6 +39,7 @@ import {
   useApproveField,
   useFinishTraining,
   useManualField,
+  useLeaveBlankField,
   useTokenCatalog,
   useReproposeField,
   useSetFieldMapHardcoded,
@@ -86,6 +87,7 @@ function describeMappingDecision(map: PortalFieldMap | null): string {
   }
   if (map.source === "hardcoded") return "Approved fixed value";
   if (map.source === "manual") return "A person fills this field";
+  if (map.source === "leave_blank") return "Left blank on purpose";
   return "Needs review";
 }
 
@@ -193,6 +195,7 @@ export function FormStepPanel({
 
   const approveMut = useApproveField();
   const manualMut = useManualField();
+  const leaveBlankMut = useLeaveBlankField();
   const hardcodedMut = useSetFieldMapHardcoded();
   const transformMut = useSetFieldMapTransform();
   const trainGlobalMut = useTrainGlobalFieldMap();
@@ -337,14 +340,16 @@ export function FormStepPanel({
               ? { status: "approved", source: "hardcoded", hardcodedValue: decision.value }
               : decision.kind === "human"
                 ? { status: "approved", source: "manual" }
-                : decision.kind === "transform"
-                  ? {
-                      status: "approved",
-                      source: "token",
-                      token: map.token,
-                      transform: decision.transform,
-                    }
-                  : { status: "proposed", source: "manual" };
+                : decision.kind === "leave_blank"
+                  ? { status: "approved", source: "leave_blank" }
+                  : decision.kind === "transform"
+                    ? {
+                        status: "approved",
+                        source: "token",
+                        token: map.token,
+                        transform: decision.transform,
+                      }
+                    : { status: "proposed", source: "manual" };
         await trainGlobalMut.mutateAsync({
           id: map.id,
           patch: { ...patch, expectedMappingGeneration: map.mappingGeneration },
@@ -358,6 +363,12 @@ export function FormStepPanel({
         });
       } else if (decision.kind === "human") {
         await manualMut.mutateAsync({
+          id: map.id,
+          fieldLabel: map.fieldLabel,
+          expectedMappingGeneration: map.mappingGeneration,
+        });
+      } else if (decision.kind === "leave_blank") {
+        await leaveBlankMut.mutateAsync({
           id: map.id,
           fieldLabel: map.fieldLabel,
           expectedMappingGeneration: map.mappingGeneration,

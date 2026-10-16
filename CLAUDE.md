@@ -628,7 +628,18 @@ through `org_payer_assignments`. Don't weaken it.
 (status, source) and fails closed.** Order matters: retired → stale, explicit
 stale → stale, **`proposed` → undecided before any source check** (capture's
 canonical shape is `proposed + manual`), then approved × token / manual_partial
-/ hardcoded / manual.
+/ hardcoded / manual / leave_blank.
+
+**Four decisions, not three.** `leave_blank` (`source`, with `status`
+`approved`; migration `20261015120000`, repo-only until the operator apply —
+verify `portal_field_maps_source_check` on hosted) is "reviewed, stays empty":
+classified `leave_blank`, so it is never a gap or "Needs a decision", never
+mapped (it does not autofill), and never on the specialist's post-fill list
+(that is `human`). A fixed `N/A` would fail portal validation and `manual`
+would distort completion, which is why it is its own value. Nothing fills it:
+the PDF plan emits `outcome: "leave_blank"` (reported to fill-events V2 as
+`unchanged` / `unchanged_value`), `isUnlinkedFieldMap` excludes it, and the
+extension mirrors the value in its `apiTypes.ts` `PortalFieldMapSource`.
 
 Only `approved` maps fill. A proposed row is an unreviewed observation.
 Stale rows keep their controls — staleness is information, not a lock.
