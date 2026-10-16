@@ -64,8 +64,16 @@ describe("isUnlinkedFieldMap", () => {
     expect(isUnlinkedFieldMap(map({ source: "manual_partial", token: null }))).toBe(false);
   });
 
-  it("is false for leave_blank (blank is the decision, not a gap)", () => {
-    expect(isUnlinkedFieldMap(map({ source: "leave_blank", token: null }))).toBe(false);
+  it("is false for an approved leave_blank (blank is the decision, not a gap)", () => {
+    expect(
+      isUnlinkedFieldMap(map({ status: "approved", source: "leave_blank", token: null })),
+    ).toBe(false);
+  });
+
+  it("is true for a proposed leave_blank — the exemption is the decision, not the word", () => {
+    expect(
+      isUnlinkedFieldMap(map({ status: "proposed", source: "leave_blank", token: null })),
+    ).toBe(true);
   });
 
   it("is false for a retired row (never filled)", () => {

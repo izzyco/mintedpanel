@@ -493,7 +493,7 @@ function ViewFieldsDialog({
                       <span className="inline-flex items-center rounded-md border border-[#E8E5E0] bg-[#F5F5F4] px-2 py-0.5 text-[12px] text-[#78716C] font-mono">
                         manual
                       </span>
-                    ) : f.source === "leave_blank" ? (
+                    ) : f.source === "leave_blank" && f.status === "approved" ? (
                       <StatusPill status="blue" label="Leave blank" />
                     ) : isUnlinkedFieldMap(f) ? (
                       <span

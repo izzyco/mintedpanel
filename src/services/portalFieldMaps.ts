@@ -1030,12 +1030,7 @@ export async function approveFieldMap(
 // 18 live 'token' rows do, and any of them can be sent back to proposed by
 // Undo. Without a note this update is a 23514, so supply one when the row has
 // none. An existing note is a human's and is never overwritten.
-export async function markFieldMapManual(
-  id: string,
-  expectedMappingGeneration: number | null | undefined,
-  fieldLabel?: string | null,
-): Promise<PortalFieldMap> {
-  const orgId = requireActiveOrg();
+async function manualNotePatch(orgId: string, id: string): Promise<{ notes?: string }> {
   const { data: current, error: readError } = await supabase
     .from("portal_field_maps")
     .select("notes")
@@ -1044,12 +1039,22 @@ export async function markFieldMapManual(
     .maybeSingle();
   if (readError) throw readError;
   const existingNote = (current?.notes ?? "").trim();
+  return existingNote ? {} : { notes: MARKED_MANUAL_NOTE };
+}
+
+export async function markFieldMapManual(
+  id: string,
+  expectedMappingGeneration: number | null | undefined,
+  fieldLabel?: string | null,
+): Promise<PortalFieldMap> {
+  const orgId = requireActiveOrg();
+  const notePatch = await manualNotePatch(orgId, id);
   const row = await updateFieldMapRow(orgId, id, expectedMappingGeneration, {
     status: "approved",
     source: "manual",
     token: null,
     transform: null,
-    ...(existingNote ? {} : { notes: MARKED_MANUAL_NOTE }),
+    ...notePatch,
   });
   await writeAudit({
     actionType: "UPDATE",
@@ -1136,23 +1141,35 @@ export async function setFieldMapTransform(
 }
 
 // Restore a decided row to proposed (single-level Undo in the training flow).
+//
+// An undecided row's canonical shape is (proposed, manual) — what capture
+// writes and what the shared-tier Unmap writes. A leave_blank row is
+// normalised to that shape on Unmap: (proposed, leave_blank) is not a state
+// anything defines, and the registry chip and the unlinked predicate key off
+// the source. Moving to 'manual' brings the row under notes_required, so a
+// note is synthesized when the row has none (same rule as markFieldMapManual).
 export async function reproposeFieldMap(
   id: string,
   previous: { token: string | null; source: PortalFieldMap["source"] },
   expectedMappingGeneration: number | null | undefined,
 ): Promise<PortalFieldMap> {
   const orgId = requireActiveOrg();
+  const fromLeaveBlank = previous.source === "leave_blank";
+  const source: PortalFieldMap["source"] = fromLeaveBlank ? "manual" : previous.source;
+  const token = fromLeaveBlank ? null : previous.token;
+  const notePatch = fromLeaveBlank ? await manualNotePatch(orgId, id) : {};
   const row = await updateFieldMapRow(orgId, id, expectedMappingGeneration, {
     status: "proposed",
-    source: previous.source,
-    token: previous.token,
+    source,
+    token,
     transform: null,
+    ...notePatch,
   });
   await writeAudit({
     actionType: "UPDATE",
     entityType: "portal_field_map",
     entityId: id,
-    after: { status: "proposed", source: previous.source, token: previous.token },
+    after: { status: "proposed", source, token },
     description: `Reverted field map "${row.fieldLabel ?? id}" to proposed (undo)`,
   });
   return row;

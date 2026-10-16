@@ -613,6 +613,33 @@ describe("portal field maps handler", () => {
     });
   });
 
+  it("passes a leave_blank source through the serializer unchanged", async () => {
+    // The extension keys its skip decision off `source`; the route must never
+    // rewrite or drop a value it does not recognise from an older allowlist.
+    legacyMapsMock.mockResolvedValue([
+      resolution({
+        maps: [
+          {
+            id: "m3",
+            status: "approved",
+            source: "leave_blank",
+            token: null,
+            hardcodedValue: null,
+          },
+        ],
+      }),
+    ] as never);
+    const res = await handleListPortalFieldMaps(
+      new URL("https://x.test/api/portal-field-maps"),
+      ctx(),
+    );
+    expect(res.status).toBe(200);
+    const b = await body(res);
+    expect(b.data).toEqual([
+      { id: "m3", status: "approved", source: "leave_blank", token: null, hardcodedValue: null },
+    ]);
+  });
+
   it("resolves the exact ?portal_key using the authenticated organization", async () => {
     await handleListPortalFieldMaps(
       new URL("https://x.test/api/portal-field-maps?portal_key=availity"),
