@@ -11,6 +11,7 @@ import { useActiveOrgId, useAuthStore } from "@/lib/auth-store";
 import { currentUserId, requireActiveOrg } from "@/lib/audit";
 import { queryKeys } from "@/hooks/queryKeys";
 import { planPayerFormFill } from "@/lib/payerFormFill";
+import { withSystemTokenValues } from "@/lib/systemTokens";
 import { downloadPayerFormOutput, preparePayerFormFill } from "@/lib/payerFormFillClient";
 import { fetchPdfBytes } from "@/lib/pdfFieldImportClient";
 import { pdfFormPortalKey } from "@/lib/pdfFieldImport";
@@ -219,7 +220,15 @@ export function useFillPayerForm() {
         };
       }
 
-      const plan = planPayerFormFill(vars.rows, vars.tokenValues);
+      // DYN-TODAY-01 — `system.today` is resolved HERE, from the device clock at
+      // fill click, for the real case fill and the trainer's sample fill alike.
+      // Not in `buildProviderTokenValues` (a pure lib must not read a clock,
+      // and a memoized value would go stale across midnight), and not from any
+      // stored row.
+      const plan = planPayerFormFill(
+        vars.rows,
+        withSystemTokenValues(vars.tokenValues, new Date()),
+      );
       if (
         plan.entries.filter((entry) => entry.outcome !== "stale").length >
         MAX_FILL_EVENT_V2_FIELD_OUTCOMES

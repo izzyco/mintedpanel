@@ -217,6 +217,17 @@ User-scoped (`authenticateUser()`, no org resolution):
   (`ControlOptionPicker`).
 - **Touches body is snake_case** (locked); fill-events is camelCase. Do not
   "fix" either.
+- **`system.today` is resolved on the device, never by the server.** The
+  one `system.*` token (`src/lib/systemTokens.ts`, catalog entry
+  `resolution: "device"`) is the coordinator's LOCAL calendar date at fill
+  click: the extension resolves it before its profile join, the panel's
+  payer-PDF fill in `useFillPayerForm`. The profile endpoint does not emit it
+  and does not list it under `unresolved` (pinned in
+  `profileFieldMapJoin.test.ts`). It is offered in both mapping pickers under
+  "System", not on quick cards and not in SOP authoring. `POST /api/fill-events`
+  takes an optional `systemTodayDate` (`YYYY-MM-DD`) into
+  `fill_sessions.system_today_date`, stored only when the column exists; never
+  logged. Date spelling comes from the row's `date_*` transform.
 - **`bump_status: true` on a touch does not perform a transition.** A DB
   trigger fires on the touch and moves the case; the route only reads back and
   reports what the trigger did, via `meta.status_bump`. Calling
@@ -265,6 +276,9 @@ before any schema work.
 
 - `20260810120000_purge_unreferenced_catalog_payers.sql` — **needs a second PM
   sign-off. Never agent-apply.**
+- `20261015120000_fill_sessions_system_today_date.sql` — additive nullable
+  `fill_sessions.system_today_date`; the service probes for the column and
+  drops only the date when it is absent, so the apply can follow the merge.
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,
   never applied. Do not resurrect.
 

@@ -144,4 +144,74 @@ describe("profile ↔ field-map token join (extension fill contract)", () => {
     expect(joined).toBeDefined();
     expect(joined?.value).toBe("Brian");
   });
+
+  // DYN-TODAY-01 — `system.today` is resolved on the coordinator's device at
+  // fill click, never by this endpoint. So a {{system.today}} field map finds
+  // NO profile token to join against (the extension fills it before the join),
+  // and the profile does not list it under `unresolved` either: an absent key
+  // is the contract working, not a permanent blank the UI should flag.
+  it("never emits system.today — not as a token, not as an unresolved reason", async () => {
+    const profileDb = makeFakeDb(
+      {
+        providers: {
+          data: { id: PROVIDER_ID, group_id: null, first_name: "Brian", npi: "1234567890" },
+        },
+        state_licenses: { data: [] },
+        provider_facility_assignments: { data: [] },
+      },
+      CATALOG,
+    );
+    const res = await handleProviderProfile(
+      PROVIDER_ID,
+      new URL(`https://x.test/api/providers/${PROVIDER_ID}/profile`),
+      ctxWith(profileDb),
+    );
+    expect(res.status).toBe(200);
+    const envelope = (await res.json()) as ApiEnvelope<{
+      tokens: ProfileToken[];
+      unresolved: { token: string; reason: string }[];
+    }>;
+    const tokens = envelope.data?.tokens ?? [];
+    const unresolved = envelope.data?.unresolved ?? [];
+
+    const maps = await listPortalFieldMaps({
+      db: makeFakeDb({
+        portals: {
+          data: [
+            {
+              id: "legacy-bcbs-ks",
+              org_id: null,
+              portal_key: "bcbs_ks_enrollment",
+              name: "BCBS KS Enrollment",
+              payer_id: null,
+              form_url: "https://portal.example/login",
+              case_type: null,
+              requires_explicit_selection: false,
+              mapping_generation: 1,
+              is_verified: false,
+              proven_at: null,
+            },
+          ],
+        },
+        portal_field_maps: {
+          data: [
+            {
+              ...fieldMapRow,
+              id: "m2",
+              selector: "#signatureDate",
+              token: "{{system.today}}",
+              transform: "date_mmddyyyy",
+            },
+          ],
+        },
+      }),
+      orgId: "org-1",
+    });
+    expect(maps).toHaveLength(1);
+    expect(maps[0].token).toBe("system.today");
+
+    expect(tokens.find((t) => t.token === "system.today")).toBeUndefined();
+    expect(tokens.some((t) => t.token.startsWith("system."))).toBe(false);
+    expect(unresolved.find((u) => u.token === "system.today")).toBeUndefined();
+  });
 });

@@ -2129,6 +2129,8 @@ export async function createMockApiServer(options = {}) {
         fieldsSkipped: body.fieldsSkipped ?? null,
         docsAttached: body.docsAttached ?? null,
         performedBy: user.userId,
+        // DYN-TODAY-01 optional per-fill resolved system.today date (YYYY-MM-DD).
+        systemTodayDate: body.systemTodayDate ?? null,
       };
       fillSessions.set(key, session);
       return envelope(res, 201, session);

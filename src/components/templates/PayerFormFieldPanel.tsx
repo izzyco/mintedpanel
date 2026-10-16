@@ -47,6 +47,7 @@ import { createFillRunGuard } from "@/lib/fillRunGuard";
 import { registryCoverage, sectionRenamePatches, type RegistryRow } from "@/lib/fieldRegistry";
 import { groupTokens } from "@/lib/tokenGroups";
 import { filterPdfMappingTokens, isPdfFillableToken } from "@/lib/fillTokenReach";
+import { isSystemToken } from "@/lib/systemTokens";
 import { isXlsxPayerForm } from "@/lib/payerForms";
 import type { GlobalTrainPatch } from "@/services/portalFieldMaps";
 import { FieldRegistryList, type RegistryDecision } from "./FieldRegistryList";
@@ -265,11 +266,16 @@ export function PayerFormFieldPanel({
   // (case page picks each). Keep `isPdfFillableToken` / `PDF_FILL_FAMILIES`
   // in step with that, or the sample fill will teach the opposite of the
   // case fill again.
+  //
+  // DYN-TODAY-01 — `system.*` is reachable but never MOCKED: `useFillPayerForm`
+  // resolves it from the device clock at fill click, so the sample carries the
+  // real date a case fill would, not a synthetic one.
   const sampleValues = useMemo(() => {
     const values: Record<string, string> = {};
     for (const map of maps) {
       const token = map.token?.trim();
-      if (token && isPdfFillableToken(token)) values[token] = mockValueForToken(token);
+      if (!token || isSystemToken(token) || !isPdfFillableToken(token)) continue;
+      values[token] = mockValueForToken(token);
     }
     return values;
   }, [maps]);

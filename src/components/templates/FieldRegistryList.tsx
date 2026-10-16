@@ -46,6 +46,7 @@ import {
 } from "@/lib/fieldRegistry";
 import type { TokenGroup } from "@/lib/tokenGroups";
 import { suggestionEvidence, type LabelSuggestion } from "@/lib/labelLearning";
+import { DEVICE_RESOLVED_TOKEN_COPY, isDeviceResolvedToken } from "@/lib/systemTokens";
 
 /** The three decisions a trainer actually has (D2), plus the reversal, plus
  * E6.10 value-shaping on a token-mapped row. */
@@ -344,6 +345,9 @@ function RegistryRowEditor({
         <p className="text-[11px] text-muted-foreground">Payer’s label: {rawLabel}</p>
       ) : null}
       <p className="text-[11px] text-muted-foreground">{classification.reason}</p>
+      {classification.decision === "token" && isDeviceResolvedToken(row.token) ? (
+        <p className="text-[11px] text-muted-foreground">{DEVICE_RESOLVED_TOKEN_COPY}</p>
+      ) : null}
       {shapingCopy && classification.decision === "token" ? (
         <p className="text-[11px] text-muted-foreground">Shapes the value: {shapingCopy}</p>
       ) : null}

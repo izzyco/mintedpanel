@@ -36,6 +36,12 @@ describe("isPdfFillableToken", () => {
     expect(isPdfFillableToken("contractingSigner.email")).toBe(true);
   });
 
+  // DYN-TODAY-01 — no row at all: useFillPayerForm resolves it from the clock.
+  it("admits system.today, which the fill resolves from the device clock", () => {
+    expect(PDF_FILL_FAMILIES).toContain("system");
+    expect(isPdfFillableToken("system.today")).toBe(true);
+  });
+
   it("rejects every family with no row in hand on the case page", () => {
     for (const token of [
       "assignment.isPrimary",
@@ -80,6 +86,9 @@ describe("isWebFillableToken", () => {
       "billingContact.fullName",
       "credentialingContact.phoneOffice",
       "contractingSigner.email",
+      // DYN-TODAY-01 — the extension resolves it on the device before its
+      // profile join; the profile endpoint never emits it.
+      "system.today",
     ]) {
       expect(isWebFillableToken(token)).toBe(true);
     }
@@ -118,6 +127,7 @@ describe("isUnfillableToken / UNFILLABLE_FAMILIES", () => {
     expect(isUnfillableToken("user.name")).toBe(false);
     expect(isUnfillableToken("billingContact.fullName")).toBe(false);
     expect(isUnfillableToken("provider.npi")).toBe(false);
+    expect(isUnfillableToken("system.today")).toBe(false);
   });
 });
 
@@ -176,6 +186,12 @@ describe("filterMappingTokens", () => {
       "user.name",
       "billingContact.fullName",
     ]);
+  });
+
+  it("offers system.today to both mapping pickers", () => {
+    const withSystem = [{ token: "system.today" }, { token: "payer.name" }];
+    expect(filterMappingTokens(withSystem).map((e) => e.token)).toEqual(["system.today"]);
+    expect(filterPdfMappingTokens(withSystem).map((e) => e.token)).toEqual(["system.today"]);
   });
 
   it("also drops the individually withdrawn tokens", () => {
