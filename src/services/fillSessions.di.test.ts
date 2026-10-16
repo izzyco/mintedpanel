@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -9,6 +9,7 @@ vi.mock("@/services/workContext", () => ({ validateWorkContext: vi.fn() }));
 
 import {
   recordFillEvent,
+  resetSystemTodayColumnProbe,
   type FillEventInput,
   type FillSessionServiceCtx,
   type RecordFillEventResult,
@@ -64,6 +65,12 @@ function makeFakeDb(results: Array<{ data: unknown; error?: unknown }>) {
         },
         ilike(col: string, val: unknown) {
           cap.filters.push([col, val]);
+          return builder;
+        },
+        // The additive-column probes (`select(col).limit(0)`) consume one
+        // result like any other read; an `error` result = column missing.
+        limit(n: number) {
+          cap.filters.push(["limit", n]);
           return builder;
         },
         maybeSingle: () => Promise.resolve(take()),
@@ -260,6 +267,222 @@ describe("recordFillEvent — shape validation rejects before any DB call", () =
     expectRejected(result, 422);
     expect(captures).toHaveLength(0);
     expect(writeAudit).not.toHaveBeenCalled();
+  });
+});
+
+// DYN-TODAY-01 — the optional resolved `system.today` date on a fill event.
+describe("recordFillEvent — systemTodayDate", () => {
+  // The column probe remembers a hit for the life of the process; every test
+  // here starts from "not yet seen".
+  beforeEach(() => resetSystemTodayColumnProbe());
+
+  it("rejects a malformed systemTodayDate before any DB call", async () => {
+    const { db, captures } = makeFakeDb([]);
+    const { ctx } = ctxWith(db);
+    for (const bad of ["10/15/2026", "2026-02-30", "2026-10-15T00:00:00Z", "", 20261015]) {
+      const result = await recordFillEvent(ctx, {
+        ...baseInput,
+        systemTodayDate: bad as unknown as string,
+      });
+      expectRejected(result, 422);
+    }
+    expect(captures).toHaveLength(0);
+  });
+
+  it("stores the date in its own column when the database has it, and keeps it out of the audit row", async () => {
+    // Sequence: column probe (ok), case lookup, idempotency lookup, insert.
+    const { db, captures } = makeFakeDb([
+      { data: [] },
+      { data: { id: CASE_ID } },
+      { data: null },
+      { data: { ...storedRow, system_today_date: "2026-10-15" } },
+    ]);
+    const { ctx, writeAudit } = ctxWith(db);
+
+    const result = await recordFillEvent(ctx, { ...baseInput, systemTodayDate: "2026-10-15" });
+
+    expect(result.kind).toBe("created");
+    if (result.kind !== "created") throw new Error("expected created");
+    expect(result.session.systemTodayDate).toBe("2026-10-15");
+
+    const probe = captures[0];
+    expect(probe.table).toBe("fill_sessions");
+    expect(probe.selectCols).toBe("system_today_date");
+    expect(probe.filters).toEqual([["limit", 0]]);
+
+    const insertCap = captures.find((c) => c.op === "insert");
+    expect(insertCap?.payload?.system_today_date).toBe("2026-10-15");
+    expect(insertCap?.selectCols).toContain("system_today_date");
+
+    // A date is not PHI, but it is still a value: the audit row names the fill,
+    // never what went into it.
+    expect(writeAudit).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(writeAudit.mock.calls[0][0])).not.toContain("2026-10-15");
+  });
+
+  it("drops the date, not the fill, when the column is not applied yet", async () => {
+    const missingColumn = [
+      { code: "42703", message: "column fill_sessions.system_today_date does not exist" },
+      {
+        code: "PGRST204",
+        message:
+          "Could not find the 'system_today_date' column of 'fill_sessions' in the schema cache",
+      },
+    ];
+    for (const error of missingColumn) {
+      resetSystemTodayColumnProbe();
+      // Sequence: column probe (missing), case lookup, idempotency, insert.
+      const { db, captures } = makeFakeDb([
+        { data: null, error },
+        { data: { id: CASE_ID } },
+        { data: null },
+        { data: storedRow },
+      ]);
+      const { ctx } = ctxWith(db);
+
+      const result = await recordFillEvent(ctx, { ...baseInput, systemTodayDate: "2026-10-15" });
+
+      expect(result.kind).toBe("created");
+      const insertCap = captures.find((c) => c.op === "insert");
+      expect(insertCap?.payload).not.toHaveProperty("system_today_date");
+      expect(insertCap?.selectCols).not.toContain("system_today_date");
+    }
+  });
+
+  it("propagates any probe error that is not a missing column, instead of dropping the date", async () => {
+    const transient = { code: "PGRST000", message: "could not connect to the database" };
+    const { db, captures } = makeFakeDb([{ data: null, error: transient }]);
+    const { ctx } = ctxWith(db);
+
+    await expect(
+      recordFillEvent(ctx, { ...baseInput, systemTodayDate: "2026-10-15" }),
+    ).rejects.toMatchObject(transient);
+    // Nothing past the probe ran: no lookup, no insert.
+    expect(captures).toHaveLength(1);
+    expect(captures.some((c) => c.op === "insert")).toBe(false);
+  });
+
+  it("remembers a seen column: later fills select and compare it without probing again", async () => {
+    // First fill: probe (ok), case lookup, idempotency miss, insert.
+    const first = makeFakeDb([
+      { data: [] },
+      { data: { id: CASE_ID } },
+      { data: null },
+      { data: { ...storedRow, system_today_date: "2026-10-15" } },
+    ]);
+    await recordFillEvent(ctxWith(first.db).ctx, { ...baseInput, systemTodayDate: "2026-10-15" });
+
+    // Second fill, no date: no probe — straight to the case lookup — yet the
+    // column is still selected so a replay can be compared.
+    const second = makeFakeDb([{ data: { id: CASE_ID } }, { data: null }, { data: storedRow }]);
+    const result = await recordFillEvent(ctxWith(second.db).ctx, baseInput);
+
+    expect(result.kind).toBe("created");
+    expect(second.captures[0].table).toBe("credential_cases");
+    expect(second.captures.some((c) => c.filters.some(([k]) => k === "limit"))).toBe(false);
+    const insertCap = second.captures.find((c) => c.op === "insert");
+    expect(insertCap?.selectCols).toContain("system_today_date");
+    expect(insertCap?.payload).not.toHaveProperty("system_today_date");
+  });
+
+  it("conflicts a V2 retry that OMITS a date the stored receipt carries, once the column is known", async () => {
+    // Learn the column from a dated fill first.
+    const learn = makeFakeDb([
+      { data: [] },
+      { data: { id: CASE_ID } },
+      { data: null },
+      { data: { ...storedRow, system_today_date: "2026-10-15" } },
+    ]);
+    await recordFillEvent(ctxWith(learn.db).ctx, { ...baseInput, systemTodayDate: "2026-10-15" });
+
+    // Retry without the date: case lookup, idempotency hit on a dated V2 row.
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      {
+        data: {
+          ...storedRow,
+          fields_filled: 1,
+          fields_skipped: [],
+          event_schema_version: 2,
+          fields_attempted: 1,
+          fields_verified: 1,
+          fields_rejected: 0,
+          field_outcomes: [V2_FIELD],
+          system_today_date: "2026-10-15",
+        },
+      },
+    ]);
+
+    expectRejected(await recordFillEvent(ctxWith(db).ctx, V2_INPUT), 409);
+  });
+
+  it("does not conflict a dated V2 retry with a receipt that recorded no date (written before the column)", async () => {
+    // Sequence: column probe (ok), case lookup, idempotency hit with a NULL date.
+    const { db } = makeFakeDb([
+      { data: [] },
+      { data: { id: CASE_ID } },
+      {
+        data: {
+          ...storedRow,
+          fields_filled: 1,
+          fields_skipped: [],
+          event_schema_version: 2,
+          fields_attempted: 1,
+          fields_verified: 1,
+          fields_rejected: 0,
+          field_outcomes: [V2_FIELD],
+          system_today_date: null,
+        },
+      },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordFillEvent(ctx, { ...V2_INPUT, systemTodayDate: "2026-10-15" });
+
+    expect(result.kind).toBe("duplicate");
+  });
+
+  it("never probes the column for a fill that did not write system.today", async () => {
+    const { db, captures } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: null },
+      { data: storedRow },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordFillEvent(ctx, baseInput);
+
+    expect(result.kind).toBe("created");
+    expect(captures[0].table).toBe("credential_cases");
+    expect(captures.some((c) => c.selectCols === "system_today_date")).toBe(false);
+    const insertCap = captures.find((c) => c.op === "insert");
+    expect(insertCap?.payload).not.toHaveProperty("system_today_date");
+  });
+
+  it("treats a V2 replay with a different systemTodayDate as a conflict", async () => {
+    // Sequence: column probe (ok), case lookup, idempotency lookup (hit).
+    const { db } = makeFakeDb([
+      { data: [] },
+      { data: { id: CASE_ID } },
+      {
+        data: {
+          ...storedRow,
+          fields_filled: 1,
+          fields_skipped: [],
+          event_schema_version: 2,
+          fields_attempted: 1,
+          fields_verified: 1,
+          fields_rejected: 0,
+          field_outcomes: [V2_FIELD],
+          system_today_date: "2026-10-14",
+        },
+      },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordFillEvent(ctx, { ...V2_INPUT, systemTodayDate: "2026-10-15" });
+
+    expectRejected(result, 409);
   });
 });
 

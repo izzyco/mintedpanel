@@ -158,4 +158,15 @@ describe("isAuthorableTransform", () => {
     expect(isAuthorableTransform("uppercase")).toBe(false);
     expect(AUTHORABLE_TRANSFORM_OPTIONS.map(({ value }) => value)).toEqual(AUTHORABLE_TRANSFORMS);
   });
+
+  // DYN-TODAY-01 — a `system.today` mapping picks the payer's date spelling
+  // through these ids. The extension's `applyTransform` knows the same three;
+  // renaming one here would silently leave every mapped signature date in
+  // canonical ISO.
+  it("offers the three date shapes a system.today mapping relies on, by their locked ids", () => {
+    const labels = new Map(AUTHORABLE_TRANSFORM_OPTIONS.map((o) => [o.value, o.label]));
+    expect(labels.get("date_mmddyyyy")).toBe("Date → MM/DD/YYYY");
+    expect(labels.get("date_mmddyyyy_dash")).toBe("Date → MM-DD-YYYY");
+    expect(labels.get("date_yyyymmdd")).toBe("Date → YYYY-MM-DD");
+  });
 });

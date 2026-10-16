@@ -41,6 +41,7 @@ export const TOKEN_GROUP_LABELS: Record<string, string> = {
   billingContact: "Billing Contact",
   credentialingContact: "Credentialing Contact",
   contractingSigner: "Contracting Signer",
+  system: "System",
 };
 
 export const TOKEN_GROUP_ORDER = [
@@ -57,6 +58,7 @@ export const TOKEN_GROUP_ORDER = [
   "billingContact",
   "credentialingContact",
   "contractingSigner",
+  "system",
 ];
 
 /**

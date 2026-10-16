@@ -30,6 +30,10 @@
  * DYN-TOKEN-05 added `license` then `groupInsurance`. Keep this list in step
  * with the entities `buildProviderTokenValues` actually passes — the sample
  * fill reads it.
+ *
+ * DYN-TODAY-01 added `system`: `useFillPayerForm` layers
+ * `resolveSystemTokenValues(new Date())` over the token values at fill click
+ * (`src/lib/systemTokens.ts`), so the family is reachable with no row at all.
  */
 export const PDF_FILL_FAMILIES: readonly string[] = [
   "provider",
@@ -41,11 +45,14 @@ export const PDF_FILL_FAMILIES: readonly string[] = [
   "billingContact",
   "credentialingContact",
   "contractingSigner",
+  "system",
 ];
 
 /**
- * Families the web profile resolves — provider/case source rows plus the
- * user/contact families appended by the route.
+ * Families the web fill resolves — provider/case source rows plus the
+ * user/contact families appended by the profile route, plus `system`, which
+ * the extension resolves on the device BEFORE its profile join (the profile
+ * endpoint never emits it; `src/server/profileFieldMapJoin.test.ts`).
  */
 export const WEB_FILL_FAMILIES: readonly string[] = [
   "provider",
@@ -58,6 +65,7 @@ export const WEB_FILL_FAMILIES: readonly string[] = [
   "billingContact",
   "credentialingContact",
   "contractingSigner",
+  "system",
 ];
 
 /**

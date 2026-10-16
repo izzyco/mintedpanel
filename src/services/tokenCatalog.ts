@@ -5,11 +5,16 @@
 // the fill engine can resolve. Tokens are the BARE catalog form.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { orgContactTokenKeys } from "@/lib/orgContactTokens";
+import { SYSTEM_TODAY_TOKEN, SYSTEM_TOKEN_FAMILY } from "@/lib/systemTokens";
 
 export interface TokenCatalogEntry {
   token: string;
   table: string;
   column: string;
+  /** `"device"` = resolved on the coordinator's device at fill time, never by
+   * the profile endpoint and never from a stored row. Absent = a stored or
+   * server-computed value. UI copy keys off this, not off the family name. */
+  resolution?: "device";
 }
 
 // Mirrors src/server/userTokens.ts — KEEP THE TWO IN LOCKSTEP: a key offered
@@ -48,6 +53,15 @@ const COMPUTED_TOKENS: TokenCatalogEntry[] = [
   },
 ];
 
+// DYN-TODAY-01 — `system.today`, the one family with no source table at all.
+// Both fill surfaces resolve it from the device clock at fill click
+// (`src/lib/systemTokens.ts`); the profile endpoint deliberately does NOT emit
+// it, so unlike every other key here an unresolved `system.today` on the
+// server is the contract working, not a permanent blank.
+const SYSTEM_TOKENS: TokenCatalogEntry[] = [
+  { token: SYSTEM_TODAY_TOKEN, table: SYSTEM_TOKEN_FAMILY, column: "today", resolution: "device" },
+];
+
 // Role-specific contact tokens are code-owned (ROLE × FIELD), not emitted by
 // the schema sweep. The same keys are resolved at profile/fill time from the
 // org's current default role holders.
@@ -62,7 +76,13 @@ export async function listTokenCatalog(): Promise<TokenCatalogEntry[]> {
   if (error) throw error;
   const catalog = ((data ?? []) as TokenCatalogEntry[]).filter((e) => Boolean(e?.token));
   const byToken = new Map<string, TokenCatalogEntry>();
-  for (const entry of [...catalog, ...USER_TOKENS, ...CONTACT_TOKENS, ...COMPUTED_TOKENS]) {
+  for (const entry of [
+    ...catalog,
+    ...USER_TOKENS,
+    ...CONTACT_TOKENS,
+    ...COMPUTED_TOKENS,
+    ...SYSTEM_TOKENS,
+  ]) {
     if (!byToken.has(entry.token)) byToken.set(entry.token, entry);
   }
   return [...byToken.values()];
