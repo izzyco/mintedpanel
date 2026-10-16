@@ -47,12 +47,13 @@ import {
 import type { TokenGroup } from "@/lib/tokenGroups";
 import { suggestionEvidence, type LabelSuggestion } from "@/lib/labelLearning";
 
-/** The three decisions a trainer actually has (D2), plus the reversal, plus
- * E6.10 value-shaping on a token-mapped row. */
+/** The four decisions a trainer actually has (D2 plus Leave blank), plus the
+ * reversal, plus E6.10 value-shaping on a token-mapped row. */
 export type RegistryDecision =
   | { kind: "token"; token: string }
   | { kind: "fixed"; value: string }
   | { kind: "human" }
+  | { kind: "leave_blank" }
   | { kind: "unmap" }
   | { kind: "transform"; transform: string | null };
 
@@ -79,6 +80,7 @@ const PILL: Record<FieldDecision, { label: string; tone: StatusColor }> = {
   token: { label: "Mapped", tone: "green" },
   fixed: { label: "Fixed value", tone: "green" },
   human: { label: "Human fills this", tone: "neutral" },
+  leave_blank: { label: "Leave blank", tone: "blue" },
   undecided: { label: "Needs a decision", tone: "amber" },
   stale: { label: "Not found in the latest fill", tone: "neutral" },
   invalid: { label: "Needs attention", tone: "red" },
@@ -507,6 +509,19 @@ function RegistryRowEditor({
             onClick={() => void onDecide(row, { kind: "human" })}
           >
             Human fills this
+          </Button>
+
+          {/* Reviewed and intentionally empty. Not a value (a fixed "N/A" fails
+              portal validation) and not a person's job (that is "Human fills
+              this", which lands on the post-fill checklist). */}
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-[12px]"
+            disabled={classification.decision === "leave_blank"}
+            onClick={() => void onDecide(row, { kind: "leave_blank" })}
+          >
+            Leave blank
           </Button>
 
           {/* Reversible at any time — the registry is a working surface, not a

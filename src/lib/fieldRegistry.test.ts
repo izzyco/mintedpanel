@@ -64,6 +64,37 @@ describe("classifyFieldMap — exhaustive over (status, source)", () => {
     expect(c.needsDecision).toBe(false);
   });
 
+  it("treats approved+leave_blank as reviewed and done: not mapped, not a gap, not a person's", () => {
+    const c = classifyFieldMap(row({ status: "approved", source: "leave_blank" }));
+    expect(c.decision).toBe("leave_blank");
+    expect(c.mapped).toBe(false);
+    expect(c.autofillable).toBe(false);
+    // The whole point: reviewed, so it never blocks a dry run or reads as
+    // "Needs a decision" — and distinct from "human" so it never lands on the
+    // specialist's post-fill checklist.
+    expect(c.needsDecision).toBe(false);
+    expect(c.decision).not.toBe("human");
+  });
+
+  it("keeps a proposed leave_blank row undecided — status is still checked first", () => {
+    const c = classifyFieldMap(row({ status: "proposed", source: "leave_blank" }));
+    expect(c.decision).toBe("undecided");
+    expect(c.needsDecision).toBe(true);
+  });
+
+  it("ignores a stray token or literal on a leave_blank row — the SOURCE decides", () => {
+    const c = classifyFieldMap(
+      row({
+        status: "approved",
+        source: "leave_blank",
+        token: "provider.npi",
+        hardcodedValue: "leftover",
+      }),
+    );
+    expect(c.decision).toBe("leave_blank");
+    expect(c.autofillable).toBe(false);
+  });
+
   it("fails closed when an approved token row has no token", () => {
     const c = classifyFieldMap(row({ status: "approved", source: "token", token: null }));
     expect(c.decision).toBe("invalid");
@@ -217,6 +248,16 @@ describe("registryCoverage", () => {
       ...Array.from({ length: 19 }, (_, i) => row({ id: `todo${i}` })),
     ];
     expect(registryCoverage(rows)).toMatchObject({ mapped: 4, total: 23, needsDecision: 19 });
+  });
+
+  it("counts leave_blank rows as reviewed: in the denominator, never mapped, never a gap", () => {
+    const rows = [
+      row({ id: "a", status: "approved", source: "token", token: "provider.npi" }),
+      row({ id: "b", status: "approved", source: "leave_blank" }),
+      row({ id: "c" }),
+    ];
+    // The blank field is done — only the undecided capture still needs a human.
+    expect(registryCoverage(rows)).toMatchObject({ mapped: 1, total: 3, needsDecision: 1 });
   });
 
   it("counts human-fill rows in the denominator but never as mapped", () => {

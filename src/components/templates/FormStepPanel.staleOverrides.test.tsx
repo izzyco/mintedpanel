@@ -40,6 +40,7 @@ vi.mock("@/hooks/useMappingReview", () => {
     useApproveField: mutation,
     useFinishTraining: mutation,
     useManualField: mutation,
+    useLeaveBlankField: mutation,
     useTokenCatalog: () => ({ data: [] }),
     useReproposeField: mutation,
     useSetFieldMapHardcoded: mutation,

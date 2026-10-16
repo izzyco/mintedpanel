@@ -29,7 +29,8 @@ export interface TrainablePartition {
   // Own-org proposed rows — the only rows the org can actually decide (RLS
   // blocks writes to global rows), so these seed the training deck.
   orgProposed: PortalFieldMap[];
-  // Decided rows (token / manual / manual_partial), global or own-org.
+  // Decided rows (token / manual / manual_partial / hardcoded / leave_blank),
+  // global or own-org.
   approved: PortalFieldMap[];
   // Global (org_id NULL) proposed rows: captured but not yet finalized by the
   // platform. The org can't train them, so they stay out of the deck — but they

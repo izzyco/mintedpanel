@@ -64,7 +64,7 @@ interface MapSeed {
   selector: string;
   label: string;
   status: "proposed" | "approved" | "retired";
-  source: "token" | "manual" | "manual_partial" | "hardcoded";
+  source: "token" | "manual" | "manual_partial" | "hardcoded" | "leave_blank";
   token?: string | null;
   hardcodedValue?: string | null;
   section?: string | null;

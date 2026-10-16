@@ -131,6 +131,17 @@ describe("planPayerFormFill", () => {
     expect(plan.fieldsSkipped).toEqual([]);
   });
 
+  it("leaves a leave_blank field alone: not written, not a gap, not the person's", () => {
+    const plan = planPayerFormFill(
+      [row({ source: "leave_blank", token: null, fieldLabel: "Middle name" })],
+      VALUES,
+    );
+    expect(plan.fill).toEqual([]);
+    expect(plan.manualLabels).toEqual([]);
+    expect(plan.fieldsSkipped).toEqual([]);
+    expect(plan.entries.map((e) => e.outcome)).toEqual(["leave_blank"]);
+  });
+
   it("treats an undecided row as a gap — nothing is assumed for it", () => {
     const plan = planPayerFormFill(
       [row({ status: "proposed", source: "manual", token: null })],
