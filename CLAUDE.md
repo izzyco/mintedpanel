@@ -612,10 +612,13 @@ at generation.
 - **Payer and states are read-only context from the template**, never tagged per
   form. A form that applies to only some of a multi-state template's states
   belongs on its own single-state template.
-- **Attached at `/generation` only.** `ManualCaseModal` and Reapply attach SOP
-  tasks as before. An action whose family has no live form is DROPPED rather
-  than generated empty, and `hydratePayerFormTasks` must therefore run AFTER
-  both stamps — they pair tasks with definitions by index.
+- **Attached on every creation surface.** `/generation`, `ManualCaseModal` and
+  Reapply all run `hydratePayerFormTasks` so a Payer PDF action is baked with a
+  live form pointer (the modal and Reapply read the template's current forms
+  via `useTemplatePayerForms` and block submit until they load). An action
+  whose family has no live form is DROPPED rather than generated empty, and
+  `hydratePayerFormTasks` must run AFTER both stamps — they pair tasks with
+  definitions by index.
 - **Removal is per case and permanent by construction**: the task is marked
   `blocked` and a `removedAt` marker is appended to its own `sop_content`;
   `CaseTasksPanel` filters marked tasks out before anything derives from the
