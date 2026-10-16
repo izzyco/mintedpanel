@@ -170,6 +170,9 @@ function CaseDetailPage() {
           : "full-facility-missing"
     : "no-facility-data-required";
   const pdfContextKey = `${selectionOwner}:${facilityResolution.status === "ready" ? `ready:${facilityResolution.facilityId ?? "no-facility"}` : `blocked:${facilityResolution.reason}`}:${selectedFacilityDataState}`;
+  // The case's group rides into the facility refresh so an inherited facility
+  // contact (E1.2 TE-4) survives the rebuild of facility.* values.
+  const caseGroup = c?.group ?? null;
   const refreshCasePdfTokenValues: RefreshPdfTokenValues = useCallback(
     async (baseValues, isCurrent = () => true) => {
       if (!isCurrent()) {
@@ -237,7 +240,7 @@ function CaseDetailPage() {
       const withoutOldFacility = Object.fromEntries(
         Object.entries(baseValues).filter(([token]) => !token.startsWith("facility.")),
       );
-      const freshFacilityValues = buildProviderTokenValues(null, null, freshFacility.facility);
+      const freshFacilityValues = buildProviderTokenValues(null, caseGroup, freshFacility.facility);
       return refreshPdfTokenValues(
         { ...withoutOldFacility, ...freshFacilityValues },
         isRouteContextCurrent,
@@ -248,6 +251,7 @@ function CaseDetailPage() {
       c?.orgId,
       c?.providerId,
       c?.groupId,
+      caseGroup,
       c?.state,
       actorId,
       authGeneration,

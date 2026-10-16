@@ -11,6 +11,7 @@
 // providers/provider_groups/facilities/msos widens the picker on its own. What
 // remains hand-listed is the one exclusion below, which is a policy choice
 // rather than a resolution limit.
+import { FACILITY_HOURS_TOKEN_KEYS } from "@/lib/facilityHours";
 import { isEmailValuedToken, isResolvableToken } from "@/lib/sopResolver";
 
 /** Resolvable, but deliberately NOT authorable in a SOP.
@@ -28,6 +29,9 @@ export const AUTHORING_EXCLUDED_TOKENS: readonly string[] = [
   "provider.lastFirst",
   "facility.streetAddress",
   "facility.fullAddress",
+  // The per-day hours composites are fill-time only as well: the SOP
+  // resolver's entity sweep never builds them.
+  ...FACILITY_HOURS_TOKEN_KEYS,
 ];
 
 export function filterAuthoringTokens<T extends { token: string }>(catalog: T[]): T[] {

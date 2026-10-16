@@ -24,6 +24,8 @@ describe("listTokenCatalog", () => {
         "facility.cityStateZip",
         "facility.streetAddress",
         "facility.fullAddress",
+        "facility.hoursMonStatus",
+        "facility.hoursSunClose",
         "group.payerIssuedId",
         "user.name",
         "user.firstName",

@@ -135,6 +135,20 @@ const CONTRACT_CONTACT_AND_SIGNER_CATALOG: Json = [
   },
 ] as Json;
 
+const CONTACT_CATALOG: Json = [
+  ...(CATALOG as unknown as Json[]),
+  { table: "facilities", token: "facility.phone", column: "phone" },
+  { table: "facilities", token: "facility.fax", column: "fax" },
+  { table: "facilities", token: "facility.email", column: "email" },
+  { table: "facilities", token: "facility.contactName", column: "contact_name" },
+] as Json;
+
+const STRUCTURED_CATALOG: Json = [
+  ...(CATALOG as unknown as Json[]),
+  { table: "facilities", token: "facility.hours", column: "hours" },
+  { table: "facilities", token: "facility.adaCompliance", column: "ada_compliance" },
+] as Json;
+
 const providerRow = {
   id: "p1",
   group_id: "g1",
@@ -553,7 +567,8 @@ describe("provider profile service — injected server context", () => {
 
     expect(rpcCalls).toEqual(["get_sop_field_tokens"]);
     // Every catalog entry appears in tokens, resolved or not.
-    expect(profile.tokens).toHaveLength((CATALOG as unknown[]).length + 8);
+    // + 7 name/address composites + 21 per-day hours composites + payerIssuedId.
+    expect(profile.tokens).toHaveLength((CATALOG as unknown[]).length + 29);
     expect(profile.case_id).toBeNull();
     expect(valueOf(profile, "provider.firstName")).toBe("Ana");
     expect(valueOf(profile, "group.name")).toBe("Group One");
@@ -593,6 +608,148 @@ describe("provider profile service — injected server context", () => {
     // Licenses come back newest-first so ?state picks deterministically.
     const licenseCap = captures.find((c) => c.table === "state_licenses");
     expect(licenseCap?.orders).toEqual([["issue_date", { ascending: false, nullsFirst: false }]]);
+  });
+
+  it("inherits the owning group's contact block for a facility with no channel of its own", async () => {
+    // E1.2 TE-4 (locked 2026-07-12): credentialing → correspondence → billing,
+    // displayed as inherited in the UI — the fill must say the same.
+    const tables = happyTables();
+    tables.provider_groups = {
+      data: {
+        ...groupRow,
+        credentialing_phone: "555-0100",
+        credentialing_fax: "555-0101",
+        billing_phone: "555-0200",
+        billing_contact_name: "Billing Desk",
+      },
+    };
+    tables.facilities = [
+      { data: [facilityListF1] },
+      {
+        data: {
+          ...facilityRowF1,
+          group_id: "g1",
+          phone: null,
+          fax: null,
+          email: null,
+          contact_name: null,
+        },
+      },
+    ];
+    const { db } = makeFakeDb(tables, { data: CONTACT_CATALOG });
+
+    const profile = must(await getProviderProfile(ctxWith(db), "p1"));
+
+    expect(valueOf(profile, "facility.phone")).toBe("555-0100");
+    expect(valueOf(profile, "facility.fax")).toBe("555-0101");
+    // The whole block is inherited (first non-empty block wins), never mixed.
+    expect(valueOf(profile, "facility.contactName")).toBeNull();
+    expect(valueOf(profile, "facility.email")).toBeNull();
+  });
+
+  it("keeps a facility's own contact verbatim — one own channel disables inheritance", async () => {
+    const tables = happyTables();
+    tables.provider_groups = {
+      data: { ...groupRow, credentialing_phone: "555-0100", credentialing_fax: "555-0101" },
+    };
+    tables.facilities = [
+      { data: [facilityListF1] },
+      {
+        data: {
+          ...facilityRowF1,
+          group_id: "g1",
+          phone: "555-0300",
+          fax: null,
+          email: null,
+          contact_name: null,
+        },
+      },
+    ];
+    const { db } = makeFakeDb(tables, { data: CONTACT_CATALOG });
+
+    const profile = must(await getProviderProfile(ctxWith(db), "p1"));
+
+    expect(valueOf(profile, "facility.phone")).toBe("555-0300");
+    expect(valueOf(profile, "facility.fax")).toBeNull();
+  });
+
+  it("does not inherit from a group that does not own the facility", async () => {
+    const tables = happyTables();
+    tables.provider_groups = { data: { ...groupRow, credentialing_phone: "555-0100" } };
+    tables.facilities = [
+      { data: [facilityListF1] },
+      {
+        data: {
+          ...facilityRowF1,
+          group_id: "g-other",
+          phone: null,
+          fax: null,
+          email: null,
+          contact_name: null,
+        },
+      },
+    ];
+    const { db } = makeFakeDb(tables, { data: CONTACT_CATALOG });
+
+    const profile = must(await getProviderProfile(ctxWith(db), "p1"));
+
+    expect(valueOf(profile, "facility.phone")).toBeNull();
+  });
+
+  it("resolves facility hours as summary text plus per-day composites, never as the raw object", async () => {
+    const tables = happyTables();
+    tables.facilities = [
+      { data: [facilityListF1] },
+      {
+        data: {
+          ...facilityRowF1,
+          hours: {
+            mon: { status: "open", open: "07:00", close: "19:00" },
+            tue: { status: "open", open: "07:00", close: "19:00" },
+            sat: { status: "closed" },
+          },
+          ada_compliance: { accessible: true },
+        },
+      },
+    ];
+    const { db } = makeFakeDb(tables, { data: STRUCTURED_CATALOG });
+
+    const profile = must(await getProviderProfile(ctxWith(db), "p1"));
+
+    expect(valueOf(profile, "facility.hours")).toBe("Mon, Tue 7:00 AM–7:00 PM");
+    expect(valueOf(profile, "facility.hoursMonStatus")).toBe("Open");
+    expect(valueOf(profile, "facility.hoursMonOpen")).toBe("07:00");
+    expect(valueOf(profile, "facility.hoursMonClose")).toBe("19:00");
+    expect(valueOf(profile, "facility.hoursSatStatus")).toBe("Closed");
+    // A day absent from the stored grid decodes closed; closed days carry no times.
+    expect(valueOf(profile, "facility.hoursSunStatus")).toBe("Closed");
+    expect(valueOf(profile, "facility.hoursSunOpen")).toBeNull();
+    expect(reasonFor(profile, "facility.hoursSunOpen")).toBe("hours not entered");
+    // Any other jsonb is a reasoned gap, not "[object Object]".
+    expect(valueOf(profile, "facility.adaCompliance")).toBeNull();
+    expect(reasonFor(profile, "facility.adaCompliance")).toContain("no single-line rendering");
+    for (const token of profile.tokens) {
+      expect(
+        typeof token.value === "object" && token.value !== null && !Array.isArray(token.value),
+      ).toBe(false);
+    }
+  });
+
+  it("reports the {} hours default as 'hours not entered' on the summary and all 21 per-day tokens", async () => {
+    const tables = happyTables();
+    tables.facilities = [{ data: [facilityListF1] }, { data: { ...facilityRowF1, hours: {} } }];
+    const { db } = makeFakeDb(tables, { data: STRUCTURED_CATALOG });
+
+    const profile = must(await getProviderProfile(ctxWith(db), "p1"));
+
+    expect(valueOf(profile, "facility.hours")).toBeNull();
+    expect(reasonFor(profile, "facility.hours")).toBe("hours not entered");
+    const hoursTokens = profile.tokens.filter((t) => /^facility\.hours[A-Z]/.test(t.token));
+    expect(hoursTokens).toHaveLength(21);
+    for (const t of hoursTokens) {
+      expect(t.value).toBeNull();
+      expect(reasonFor(profile, t.token)).toBe("hours not entered");
+    }
   });
 
   it("?state picks the matching license among several", async () => {

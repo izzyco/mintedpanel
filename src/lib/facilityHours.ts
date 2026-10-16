@@ -6,8 +6,8 @@
 // strings; single range per day (no split shifts in v1). This module is the
 // SINGLE source of truth for encode/decode, the weekday quick-fill, 12h
 // display formatting, and validation — it is also the extension fill
-// contract ({{facility.hours.mon.open}}-style tokens later), so no hours
-// logic may live inline in components.
+// contract (the facility.hours{Day}{Status|Open|Close} composites at the
+// bottom of this file), so no hours logic may live inline in components.
 
 export const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 export type DayKey = (typeof DAY_KEYS)[number];
@@ -146,4 +146,40 @@ export function hoursSummary(stored: unknown): string | null {
     return `${label} ${formatTime12h(open)}–${formatTime12h(close)}`;
   }
   return `Open ${openDays.length} days/week`;
+}
+
+/* ----------------------------- Fill tokens ------------------------------ */
+
+type HoursSlot = "Status" | "Open" | "Close";
+
+function hoursTokenKey(day: DayKey, slot: HoursSlot): string {
+  return `facility.hours${day.charAt(0).toUpperCase()}${day.slice(1)}${slot}`;
+}
+
+/** The 21 per-day fill-token keys in week order (`facility.hoursMonStatus`,
+ * `facility.hoursMonOpen`, `facility.hoursMonClose`, …). Registered from this
+ * list in the token catalog, the profile resolver, the PDF fill, the SOP
+ * authoring exclusions and both mock profiles — never retype them. */
+export const FACILITY_HOURS_TOKEN_KEYS: readonly string[] = DAY_KEYS.flatMap((day) =>
+  (["Status", "Open", "Close"] as const).map((slot) => hoursTokenKey(day, slot)),
+);
+
+/** Per-day composites for the fill surfaces: `…Status` = "Open" | "Closed";
+ * `…Open` / `…Close` = the stored 24h "HH:MM", present only on open days (a
+ * field map's transform spells them for the page). When NO day is open — the
+ * `{}` column default, hours never entered — nothing is emitted, so all 21
+ * resolve as "hours not entered" rather than claiming "Closed" all week. */
+export function composeFacilityHoursTokens(stored: unknown): Record<string, string> {
+  const draft = decodeHours(stored);
+  if (!DAY_KEYS.some((day) => draft[day].open)) return {};
+  const out: Record<string, string> = {};
+  for (const day of DAY_KEYS) {
+    const entry = draft[day];
+    out[hoursTokenKey(day, "Status")] = entry.open ? "Open" : "Closed";
+    if (entry.open) {
+      out[hoursTokenKey(day, "Open")] = entry.openTime;
+      out[hoursTokenKey(day, "Close")] = entry.closeTime;
+    }
+  }
+  return out;
 }

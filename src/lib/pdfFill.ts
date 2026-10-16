@@ -16,6 +16,8 @@ import {
   composeFacilityAddressTokens,
   composeProviderNameTokens,
 } from "@/lib/entityTokens";
+import { resolveFacilityContact } from "@/lib/facilityContact";
+import { composeFacilityHoursTokens } from "@/lib/facilityHours";
 import { normalizeFieldLabel } from "@/lib/tokenFormat";
 import type { Facility, FieldDictionaryEntry, Provider, ProviderGroup } from "@/types";
 // Type-only, like csvImport/payerForm/providerGroup do — no runtime edge from
@@ -129,6 +131,34 @@ export function resolvePdfValues(
 // Do NOT re-derive the picks in here. The state / group that disambiguates
 // them belongs to the case, which this pure function has no business knowing
 // about.
+// E1.2 TE-4: tel / fax / email / contact inherit the OWNING group's contact
+// block when the facility has none of its own — the rule the facility UI
+// displays, applied to the fill exactly as the web profile applies it
+// (services/providerProfile.ts). Owner-guarded; all-or-nothing.
+function withInheritedContact(
+  facility: Facility | null,
+  group: ProviderGroup | null,
+): Facility | null {
+  if (!facility || !group || facility.groupId !== group.id) return facility;
+  const resolved = resolveFacilityContact(
+    {
+      contactName: facility.contactName ?? null,
+      phone: facility.phone ?? null,
+      fax: facility.fax ?? null,
+      email: facility.email ?? null,
+    },
+    group,
+  );
+  if (!resolved.inherited) return facility;
+  return {
+    ...facility,
+    contactName: resolved.contactName,
+    phone: resolved.phone,
+    fax: resolved.fax,
+    email: resolved.email,
+  };
+}
+
 export function buildProviderTokenValues(
   provider: Provider | null,
   group: ProviderGroup | null,
@@ -139,12 +169,14 @@ export function buildProviderTokenValues(
   const out = buildEntityTokenValues({
     provider,
     group,
-    facility,
+    facility: withInheritedContact(facility, group),
     license,
     groupInsurance,
   });
   Object.assign(out, composeProviderNameTokens(provider));
   Object.assign(out, composeFacilityAddressTokens(facility));
+  // The jsonb grid is omitted by the entity sweep; these are its fill form.
+  Object.assign(out, composeFacilityHoursTokens(facility?.hours));
   return out;
 }
 

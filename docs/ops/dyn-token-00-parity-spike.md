@@ -119,6 +119,18 @@ A token outside the passed entities is simply absent from the map. It is not
 mis-resolved, and `planPayerFormFill` reports it as `empty_token` — a gap the
 coordinator sees before downloading.
 
+**Update 2026-10-15 (field-flow gap analysis, `docs/ops/field-flow-gap-analysis-2026-10-15.md`):**
+the `facility` family gained 21 per-day hours composites
+(`facility.hours{Mon..Sun}{Status|Open|Close}`, offered on both surfaces, resolved
+by both fills from the jsonb grid; `facility.hours` itself is now the summary
+text, never the object), and `facility.phone/fax/email/contactName` inherit the
+owning group's contact block on both fills exactly as the facility UI displays
+it. Eight internal/audit tokens the web profile never projected
+(`provider.referenceOnly/verificationState/isTestProvider`,
+`facility.referenceOnly`, `license.verified*` / `verificationSourceUrl`) are
+withdrawn from the mapping pickers (`WITHDRAWN_TOKENS`); zero field maps
+referenced them on production or staging. The counts below predate that.
+
 ## Capability matrix
 
 | Family           | Tokens | Mapping picker  | Web fill                     | Real payer-PDF fill    |
@@ -301,6 +313,14 @@ Three child-row picks. Split further if the selection rules (which license for
 which state, which policy) do not port cleanly from `providerProfile.ts`.
 
 - **Repos:** panel · **Risk:** medium — selection rules, not plumbing
+- **2026-10-15: eight internal columns withdrawn.** `provider.referenceOnly`,
+  `provider.verificationState`, `provider.isTestProvider`,
+  `facility.referenceOnly`, `license.verifiedStatus/verifiedBy/verifiedAt/
+verificationSourceUrl` are absent from the web profile projections (so a
+  mapping was a permanent blank there) and are workflow / PSV bookkeeping, not
+  payer-form values; the PDF sweep resolved them only by accident of the
+  entity sweep. Appendix A query 2 returned no rows for them on either hosted
+  project before withdrawal.
 - **D3 SETTLED 2026-09-03: `license.*` is canonical.** `providers.license_*`
   has no writer and is null for all 21 hosted providers; provider create and
   update write `state_licenses` rows. The four `provider.license*` tokens are
