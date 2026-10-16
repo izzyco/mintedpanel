@@ -276,7 +276,7 @@ before any schema work.
 
 - `20260810120000_purge_unreferenced_catalog_payers.sql` — **needs a second PM
   sign-off. Never agent-apply.**
-- `20261015120000_fill_sessions_system_today_date.sql` — additive nullable
+- `20261015130000_fill_sessions_system_today_date.sql` — additive nullable
   `fill_sessions.system_today_date`; the service probes for the column and
   drops only the date when it is absent, so the apply can follow the merge.
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,

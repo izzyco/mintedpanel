@@ -103,7 +103,7 @@ const FILL_EVENT_V2_COLUMNS =
   "event_schema_version, fields_attempted, fields_verified, fields_rejected, field_outcomes";
 // DYN-TODAY-01 — probed only when a request carries `systemTodayDate` (or the
 // column is already known to exist), so a database that predates migration
-// 20261015120000 keeps accepting every other fill event unchanged (same
+// 20261015130000 keeps accepting every other fill event unchanged (same
 // posture as case_step_key above).
 const SYSTEM_TODAY_COLUMN = "system_today_date";
 // Once one probe has seen the column it stays seen: the schema is additive, so
