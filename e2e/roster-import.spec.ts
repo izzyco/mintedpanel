@@ -56,6 +56,7 @@ const TEMPLATE_HEADERS = [
   "provider_middle_initial",
   "provider_last_name",
   "credentials",
+  "gender",
   "date_of_birth",
   "ssn_last4",
   "email",

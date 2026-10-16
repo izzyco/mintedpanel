@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   ensureFirstFacilityPrimary: vi.fn(),
   listEnrollmentFacts: vi.fn(),
   createEnrollmentFact: vi.fn(),
+  createFacility: vi.fn(),
+  createProviderGroup: vi.fn(),
 }));
 
 vi.mock("@/integrations/supabase/externalClient", () => ({
@@ -26,8 +28,12 @@ vi.mock("@/services/enrollmentFacts", () => ({
   listEnrollmentFacts: mocks.listEnrollmentFacts,
   createEnrollmentFact: mocks.createEnrollmentFact,
 }));
+vi.mock("@/services/orgSettings", () => ({
+  createFacility: mocks.createFacility,
+  createProviderGroup: mocks.createProviderGroup,
+}));
 
-import { commitImportRun } from "./importRuns";
+import { commitImportRun, commitSectionImportRun } from "./importRuns";
 
 const NPI = "1234567890";
 const OTHER_NPI = "9998887776";
@@ -289,5 +295,145 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
     expect(mocks.insertAssignmentRows).not.toHaveBeenCalled();
     expect(mocks.createEnrollmentFact).not.toHaveBeenCalled();
     expect(mocks.ensureFirstFacilityPrimary).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------ facility section commit ------------------------ */
+
+// Only the run header read, the committed flip and the staged-row purge touch
+// the transport here; createFacility is the seam under test.
+function installSectionTransport() {
+  mocks.from.mockImplementation((table: string) => {
+    const builder = {
+      select: () => builder,
+      eq: () => builder,
+      update: () => builder,
+      delete: () => builder,
+      maybeSingle: () =>
+        Promise.resolve({
+          data:
+            table === "import_runs"
+              ? { id: "run-1", org_id: "org-1", state: "ready_for_review", error_report: null }
+              : null,
+          error: null,
+        }),
+      then: (resolve: (value: { data: unknown; error: null }) => unknown) =>
+        Promise.resolve({ data: null, error: null }).then(resolve),
+    };
+    return builder;
+  });
+}
+
+const FACILITY_MAPPED: Record<string, string | null> = {
+  facility_name: "Riverside Clinic",
+  group_name: null,
+  group_tin: "123456789",
+  group_npi: null,
+  street: "10 Dockside Dr",
+  suite: null,
+  city: "Wilmington",
+  state: "NC",
+  zip: "28401",
+  county: null,
+  phone: null,
+  fax: null,
+  email: null,
+  appointment_phone: null,
+  contact_name: null,
+  accepting_new_patients: null,
+  languages_offered: null,
+  interpreter_languages: null,
+  ada_accessible: null,
+  ada_notes: null,
+  effective_date: null,
+};
+
+describe("commitSectionImportRun — facility rows match the manual form", () => {
+  beforeEach(() => {
+    mocks.from.mockReset();
+    mocks.createFacility
+      .mockReset()
+      .mockResolvedValue({ id: "facility-new", name: "Riverside Clinic" });
+    installSectionTransport();
+  });
+
+  it("writes the form's defaults for blank cells instead of NULLs that override them (G4)", async () => {
+    const result = await commitSectionImportRun({
+      runId: "run-1",
+      entityKind: "facility",
+      creates: [
+        {
+          line: 2,
+          displayName: "Riverside Clinic",
+          mapped: FACILITY_MAPPED,
+          groupId: "group-1",
+          notes: [],
+        },
+      ],
+      skippedCount: 0,
+      blocked: [],
+    });
+
+    expect(result).toMatchObject({ alreadyCommitted: false, created: 1 });
+    expect(mocks.createFacility).toHaveBeenCalledTimes(1);
+    expect(mocks.createFacility).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Riverside Clinic",
+        groupId: "group-1",
+        acceptingNewPatients: true,
+        languagesOffered: [],
+        interpreterLanguages: [],
+        adaCompliance: {},
+        hours: {},
+        effectiveDate: null,
+      }),
+    );
+  });
+
+  it("encodes the per-day hours columns through the locked jsonb contract and carries the go-live date (G5)", async () => {
+    await commitSectionImportRun({
+      runId: "run-1",
+      entityKind: "facility",
+      creates: [
+        {
+          line: 2,
+          mapped: {
+            ...FACILITY_MAPPED,
+            effective_date: "2027-03-01",
+            mon_open: "07:00",
+            mon_close: "19:00",
+            sat_open: "09:00",
+            sat_close: "13:00",
+            accepting_new_patients: "false",
+            languages_offered: "English;Spanish",
+            ada_accessible: "true",
+            ada_notes: "Ramp at side entrance",
+          },
+          groupId: "group-1",
+          displayName: "Riverside Clinic",
+          notes: [],
+        },
+      ],
+      skippedCount: 0,
+      blocked: [],
+    });
+
+    expect(mocks.createFacility).toHaveBeenCalledWith(
+      expect.objectContaining({
+        effectiveDate: "2027-03-01",
+        acceptingNewPatients: false,
+        languagesOffered: ["English", "Spanish"],
+        adaCompliance: { accessible: true, notes: "Ramp at side entrance" },
+        hours: {
+          mon: { status: "open", open: "07:00", close: "19:00" },
+          tue: { status: "closed" },
+          wed: { status: "closed" },
+          thu: { status: "closed" },
+          fri: { status: "closed" },
+          sat: { status: "open", open: "09:00", close: "13:00" },
+          sun: { status: "closed" },
+        },
+      }),
+    );
   });
 });
