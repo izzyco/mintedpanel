@@ -12,7 +12,7 @@
 // curated values or the heuristics change materially — recorded dry runs are
 // interpreted against the profile that produced them.
 
-export const MOCK_FILL_PROFILE_VERSION = 2;
+export const MOCK_FILL_PROFILE_VERSION = 4;
 
 // Curated values for the common catalog tokens (bare form, the extension join
 // contract). Everything else falls through to the field-name heuristics below.
@@ -43,13 +43,36 @@ export const MOCK_FILL_VALUES: Readonly<Record<string, string>> = {
   "license.expirationDate": "2027-01-15",
   "group.name": "Sample Provider Group",
   "group.tin": "123456789",
-  "group.npi": "1999999984",
   "facility.name": "Sample Clinic",
   "facility.street": "456 Sample Ave",
   "facility.city": "Sampleville",
   "facility.state": "NC",
   "facility.zip": "27601",
   "facility.cityStateZip": "Sampleville, NC 27601",
+  // facility.hours is the hoursSummary() text; the per-day keys are the
+  // facility.hours{Day}{Status|Open|Close} composites (stored 24h HH:MM).
+  "facility.hours": "Open 7 days/week",
+  "facility.hoursMonStatus": "Open",
+  "facility.hoursMonOpen": "08:00",
+  "facility.hoursMonClose": "17:00",
+  "facility.hoursTueStatus": "Open",
+  "facility.hoursTueOpen": "08:00",
+  "facility.hoursTueClose": "17:00",
+  "facility.hoursWedStatus": "Open",
+  "facility.hoursWedOpen": "08:00",
+  "facility.hoursWedClose": "17:00",
+  "facility.hoursThuStatus": "Open",
+  "facility.hoursThuOpen": "08:00",
+  "facility.hoursThuClose": "17:00",
+  "facility.hoursFriStatus": "Open",
+  "facility.hoursFriOpen": "08:00",
+  "facility.hoursFriClose": "17:00",
+  "facility.hoursSatStatus": "Open",
+  "facility.hoursSatOpen": "09:00",
+  "facility.hoursSatClose": "13:00",
+  "facility.hoursSunStatus": "Open",
+  "facility.hoursSunOpen": "09:00",
+  "facility.hoursSunClose": "13:00",
   "user.name": "Sample Operator",
   "user.email": "sample.operator@example.com",
 };

@@ -4,6 +4,7 @@
 // route adds at read time (no schema backing) so the picker offers the full set
 // the fill engine can resolve. Tokens are the BARE catalog form.
 import { supabase } from "@/integrations/supabase/externalClient";
+import { FACILITY_HOURS_TOKEN_KEYS } from "@/lib/facilityHours";
 import { orgContactTokenKeys } from "@/lib/orgContactTokens";
 
 export interface TokenCatalogEntry {
@@ -38,6 +39,13 @@ const COMPUTED_TOKENS: TokenCatalogEntry[] = [
   { token: "facility.cityStateZip", table: "facilities", column: "composite" },
   { token: "facility.streetAddress", table: "facilities", column: "composite" },
   { token: "facility.fullAddress", table: "facilities", column: "composite" },
+  // The per-day hours grid (facilities.hours jsonb) as fill tokens — the key
+  // list is owned by src/lib/facilityHours.ts.
+  ...FACILITY_HOURS_TOKEN_KEYS.map((token) => ({
+    token,
+    table: "facilities",
+    column: "composite",
+  })),
   // payer_network_targets is keyed by group × payer × state, so this value is
   // resolved only when the web fill has a validated case context. It is a
   // computed token, not a provider_groups column.

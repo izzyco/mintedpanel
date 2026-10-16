@@ -151,10 +151,30 @@ describe("WITHDRAWN_TOKENS (DYN-TOKEN-05)", () => {
     }
   });
 
-  it("names only provider.* tokens — a family withdrawal would be the wrong tool", () => {
+  it("names individual tokens, never a family — every withdrawn key has a family that still maps", () => {
     for (const token of WITHDRAWN_TOKENS) {
-      expect(token.startsWith("provider.")).toBe(true);
+      expect(token).toMatch(/^[a-z][A-Za-z]*\.[a-z][A-Za-z0-9]*$/);
+      expect(isUnfillableToken(token)).toBe(false);
     }
+  });
+
+  // 2026-10-15 (field-flow gap analysis G3): internal / audit columns the web
+  // profile never projects, so a mapping to them was a permanent blank.
+  it("withdraws the eight internal columns the web fill cannot resolve", () => {
+    for (const token of [
+      "provider.referenceOnly",
+      "provider.verificationState",
+      "provider.isTestProvider",
+      "facility.referenceOnly",
+      "license.verifiedStatus",
+      "license.verifiedBy",
+      "license.verifiedAt",
+      "license.verificationSourceUrl",
+    ]) {
+      expect(isWithdrawnToken(token)).toBe(true);
+    }
+    expect(isWithdrawnToken("license.state")).toBe(false);
+    expect(isWithdrawnToken("facility.name")).toBe(false);
   });
 });
 

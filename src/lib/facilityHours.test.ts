@@ -13,6 +13,8 @@ import {
   hoursSummary,
   isValidTime,
   validateHoursDraft,
+  FACILITY_HOURS_TOKEN_KEYS,
+  composeFacilityHoursTokens,
 } from "./facilityHours";
 
 describe("encode/decode round-trip", () => {
@@ -113,6 +115,28 @@ describe("display formatting", () => {
     expect(hoursSummary(encodeHours(irregular))).toBe("Open 5 days/week");
     expect(hoursSummary({})).toBeNull();
     expect(hoursSummary(undefined)).toBeNull();
+  });
+
+  it("composes the 21 per-day fill tokens from a stored week", () => {
+    const stored = encodeHours(applyWeekdayDefault("07:00", "19:00"));
+    const tokens = composeFacilityHoursTokens(stored);
+    expect(tokens["facility.hoursMonStatus"]).toBe("Open");
+    expect(tokens["facility.hoursMonOpen"]).toBe("07:00");
+    expect(tokens["facility.hoursFriClose"]).toBe("19:00");
+    expect(tokens["facility.hoursSatStatus"]).toBe("Closed");
+    // Closed days carry no times, so a mapped time box stays an honest gap.
+    expect("facility.hoursSatOpen" in tokens).toBe(false);
+    expect(Object.keys(tokens)).toHaveLength(7 + 5 * 2);
+    for (const key of Object.keys(tokens)) expect(FACILITY_HOURS_TOKEN_KEYS).toContain(key);
+  });
+
+  it("emits nothing for the {} default or malformed input — never 'Closed' all week", () => {
+    expect(composeFacilityHoursTokens({})).toEqual({});
+    expect(composeFacilityHoursTokens(null)).toEqual({});
+    expect(composeFacilityHoursTokens("garbage")).toEqual({});
+    expect(FACILITY_HOURS_TOKEN_KEYS).toHaveLength(21);
+    expect(FACILITY_HOURS_TOKEN_KEYS[0]).toBe("facility.hoursMonStatus");
+    expect(FACILITY_HOURS_TOKEN_KEYS[20]).toBe("facility.hoursSunClose");
   });
 
   it("covers every day key exactly once", () => {

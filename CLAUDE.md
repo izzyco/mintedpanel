@@ -207,6 +207,25 @@ User-scoped (`authenticateUser()`, no org resolution):
   `normalizeTokenKey`), so the field-map → profile-token join is a literal
   string match. The extension never strips braces. Pinned by
   `src/server/profileFieldMapJoin.test.ts`.
+- **The profile never pushes a jsonb object.** `facilities.hours` resolves to
+  the `hoursSummary()` text and to 21 per-day composites
+  `facility.hours{Mon..Sun}{Status|Open|Close}` (`src/lib/facilityHours.ts`
+  owns the key list; `providerProfile.ts`, `tokenCatalog.ts`, `pdfFill.ts`,
+  `sopAuthoringTokens.ts` and both mock profiles register from it). When no
+  day is open — the `{}` column default — all 22 come back `unresolved`
+  ("hours not entered"), never "Closed" all week. Any other object column
+  (`ada_compliance`, `service_types`, …) is null + a reason. Before this the
+  extension typed the literal text "[object Object]" into payer forms.
+- **Facility contact inheritance is applied to the fill.** The locked E1.2
+  rule (tel/fax/email/contact inherit the OWNING group's credentialing →
+  correspondence → billing block when the facility has none of its own,
+  `src/lib/facilityContact.ts`) is substituted on the picked facility row in
+  `providerProfile.ts` and in `pdfFill.ts` `buildProviderTokenValues` — owner-
+  guarded (`facility.group_id === group.id`), all-or-nothing, never copied
+  into the columns. `facility.phone` fills what the facility page shows.
+- **Mock dry-run profiles are versioned in lockstep.** `MOCK_FILL_PROFILE_VERSION`
+  in `src/lib/mockFillProfile.ts` and the extension's `src/shared/mockFillProfile.ts`
+  are both 4 (2026-10-15). Bump both in one coordinated change.
 - **`control_options` is capped at 1000 entries on BOTH sides** —
   `CONTROL_OPTIONS_CAP` in `src/lib/controlOptions.ts` here and in the
   extension's `src/content/captureScan.ts`. Both propose routes 422 a longer
