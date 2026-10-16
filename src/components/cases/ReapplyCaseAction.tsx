@@ -29,7 +29,7 @@ import {
 import { isAllStates, templateStates } from "@/lib/sopMatchKey";
 import { isFallbackTemplate, topRankedTemplates } from "@/lib/pickTemplate";
 import { resolveTemplate } from "@/lib/sopResolver";
-import { stampTasks } from "@/lib/sopStamp";
+import { stampExecutionTypes, stampTasks } from "@/lib/sopStamp";
 import { useReapplyCase } from "@/hooks/useCases";
 import { useSops } from "@/hooks/useAdmin";
 import type { CaseDetail } from "@/types";
@@ -106,9 +106,15 @@ export function ReapplyCaseAction({ c, canEdit }: ReapplyCaseActionProps) {
     // generation now wins over the fallback); the prior cycle's tasks and
     // stamps are untouched.
     const offset = (c.tasks ?? []).reduce((max, t) => Math.max(max, t.sortOrder + 1), 0);
-    const tasks = stampTasks(
-      resolved.map((t) => ({ ...t, sortOrder: t.sortOrder + offset })),
-      template,
+    // E4.2 TE-12: stamp execution types by index from taskDefinitions, as
+    // /generation and ManualCaseModal do, so an online-form task reapplied
+    // here stays Auto-fill rather than falling back to Manual.
+    const tasks = stampExecutionTypes(
+      stampTasks(
+        resolved.map((t) => ({ ...t, sortOrder: t.sortOrder + offset })),
+        template,
+      ),
+      template.taskDefinitions,
     );
 
     reapply.mutate(
