@@ -41,7 +41,7 @@ import { resolveCaseFacilityId } from "@/lib/caseFacility";
 import { manualCasePayers } from "@/lib/payerSetup";
 import { isFallbackTemplate, topRankedTemplates } from "@/lib/pickTemplate";
 import { resolveTemplate } from "@/lib/sopResolver";
-import { stampTasks } from "@/lib/sopStamp";
+import { stampExecutionTypes, stampTasks } from "@/lib/sopStamp";
 import { isAllStates, templateStates } from "@/lib/sopMatchKey";
 import { US_STATES } from "@/lib/usStates";
 import { useCanWrite, useIsAdmin } from "@/lib/permissions";
@@ -266,8 +266,14 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
         ? ((facilitiesQ.data ?? []).find((f) => f.id === facilityId) ?? null)
         : null;
     // E2.2 F2.2.1: stamp the version resolved here (same head row, TE-2).
+    // E4.2 TE-12: stamp each task's execution type from its SOP definition —
+    // without it an online-form task lands as Manual and the exact Extension
+    // handoff refuses it. Both stamps pair by index with taskDefinitions.
     const tasks = template
-      ? stampTasks(resolveTemplate(template, provider, group, facility, null), template)
+      ? stampExecutionTypes(
+          stampTasks(resolveTemplate(template, provider, group, facility, null), template),
+          template.taskDefinitions,
+        )
       : [];
 
     createCase.mutate(
