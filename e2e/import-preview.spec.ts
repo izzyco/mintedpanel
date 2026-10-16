@@ -288,6 +288,7 @@ function makeHandler(fixtures: Record<string, Record<string, unknown>[]>, wire: 
             last_name: p.last_name,
             middle_initial: p.middle_initial,
             credentials: p.credentials,
+            gender: p.gender ?? null,
             email: p.email,
             phone: p.phone,
             npi: p.npi,
@@ -320,14 +321,16 @@ function makeHandler(fixtures: Record<string, Record<string, unknown>[]>, wire: 
             created_at: NOW,
           }),
         );
-        ((c.facility_ids as string[]) ?? []).forEach((fid) =>
+        ((c.facility_ids as string[]) ?? []).forEach((fid, i) =>
           fixtures.provider_facility_assignments.push({
             id: `imp-pfa-${seq++}`,
             org_id: ORG_ID,
             provider_id: pid,
             facility_id: fid,
-            is_primary: false,
-            start_date: NOW.slice(0, 10),
+            // Mirrors the RPC: first facility on the file is primary; the
+            // assignment starts on the provider's start date, else today.
+            is_primary: i === 0,
+            start_date: (p.start_date as string | null) ?? NOW.slice(0, 10),
             created_at: NOW,
           }),
         );

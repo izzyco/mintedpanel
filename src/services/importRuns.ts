@@ -20,6 +20,7 @@ import {
 } from "@/services/orgSettings";
 import { matchGroupLocator } from "@/lib/groupLocator";
 import { decodeDelimited } from "@/lib/importSections";
+import { DAY_KEYS, emptyHoursDraft, encodeHours } from "@/lib/facilityHours";
 import { normalizeWebsiteUrl } from "@/lib/providerGroup";
 import { attachGroupPayer, listPayerNetworkTargets } from "@/services/payerNetworkTargets";
 import type { ScannedRow } from "@/lib/rosterImport";
@@ -602,12 +603,34 @@ function facilityInputFromMapped(m: Record<string, string | null>, groupId: stri
     email: m.email ?? null,
     appointmentPhone: m.appointment_phone ?? null,
     contactName: m.contact_name ?? null,
+    // Blank cells land exactly what FacilityForm saves for an untouched field
+    // (and what the column defaults are): true / [] / [] / {}. Sending null
+    // here overrode those defaults, so an uploaded facility differed from a
+    // manually created twin (field-flow gap analysis G4, 2026-10-15).
     acceptingNewPatients:
-      m.accepting_new_patients == null ? null : m.accepting_new_patients === "true",
-    languagesOffered: languages.length > 0 ? languages : null,
-    interpreterLanguages: interpreters.length > 0 ? interpreters : null,
-    adaCompliance: Object.keys(ada).length > 0 ? ada : null,
+      m.accepting_new_patients == null ? true : m.accepting_new_patients === "true",
+    effectiveDate: m.effective_date ?? null,
+    languagesOffered: languages,
+    interpreterLanguages: interpreters,
+    hours: hoursFromMapped(m),
+    adaCompliance: ada,
   };
+}
+
+// The 14 per-day columns → the locked jsonb through the pure module, exactly
+// as the form does: all closed / untouched stores {} ("not entered yet").
+function hoursFromMapped(m: Record<string, string | null>): FacilityInput["hours"] {
+  const draft = emptyHoursDraft();
+  let anyOpen = false;
+  for (const day of DAY_KEYS) {
+    const open = m[`${day}_open`];
+    const close = m[`${day}_close`];
+    if (open && close) {
+      draft[day] = { open: true, openTime: open, closeTime: close };
+      anyOpen = true;
+    }
+  }
+  return anyOpen ? encodeHours(draft) : {};
 }
 
 export interface SectionCommitResult {

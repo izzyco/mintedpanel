@@ -123,6 +123,7 @@ export interface CreateDisposition {
     middleInitial: string | null;
     lastName: string;
     credentials: string | null;
+    gender: string | null;
     email: string | null;
     phone: string | null;
     npi: string;
@@ -205,6 +206,7 @@ function createProviderDraft(row: StagedImportRow): CreateDisposition["provider"
     middleInitial: field(row, "provider_middle_initial"),
     lastName: field(row, "provider_last_name") ?? "",
     credentials: field(row, "credentials"),
+    gender: field(row, "gender"),
     email: field(row, "email"),
     phone: field(row, "phone"),
     npi: field(row, "npi") ?? "",
@@ -224,6 +226,7 @@ function createProviderDraft(row: StagedImportRow): CreateDisposition["provider"
 
 const CREATE_SCALAR_LABELS = [
   ["credentials", "credentials"],
+  ["gender", "gender"],
   ["email", "email"],
   ["phone", "phone"],
   ["specialty", "specialty"],
@@ -820,6 +823,9 @@ export interface CommitPlanCreate {
     caqh_last_attested_date: string | null;
     is_new_grad: boolean;
     credentials: string | null;
+    // Optional on the wire (2026-10-15): the RPC reads null when absent, so an
+    // older plan shape still commits.
+    gender?: string | null;
     email: string | null;
     phone: string | null;
     specialty: string | null;
@@ -906,6 +912,7 @@ export function buildCommitPlan(
           middle_initial: d.provider.middleInitial,
           last_name: d.provider.lastName,
           credentials: d.provider.credentials,
+          gender: d.provider.gender,
           email: d.provider.email,
           phone: d.provider.phone,
           npi: d.provider.npi,

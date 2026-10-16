@@ -40,9 +40,39 @@ describe("latest commit_import_run migration contract", () => {
         "graduation_date",
         "caqh_last_attested_date",
         "is_new_grad",
+        "gender",
       ]),
     );
     expect(providerInsertColumns(executableSql)).not.toContain("status");
+  });
+
+  // 2026-10-15 (field-flow gap analysis G6/G7): defaults and file-order primary.
+  it("falls back to the column defaults for a blank taxonomy_code / specialty instead of NULL", () => {
+    expect(executableSql).toMatch(
+      /COALESCE\(NULLIF\(v_provider ->> 'specialty', ''\), 'Physical Therapy'\)/,
+    );
+    expect(executableSql).toMatch(
+      /COALESCE\(NULLIF\(v_provider ->> 'taxonomy_code', ''\), '225100000X'\)/,
+    );
+  });
+
+  it("makes the first facility on the file primary and starts the assignment on the provider start date", () => {
+    const createLoop = executableSql.match(
+      /jsonb_array_elements_text\(COALESCE\(v_entry -> 'facility_ids'[\s\S]*?END LOOP;/i,
+    )?.[0];
+    if (!createLoop) throw new Error("Facility create loop not found in commit_import_run");
+    expect(createLoop).toMatch(/WITH ORDINALITY/i);
+    expect(createLoop).toMatch(/\(v_ord = 1\)/);
+    expect(createLoop).toMatch(/COALESCE\(\(v_provider ->> 'start_date'\)::date, CURRENT_DATE\)/);
+    const updateLoop = executableSql.match(
+      /jsonb_array_elements_text\(COALESCE\(v_entry -> 'add_facility_ids'[\s\S]*?END LOOP;/i,
+    )?.[0];
+    if (!updateLoop) throw new Error("Facility update loop not found in commit_import_run");
+    // Existing providers keep their primary; the new assignment starts when the provider did.
+    expect(updateLoop).toMatch(/v_fid, false,/);
+    expect(updateLoop).toMatch(
+      /COALESCE\(\(SELECT p\.start_date FROM providers p WHERE p\.id = v_pid\), CURRENT_DATE\)/,
+    );
   });
 
   it("keeps the provider update allowlist narrow", () => {
