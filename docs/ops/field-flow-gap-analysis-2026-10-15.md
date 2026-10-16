@@ -361,7 +361,8 @@ here).
 `facility.hours{Mon,Tue,Wed,Thu,Fri,Sat,Sun}{Status,Open,Close}` — `Status` = `Open`/`Closed`,
 times as stored 24h `HH:MM`, nothing emitted (all 21 unresolved, "hours not entered") when no day
 is open — plus `facility.hours` itself resolving to the existing `hoursSummary()` text
-(`Mon–Fri 7:00 AM–7:00 PM · Sat, Sun closed`) instead of the raw object.
+(`Mon–Fri 7:00 AM–7:00 PM` when every open day shares one range, otherwise
+`Open N days/week`) instead of the raw object.
 
 ## 4. Upload vs manual form — write parity
 
