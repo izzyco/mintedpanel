@@ -101,10 +101,42 @@ const FILL_SESSION_COLUMNS =
 const TYPED_CASE_FILL_SESSION_COLUMNS = `${FILL_SESSION_COLUMNS}, case_step_key`;
 const FILL_EVENT_V2_COLUMNS =
   "event_schema_version, fields_attempted, fields_verified, fields_rejected, field_outcomes";
-// DYN-TODAY-01 — named only when the request carries `systemTodayDate`, so a
-// database that predates migration 20261015120000 keeps accepting every other
-// fill event unchanged (same posture as case_step_key above).
+// DYN-TODAY-01 — probed only when a request carries `systemTodayDate` (or the
+// column is already known to exist), so a database that predates migration
+// 20261015120000 keeps accepting every other fill event unchanged (same
+// posture as case_step_key above).
 const SYSTEM_TODAY_COLUMN = "system_today_date";
+// Once one probe has seen the column it stays seen: the schema is additive, so
+// a column never goes away, and every later fill event (dated or not) can then
+// select it and compare it on replay without another round trip.
+let systemTodayColumnKnown = false;
+
+/** Test seam: forget that the column was seen. */
+export function resetSystemTodayColumnProbe(): void {
+  systemTodayColumnKnown = false;
+}
+
+/** PostgREST's two spellings of "that column does not exist": Postgres 42703
+ * from the statement, or PGRST204 from the schema cache. Anything else — a
+ * network fault, a permission error, a 5xx — is NOT "unsupported" and must
+ * propagate, or a transient error would silently drop the date from a fill. */
+function isMissingSystemTodayColumnError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const row = error as { code?: unknown; message?: unknown; details?: unknown };
+  const namesColumn = [row.message, row.details].some(
+    (value) => typeof value === "string" && value.includes(SYSTEM_TODAY_COLUMN),
+  );
+  return namesColumn && (row.code === "42703" || row.code === "PGRST204");
+}
+
+/** Replay rule for the resolved date. A stored row that recorded no date (it
+ * was written before the column existed, or the fill did not send one) cannot
+ * be contradicted by a retry, so it never conflicts; a stored date must be
+ * matched exactly, and a retry that omits it is a different request. */
+function sameSystemTodayDate(stored: unknown, incoming: string | null | undefined): boolean {
+  const storedDate = (stored ?? null) as string | null;
+  return storedDate == null || storedDate === (incoming ?? null);
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FILL_MODES = new Set<string>(["web", "pdf"]);
@@ -202,7 +234,7 @@ function sameStoredFill(
     canonicalJson(row.docs_attached ?? null) ===
       canonicalJson(metadata ? null : (input.docsAttached ?? null)) &&
     row.performed_by === ctx.userId &&
-    (!compareSystemToday || (row.system_today_date ?? null) === (input.systemTodayDate ?? null));
+    (!compareSystemToday || sameSystemTodayDate(row.system_today_date, input.systemTodayDate));
   if (!commonMatches) return false;
   if (input.startedAt != null && Date.parse(String(row.started_at)) !== Date.parse(input.startedAt))
     return false;
@@ -755,12 +787,16 @@ export async function recordFillEvent(
     return reject(422, "systemTodayDate must be a calendar date (YYYY-MM-DD)");
   }
   // The column is additive and may not be applied yet. A fill that resolved
-  // system.today is still a fill worth recording, so a missing column drops the
-  // date rather than the receipt; it is stored and compared on replay only when
-  // the database can hold it.
-  const storeSystemToday =
-    input.systemTodayDate != null && (await supportsSystemTodayDate({ db: ctx.db }));
-  const sessionColumns: string = storeSystemToday
+  // system.today is still a fill worth recording, so a MISSING column drops the
+  // date rather than the receipt (any other probe error propagates). Once the
+  // column has been seen, every request selects and compares it, so a replay
+  // that drops or changes a stored date is caught whichever side carries one.
+  const hasSystemToday = input.systemTodayDate != null;
+  const systemTodayColumn = hasSystemToday
+    ? await supportsSystemTodayDate({ db: ctx.db })
+    : systemTodayColumnKnown;
+  const storeSystemToday = hasSystemToday && systemTodayColumn;
+  const sessionColumns: string = systemTodayColumn
     ? `${baseSessionColumns}, ${SYSTEM_TODAY_COLUMN}`
     : baseSessionColumns;
 
@@ -772,7 +808,7 @@ export async function recordFillEvent(
     const incomingIsV2 = v2Metadata !== null;
     if (
       (storedIsV2 || incomingIsV2) &&
-      (!storedIsV2 || !incomingIsV2 || !sameStoredFill(row, input, ctx, storeSystemToday))
+      (!storedIsV2 || !incomingIsV2 || !sameStoredFill(row, input, ctx, systemTodayColumn))
     ) {
       return reject(409, "Idempotency id was already used with a different fill event");
     }
@@ -970,16 +1006,20 @@ export async function supportsFillEventV2(
 }
 
 /** DYN-TODAY-01 — can this database hold the resolved `system.today` date?
- * Probed only on a request that carries one. */
+ * Probed on a request that carries one, until a probe has seen the column.
+ * Only "column does not exist" means no; any other error is thrown, never read
+ * as "unsupported". */
 export async function supportsSystemTodayDate(
   ctx: Pick<FillSessionServiceCtx, "db">,
 ): Promise<boolean> {
-  try {
-    const { error } = await ctx.db.from("fill_sessions").select(SYSTEM_TODAY_COLUMN).limit(0);
-    return error == null;
-  } catch {
-    return false;
+  if (systemTodayColumnKnown) return true;
+  const { error } = await ctx.db.from("fill_sessions").select(SYSTEM_TODAY_COLUMN).limit(0);
+  if (error == null) {
+    systemTodayColumnKnown = true;
+    return true;
   }
+  if (isMissingSystemTodayColumnError(error)) return false;
+  throw error;
 }
 
 // ---------------------------------------------------------------------------
