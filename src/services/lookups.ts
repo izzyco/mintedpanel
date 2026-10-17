@@ -3,6 +3,7 @@
 // lookup retired in E6.5 F6.5.5.)
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow, snakeizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
 import type { Facility, Note, NoteEntityType, Profile, ProviderGroup } from "@/types";
 
@@ -61,28 +62,32 @@ export async function getStateLicensesByProvider(providerId: string): Promise<St
   return camelizeRow<StateLicense[]>(data ?? []);
 }
 
+// Facilities and groups back the reports as well as the pickers, so both read
+// to completion (never cut at PostgREST's max-rows); the id tiebreak keeps
+// page boundaries stable under equal names.
 export async function getFacilities(groupId?: string | null): Promise<Facility[]> {
   const orgId = requireActiveOrg();
-  let query = supabase
-    .from("facilities")
-    .select("*")
-    .eq("org_id", orgId)
-    .order("name", { ascending: true });
+  let query = supabase.from("facilities").select("*", { count: "exact" }).eq("org_id", orgId);
   if (groupId) query = query.eq("group_id", groupId);
-  const { data, error } = await query;
-  if (error) throw error;
-  return camelizeRow<Facility[]>(data ?? []);
+  const ordered = query.order("name", { ascending: true }).order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await ordered.range(from, to), {
+    label: "Facility list",
+  });
+  return camelizeRow<Facility[]>(rows);
 }
 
 export async function getProviderGroups(): Promise<ProviderGroup[]> {
   const orgId = requireActiveOrg();
-  const { data, error } = await supabase
+  const query = supabase
     .from("provider_groups")
-    .select("*")
+    .select("*", { count: "exact" })
     .eq("org_id", orgId)
-    .order("name", { ascending: true });
-  if (error) throw error;
-  return camelizeRow<ProviderGroup[]>(data ?? []);
+    .order("name", { ascending: true })
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Provider group list",
+  });
+  return camelizeRow<ProviderGroup[]>(rows);
 }
 
 export async function getCoordinators(): Promise<Profile[]> {

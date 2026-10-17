@@ -8,6 +8,7 @@
 // (prospects / in-motion, inactive excluded) lives in src/lib/portfolio.ts.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import type { LifecycleState, PortfolioOrg } from "@/types";
 
 const LIFECYCLE_STATES: readonly LifecycleState[] = ["prospect", "active", "inactive"];
@@ -19,12 +20,15 @@ function toLifecycleState(value: unknown): LifecycleState {
 }
 
 export async function listPortfolioOrgs(): Promise<PortfolioOrg[]> {
-  const { data, error } = await supabase
+  const query = supabase
     .from("organizations")
-    .select("id, name, lifecycle_state, created_at")
-    .order("name");
-  if (error) throw error;
-  return (data ?? []).map((row) => {
+    .select("id, name, lifecycle_state, created_at", { count: "exact" })
+    .order("name")
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Organization list",
+  });
+  return rows.map((row) => {
     const camel = camelizeRow<PortfolioOrg>(row);
     return { ...camel, lifecycleState: toLifecycleState(camel.lifecycleState) };
   });

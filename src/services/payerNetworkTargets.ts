@@ -6,19 +6,23 @@
 // unique key because it re-activates the existing row instead of inserting.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import { requireActiveOrg, writeAudit } from "@/lib/audit";
 import type { AttachmentSavePlan } from "@/lib/payerExpansion";
 import type { PayerNetworkTarget } from "@/types";
 
 export async function listPayerNetworkTargets(): Promise<PayerNetworkTarget[]> {
   const orgId = requireActiveOrg();
-  const { data, error } = await supabase
+  const query = supabase
     .from("payer_network_targets")
-    .select("*")
+    .select("*", { count: "exact" })
     .eq("org_id", orgId)
-    .order("created_at", { ascending: true });
-  if (error) throw error;
-  return camelizeRow<PayerNetworkTarget[]>(data ?? []);
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Payer network target list",
+  });
+  return camelizeRow<PayerNetworkTarget[]>(rows);
 }
 
 /** Apply a reviewed attachment save plan for one payer: insert the brand-new

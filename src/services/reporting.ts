@@ -8,6 +8,7 @@
 // every org with the same address and would collapse the whole book into one
 // state. Orgs with no derivable state resolve to null → the "Unknown" bucket.
 import { supabase } from "@/integrations/supabase/externalClient";
+import { readCompletePages } from "@/lib/completePages";
 
 interface AssignmentStateRow {
   org_id: string;
@@ -16,15 +17,18 @@ interface AssignmentStateRow {
 }
 
 export async function listPortfolioOrgStates(): Promise<Record<string, string | null>> {
-  const { data, error } = await supabase
+  const query = supabase
     .from("party_role_assignments")
-    .select("org_id, role_key, parties(state)")
+    .select("id, org_id, role_key, parties(state)", { count: "exact" })
     .eq("scope_type", "org")
-    .in("role_key", ["customer_escalation_contact", "owner"]);
-  if (error) throw error;
+    .in("role_key", ["customer_escalation_contact", "owner"])
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Organization geography",
+  });
   const customer: Record<string, string> = {};
   const owner: Record<string, string> = {};
-  for (const row of (data ?? []) as AssignmentStateRow[]) {
+  for (const row of rows as unknown as AssignmentStateRow[]) {
     const st = row.parties?.state?.trim();
     if (!st) continue;
     if (row.role_key === "customer_escalation_contact") customer[row.org_id] = st;

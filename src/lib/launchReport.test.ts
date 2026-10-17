@@ -1,6 +1,6 @@
 // E6.6 F6.6.2 — Launches report derivation tests (TS-135 shapes): the
-// date-only universe, the assignment-union open-case counts, the at-risk
-// rule, and the group ordering.
+// date-only universe, the case_facilities open-case attribution, the
+// staffing rule, the at-risk rule, and the group ordering.
 import { describe, expect, it } from "vitest";
 import {
   buildLaunchReportRows,
@@ -32,44 +32,74 @@ describe("daysUntil", () => {
 });
 
 describe("openCasesByFacility", () => {
-  const assignments = [
-    { providerId: "pr1", facilityId: "f1" },
-    { providerId: "pr1", facilityId: "f2" },
-    { providerId: "pr2", facilityId: "f2" },
+  const providers = [
+    { id: "pr1", status: "active" },
+    { id: "pr2", status: "active" },
+    { id: "test", status: "active", isTestProvider: true },
   ];
 
-  it("reaches a facility via the provider's assignment (generation cases carry no facility_id)", () => {
+  it("attributes a case to its case_facilities locations only — never via the provider's assignments", () => {
+    // pr1 is assigned to f1 AND f2, but the case holds only f1: it is pending
+    // for f1's go-live, not f2's.
     const counts = openCasesByFacility(
-      [{ id: "c1", providerId: "pr1", facilityId: null, status: "in_progress" }],
-      assignments,
+      [{ id: "c1", providerId: "pr1", facilityId: "f1", status: "in_progress" }],
+      [{ caseId: "c1", facilityId: "f1" }],
+      providers,
+    );
+    expect(counts.get("f1")).toBe(1);
+    expect(counts.has("f2")).toBe(false);
+  });
+
+  it("a multi-location case counts once at each location it holds", () => {
+    const counts = openCasesByFacility(
+      [{ id: "c1", providerId: "pr1", facilityId: "f1", status: "submitted" }],
+      [
+        { caseId: "c1", facilityId: "f1" },
+        { caseId: "c1", facilityId: "f2" },
+        { caseId: "c1", facilityId: "f2" },
+      ],
+      providers,
     );
     expect(counts.get("f1")).toBe(1);
     expect(counts.get("f2")).toBe(1);
   });
 
-  it("an explicit facility_id counts once even when the provider is also assigned there", () => {
+  it("the primary mirror never adds a location the case's links leave out", () => {
     const counts = openCasesByFacility(
-      [{ id: "c1", providerId: "pr1", facilityId: "f1", status: "submitted" }],
-      assignments,
+      [{ id: "c1", providerId: "pr1", facilityId: "f9", status: "submitted" }],
+      [{ caseId: "c1", facilityId: "f1" }],
+      providers,
     );
-    expect(counts.get("f1")).toBe(1);
+    expect(Array.from(counts.keys())).toEqual(["f1"]);
   });
 
-  it("a facility-linked case counts even without an assignment", () => {
-    const counts = openCasesByFacility(
-      [{ id: "c1", providerId: "pr9", facilityId: "f3", status: "not_started" }],
-      assignments,
-    );
-    expect(counts.get("f3")).toBe(1);
-  });
-
-  it("closed cases never count", () => {
+  it("a case with no case_facilities rows falls back to its facility_id mirror", () => {
+    // Creation stamps facility_id without writing the child row.
     const counts = openCasesByFacility(
       [
-        { id: "c1", providerId: "pr1", facilityId: null, status: "approved" },
-        { id: "c2", providerId: "pr2", facilityId: null, status: "denied" },
+        { id: "c1", providerId: "pr2", facilityId: "f3", status: "not_started" },
+        { id: "c2", providerId: "pr2", facilityId: null, status: "not_started" },
       ],
-      assignments,
+      [],
+      providers,
+    );
+    expect(counts.get("f3")).toBe(1);
+    expect(counts.size).toBe(1);
+  });
+
+  it("closed cases and the test provider's cases never count", () => {
+    const counts = openCasesByFacility(
+      [
+        { id: "c1", providerId: "pr1", facilityId: "f1", status: "approved" },
+        { id: "c2", providerId: "pr2", facilityId: "f1", status: "denied" },
+        { id: "c3", providerId: "test", facilityId: "f1", status: "in_progress" },
+      ],
+      [
+        { caseId: "c1", facilityId: "f1" },
+        { caseId: "c2", facilityId: "f1" },
+        { caseId: "c3", facilityId: "f1" },
+      ],
+      providers,
     );
     expect(counts.size).toBe(0);
   });
@@ -77,12 +107,46 @@ describe("openCasesByFacility", () => {
 
 describe("providerCountsByFacility", () => {
   it("counts distinct providers", () => {
-    const counts = providerCountsByFacility([
-      { providerId: "pr1", facilityId: "f1" },
-      { providerId: "pr1", facilityId: "f1" },
-      { providerId: "pr2", facilityId: "f1" },
-    ]);
+    const counts = providerCountsByFacility(
+      [
+        { providerId: "pr1", facilityId: "f1" },
+        { providerId: "pr1", facilityId: "f1" },
+        { providerId: "pr2", facilityId: "f1" },
+      ],
+      [
+        { id: "pr1", status: "active" },
+        { id: "pr2", status: "onboarding" },
+      ],
+      TODAY,
+    );
     expect(counts.get("f1")).toBe(2);
+  });
+
+  it("ignores terminated, test, and not-yet-started providers", () => {
+    const counts = providerCountsByFacility(
+      [
+        { providerId: "gone", facilityId: "f1", startDate: "2025-01-01" },
+        { providerId: "test", facilityId: "f1", startDate: "2025-01-01" },
+        { providerId: "future", facilityId: "f1", startDate: "2026-07-20" },
+        { providerId: "today", facilityId: "f2", startDate: TODAY },
+        { providerId: "legacy", facilityId: "f2", startDate: null },
+      ],
+      [
+        { id: "gone", status: "terminated" },
+        { id: "test", status: "active", isTestProvider: true },
+        { id: "future", status: "onboarding" },
+        { id: "today", status: "active" },
+        { id: "legacy", status: "active" },
+      ],
+      TODAY,
+    );
+    expect(counts.has("f1")).toBe(false);
+    expect(counts.get("f2")).toBe(2);
+  });
+
+  it("a provider the list does not carry still counts", () => {
+    const counts = providerCountsByFacility([{ providerId: "pr9", facilityId: "f1" }], [], TODAY);
+    expect(counts.get("f1")).toBe(1);
   });
 });
 

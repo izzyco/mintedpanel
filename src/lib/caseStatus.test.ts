@@ -19,6 +19,7 @@ import {
   isCaseStatus,
   isOpenCaseStatus,
   isReapplyCaseTransition,
+  isStatusHistorySeed,
   isTerminalCaseStatus,
   mapLegacyCaseStatus,
   suggestStatusBump,
@@ -316,5 +317,22 @@ describe("case status — allowed-transition menu order", () => {
         expect(canSetCaseStatus(from, to as CaseStatus)).toBe(true);
       }
     }
+  });
+});
+
+describe("isStatusHistorySeed", () => {
+  it("is exactly the NULL-from system row (migration snapshot or creation)", () => {
+    expect(isStatusHistorySeed({ fromStatus: null, actorKind: "system" })).toBe(true);
+  });
+
+  it("a real transition is never a seed — a system auto-transition or a user's first move", () => {
+    expect(isStatusHistorySeed({ fromStatus: "submitted", actorKind: "system" })).toBe(false);
+    expect(isStatusHistorySeed({ fromStatus: "in_review", actorKind: "user" })).toBe(false);
+    expect(isStatusHistorySeed({ fromStatus: null, actorKind: "user" })).toBe(false);
+  });
+
+  it("a partial projection that did not read the columns is not a seed", () => {
+    expect(isStatusHistorySeed({ fromStatus: undefined, actorKind: "system" })).toBe(false);
+    expect(isStatusHistorySeed({ fromStatus: null, actorKind: undefined })).toBe(false);
   });
 });

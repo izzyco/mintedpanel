@@ -6,6 +6,7 @@
 // shared internal triage queue (TD-6), so these also skip requireActiveOrg.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import type { InboundLead, InboundLeadInput } from "@/types";
 
 function boundRpc() {
@@ -34,12 +35,15 @@ export async function submitInboundLead(input: InboundLeadInput): Promise<void> 
 // Operator: the shared inbound triage queue, newest first. RLS lets any
 // authenticated user read (Stage 0 shared queue).
 export async function listInboundLeads(): Promise<InboundLead[]> {
-  const { data, error } = await supabase
+  const query = supabase
     .from("inbound_leads")
-    .select("*")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []).map((row) => camelizeRow<InboundLead>(row));
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Inbound lead list",
+  });
+  return rows.map((row) => camelizeRow<InboundLead>(row));
 }
 
 // Operator: convert a lead into a PROSPECT org via the E0.1 create_organization
