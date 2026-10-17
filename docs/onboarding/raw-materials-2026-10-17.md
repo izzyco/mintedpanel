@@ -92,6 +92,14 @@ Caveats that matter:
 Each was retried by Minted staff within 1 to 4 days. No customer has ever
 uploaded a file; `/admin/import` is admin-only and customers have no login.
 
+The provider template changed at least three times in this window
+(relationship columns in E6.4, optional gender and facility-hours columns on
+2026-10-15, the Add Provider parity fix in PR #526 on 2026-10-16). The header
+gate rejects a file built on an older template with "download the template
+and re-upload". A template downloaded one week and uploaded the next is the
+most likely cause of the 100% row failures. The stored `error_report` rows
+would confirm it; they were not read for this audit.
+
 ### 1d. Days per controllable segment (Minted Panel work)
 
 | Segment | BEST | KFP | Lionstone |
