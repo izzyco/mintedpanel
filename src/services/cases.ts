@@ -355,76 +355,67 @@ export async function setPayerReference(caseId: string, value: string | null): P
   });
 }
 
-/** Overwrite the case's facility_id (latest wins). Must be a facility the
- * provider is assigned to under the case's group — or null to clear. Mirrors
- * setPayerReference: org-scoped read, audited before→after, no status change. */
+/** Point the case's primary location at `facilityId`, or clear it (null).
+ * Never writes the `credential_cases.facility_id` mirror without its
+ * `case_facilities` row: a facility not yet on the case is attached through
+ * `addCaseFacility` (same eligibility rule, audited) and then made primary
+ * through `setPrimaryCaseFacility`, so the previous primary stays on the case
+ * as a non-primary location. Setting the mirror's own facility on a case that
+ * has no child row (created before case creation wrote one) adds that row.
+ * Clearing removes the case's only location; a case with several has them
+ * removed one at a time. */
 export async function setCaseFacility(caseId: string, facilityId: string | null): Promise<void> {
   const orgId = requireActiveOrg();
 
-  const { data: prior, error: readErr } = await supabase
-    .from("credential_cases")
-    .select("id, provider_id, group_id, facility_id")
-    .eq("id", caseId)
-    .eq("org_id", orgId)
-    .maybeSingle();
+  const [{ data: prior, error: readErr }, { data: rows, error: rowsErr }] = await Promise.all([
+    supabase
+      .from("credential_cases")
+      .select("id, facility_id")
+      .eq("id", caseId)
+      .eq("org_id", orgId)
+      .maybeSingle(),
+    supabase
+      .from("case_facilities")
+      .select("id, facility_id, is_primary")
+      .eq("org_id", orgId)
+      .eq("case_id", caseId),
+  ]);
   if (readErr) throw readErr;
+  if (rowsErr) throw rowsErr;
   if (!prior) throw new Error("Case not found");
 
   const priorFacilityId = (prior.facility_id as string | null) ?? null;
-  const providerId = prior.provider_id as string;
-  const groupId = (prior.group_id as string | null) ?? null;
-
-  if (facilityId === priorFacilityId) return;
+  const links = (rows ?? []) as RawCaseFacilityRow[];
 
   if (facilityId != null) {
-    const [{ data: facilities, error: facErr }, { data: assignments, error: asnErr }] =
-      await Promise.all([
-        supabase.from("facilities").select("id, group_id, is_active").eq("org_id", orgId),
-        supabase
-          .from("provider_facility_assignments")
-          .select("provider_id, facility_id, is_primary")
-          .eq("org_id", orgId)
-          .eq("provider_id", providerId),
-      ]);
-    if (facErr) throw facErr;
-    if (asnErr) throw asnErr;
-
-    const eligible = isEligibleCaseFacility(
-      facilityId,
-      providerId,
-      groupId,
-      (assignments ?? []).map((a) => ({
-        providerId: (a.provider_id as string | null) ?? null,
-        facilityId: (a.facility_id as string | null) ?? null,
-        isPrimary: (a.is_primary as boolean | null) ?? null,
-      })),
-      (facilities ?? []).map((f) => ({
-        id: f.id as string,
-        groupId: (f.group_id as string | null) ?? null,
-        isActive: Boolean(f.is_active),
-      })),
-    );
-    if (!eligible) {
-      throw new Error("Facility must be one of this provider's locations under the case's group.");
+    if (!links.some((r) => r.facility_id === facilityId)) {
+      await addCaseFacility(caseId, facilityId);
     }
+    await setPrimaryCaseFacility(caseId, facilityId);
+    return;
   }
 
-  const { data, error } = await supabase
+  if (links.length > 1) {
+    throw new Error("This case has several locations. Remove them one at a time.");
+  }
+  const [only] = links;
+  if (only) await removeCaseFacility(caseId, only.facility_id);
+  if (only?.is_primary || priorFacilityId === null) return;
+
+  // No primary row backed the mirror, so removing a row did not clear it.
+  const { error } = await supabase
     .from("credential_cases")
-    .update({ facility_id: facilityId } as CredentialCaseUpdate)
+    .update({ facility_id: null } as CredentialCaseUpdate)
     .eq("id", caseId)
-    .eq("org_id", orgId)
-    .select("id, facility_id")
-    .maybeSingle();
+    .eq("org_id", orgId);
   if (error) throw error;
-  if (!data) throw new Error("Case not found");
 
   await writeAudit({
     actionType: "UPDATE",
     entityType: "case",
     entityId: caseId,
     before: { facilityId: priorFacilityId },
-    after: { facilityId },
+    after: { facilityId: null },
     description: "Updated case facility",
   });
 }
@@ -432,9 +423,9 @@ export async function setCaseFacility(caseId: string, facilityId: string | null)
 // E1.1 (Track B) — multi-location cases. `case_facilities` holds the full
 // location set for a case; `credential_cases.facility_id` stays a PRIMARY
 // MIRROR (unchanged shape — still what every existing reader sees) of
-// whichever row has `isPrimary: true`. `resolveCaseFacilityId` (creation-time
-// stamp) and `setCaseFacility` (existing single-facility overwrite) are both
-// untouched — these three functions are purely additive, post-create.
+// whichever row has `isPrimary: true`. At creation `create_case_with_tasks`
+// writes the primary row alongside the stamped `facility_id`; these three
+// functions own every change after that, and `setCaseFacility` composes them.
 
 const CASE_FACILITY_COLUMNS =
   "id, org_id, case_id, facility_id, is_primary, created_at, created_by, facility:facilities(id, name, street, suite, city, state, zip, is_active)";

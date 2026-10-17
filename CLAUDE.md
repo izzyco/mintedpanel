@@ -298,6 +298,13 @@ before any schema work.
 - `20261015130000_fill_sessions_system_today_date.sql` — additive nullable
   `fill_sessions.system_today_date`; the service probes for the column and
   drops only the date when it is absent, so the apply can follow the merge.
+- `20261017120000_case_creation_primary_location.sql` — **needs PM
+  sign-off.** `create_case_with_tasks` writes the primary `case_facilities`
+  row, plus a backfill of cases that have only the `facility_id` mirror (36
+  on production, 0 on staging, 2026-10-17). Verify: the function's `prosrc`
+  contains `INSERT INTO public.case_facilities`, and no case with a
+  `facility_id` lacks a matching child row. Staging already runs draft PR
+  #520's superset body; the migration's guard leaves that body alone.
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,
   never applied. Do not resurrect.
 
@@ -322,7 +329,10 @@ the repo just added. Check before regenerating.
 All are repo migrations unless noted.
 
 - **`create_case_with_tasks(p_input jsonb, p_tasks jsonb)`** — transactional
-  case + initial status history + tasks + audit rows. Threads
+  case + initial status history + tasks + audit rows, and the primary
+  `case_facilities` row whenever it stamps `facility_id` (repo
+  `20261017120000`; hosted production lacks it until the operator apply).
+  Exactly one overload. Threads
   `generation_run_id` and per-task `sop_template_id` / `sop_version` /
   `execution_type` / `sop_resolution_tier`. **Not replay-idempotent** — batch
   safety is per-row transactionality + skip-on-23505.
@@ -399,11 +409,14 @@ group_id, payer_id, state)` on `credential_cases`. Legacy NULL-group rows
   is unchanged in shape and is now a PRIMARY MIRROR of whichever row is
   primary — every existing reader keeps working untouched.
   `resolveCaseFacilityId` (creation-time stamp) still stamps exactly one
-  location; everything past that is additive via `src/services/cases.ts`'s
+  location, and `create_case_with_tasks` writes its primary child row in the
+  same transaction; everything past that goes through `src/services/cases.ts`'s
   `addCaseFacility`/`removeCaseFacility`/`setPrimaryCaseFacility`, which keep
-  the mirror in lockstep in the same call as the child-row write. Eligibility
-  is the same rule as `setCaseFacility` (provider must be assigned to the
-  facility under the case's group), enforced app-side, not by RLS.
+  the mirror in lockstep in the same call as the child-row write. **A mirror
+  with no child row is a defect**: Billing Readiness and the typed
+  fill-submission guard read `case_facilities` only. Eligibility
+  (provider must be assigned to the facility under the case's group) is
+  enforced app-side in `addCaseFacility`, not by RLS.
   **UI:** the case Details card's old single-value Facility row
   (`CaseFacilityField`, retired) is now `CaseLocationsSection` — every
   location listed, primary badged (`StatusPill`), Add/Remove/Make-primary for
@@ -411,12 +424,10 @@ group_id, payer_id, state)` on `credential_cases`. Legacy NULL-group rows
   `useAddCaseFacility`/`useRemoveCaseFacility`/`useSetPrimaryCaseFacility`
   (`src/hooks/useCases.ts`), keyed by `queryKeys.caseFacilities` and
   invalidated alongside `cases`/`case` so the list and the `facility_id`
-  mirror refresh together. `setCaseFacility`/`useSetCaseFacility` (the old
-  single-value overwrite) are untouched and kept — `resolveCaseFacilityId` at
-  `/generation` still stamps through `create_case_with_tasks`' `facilityId`
-  input, not through this function, so as of this UI swap neither has a
-  caller; left in place rather than removed, since case creation is out of
-  scope for the multi-location work.
+  mirror refresh together. `setCaseFacility`/`useSetCaseFacility` have no
+  caller; `setCaseFacility` composes the three lockstep functions (attach if
+  needed, then make primary; clearing removes only a sole location), so it
+  can never write the mirror alone.
   **Extension surface (E1.4):** `GET /api/cases/:id/context` additionally
   serves `facilities: CaseContextFacility[]` — the same full location set,
   org-scoped on both the `case_facilities` join row and the joined facility,
