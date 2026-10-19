@@ -109,6 +109,7 @@ import {
 import { normalizePortalKey } from "@/lib/tokenFormat";
 import { CASE_TYPES, type CaseType } from "@/lib/caseTypes";
 import { isPortalHiddenFromPickers } from "@/lib/portalRetirement";
+import { checkPortalBindingEligibility } from "@/lib/portalBinding";
 import { errorMessage } from "@/lib/dbErrors";
 import { SopVersionConflictError } from "@/services/templates";
 import { lintSopForPublish } from "@/lib/sopPublishLint";
@@ -993,7 +994,6 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
   }
 
   function portalConfigurationBlocked(): boolean {
-    if (!caseType) return false;
     if (portalsQ.isLoading) {
       toast.error("Wait for form configurations to load before publishing");
       setStep(2);
@@ -1016,26 +1016,17 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
           setStep(2);
           return true;
         }
-        const availablePortals = portals.filter((portal) => !isPortalHiddenFromPickers(portal));
-        const matches = availablePortals.filter(
-          (portal) =>
-            portal.portalKey === portalKey &&
-            portal.payerId === payload.payerId &&
-            portal.caseType === caseType,
-        );
-        const sameKeyCount = availablePortals.filter(
-          (portal) => portal.portalKey === portalKey,
-        ).length;
-        if (matches.length === 0) {
+        const eligibility = checkPortalBindingEligibility({
+          portalKey,
+          portals,
+          templatePayerId: payload.payerId,
+          templateCaseType: caseType,
+          isGlobalAuthoring: isGlobal,
+          templateOrgId: initial?.orgId ?? null,
+        });
+        if (!eligibility.isEligible) {
           toast.error(
-            `Form key “${portalKey}” has no configuration for this payer and case type. Choose a matching form configuration.`,
-          );
-          setStep(2);
-          return true;
-        }
-        if (sameKeyCount > 1) {
-          toast.error(
-            `Form key “${portalKey}” resolves to more than one visible configuration. Use a unique key before publishing.`,
+            `Action ${taskIndex + 1}, step ${stepIndex + 1}: ${eligibility.reason}`,
           );
           setStep(2);
           return true;

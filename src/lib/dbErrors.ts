@@ -152,6 +152,22 @@ export function translateDbError(error: unknown): unknown {
         : "Another active SOP template already covers one of these states for this payer and group.",
     );
   }
+  if (haystack.includes("sop_portal_binding_ineligible")) {
+    const key = /portal key "([^"]+)"/.exec(haystack)?.[1];
+    return new Error(
+      key
+        ? `Portal configuration “${key}” is incompatible with this template's payer, case type, or owner scope. Update or unlink it in Actions before publishing.`
+        : "A selected portal configuration is incompatible with this template's payer, case type, or owner scope. Update or unlink it in Actions before publishing.",
+    );
+  }
+  if (haystack.includes("sop_portal_binding_ambiguous")) {
+    const key = /portal key "([^"]+)"/.exec(haystack)?.[1];
+    return new Error(
+      key
+        ? `Portal configuration “${key}” matches multiple configurations. Use a unique portal key before publishing.`
+        : "A selected portal configuration matches multiple configurations. Use a unique portal key before publishing.",
+    );
+  }
   if (pg?.code === "23505") {
     const friendly = matchFragment(haystack, UNIQUE_MESSAGES);
     return new UniqueViolationError(friendly ?? "This record already exists.");

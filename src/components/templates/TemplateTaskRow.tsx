@@ -51,6 +51,10 @@ import {
   portalDisplayName,
   portalsForPicker,
 } from "@/lib/portalRetirement";
+import {
+  checkPortalBindingEligibility,
+  eligiblePortalsForPicker,
+} from "@/lib/portalBinding";
 import type { Portal, SOPStepType } from "@/types";
 import type { TokenGroup } from "@/lib/tokenGroups";
 
@@ -682,6 +686,7 @@ function StepModeBody({
                 portals={portals}
                 templatePayerId={templatePayerId}
                 templateCaseType={templateCaseType}
+                isGlobalAuthoring={isGlobalAuthoring}
                 canEdit={canEdit}
                 onChange={onPortalKeyChange}
                 onRequestRegister={
@@ -1071,6 +1076,7 @@ function PortalStepSelect({
   portals,
   templatePayerId,
   templateCaseType,
+  isGlobalAuthoring,
   canEdit,
   onChange,
   onRequestRegister,
@@ -1079,38 +1085,42 @@ function PortalStepSelect({
   portals: Portal[];
   templatePayerId: string | null;
   templateCaseType: CaseType | null;
+  isGlobalAuthoring?: boolean;
   canEdit: boolean;
   onChange: (portalKey: string) => void;
   /** Opens Form setup's Register portal dialog — the live registration path
    * after Admin > Portals became a redirect shell. */
   onRequestRegister?: () => void;
 }) {
+  const options = eligiblePortalsForPicker({
+    portals,
+    templatePayerId,
+    templateCaseType,
+    isGlobalAuthoring,
+  });
+
+  const eligibility = checkPortalBindingEligibility({
+    portalKey: step.portalKey,
+    portals,
+    templatePayerId,
+    templateCaseType,
+    isGlobalAuthoring,
+  });
+
   const visiblePortals = portalsForPicker(portals, step.portalKey);
-  const matching =
-    templatePayerId && templateCaseType
-      ? visiblePortals.filter(
-          (p) => p.payerId === templatePayerId && p.caseType === templateCaseType,
-        )
-      : !templateCaseType && step.portalKey
-        ? visiblePortals.filter((p) => p.portalKey === step.portalKey)
-        : [];
   const keyCounts = new Map<string, number>();
   for (const portal of visiblePortals) {
+    if (isPortalHiddenFromPickers(portal)) continue;
     keyCounts.set(portal.portalKey, (keyCounts.get(portal.portalKey) ?? 0) + 1);
   }
   const ambiguousKeys = new Set(
     [...keyCounts.entries()].filter(([, count]) => count > 1).map(([key]) => key),
   );
-  const options = matching.filter(
-    (portal) =>
-      !ambiguousKeys.has(portal.portalKey) &&
-      (!templateCaseType || !isPortalHiddenFromPickers(portal)),
-  );
-  const savedKeyMatches = visiblePortals.filter((p) => p.portalKey === step.portalKey);
-  const selected = savedKeyMatches.length === 1 ? savedKeyMatches[0] : undefined;
-  const selectedIsCompatible =
-    selected != null && options.some((portal) => portal.id === selected.id);
-  const value = selectedIsCompatible ? selected.portalKey : NO_PORTAL;
+
+  const value =
+    eligibility.isEligible && eligibility.selectedPortal
+      ? eligibility.selectedPortal.portalKey
+      : NO_PORTAL;
 
   const registerCta = onRequestRegister ? (
     <button
@@ -1170,14 +1180,23 @@ function PortalStepSelect({
               {[...ambiguousKeys].join(", ")}. Use a unique key in Form setup before linking it.
             </div>
           ) : null}
-          {step.portalKey && !selectedIsCompatible ? (
-            <div className="rounded-md border border-[#FDE68A] bg-[#FEF3C7] px-3 py-2 text-[11px] text-[#92400E]">
-              {templateCaseType
-                ? `Saved portal key ${step.portalKey} is unavailable for this payer and case type.`
-                : `Saved portal key ${step.portalKey} is missing or ambiguous in the registry.`}{" "}
-              Choose a compatible unique key or unlink it.
+          {step.portalKey && !eligibility.isEligible ? (
+            <div className="rounded-md border border-[#FCA5A5] bg-[#FEF2F2] px-3 py-2 text-[11px] text-[#B91C1C] flex items-center justify-between gap-2">
+              <span>
+                {eligibility.reason ??
+                  `Saved portal key “${step.portalKey}” is unavailable for this template.`}
+              </span>
+              {canEdit ? (
+                <button
+                  type="button"
+                  onClick={() => onChange("")}
+                  className="font-medium underline hover:opacity-80 shrink-0"
+                >
+                  Unlink
+                </button>
+              ) : null}
             </div>
-          ) : !selectedIsCompatible && !step.portalKey ? (
+          ) : !eligibility.isEligible && !step.portalKey ? (
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#92400E]">
               <span>
                 This step won&apos;t be linked for extension fill until a compatible configuration

@@ -21,7 +21,7 @@ import { TemplateTaskRow, type TemplateTaskRowProps } from "./TemplateTaskRow";
 const portals: Portal[] = [
   {
     id: "portal-enrollment-a",
-    orgId: "org-1",
+    orgId: null,
     portalKey: "enrollment_a",
     name: "Enrollment A",
     payerId: "payer-1",
@@ -35,7 +35,7 @@ const portals: Portal[] = [
   },
   {
     id: "portal-enrollment-b",
-    orgId: "org-1",
+    orgId: null,
     portalKey: "enrollment_b",
     name: "Enrollment B",
     payerId: "payer-1",
@@ -49,7 +49,7 @@ const portals: Portal[] = [
   },
   {
     id: "portal-contract",
-    orgId: "org-1",
+    orgId: null,
     portalKey: "contract_only",
     name: "Contract portal",
     payerId: "payer-1",
@@ -63,7 +63,7 @@ const portals: Portal[] = [
   },
   {
     id: "portal-other-payer",
-    orgId: "org-1",
+    orgId: null,
     portalKey: "other_payer",
     name: "Other payer portal",
     payerId: "payer-2",
@@ -75,9 +75,23 @@ const portals: Portal[] = [
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   },
+  {
+    id: "portal-org-scoped",
+    orgId: "org-1",
+    portalKey: "org_scoped",
+    name: "Org scoped portal",
+    payerId: "payer-1",
+    caseType: "enrollment",
+    formUrl: "https://payer.example/form",
+    isVerified: true,
+    lastVerifiedAt: null,
+    urlChangedAt: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
 ];
 
-function task(): EditableTask {
+function task(stepPortalKey = ""): EditableTask {
   return {
     id: "task-1",
     title: "Complete enrollment",
@@ -92,7 +106,7 @@ function task(): EditableTask {
         stepType: "online_form",
         emailTemplate: { subject: "", body: "", to: [], cc: [] },
         dataFields: [],
-        portalKey: "",
+        portalKey: stepPortalKey,
         payerFormFamilyId: "",
         isPayerForm: false,
         expectedTurnaroundDays: null,
@@ -103,10 +117,10 @@ function task(): EditableTask {
   };
 }
 
-function renderPicker() {
+function renderPicker(stepPortalKey = "") {
   const noop = vi.fn();
   const props: TemplateTaskRowProps = {
-    task: task(),
+    task: task(stepPortalKey),
     taskIdx: 0,
     taskCount: 1,
     canEdit: true,
@@ -140,12 +154,22 @@ function renderPicker() {
 }
 
 describe("TemplateTaskRow portal picker", () => {
-  it("keeps equal-URL portal keys distinct and filters by payer and case type", () => {
+  it("keeps equal-URL portal keys distinct and filters by payer, case type, and owner scope", () => {
     const html = renderPicker();
 
     expect(html).toContain('data-value="enrollment_a"');
     expect(html).toContain('data-value="enrollment_b"');
     expect(html).not.toContain('data-value="contract_only"');
     expect(html).not.toContain('data-value="other_payer"');
+    expect(html).not.toContain('data-value="org_scoped"');
+  });
+
+  it("renders an actionable unlink warning when a step contains an incompatible portal key", () => {
+    const html = renderPicker("org_scoped");
+
+    expect(html).toContain(
+      "belongs to a specific organization and cannot be bound to a global template",
+    );
+    expect(html).toContain("Unlink");
   });
 });
