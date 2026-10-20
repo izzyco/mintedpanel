@@ -866,7 +866,9 @@ export async function getProviderProfile(
         contact_name?: string | null;
       } | null,
     ),
-    ...composeGroupAddressTokens(group ? (camelizeRow<ProviderGroup>(group) as unknown as ProviderGroup) : null),
+    ...composeGroupAddressTokens(
+      group ? (camelizeRow<ProviderGroup>(group) as unknown as ProviderGroup) : null,
+    ),
     ...composeFacilityHoursTokens(selectedFacilityRow?.hours),
   };
   const hoursReason = selectedFacilityRow

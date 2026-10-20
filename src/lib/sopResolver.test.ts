@@ -468,10 +468,17 @@ describe("resolveTemplate draft-email recipients (E1.7b F1.7b.5)", () => {
       state: "TX",
       zip: "78701",
     };
-    const [task] = resolveTemplate(tpl, provider({ firstName: "Jordan", lastName: "Rivera" }), g, f);
+    const [task] = resolveTemplate(
+      tpl,
+      provider({ firstName: "Jordan", lastName: "Rivera" }),
+      g,
+      f,
+    );
     const email = task.sopContent[0].emailTemplate;
     expect(email?.subject).toBe("Update for Jordan Rivera");
-    expect(email?.body).toBe("Provider Jordan Rivera at Austin, TX 78701 under Jane Billing in Austin, TX 78701.");
+    expect(email?.body).toBe(
+      "Provider Jordan Rivera at Austin, TX 78701 under Jane Billing in Austin, TX 78701.",
+    );
   });
 });
 

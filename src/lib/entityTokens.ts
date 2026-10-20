@@ -280,12 +280,17 @@ export function composeGroupAddressTokens(
   if (corrCity && corrState && corrZip) {
     tokens["group.correspondenceCityStateZip"] = `${corrCity}, ${corrState} ${corrZip}`;
   }
-  const corrStreetAddress = corrStreet ? (corrSuite ? `${corrStreet}, ${corrSuite}` : corrStreet) : null;
+  const corrStreetAddress = corrStreet
+    ? corrSuite
+      ? `${corrStreet}, ${corrSuite}`
+      : corrStreet
+    : null;
   if (corrStreetAddress) tokens["group.correspondenceStreetAddress"] = corrStreetAddress;
   const corrLegacy = composeAddressToken([corrStreet, corrCity, corrState, corrZip]);
   if (corrLegacy) tokens["group.correspondenceAddress"] = corrLegacy;
   if (corrStreetAddress && corrCity && corrState && corrZip) {
-    tokens["group.correspondenceFullAddress"] = `${corrStreetAddress}, ${corrCity}, ${corrState} ${corrZip}`;
+    tokens["group.correspondenceFullAddress"] =
+      `${corrStreetAddress}, ${corrCity}, ${corrState} ${corrZip}`;
   }
 
   // Credentialing
@@ -297,12 +302,17 @@ export function composeGroupAddressTokens(
   if (credCity && credState && credZip) {
     tokens["group.credentialingCityStateZip"] = `${credCity}, ${credState} ${credZip}`;
   }
-  const credStreetAddress = credStreet ? (credSuite ? `${credStreet}, ${credSuite}` : credStreet) : null;
+  const credStreetAddress = credStreet
+    ? credSuite
+      ? `${credStreet}, ${credSuite}`
+      : credStreet
+    : null;
   if (credStreetAddress) tokens["group.credentialingStreetAddress"] = credStreetAddress;
   const credLegacy = composeAddressToken([credStreet, credCity, credState, credZip]);
   if (credLegacy) tokens["group.credentialingAddress"] = credLegacy;
   if (credStreetAddress && credCity && credState && credZip) {
-    tokens["group.credentialingFullAddress"] = `${credStreetAddress}, ${credCity}, ${credState} ${credZip}`;
+    tokens["group.credentialingFullAddress"] =
+      `${credStreetAddress}, ${credCity}, ${credState} ${credZip}`;
   }
 
   // Contact full names
