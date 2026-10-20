@@ -2,7 +2,8 @@
 // recent go-live dates, grouped by provider group and date-sorted, with
 // provider counts, open-case counts, and the at-risk flag. DATE-ONLY — no
 // location statuses anywhere; derivation is pure (src/lib/launchReport.ts)
-// over the shared facilities / assignments / cases caches. Org-scoped inside
+// over the shared facilities / assignments / providers / cases + case
+// location caches. Org-scoped inside
 // the cross-org Reporting Center.
 import { useMemo } from "react";
 import { AlertTriangle } from "lucide-react";
@@ -19,9 +20,9 @@ import { EmptyState } from "@/components/EmptyState";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { fmtDate } from "@/lib/format";
 import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
-import { useCases } from "@/hooks/useCases";
+import { useCases, useOrgCaseFacilityLinks } from "@/hooks/useCases";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
-import { useProviderAssignments } from "@/hooks/useProviders";
+import { useProviderAssignments, useProviders } from "@/hooks/useProviders";
 import {
   buildLaunchReportRows,
   groupLaunchRows,
@@ -42,15 +43,20 @@ export function LaunchesReport() {
   const facilitiesQ = useFacilities();
   const groupsQ = useProviderGroups();
   const assignmentsQ = useProviderAssignments();
+  const providersQ = useProviders();
   const casesQ = useCases();
+  const caseFacilitiesQ = useOrgCaseFacilityLinks();
   const today = localTodayIso();
 
   const groups = useMemo(() => {
     // The domain type keeps the FK columns nullable; a row missing either id
     // can't join anything, so it drops at this boundary.
     const assignments = (assignmentsQ.data ?? []).flatMap((a) =>
-      a.providerId && a.facilityId ? [{ providerId: a.providerId, facilityId: a.facilityId }] : [],
+      a.providerId && a.facilityId
+        ? [{ providerId: a.providerId, facilityId: a.facilityId, startDate: a.startDate }]
+        : [],
     );
+    const providers = providersQ.data ?? [];
     const rows = buildLaunchReportRows(
       (facilitiesQ.data ?? []).map((f) => ({
         id: f.id,
@@ -62,7 +68,7 @@ export function LaunchesReport() {
         city: f.city,
         state: f.state,
       })),
-      providerCountsByFacility(assignments),
+      providerCountsByFacility(assignments, providers, today),
       openCasesByFacility(
         (casesQ.data ?? []).map((c) => ({
           id: c.id,
@@ -70,18 +76,32 @@ export function LaunchesReport() {
           facilityId: c.facilityId,
           status: c.caseStatus,
         })),
-        assignments,
+        caseFacilitiesQ.data ?? [],
+        providers,
       ),
       today,
     );
     return groupLaunchRows(rows, new Map((groupsQ.data ?? []).map((g) => [g.id, g.name])));
-  }, [facilitiesQ.data, groupsQ.data, assignmentsQ.data, casesQ.data, today]);
+  }, [
+    facilitiesQ.data,
+    groupsQ.data,
+    assignmentsQ.data,
+    providersQ.data,
+    casesQ.data,
+    caseFacilitiesQ.data,
+    today,
+  ]);
 
   if (!orgId) {
     return <EmptyState message="Select an organization to see its upcoming launches." />;
   }
   const loading =
-    facilitiesQ.isLoading || groupsQ.isLoading || assignmentsQ.isLoading || casesQ.isLoading;
+    facilitiesQ.isLoading ||
+    groupsQ.isLoading ||
+    assignmentsQ.isLoading ||
+    providersQ.isLoading ||
+    casesQ.isLoading ||
+    caseFacilitiesQ.isLoading;
   if (loading) return <Skeleton className="h-40 w-full" />;
 
   return (

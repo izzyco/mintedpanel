@@ -1,6 +1,8 @@
 // E6.6 F6.6.4 — counts-as-reports: active locations with no providers
-// assigned. Derived live from the shared facilities + assignments caches
-// (src/lib/countsReports.ts); no stored state, no widgets on working screens.
+// assigned. Derived live from the shared facilities + assignments + providers
+// caches (src/lib/countsReports.ts, staffing rule in launchReport.ts — a
+// terminated, test or not-yet-started provider does not staff a location);
+// no stored state, no widgets on working screens.
 import { useMemo } from "react";
 import {
   Table,
@@ -15,7 +17,8 @@ import { EmptyState } from "@/components/EmptyState";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { fmtDate } from "@/lib/format";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
-import { useProviderAssignments } from "@/hooks/useProviders";
+import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
+import { useProviderAssignments, useProviders } from "@/hooks/useProviders";
 import { providerCountsByFacility } from "@/lib/launchReport";
 import { facilitiesWithoutProviders } from "@/lib/countsReports";
 
@@ -24,17 +27,21 @@ export function FacilitiesWithoutProvidersReport() {
   const facilitiesQ = useFacilities();
   const groupsQ = useProviderGroups();
   const assignmentsQ = useProviderAssignments();
+  const providersQ = useProviders();
+  const today = localTodayIso();
 
   const rows = useMemo(() => {
     const counts = providerCountsByFacility(
       (assignmentsQ.data ?? []).flatMap((a) =>
         a.providerId && a.facilityId
-          ? [{ providerId: a.providerId, facilityId: a.facilityId }]
+          ? [{ providerId: a.providerId, facilityId: a.facilityId, startDate: a.startDate }]
           : [],
       ),
+      providersQ.data ?? [],
+      today,
     );
     return facilitiesWithoutProviders(facilitiesQ.data ?? [], counts);
-  }, [facilitiesQ.data, assignmentsQ.data]);
+  }, [facilitiesQ.data, assignmentsQ.data, providersQ.data, today]);
 
   const groupName = useMemo(
     () => new Map((groupsQ.data ?? []).map((g) => [g.id, g.name])),
@@ -44,7 +51,12 @@ export function FacilitiesWithoutProvidersReport() {
   if (!orgId) {
     return <EmptyState message="Select an organization to see its unstaffed facilities." />;
   }
-  if (facilitiesQ.isLoading || groupsQ.isLoading || assignmentsQ.isLoading) {
+  if (
+    facilitiesQ.isLoading ||
+    groupsQ.isLoading ||
+    assignmentsQ.isLoading ||
+    providersQ.isLoading
+  ) {
     return <Skeleton className="h-40 w-full" />;
   }
   if (rows.length === 0) {

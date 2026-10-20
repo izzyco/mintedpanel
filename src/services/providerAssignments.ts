@@ -8,6 +8,7 @@
 // removals use the DELETE action (CHECK widened by 20260712150200).
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import { requireActiveOrg, writeAudit } from "@/lib/audit";
 import { translateDbError } from "@/lib/dbErrors";
 import {
@@ -25,12 +26,15 @@ const ASSIGNMENT_COLUMNS =
 
 export async function listOrgAssignments(): Promise<FacilityAssignment[]> {
   const orgId = requireActiveOrg();
-  const { data, error } = await supabase
+  const query = supabase
     .from("provider_facility_assignments")
-    .select(ASSIGNMENT_COLUMNS)
-    .eq("org_id", orgId);
-  if (error) throw error;
-  return camelizeRow<FacilityAssignment[]>(data ?? []);
+    .select(ASSIGNMENT_COLUMNS, { count: "exact" })
+    .eq("org_id", orgId)
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Facility assignment list",
+  });
+  return camelizeRow<FacilityAssignment[]>(rows);
 }
 
 export interface AssignmentRowInput {

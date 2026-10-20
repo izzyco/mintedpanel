@@ -38,7 +38,10 @@ describe("contracts service", () => {
     const chain: Record<string, unknown> = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
-      order: vi.fn().mockResolvedValue({
+      order: vi.fn().mockReturnThis(),
+      // The list reads to completion: one page, with the exact count.
+      range: vi.fn().mockResolvedValue({
+        count: 1,
         data: [
           {
             id: "c-1",
@@ -64,6 +67,8 @@ describe("contracts service", () => {
     expect(result[0].specialty).toBe("Physical Therapy");
     expect(chain.eq).toHaveBeenCalledWith("org_id", "org-123");
     expect(chain.eq).toHaveBeenCalledWith("group_id", "g-1");
+    expect(chain.order).toHaveBeenCalledWith("id", { ascending: true });
+    expect(chain.range).toHaveBeenCalledWith(0, 499);
   });
 
   it("creates a new contract and logs audit and status history", async () => {

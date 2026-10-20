@@ -281,7 +281,7 @@ test("TS-135 — the Launches report groups by group, sorts by date, and flags a
     facilities: [
       // +10d, zero providers → at risk (no providers assigned).
       facilityRow("f-soon", "Eastside Clinic", daysFromNow(10)),
-      // +12d, staffed but its provider still has an open case → at risk.
+      // +12d, staffed, and an open case holds this location → at risk.
       facilityRow("f-soon2", "Westside Clinic", daysFromNow(12)),
       // +90d, zero providers — outside the approaching window → NOT at risk.
       facilityRow("f-far", "Northside Clinic", daysFromNow(90)),
@@ -296,6 +296,9 @@ test("TS-135 — the Launches report groups by group, sorts by date, and flags a
       { id: "a-2", org_id: ORG_A, provider_id: "p-2", facility_id: "f-recent", is_primary: true },
     ],
     credential_cases: [caseRow("c-open", "p-1", "pay-anthem", "TX", "in_progress")],
+    // Open cases reach a location through case_facilities, never through the
+    // provider's assignments.
+    case_facilities: [{ id: "cf-1", org_id: ORG_A, case_id: "c-open", facility_id: "f-soon2" }],
   });
   await page.goto("/reporting/launches");
   await expect(page.getByRole("heading", { name: "Launches", exact: true })).toBeVisible({
