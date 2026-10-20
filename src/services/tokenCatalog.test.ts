@@ -30,7 +30,6 @@ describe("listTokenCatalog", () => {
         "facility.hoursSunClose",
         "group.payerIssuedId",
         "user.name",
-        "user.fullName",
         "user.firstName",
         "user.lastName",
         "user.title",

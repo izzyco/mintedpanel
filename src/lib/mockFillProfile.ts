@@ -214,7 +214,6 @@ export const MOCK_FILL_VALUES: Readonly<Record<string, string>> = {
 
   // --- user.* ---
   "user.name": "Sample Operator",
-  "user.fullName": "Sample Operator",
   "user.firstName": "Sample",
   "user.lastName": "Operator",
   "user.title": "Credentialing Specialist",

@@ -28,7 +28,6 @@ export interface TokenCatalogEntry {
 // one value would let a trained mapping pick either.
 const USER_TOKENS: TokenCatalogEntry[] = [
   { token: "user.name", table: "profiles", column: "full_name" },
-  { token: "user.fullName", table: "profiles", column: "full_name" },
   { token: "user.firstName", table: "profiles", column: "first_name" },
   { token: "user.lastName", table: "profiles", column: "last_name" },
   { token: "user.title", table: "profiles", column: "title" },

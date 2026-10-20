@@ -58,7 +58,6 @@ export function resolveUserTokenValues(
   return {
     tokens: [
       { token: "user.name", value: name ?? "" },
-      { token: "user.fullName", value: name ?? "" },
       { token: "user.firstName", value: firstName ?? "" },
       { token: "user.lastName", value: lastName ?? "" },
       { token: "user.title", value: title ?? "" },

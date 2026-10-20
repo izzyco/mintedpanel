@@ -191,7 +191,6 @@ describe("provider profile handler", () => {
   // with a note. The profiles-backed path is covered in userTokens.test.ts.
   const USER_TOKENS = [
     { token: "user.name", value: "Tess Tester" },
-    { token: "user.fullName", value: "Tess Tester" },
     { token: "user.firstName", value: "" },
     { token: "user.lastName", value: "" },
     { token: "user.title", value: "" },
@@ -276,7 +275,6 @@ describe("provider profile handler", () => {
     const b = await body(res);
     expect((b.data as { tokens: unknown }).tokens).toEqual([
       { token: "user.name", value: "" },
-      { token: "user.fullName", value: "" },
       { token: "user.firstName", value: "" },
       { token: "user.lastName", value: "" },
       { token: "user.title", value: "" },
