@@ -179,6 +179,30 @@ describe("translateDbError — everything else passes through", () => {
     });
     expect(messageOf(result)).toMatch(/already covers NC/);
   });
+
+  it("translates sop_portal_binding_ineligible into a friendly domain message", () => {
+    const result = translateDbError({
+      code: "P0001",
+      message:
+        'sop_portal_binding_ineligible: portal key "trinity-health-practitioner-portal-enrollment-aa68e403090d" has no compatible case type, payer, or owner scope',
+    });
+    expect(messageOf(result)).toContain(
+      "is incompatible with this template's payer, case type, or owner scope",
+    );
+    expect(messageOf(result)).toContain(
+      "trinity-health-practitioner-portal-enrollment-aa68e403090d",
+    );
+  });
+
+  it("translates sop_portal_binding_ambiguous into a friendly domain message", () => {
+    const result = translateDbError({
+      code: "P0001",
+      message:
+        'sop_portal_binding_ambiguous: portal key "ambig_key" has multiple visible global configurations',
+    });
+    expect(messageOf(result)).toContain("matches multiple configurations");
+    expect(messageOf(result)).toContain("ambig_key");
+  });
 });
 
 describe("toError — PostgREST objects become Error", () => {

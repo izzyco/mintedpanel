@@ -109,6 +109,7 @@ import {
 import { normalizePortalKey } from "@/lib/tokenFormat";
 import { CASE_TYPES, type CaseType } from "@/lib/caseTypes";
 import { isPortalHiddenFromPickers } from "@/lib/portalRetirement";
+import { checkPortalBindingEligibility } from "@/lib/portalBinding";
 import { errorMessage } from "@/lib/dbErrors";
 import { SopVersionConflictError } from "@/services/templates";
 import { lintSopForPublish } from "@/lib/sopPublishLint";
@@ -993,6 +994,12 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
   }
 
   function portalConfigurationBlocked(): boolean {
+    // Mirrors guard_typed_sop_template: Postgres runs
+    // validate_sop_template_portal_bindings only for TYPED templates (the
+    // validator also returns early on a NULL case_type), so an untyped legacy
+    // head is exempt. Publish/create/duplicate already refuse an untyped
+    // template with "Choose a case type…"; blocking here would only pre-empt
+    // that message (and the change-note dialog) for a merely incomplete draft.
     if (!caseType) return false;
     if (portalsQ.isLoading) {
       toast.error("Wait for form configurations to load before publishing");
@@ -1016,27 +1023,16 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
           setStep(2);
           return true;
         }
-        const availablePortals = portals.filter((portal) => !isPortalHiddenFromPickers(portal));
-        const matches = availablePortals.filter(
-          (portal) =>
-            portal.portalKey === portalKey &&
-            portal.payerId === payload.payerId &&
-            portal.caseType === caseType,
-        );
-        const sameKeyCount = availablePortals.filter(
-          (portal) => portal.portalKey === portalKey,
-        ).length;
-        if (matches.length === 0) {
-          toast.error(
-            `Form key “${portalKey}” has no configuration for this payer and case type. Choose a matching form configuration.`,
-          );
-          setStep(2);
-          return true;
-        }
-        if (sameKeyCount > 1) {
-          toast.error(
-            `Form key “${portalKey}” resolves to more than one visible configuration. Use a unique key before publishing.`,
-          );
+        const eligibility = checkPortalBindingEligibility({
+          portalKey,
+          portals,
+          templatePayerId: payload.payerId,
+          templateCaseType: caseType,
+          isGlobalAuthoring: isGlobal,
+          templateOrgId: initial?.orgId ?? null,
+        });
+        if (!eligibility.isEligible) {
+          toast.error(`Action ${taskIndex + 1}, step ${stepIndex + 1}: ${eligibility.reason}`);
           setStep(2);
           return true;
         }
@@ -1555,6 +1551,7 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
                 templatePayerName={payerName}
                 templateStates={states}
                 isGlobalAuthoring={isGlobal}
+                templateOrgId={initial?.orgId ?? null}
                 autoOpenStepId={intentStepId}
                 dragTaskId={dragTaskId}
                 setDragTaskId={setDragTaskId}

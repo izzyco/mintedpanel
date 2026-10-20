@@ -51,6 +51,7 @@ import {
   portalDisplayName,
   portalsForPicker,
 } from "@/lib/portalRetirement";
+import { checkPortalBindingEligibility, eligiblePortalsForPicker } from "@/lib/portalBinding";
 import type { Portal, SOPStepType } from "@/types";
 import type { TokenGroup } from "@/lib/tokenGroups";
 
@@ -93,6 +94,10 @@ export interface TemplateTaskRowProps {
   /** E6.5 F6.5.6 — the template is a GLOBAL row: the step's form machinery
    * registers/trains against the global tier. Primitive (memo-safe). */
   isGlobalAuthoring: boolean;
+  /** The template row's owner org (null for a global row) — an org template
+   * resolves its own-org portal before the global one, exactly like
+   * validate_sop_template_portal_bindings. Primitive (memo-safe). */
+  templateOrgId: string | null;
   /** Slice F — the step a readiness deep-link (?intent=) landed on: that step's
    * form panel mounts EXPANDED. Stable string (memo-safe); null = none. */
   autoOpenStepId: string | null;
@@ -130,6 +135,7 @@ export const TemplateTaskRow = memo(function TemplateTaskRow({
   groupedTokens,
   portals,
   isGlobalAuthoring,
+  templateOrgId,
   templatePayerId,
   templateCaseType,
   templateId,
@@ -378,6 +384,7 @@ export const TemplateTaskRow = memo(function TemplateTaskRow({
               templatePayerName={templatePayerName}
               templateStates={templateStates}
               isGlobalAuthoring={isGlobalAuthoring}
+              templateOrgId={templateOrgId}
               autoOpenStepId={autoOpenStepId}
               updateStep={updateStep}
               addDataField={addDataField}
@@ -490,6 +497,7 @@ export const TemplateTaskRow = memo(function TemplateTaskRow({
                       templatePayerName={templatePayerName}
                       templateStates={templateStates}
                       isGlobalAuthoring={isGlobalAuthoring}
+                      templateOrgId={templateOrgId}
                       autoOpenStepId={autoOpenStepId}
                       updateStep={updateStep}
                       addDataField={addDataField}
@@ -533,6 +541,7 @@ function StepModeBody({
   templatePayerName,
   templateStates,
   isGlobalAuthoring,
+  templateOrgId,
   autoOpenStepId,
   updateStep,
   addDataField,
@@ -551,6 +560,7 @@ function StepModeBody({
   templatePayerName: string | null;
   templateStates: string[];
   isGlobalAuthoring: boolean;
+  templateOrgId: string | null;
   autoOpenStepId: string | null;
   updateStep: TemplateTaskRowProps["updateStep"];
   addDataField: TemplateTaskRowProps["addDataField"];
@@ -682,6 +692,8 @@ function StepModeBody({
                 portals={portals}
                 templatePayerId={templatePayerId}
                 templateCaseType={templateCaseType}
+                isGlobalAuthoring={isGlobalAuthoring}
+                templateOrgId={templateOrgId}
                 canEdit={canEdit}
                 onChange={onPortalKeyChange}
                 onRequestRegister={
@@ -1071,6 +1083,8 @@ function PortalStepSelect({
   portals,
   templatePayerId,
   templateCaseType,
+  isGlobalAuthoring,
+  templateOrgId,
   canEdit,
   onChange,
   onRequestRegister,
@@ -1079,38 +1093,45 @@ function PortalStepSelect({
   portals: Portal[];
   templatePayerId: string | null;
   templateCaseType: CaseType | null;
+  isGlobalAuthoring?: boolean;
+  templateOrgId?: string | null;
   canEdit: boolean;
   onChange: (portalKey: string) => void;
   /** Opens Form setup's Register portal dialog — the live registration path
    * after Admin > Portals became a redirect shell. */
   onRequestRegister?: () => void;
 }) {
+  const options = eligiblePortalsForPicker({
+    portals,
+    templatePayerId,
+    templateCaseType,
+    isGlobalAuthoring,
+    templateOrgId,
+  });
+
+  const eligibility = checkPortalBindingEligibility({
+    portalKey: step.portalKey,
+    portals,
+    templatePayerId,
+    templateCaseType,
+    isGlobalAuthoring,
+    templateOrgId,
+  });
+
   const visiblePortals = portalsForPicker(portals, step.portalKey);
-  const matching =
-    templatePayerId && templateCaseType
-      ? visiblePortals.filter(
-          (p) => p.payerId === templatePayerId && p.caseType === templateCaseType,
-        )
-      : !templateCaseType && step.portalKey
-        ? visiblePortals.filter((p) => p.portalKey === step.portalKey)
-        : [];
   const keyCounts = new Map<string, number>();
   for (const portal of visiblePortals) {
+    if (isPortalHiddenFromPickers(portal)) continue;
     keyCounts.set(portal.portalKey, (keyCounts.get(portal.portalKey) ?? 0) + 1);
   }
   const ambiguousKeys = new Set(
     [...keyCounts.entries()].filter(([, count]) => count > 1).map(([key]) => key),
   );
-  const options = matching.filter(
-    (portal) =>
-      !ambiguousKeys.has(portal.portalKey) &&
-      (!templateCaseType || !isPortalHiddenFromPickers(portal)),
-  );
-  const savedKeyMatches = visiblePortals.filter((p) => p.portalKey === step.portalKey);
-  const selected = savedKeyMatches.length === 1 ? savedKeyMatches[0] : undefined;
-  const selectedIsCompatible =
-    selected != null && options.some((portal) => portal.id === selected.id);
-  const value = selectedIsCompatible ? selected.portalKey : NO_PORTAL;
+
+  const value =
+    eligibility.isEligible && eligibility.selectedPortal
+      ? eligibility.selectedPortal.portalKey
+      : NO_PORTAL;
 
   const registerCta = onRequestRegister ? (
     <button
@@ -1170,14 +1191,23 @@ function PortalStepSelect({
               {[...ambiguousKeys].join(", ")}. Use a unique key in Form setup before linking it.
             </div>
           ) : null}
-          {step.portalKey && !selectedIsCompatible ? (
-            <div className="rounded-md border border-[#FDE68A] bg-[#FEF3C7] px-3 py-2 text-[11px] text-[#92400E]">
-              {templateCaseType
-                ? `Saved portal key ${step.portalKey} is unavailable for this payer and case type.`
-                : `Saved portal key ${step.portalKey} is missing or ambiguous in the registry.`}{" "}
-              Choose a compatible unique key or unlink it.
+          {step.portalKey && !eligibility.isEligible ? (
+            <div className="rounded-md border border-[#FCA5A5] bg-[#FEF2F2] px-3 py-2 text-[11px] text-[#B91C1C] flex items-center justify-between gap-2">
+              <span>
+                {eligibility.reason ??
+                  `Saved portal key “${step.portalKey}” is unavailable for this template.`}
+              </span>
+              {canEdit ? (
+                <button
+                  type="button"
+                  onClick={() => onChange("")}
+                  className="font-medium underline hover:opacity-80 shrink-0"
+                >
+                  Unlink
+                </button>
+              ) : null}
             </div>
-          ) : !selectedIsCompatible && !step.portalKey ? (
+          ) : !step.portalKey ? (
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#92400E]">
               <span>
                 This step won&apos;t be linked for extension fill until a compatible configuration
