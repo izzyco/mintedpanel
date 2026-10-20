@@ -2328,30 +2328,20 @@ export interface RosterExportSnapshot {
 // the password is ciphertext; the username is a non-secret identifier safe to
 // display. The row itself has NO client SELECT grant — these types describe RPC
 // payloads, not table reads.
+//
+// The type alias is `portal` (the union), while `PortalId` is the name other
+// onboarding modules import; both are the same closed set.
 // ---------------------------------------------------------------------------
 
 /** The upstream portals a provider can be onboarded into. */
-export type portal = "caqh" | "pecos";
-
-/** Non-secret half of a vaulted portal login, as an operator surface shows it. */
-export interface ProviderPortalCredential {
-  providerId: string;
-  orgId: string;
-  portal: portal;
-  username: string;
-  /** Null until a reveal or a successful fill proves the login works. */
-  lastVerifiedAt: string | null;
-  rotatedAt: string | null;
-  /** Set when the credential is unusable but the case may still proceed. */
-  exceptionReason: string | null;
-}
+export type portal = PortalId;
 
 /** store_portal_credential echoes metadata only — NEVER the password. */
 export interface PortalCredentialStoreResult {
   ok: boolean;
   providerId: string;
   orgId: string;
-  portal: portal;
+  portal: PortalId;
   username: string;
   rotatedAt: string;
 }
@@ -2361,42 +2351,24 @@ export interface PortalCredentialStoreResult {
  * auto-rehide window. Never persisted, never cached, never logged.
  */
 export interface PortalCredentialReveal {
-  portal: portal;
+  portal: PortalId;
   username: string;
   password: string;
   lastVerifiedAt: string;
 }
 
 // ---------------------------------------------------------------------------
-// Session-bound SSN intake (20261020100002). The session handle is the
-// capability; the SSN is write-only ingress and is never returned — only the
-// mask. States are uniform so the surface is not a session oracle.
+// Session-bound SSN intake (20261020101200). The session handle minted by
+// verify_intake_code is the capability; the SSN is write-only ingress and is
+// never returned — only the mask. States are uniform so the surface is not a
+// session oracle. The session row records no used_at (the link does), so a
+// terminal state is all that is left behind.
 // ---------------------------------------------------------------------------
 
 export type ProviderIntakeSessionState = "active" | "used" | "expired" | "revoked";
 
 /** What a session handle resolves to; "invalid" means unknown or throttled. */
 export type ProviderIntakeSessionViewState = ProviderIntakeSessionState | "invalid";
-
-export interface ProviderIntakeSession {
-  id: string;
-  providerId: string;
-  orgId: string;
-  state: ProviderIntakeSessionState;
-  expiresAt: string;
-  usedAt: string | null;
-  createdBy: string;
-  createdAt: string;
-}
-
-export interface IssuedProviderIntakeSession {
-  ok: boolean;
-  sessionId: string;
-  providerId: string;
-  providerName: string;
-  orgName: string;
-  expiresAt: string;
-}
 
 export interface ProviderIntakeSessionView {
   state: ProviderIntakeSessionViewState;
@@ -2450,21 +2422,9 @@ export interface IntakeSubmitResult {
   redirect_url?: string;
 }
 
-export interface ProviderPortalCredential {
-  portal: "caqh" | "pecos";
-  username: string;
-  password_ciphertext?: never; // never crosses the wire to the browser
-  rotated_at?: string | null;
-  last_verified_at?: string | null;
-}
-
-export interface PortalCredentialReveal {
-  portal: "caqh" | "pecos";
-  username: string;
-  password: string;
-  last_verified_at?: string | null;
-}
-
+// PortalId is the shared union name imported across the onboarding modules.
+// PortalCredentialReveal and PortalCredentialStoreResult are defined with the
+// vault block above, so the store/reveal payload contract has one source of truth.
 export type PortalId = "caqh" | "pecos";
 
 export interface OnboardingSubmitResult {
