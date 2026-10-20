@@ -1,4 +1,5 @@
 import { canonicalLabel } from "@/lib/canonicalStatuses";
+import { isStatusHistorySeed } from "@/lib/caseStatus";
 import { APPROVED_LABEL, IN_NETWORK_LABEL } from "@/lib/statusLabels";
 import { taxonomyLabel } from "@/lib/providerTaxonomy";
 
@@ -741,10 +742,10 @@ export function buildBillingFeed(
       transition.fromStatus === undefined ||
       transition.actorKind === undefined ||
       !transition.actorKind ||
-      // The unified-history migration inserts NULL→current seeds as system
-      // events. They describe the preexisting case snapshot, not an approval
-      // that happened on migration day.
-      (transition.fromStatus === null && transition.actorKind === "system")
+      // A NULL→current system seed describes where the case stood (the
+      // unified-history migration snapshot, or creation), not an approval
+      // that happened at changed_at.
+      isStatusHistorySeed(transition)
     )
       continue;
     const row = casesById.get(transition.caseId);

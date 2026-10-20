@@ -31,6 +31,8 @@ export const queryKeys = {
   // the board's denial history.
   enrollmentFacts: (orgId: string) => ["enrollment-facts", orgId] as const,
   caseDenialEntries: (orgId: string) => ["cases", orgId, "denial-entries"] as const,
+  // Org-wide case_facilities links (Launches). Same "cases" prefix ride.
+  orgCaseFacilityLinks: (orgId: string) => ["cases", orgId, "facility-links"] as const,
   providerReadinessFacts: (orgId: string) => ["provider-readiness-facts", orgId] as const,
   groupReadinessDocuments: (orgId: string) => ["group-readiness-documents", orgId] as const,
   groupInsurancePolicies: (orgId: string) => ["group-insurance-policies", orgId] as const,

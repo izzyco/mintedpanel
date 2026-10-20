@@ -2,6 +2,7 @@
 // append status_history (track 'contracting') and audit_log.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow, snakeizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import { requireActiveOrg, writeAudit } from "@/lib/audit";
 import { normalizeStateCode } from "@/lib/stateCode";
 import { translateDbError } from "@/lib/dbErrors";
@@ -32,14 +33,19 @@ const CONTRACT_LIST_COLUMNS =
 
 export async function listContracts(filters: ContractFilters = {}): Promise<Contract[]> {
   const orgId = requireActiveOrg();
-  let query = supabase.from("contracts").select(CONTRACT_LIST_COLUMNS).eq("org_id", orgId);
+  let query = supabase
+    .from("contracts")
+    .select(CONTRACT_LIST_COLUMNS, { count: "exact" })
+    .eq("org_id", orgId);
   if (filters.groupId) query = query.eq("group_id", filters.groupId);
   if (filters.payerId) query = query.eq("payer_id", filters.payerId);
   if (filters.state) query = query.eq("state", filters.state);
   if (filters.statusId) query = query.eq("contracting_status_id", filters.statusId);
-  const { data, error } = await query.order("created_at", { ascending: false });
-  if (error) throw error;
-  return camelizeRow<Contract[]>(data ?? []);
+  const ordered = query.order("created_at", { ascending: false }).order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await ordered.range(from, to), {
+    label: "Contract list",
+  });
+  return camelizeRow<Contract[]>(rows);
 }
 
 export async function getContract(id: string): Promise<Contract | null> {

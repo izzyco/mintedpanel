@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import { billingFeedQueryWindowStart, type BillingReadinessSnapshot } from "@/lib/billingReadiness";
 import { useAuthStore } from "@/lib/auth-store";
 import { requireActiveOrg } from "@/lib/audit";
@@ -9,49 +10,6 @@ import type { Database } from "@/integrations/supabase/types";
 export interface BillingReadinessServiceCtx {
   db: SupabaseClient<Database>;
   orgId: string;
-}
-
-interface PageResult<T> {
-  data: T[] | null;
-  error: unknown;
-  count: number | null;
-}
-
-const PAGE_SIZE = 500;
-const MAX_COMPLETE_ROWS = 100_000;
-
-async function readCompletePages<T>(
-  readPage: (from: number, to: number) => Promise<PageResult<T>>,
-): Promise<T[]> {
-  const rows: T[] = [];
-  let expectedCount: number | null = null;
-  while (true) {
-    const { data, error, count } = await readPage(rows.length, rows.length + PAGE_SIZE - 1);
-    if (error) throw error;
-    if (data === null) throw new Error("Billing readiness source returned no data payload.");
-    if (count === null || !Number.isSafeInteger(count) || count < 0) {
-      throw new Error("Billing readiness source could not verify completeness.");
-    }
-    if (expectedCount === null) expectedCount = count;
-    else if (count !== expectedCount)
-      throw new Error("Billing readiness source changed during pagination.");
-    if (expectedCount > MAX_COMPLETE_ROWS) {
-      throw new Error("Billing readiness source exceeded the complete-read limit.");
-    }
-    const page = data;
-    if (page.length > PAGE_SIZE)
-      throw new Error("Billing readiness source returned an oversized page.");
-    rows.push(...page);
-    if (rows.length > expectedCount) {
-      throw new Error("Billing readiness source returned more rows than its exact count.");
-    }
-    if (rows.length === expectedCount) return rows;
-    if (rows.length >= MAX_COMPLETE_ROWS) {
-      throw new Error("Billing readiness source exceeded the complete-read limit.");
-    }
-    if (page.length < PAGE_SIZE)
-      throw new Error("Billing readiness source returned an incomplete page set.");
-  }
 }
 
 function activeOrgContext(expectedOrgId?: string): BillingReadinessServiceCtx {
@@ -92,7 +50,11 @@ export async function getBillingReadinessSnapshot(
       from: number,
       to: number,
     ) => PromiseLike<{ data: T[] | null; error: unknown; count: number | null }>;
-  }) => readCompletePages<T>(async (from, to) => await builder.range(from, to));
+  }) =>
+    readCompletePages<T>(async (from, to) => await builder.range(from, to), {
+      label: "Billing readiness source",
+      requireCount: true,
+    });
 
   const [
     providers,

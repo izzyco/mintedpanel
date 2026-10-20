@@ -10,7 +10,13 @@ import { normalizeStateCode } from "@/lib/stateCode";
 import { translateDbError } from "@/lib/dbErrors";
 import type { Database, Json } from "@/integrations/supabase/types";
 import { isTerminalPipelineState, type PayerPipelineState } from "@/lib/payerPipeline";
-import { isCaseStatus, isTerminalCaseStatus, mapLegacyCaseStatus } from "@/lib/caseStatus";
+import {
+  isCaseStatus,
+  isStatusHistorySeed,
+  isTerminalCaseStatus,
+  mapLegacyCaseStatus,
+} from "@/lib/caseStatus";
+import { readCompletePages } from "@/lib/completePages";
 import type { CaseStatus } from "@/lib/caseStatus";
 import type { CaseType } from "@/lib/caseTypes";
 import type { SopResolutionTier } from "@/lib/pickTemplate";
@@ -69,21 +75,24 @@ const CASE_LIST_COLUMNS =
   // E6.8 F6.8.3) reads it off the same cached list.
   "id, case_number, provider_id, payer_id, case_type, state, group_id, facility_id, mso_id, credentialing_status_id, case_status, contract_executed_date, assigned_to, submitted_date, approved_date, confirmed_effective_date, expected_effective_date, termination_date, generation_run_id, payer_reference_id, payer_individual_provider_id, payer_group_provider_id, payer_pipeline_state, created_at, updated_at";
 
+// Read to completion (never cut at PostgREST's max-rows); the id tiebreak
+// keeps the page boundaries stable under equal created_at values.
 export async function getCases(filters: CaseFilters = {}): Promise<CredentialCase[]> {
   const orgId = requireActiveOrg();
   let query = supabase
     .from("credential_cases")
-    .select(CASE_LIST_COLUMNS)
-    .eq("org_id", orgId)
-    .order("created_at", { ascending: false });
+    .select(CASE_LIST_COLUMNS, { count: "exact" })
+    .eq("org_id", orgId);
   if (filters.providerId) query = query.eq("provider_id", filters.providerId);
   if (filters.payerId) query = query.eq("payer_id", filters.payerId);
   if (filters.state) query = query.eq("state", filters.state);
   if (filters.statusId) query = query.eq("credentialing_status_id", filters.statusId);
   if (filters.assignedTo) query = query.eq("assigned_to", filters.assignedTo);
-  const { data, error } = await query;
-  if (error) throw error;
-  return camelizeRow<CredentialCase[]>(data ?? []).map(withCaseStatusDefault);
+  const ordered = query.order("created_at", { ascending: false }).order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await ordered.range(from, to), {
+    label: "Case list",
+  });
+  return camelizeRow<CredentialCase[]>(rows).map(withCaseStatusDefault);
 }
 
 // E6.0 — keep CredentialCase.caseStatus honest at the boundary: the column is
@@ -443,6 +452,27 @@ export async function getCaseFacilities(caseId: string): Promise<CaseFacilityWit
   if (error) throw error;
   const rows = camelizeRow<CaseFacilityWithDetail[]>(data ?? []);
   return rows.slice().sort((a, b) => a.facility.name.localeCompare(b.facility.name));
+}
+
+export interface CaseFacilityLink {
+  caseId: string;
+  facilityId: string;
+}
+
+/** Every case × location link in the active org, ids only, read to
+ * completion — the reporting join (Launches attributes an open case to
+ * exactly its linked locations). */
+export async function listOrgCaseFacilityLinks(): Promise<CaseFacilityLink[]> {
+  const orgId = requireActiveOrg();
+  const query = supabase
+    .from("case_facilities")
+    .select("id, case_id, facility_id", { count: "exact" })
+    .eq("org_id", orgId)
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Case location links",
+  });
+  return rows.map((row) => ({ caseId: row.case_id, facilityId: row.facility_id }));
 }
 
 interface RawCaseFacilityRow {
@@ -914,21 +944,33 @@ export interface CaseDenialEntry {
   changedAt: string;
 }
 
+// A status-history SEED (from NULL, actor system) is not a denial event: the
+// E6.0 migration seeded every already-denied case with one dated migration
+// day, which the report would otherwise show as "Denied on" that date.
 export async function listCaseDenialEntries(): Promise<CaseDenialEntry[]> {
   const orgId = requireActiveOrg();
-  const { data, error } = await supabase
+  const query = supabase
     .from("case_status_history")
-    .select("case_id, reason_code_id, note, changed_at")
+    .select("id, case_id, reason_code_id, note, changed_at, from_status, actor_kind", {
+      count: "exact",
+    })
     .eq("org_id", orgId)
     .eq("to_status", "denied")
-    .order("changed_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []).map((row) => ({
-    caseId: (row as { case_id: string }).case_id,
-    reasonCodeId: (row as { reason_code_id: string | null }).reason_code_id,
-    note: (row as { note: string | null }).note,
-    changedAt: (row as { changed_at: string }).changed_at,
-  }));
+    .order("changed_at", { ascending: false })
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Case denial history",
+  });
+  return rows
+    .filter(
+      (row) => !isStatusHistorySeed({ fromStatus: row.from_status, actorKind: row.actor_kind }),
+    )
+    .map((row) => ({
+      caseId: row.case_id,
+      reasonCodeId: row.reason_code_id,
+      note: row.note,
+      changedAt: row.changed_at,
+    }));
 }
 
 export interface AppendStatusHistoryInput {

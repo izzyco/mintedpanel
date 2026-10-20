@@ -12,6 +12,7 @@
 // file contents never pass through the nitro server.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import { requireActiveOrg } from "@/lib/audit";
 import { normalizeDocumentFileName, signedDocumentUrlWithFileName } from "@/lib/documents";
 import {
@@ -56,13 +57,16 @@ export async function listGroupDocuments(groupId: string): Promise<ProviderDocum
  * scopes the read; the org filter is defensive like every service here. */
 export async function listOrgDocuments(): Promise<ProviderDocument[]> {
   const orgId = requireActiveOrg();
-  const { data, error } = await supabase
+  const query = supabase
     .from("provider_documents")
-    .select(DOCUMENT_COLUMNS)
+    .select(DOCUMENT_COLUMNS, { count: "exact" })
     .eq("org_id", orgId)
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return camelizeRow<ProviderDocument[]>(data ?? []);
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Document list",
+  });
+  return camelizeRow<ProviderDocument[]>(rows);
 }
 
 /** Uploader display names for a set of user ids (uploaded_by has no FK — the

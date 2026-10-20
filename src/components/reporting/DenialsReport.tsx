@@ -38,6 +38,7 @@ import {
   type DenialReportRow,
 } from "@/lib/denialsReport";
 import { downloadCsvText } from "@/lib/csv";
+import { excludeTestProviderRows, testProviderIds } from "@/lib/testProvider";
 
 type Pivot = "provider" | "payer";
 
@@ -103,8 +104,13 @@ export function DenialsReport() {
         deniedAt: d.changedAt,
       });
     }
+    // The designated test provider's cases never reach a report.
+    const cases = excludeTestProviderRows(
+      casesQ.data ?? [],
+      testProviderIds(providersQ.data ?? []),
+    );
     const denialRows = buildDenialRows(
-      (casesQ.data ?? []).map((c) => ({
+      cases.map((c) => ({
         id: c.id,
         providerId: c.providerId,
         payerId: c.payerId,

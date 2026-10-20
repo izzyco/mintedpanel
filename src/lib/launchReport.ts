@@ -1,13 +1,15 @@
 // E6.6 F6.6.2 — the Launches report derivation. DATE-ONLY by design: the
 // location status machine is gone (E6.2 made go-live a plain
 // `facilities.effective_date`), so this report reads facility dates +
-// provider assignments + open cases and NOTHING else. It restores the old
-// Home "Launches at risk" read: a location is flagged at-risk when its
-// go-live date approaches with open cases still pending or zero providers
-// assigned. All date math is date-only against a passed-in `today` (never a
+// provider assignments + open cases (with their case_facilities links) and
+// NOTHING else; the designated test provider is excluded throughout. It
+// restores the old Home "Launches at risk" read: a location is flagged
+// at-risk when its go-live date approaches with open cases still pending or
+// zero providers assigned. All date math is date-only against a passed-in `today` (never a
 // clock read in the lib — the enrollmentReadiness idiom). Pure, no I/O.
 import type { CaseStatus } from "./caseStatus";
 import { isOpenCaseStatus } from "./caseStatus";
+import { isTestProvider, testProviderIds, type HasTestProviderFlag } from "./testProvider";
 
 /** A location launched within this many days back still shows ("recently
  * launched" — carried from the retired launchLocations 30-day window). */
@@ -36,13 +38,28 @@ export interface LaunchFacilityInput {
 export interface LaunchCaseInput {
   id: string;
   providerId: string;
+  /** The `credential_cases.facility_id` primary mirror. */
   facilityId: string | null;
   status: CaseStatus;
+}
+
+/** One `case_facilities` row: a location the case holds. */
+export interface LaunchCaseFacilityInput {
+  caseId: string;
+  facilityId: string;
 }
 
 export interface LaunchAssignmentInput {
   providerId: string;
   facilityId: string;
+  /** provider_facility_assignments.start_date — a future start is not yet
+   * staffing the location. Legacy rows may carry none. */
+  startDate?: string | null;
+}
+
+export interface LaunchProviderInput extends HasTestProviderFlag {
+  id: string;
+  status: string | null;
 }
 
 export interface LaunchReportRow {
@@ -82,12 +99,27 @@ export function daysUntil(date: string, today: string): number | null {
   return Math.round((d - t) / dayMs);
 }
 
-/** Distinct assigned providers per facility. */
+/**
+ * Distinct providers staffing each facility: an assignment counts only when
+ * its provider is not terminated, not the test provider, and has started
+ * (start_date on or before `today`). Also drives Facilities Without
+ * Providers, so a location staffed only by a departed, test or future hire
+ * reads as unstaffed on both reports. A provider the list does not carry is
+ * counted (nothing says it is ineligible).
+ */
 export function providerCountsByFacility(
   assignments: readonly LaunchAssignmentInput[],
+  providers: readonly LaunchProviderInput[],
+  today: string,
 ): Map<string, number> {
+  const providerById = new Map(providers.map((p) => [p.id, p]));
+  const todayDay = toUtcDay(today);
   const byFacility = new Map<string, Set<string>>();
   for (const a of assignments) {
+    const provider = providerById.get(a.providerId);
+    if (provider && (provider.status === "terminated" || isTestProvider(provider))) continue;
+    const startDay = a.startDate ? toUtcDay(a.startDate) : null;
+    if (startDay !== null && todayDay !== null && startDay > todayDay) continue;
     const set = byFacility.get(a.facilityId) ?? new Set<string>();
     set.add(a.providerId);
     byFacility.set(a.facilityId, set);
@@ -96,28 +128,30 @@ export function providerCountsByFacility(
 }
 
 /**
- * Open cases per facility — the E2.3 union rule: a case reaches a facility
- * through its explicit `facility_id` OR through its provider's assignment
- * there (generation-created cases carry no facility_id, so the assignment
- * path is what makes the count honest). A provider assigned to two
- * facilities counts their open case toward both — the case is pending for
- * each location's go-live.
+ * Open cases per facility, attributed through `case_facilities`: a case
+ * counts once at each location it holds. A case with no `case_facilities`
+ * rows falls back to its `facility_id` primary mirror (creation stamps the
+ * mirror without writing the child row). Never through the provider's
+ * assignments: a provider at two clinics does not make a case pending at
+ * both. The test provider's cases never count.
  */
 export function openCasesByFacility(
   cases: readonly LaunchCaseInput[],
-  assignments: readonly LaunchAssignmentInput[],
+  caseFacilities: readonly LaunchCaseFacilityInput[],
+  providers: readonly LaunchProviderInput[],
 ): Map<string, number> {
-  const facilitiesByProvider = new Map<string, Set<string>>();
-  for (const a of assignments) {
-    const set = facilitiesByProvider.get(a.providerId) ?? new Set<string>();
-    set.add(a.facilityId);
-    facilitiesByProvider.set(a.providerId, set);
+  const testIds = testProviderIds(providers);
+  const facilitiesByCase = new Map<string, Set<string>>();
+  for (const link of caseFacilities) {
+    const set = facilitiesByCase.get(link.caseId) ?? new Set<string>();
+    set.add(link.facilityId);
+    facilitiesByCase.set(link.caseId, set);
   }
   const counts = new Map<string, number>();
   for (const c of cases) {
-    if (!isOpenCaseStatus(c.status)) continue;
-    const reached = new Set<string>(facilitiesByProvider.get(c.providerId) ?? []);
-    if (c.facilityId) reached.add(c.facilityId);
+    if (!isOpenCaseStatus(c.status) || testIds.has(c.providerId)) continue;
+    const linked = facilitiesByCase.get(c.id);
+    const reached = linked ?? (c.facilityId ? [c.facilityId] : []);
     for (const facilityId of reached) {
       counts.set(facilityId, (counts.get(facilityId) ?? 0) + 1);
     }

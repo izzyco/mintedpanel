@@ -14,6 +14,7 @@ import {
   getContractFor,
   listCaseDenialEntries,
   listDenialReasonCodes,
+  listOrgCaseFacilityLinks,
   removeCaseFacility,
   replaceUnstartedCaseSop,
   setCaseDates,
@@ -36,6 +37,19 @@ export function useCases(filters: CaseFilters = {}) {
   return useQuery({
     queryKey: queryKeys.cases(orgId, filters),
     queryFn: () => getCases(filters),
+    enabled: orgId !== "no-org",
+    staleTime: THIRTY_SECONDS,
+  });
+}
+
+// The org-wide case × location links behind the Launches report. Rides the
+// "cases" prefix (queryKeys.orgCaseFacilityLinks), so case creation and every
+// location add/remove/set-primary re-derive it.
+export function useOrgCaseFacilityLinks() {
+  const orgId = useActiveOrgId() ?? "no-org";
+  return useQuery({
+    queryKey: queryKeys.orgCaseFacilityLinks(orgId),
+    queryFn: () => listOrgCaseFacilityLinks(),
     enabled: orgId !== "no-org",
     staleTime: THIRTY_SECONDS,
   });

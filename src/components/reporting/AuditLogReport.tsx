@@ -8,6 +8,7 @@ import { useMemo, useState, Fragment } from "react";
 import { Link } from "@tanstack/react-router";
 import { fmtDateTime } from "@/lib/format";
 import { auditUserOptions } from "@/lib/auditUserOptions";
+import { auditDateBounds } from "@/lib/auditDateRange";
 import { ChevronDown, ChevronRight, Lock } from "lucide-react";
 import { TableSkeletonRows } from "@/components/TableSkeletonRows";
 import { EmptyState } from "@/components/EmptyState";
@@ -180,34 +181,29 @@ export function AuditLogReport() {
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  // Both date bounds are LOCAL days, applied server-side before the row
+  // limit (auditDateBounds): From's local midnight through the end of To.
   const filters = useMemo(
     () => ({
       actionType: actionType !== "all" ? (actionType as AuditActionType) : undefined,
       entityType: entityType !== "all" ? entityType : undefined,
       userId: userId !== "all" ? userId : undefined,
-      since: dateFrom ? new Date(dateFrom).toISOString() : undefined,
+      ...auditDateBounds(dateFrom, dateTo),
       limit: 1000,
     }),
-    [actionType, entityType, userId, dateFrom],
+    [actionType, entityType, userId, dateFrom, dateTo],
   );
 
   // Gate the fetch itself, not just the render: a non-admin deep-linking here
   // should never pull audit_log rows into their cache before the redirect fires.
   const auditQ = useAuditLog(filters, { enabled: isAdmin });
-  const allRows = auditQ.data ?? [];
+  const rows = useMemo(() => auditQ.data ?? [], [auditQ.data]);
 
-  const rows = useMemo(() => {
-    if (!dateTo) return allRows;
-    const end = new Date(dateTo);
-    end.setHours(23, 59, 59, 999);
-    return allRows.filter((r) => new Date(r.ts) <= end);
-  }, [allRows, dateTo]);
-
-  const users = useMemo(() => auditUserOptions(allRows), [allRows]);
+  const users = useMemo(() => auditUserOptions(rows), [rows]);
 
   const entityTypes = useMemo(() => {
-    return Array.from(new Set(allRows.map((r) => r.entityType))).sort();
-  }, [allRows]);
+    return Array.from(new Set(rows.map((r) => r.entityType))).sort();
+  }, [rows]);
 
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const pageRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
