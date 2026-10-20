@@ -26,6 +26,8 @@ describe("listTokenCatalog", () => {
         "facility.cityStateZip",
         "group.billingCityStateZip",
         "group.billingFullName",
+        "facility.hoursMonStatus",
+        "facility.hoursSunClose",
         "group.payerIssuedId",
         "user.name",
         "user.fullName",
@@ -37,9 +39,20 @@ describe("listTokenCatalog", () => {
         "billingContact.cityStateZip",
         "credentialingContact.phoneOffice",
         "contractingSigner.email",
+        "system.today",
       ]),
     );
     expect(new Set(tokens).size).toBe(tokens.length);
+  });
+
+  // DYN-TODAY-01 — the one entry marked device-resolved. The picker groups it
+  // under "System"; the registry row says it fills with today's date at fill.
+  it("marks system.today as device-resolved and nothing else", async () => {
+    const catalog = await listTokenCatalog();
+    const device = catalog.filter((entry) => entry.resolution === "device");
+    expect(device).toEqual([
+      { token: "system.today", table: "system", column: "today", resolution: "device" },
+    ]);
   });
 
   it("preserves schema-derived entries and includes the case-bound group PTAN token", async () => {

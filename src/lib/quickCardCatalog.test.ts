@@ -393,6 +393,22 @@ describe("quick-card catalog — exclusion policy", () => {
     expect(catalog.find((f) => f.key === "user.title")?.group).toBe("user");
   });
 
+  // DYN-TODAY-01 — a fill-time token, not a card value: see quickCardCatalog.ts.
+  it("does not offer system.today on a card, even when the catalog carries it", () => {
+    const catalog = buildQuickCardCatalog([
+      { table: "providers", token: "provider.npi", column: "npi" },
+      { table: "system", token: "system.today", column: "today" },
+    ]);
+    const keys = catalog.map((f) => f.key);
+    expect(keys).toContain("provider.npi");
+    expect(keys).not.toContain("system.today");
+    const allowed = new Set(keys);
+    expect(validateQuickCardFields(["system.today"], allowed)).toEqual({
+      ok: false,
+      message: "unknown or excluded field key: system.today",
+    });
+  });
+
   it("normalizes a braced token to the bare join form", () => {
     const catalog = buildQuickCardCatalog([
       { table: "providers", token: "{{provider.npi}}", column: "npi" },

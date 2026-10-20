@@ -207,6 +207,25 @@ User-scoped (`authenticateUser()`, no org resolution):
   `normalizeTokenKey`), so the field-map → profile-token join is a literal
   string match. The extension never strips braces. Pinned by
   `src/server/profileFieldMapJoin.test.ts`.
+- **The profile never pushes a jsonb object.** `facilities.hours` resolves to
+  the `hoursSummary()` text and to 21 per-day composites
+  `facility.hours{Mon..Sun}{Status|Open|Close}` (`src/lib/facilityHours.ts`
+  owns the key list; `providerProfile.ts`, `tokenCatalog.ts`, `pdfFill.ts`,
+  `sopAuthoringTokens.ts` and both mock profiles register from it). When no
+  day is open — the `{}` column default — all 22 come back `unresolved`
+  ("hours not entered"), never "Closed" all week. Any other object column
+  (`ada_compliance`, `service_types`, …) is null + a reason. Before this the
+  extension typed the literal text "[object Object]" into payer forms.
+- **Facility contact inheritance is applied to the fill.** The locked E1.2
+  rule (tel/fax/email/contact inherit the OWNING group's credentialing →
+  correspondence → billing block when the facility has none of its own,
+  `src/lib/facilityContact.ts`) is substituted on the picked facility row in
+  `providerProfile.ts` and in `pdfFill.ts` `buildProviderTokenValues` — owner-
+  guarded (`facility.group_id === group.id`), all-or-nothing, never copied
+  into the columns. `facility.phone` fills what the facility page shows.
+- **Mock dry-run profiles are versioned in lockstep.** `MOCK_FILL_PROFILE_VERSION`
+  in `src/lib/mockFillProfile.ts` and the extension's `src/shared/mockFillProfile.ts`
+  are both 4 (2026-10-15). Bump both in one coordinated change.
 - **`control_options` is capped at 1000 entries on BOTH sides** —
   `CONTROL_OPTIONS_CAP` in `src/lib/controlOptions.ts` here and in the
   extension's `src/content/captureScan.ts`. Both propose routes 422 a longer
@@ -217,6 +236,17 @@ User-scoped (`authenticateUser()`, no org resolution):
   (`ControlOptionPicker`).
 - **Touches body is snake_case** (locked); fill-events is camelCase. Do not
   "fix" either.
+- **`system.today` is resolved on the device, never by the server.** The
+  one `system.*` token (`src/lib/systemTokens.ts`, catalog entry
+  `resolution: "device"`) is the coordinator's LOCAL calendar date at fill
+  click: the extension resolves it before its profile join, the panel's
+  payer-PDF fill in `useFillPayerForm`. The profile endpoint does not emit it
+  and does not list it under `unresolved` (pinned in
+  `profileFieldMapJoin.test.ts`). It is offered in both mapping pickers under
+  "System", not on quick cards and not in SOP authoring. `POST /api/fill-events`
+  takes an optional `systemTodayDate` (`YYYY-MM-DD`) into
+  `fill_sessions.system_today_date`, stored only when the column exists; never
+  logged. Date spelling comes from the row's `date_*` transform.
 - **`bump_status: true` on a touch does not perform a transition.** A DB
   trigger fires on the touch and moves the case; the route only reads back and
   reports what the trigger did, via `meta.status_bump`. Calling
@@ -265,6 +295,9 @@ before any schema work.
 
 - `20260810120000_purge_unreferenced_catalog_payers.sql` — **needs a second PM
   sign-off. Never agent-apply.**
+- `20261015130000_fill_sessions_system_today_date.sql` — additive nullable
+  `fill_sessions.system_today_date`; the service probes for the column and
+  drops only the date when it is absent, so the apply can follow the merge.
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,
   never applied. Do not resurrect.
 
@@ -598,10 +631,13 @@ at generation.
 - **Payer and states are read-only context from the template**, never tagged per
   form. A form that applies to only some of a multi-state template's states
   belongs on its own single-state template.
-- **Attached at `/generation` only.** `ManualCaseModal` and Reapply attach SOP
-  tasks as before. An action whose family has no live form is DROPPED rather
-  than generated empty, and `hydratePayerFormTasks` must therefore run AFTER
-  both stamps — they pair tasks with definitions by index.
+- **Attached on every creation surface.** `/generation`, `ManualCaseModal` and
+  Reapply all run `hydratePayerFormTasks` so a Payer PDF action is baked with a
+  live form pointer (the modal and Reapply read the template's current forms
+  via `useTemplatePayerForms` and block submit until they load). An action
+  whose family has no live form is DROPPED rather than generated empty, and
+  `hydratePayerFormTasks` must run AFTER both stamps — they pair tasks with
+  definitions by index.
 - **Removal is per case and permanent by construction**: the task is marked
   `blocked` and a `removedAt` marker is appended to its own `sop_content`;
   `CaseTasksPanel` filters marked tasks out before anything derives from the
@@ -628,7 +664,18 @@ through `org_payer_assignments`. Don't weaken it.
 (status, source) and fails closed.** Order matters: retired → stale, explicit
 stale → stale, **`proposed` → undecided before any source check** (capture's
 canonical shape is `proposed + manual`), then approved × token / manual_partial
-/ hardcoded / manual.
+/ hardcoded / manual / leave_blank.
+
+**Four decisions, not three.** `leave_blank` (`source`, with `status`
+`approved`; migration `20261015120000`, repo-only until the operator apply —
+verify `portal_field_maps_source_check` on hosted) is "reviewed, stays empty":
+classified `leave_blank`, so it is never a gap or "Needs a decision", never
+mapped (it does not autofill), and never on the specialist's post-fill list
+(that is `human`). A fixed `N/A` would fail portal validation and `manual`
+would distort completion, which is why it is its own value. Nothing fills it:
+the PDF plan emits `outcome: "leave_blank"` (reported to fill-events V2 as
+`unchanged` / `unchanged_value`), `isUnlinkedFieldMap` excludes it, and the
+extension mirrors the value in its `apiTypes.ts` `PortalFieldMapSource`.
 
 Only `approved` maps fill. A proposed row is an unreviewed observation.
 Stale rows keep their controls — staleness is information, not a lock.

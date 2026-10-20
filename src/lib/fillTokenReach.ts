@@ -30,6 +30,10 @@
  * DYN-TOKEN-05 added `license` then `groupInsurance`. Keep this list in step
  * with the entities `buildProviderTokenValues` actually passes — the sample
  * fill reads it.
+ *
+ * DYN-TODAY-01 added `system`: `useFillPayerForm` layers
+ * `resolveSystemTokenValues(new Date())` over the token values at fill click
+ * (`src/lib/systemTokens.ts`), so the family is reachable with no row at all.
  */
 export const PDF_FILL_FAMILIES: readonly string[] = [
   "provider",
@@ -41,11 +45,14 @@ export const PDF_FILL_FAMILIES: readonly string[] = [
   "billingContact",
   "credentialingContact",
   "contractingSigner",
+  "system",
 ];
 
 /**
- * Families the web profile resolves — provider/case source rows plus the
- * user/contact families appended by the route.
+ * Families the web fill resolves — provider/case source rows plus the
+ * user/contact families appended by the profile route, plus `system`, which
+ * the extension resolves on the device BEFORE its profile join (the profile
+ * endpoint never emits it; `src/server/profileFieldMapJoin.test.ts`).
  */
 export const WEB_FILL_FAMILIES: readonly string[] = [
   "provider",
@@ -58,6 +65,7 @@ export const WEB_FILL_FAMILIES: readonly string[] = [
   "billingContact",
   "credentialingContact",
   "contractingSigner",
+  "system",
 ];
 
 /**
@@ -102,12 +110,28 @@ export const PDF_CONTEXT_REQUIRED_TOKENS: readonly string[] = ["group.payerIssue
  * Deliberately a token list, not a family: `provider.*` is otherwise the
  * best-supported family there is. The columns stay in place, unwritten, per
  * the additive-schema rule — this only stops offering them.
+ *
+ * The second block (2026-10-15, field-flow gap analysis G3) is different in
+ * kind: internal / audit columns — import staging fences, the sandbox flag,
+ * the reference-data flag, the PSV trail — that the web profile never
+ * projects (`providerProfile.ts`), so a mapping to them was a permanent blank
+ * on the web fill, while the PDF entity sweep happened to resolve them. None
+ * is a value a payer form asks for, and zero `portal_field_maps` rows
+ * referenced them on production or staging when they were withdrawn.
  */
 export const WITHDRAWN_TOKENS: readonly string[] = [
   "provider.licenseNumber",
   "provider.licenseState",
   "provider.licenseIssueDate",
   "provider.licenseExpirationDate",
+  "provider.referenceOnly",
+  "provider.verificationState",
+  "provider.isTestProvider",
+  "facility.referenceOnly",
+  "license.verifiedStatus",
+  "license.verifiedBy",
+  "license.verifiedAt",
+  "license.verificationSourceUrl",
 ];
 
 function familyOf(token: string): string {

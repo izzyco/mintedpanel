@@ -5,7 +5,9 @@ import type { PortalFieldMap } from "@/types";
 
 // A non-retired mapping the extension would attempt to fill but that carries no
 // usable value source: not manual (manual is a deliberate "fill by hand",
-// counted out of auto-fill — a choice, not a gap), no token to resolve, and no
+// counted out of auto-fill — a choice, not a gap), not an APPROVED leave_blank
+// (blank is the decision, so an empty fill is the intended outcome — a
+// proposed one is still undecided and counts), no token to resolve, and no
 // hardcoded value. Such a mapping is live on the form yet always fills blank
 // until someone links it. Proposed rows count too — not because they fill (S5.1
 // flipped the fill path to approved-only, so they no longer do) but because an
@@ -16,6 +18,7 @@ export function isUnlinkedFieldMap(m: PortalFieldMap): boolean {
     m.status !== "retired" &&
     m.source !== "manual" &&
     m.source !== "manual_partial" &&
+    !(m.source === "leave_blank" && m.status === "approved") &&
     m.token == null &&
     m.hardcodedValue == null
   );

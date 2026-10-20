@@ -46,6 +46,7 @@
 
 import { normalizeTokenKey } from "@/lib/tokenFormat";
 import { orgContactTokenKeys, contactFamilyLabel } from "@/lib/orgContactTokens";
+import { isDeviceResolvedToken } from "@/lib/systemTokens";
 
 /** The user_table_prefs page_key the extension quick-card layout is stored
  * under. Stable across machines/browsers (server-side, user-scoped). */
@@ -131,6 +132,13 @@ export const USER_TOKEN_FIELDS: readonly string[] = [
   "user.title",
   "user.email",
 ];
+
+/** NOT appended here: `system.today` (DYN-TODAY-01). A quick card shows stored
+ * values a coordinator copies by hand; today's date is on their calendar, and
+ * the token exists for FILLS, where the extension and the payer-PDF fill
+ * resolve it from the device clock (`src/lib/systemTokens.ts`). So the
+ * field-map pickers offer it and the card picker does not; a PUT naming it is
+ * a 422 like any unknown key. */
 
 /** The org contact families (2026-08-07, decisions D9/D10). Like {{user.*}},
  * these have no schema backing the RPC can sweep — `parties` would emit
@@ -218,6 +226,7 @@ export function humanizeTokenField(field: string): string {
 export function isOfferedToken(table: string, token: string): boolean {
   if (CASE_SCOPED_TOKEN_TABLES.includes(table)) return false;
   if (QUICK_CARD_EXCLUDED_FIELDS.includes(token)) return false;
+  if (isDeviceResolvedToken(token)) return false;
   return true;
 }
 

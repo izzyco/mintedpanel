@@ -75,6 +75,18 @@ describe("FieldRegistryList — captured option vocabularies", () => {
     expect(html).not.toContain('aria-label="Search options"');
   });
 
+  it("renders Leave blank as its own decided pill with its own action", () => {
+    const html = render([
+      row({ id: "mid", fieldLabel: "Middle name", source: "leave_blank", status: "approved" }),
+    ]);
+    expect(html).toContain("Leave blank");
+    expect(html).toContain("Left blank on purpose");
+    expect(html).not.toContain("Needs a decision");
+    expect(html).not.toContain("Human fills this</span>");
+    // Reversible: the row still offers Unmap and the other decisions.
+    expect(html).toContain("Unmap");
+  });
+
   it("shows a stored fixed value from deep in a long list on the picker trigger", () => {
     const html = render([
       row({

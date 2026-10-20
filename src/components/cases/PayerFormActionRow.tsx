@@ -35,6 +35,7 @@ import { pdfFormPortalKey } from "@/lib/pdfFieldImport";
 import { createFillRunGuard, createFillRunLatch } from "@/lib/fillRunGuard";
 import { planPayerFormFill } from "@/lib/payerFormFill";
 import { runExclusivePdfFill } from "@/lib/pdfFillRun";
+import { withSystemTokenValues } from "@/lib/systemTokens";
 import type { RefreshPdfTokenValues } from "@/hooks/useFreshPdfTokenValues";
 import type { RegistryRow } from "@/lib/fieldRegistry";
 import type { Task } from "@/types";
@@ -91,7 +92,9 @@ export function PayerFormActionRow({
     task.caseId,
     task.providerId,
   ]);
-  const values = useMemo(() => tokenValues ?? {}, [tokenValues]);
+  // The preview and the pre-fill "any values?" check see the same system.today
+  // the fill itself resolves (useFillPayerForm re-reads the clock at click).
+  const values = useMemo(() => withSystemTokenValues(tokenValues ?? {}, new Date()), [tokenValues]);
 
   const rows = useMemo(
     () => (mapsQ.data ?? []).filter((m) => m.portalKey === portalKey) as RegistryRow[],

@@ -1083,6 +1083,7 @@ export type Database = {
           started_at: string;
           step_index: number | null;
           step_identity: string | null;
+          system_today_date: string | null;
           task_index: number | null;
         };
         Insert: {
@@ -1121,6 +1122,7 @@ export type Database = {
           started_at?: string;
           step_index?: number | null;
           step_identity?: string | null;
+          system_today_date?: string | null;
           task_index?: number | null;
         };
         Update: {
@@ -1159,6 +1161,7 @@ export type Database = {
           started_at?: string;
           step_index?: number | null;
           step_identity?: string | null;
+          system_today_date?: string | null;
           task_index?: number | null;
         };
         Relationships: [

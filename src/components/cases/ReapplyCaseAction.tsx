@@ -29,8 +29,10 @@ import {
 import { isAllStates, templateStates } from "@/lib/sopMatchKey";
 import { isFallbackTemplate, topRankedTemplates } from "@/lib/pickTemplate";
 import { resolveTemplate } from "@/lib/sopResolver";
-import { stampTasks } from "@/lib/sopStamp";
+import { stampExecutionTypes, stampTasks } from "@/lib/sopStamp";
 import { useReapplyCase } from "@/hooks/useCases";
+import { useTemplatePayerForms } from "@/hooks/usePayerForms";
+import { hydratePayerFormTasks, payerFormsByFamily } from "@/lib/payerForms";
 import { useSops } from "@/hooks/useAdmin";
 import type { CaseDetail } from "@/types";
 
@@ -83,6 +85,9 @@ export function ReapplyCaseAction({ c, canEdit }: ReapplyCaseActionProps) {
     }
     return autoTemplate;
   }, [selectedTemplateId, templateOptions, autoTemplate]);
+  // The template's LIVE payer forms, so a reapplied Payer PDF action carries a
+  // concrete form pointer exactly as /generation bakes it.
+  const payerFormsQ = useTemplatePayerForms(effectiveTemplate?.id ?? undefined);
 
   if (c.caseType === "recredentialing" || c.caseType === "contract") {
     return c.caseStatus === "denied" && canEdit ? (
@@ -97,7 +102,7 @@ export function ReapplyCaseAction({ c, canEdit }: ReapplyCaseActionProps) {
 
   const run = () => {
     const template = effectiveTemplate;
-    if (!template) return;
+    if (!template || payerFormsQ.data === undefined) return;
     const resolved =
       template && c.provider ? resolveTemplate(template, c.provider, c.group, null, null) : [];
     // Append after the case's existing tasks so the combined checklist keeps
@@ -106,9 +111,20 @@ export function ReapplyCaseAction({ c, canEdit }: ReapplyCaseActionProps) {
     // generation now wins over the fallback); the prior cycle's tasks and
     // stamps are untouched.
     const offset = (c.tasks ?? []).reduce((max, t) => Math.max(max, t.sortOrder + 1), 0);
-    const tasks = stampTasks(
-      resolved.map((t) => ({ ...t, sortOrder: t.sortOrder + offset })),
-      template,
+    // E4.2 TE-12: stamp execution types by index from taskDefinitions, as
+    // /generation and ManualCaseModal do, so an online-form task reapplied
+    // here stays Auto-fill rather than falling back to Manual. Payer-form
+    // hydration runs LAST (it is the only pass that can drop a task).
+    const tasks = hydratePayerFormTasks(
+      stampExecutionTypes(
+        stampTasks(
+          resolved.map((t) => ({ ...t, sortOrder: t.sortOrder + offset })),
+          template,
+        ),
+        template.taskDefinitions,
+      ),
+      template.taskDefinitions,
+      payerFormsByFamily(payerFormsQ.data ?? []),
     );
 
     reapply.mutate(
@@ -211,7 +227,13 @@ export function ReapplyCaseAction({ c, canEdit }: ReapplyCaseActionProps) {
               </Button>
               <Button
                 className="bg-[#1B4D3E] text-white hover:bg-[#163F33]"
-                disabled={reapply.isPending || templateOptions.length === 0 || !effectiveTemplate}
+                disabled={
+                  reapply.isPending ||
+                  templateOptions.length === 0 ||
+                  !effectiveTemplate ||
+                  payerFormsQ.isLoading ||
+                  payerFormsQ.isError
+                }
                 onClick={run}
               >
                 {reapply.isPending ? "Reapplying…" : "Reapply"}

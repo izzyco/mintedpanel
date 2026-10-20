@@ -44,6 +44,12 @@ import {
   composeProviderAddressTokens,
   composeProviderNameTokens,
 } from "@/lib/entityTokens";
+import { resolveFacilityContact } from "@/lib/facilityContact";
+import {
+  FACILITY_HOURS_TOKEN_KEYS,
+  composeFacilityHoursTokens,
+  hoursSummary,
+} from "@/lib/facilityHours";
 import { pickGroupInsurancePolicy } from "@/lib/groupInsurancePick";
 import { pickLicenseForState } from "@/lib/licensePick";
 import { normalizeTokenKey } from "@/lib/tokenFormat";
@@ -162,7 +168,7 @@ const PROFILE_LICENSE_COLUMNS =
 const PROFILE_ASSIGNMENT_COLUMNS = "id, facility_id, is_primary, start_date, practice_frequency";
 
 const PROFILE_FACILITY_COLUMNS =
-  "id, name, street, city, state, zip, suite, county, phone, fax, email, appointment_phone, " +
+  "id, group_id, name, street, city, state, zip, suite, county, phone, fax, email, appointment_phone, " +
   "contact_name, accepting_new_patients, language_line, languages_offered, interpreter_languages, " +
   "hours, ada_compliance, service_types, treating_categories, status_id, effective_date";
 
@@ -208,10 +214,14 @@ export const COMPUTED_PROFILE_TOKENS = new Set([
   "group.contractingFullName",
   "group.contractingContactFullName",
   "group.contractSignerFullName",
+  ...FACILITY_HOURS_TOKEN_KEYS,
   "group.payerIssuedId",
 ]);
 
-export const COMPUTED_PROFILE_TOKEN_KEYS = [
+// Resolved after the catalog loop from the picked rows. The hours keys come
+// from facilityHours.ts (the hours contract owner); keep tokenCatalog.ts
+// COMPUTED_TOKENS and sopAuthoringTokens.ts in lockstep.
+export const COMPUTED_PROFILE_TOKEN_KEYS: readonly string[] = [
   "provider.fullName",
   "provider.fullNameWithCredentials",
   "provider.lastFirst",
@@ -244,7 +254,9 @@ export const COMPUTED_PROFILE_TOKEN_KEYS = [
   "group.contractingFullName",
   "group.contractingContactFullName",
   "group.contractSignerFullName",
-] as const;
+  ...FACILITY_HOURS_TOKEN_KEYS,
+];
+const FACILITY_HOURS_TOKEN_KEY_SET = new Set(FACILITY_HOURS_TOKEN_KEYS);
 
 interface CatalogEntry {
   table: string;
@@ -264,6 +276,52 @@ interface ProfileCaseContext {
 }
 
 type Row = Record<string, unknown>;
+
+// E1.2 TE-4 (locked PM decision 2026-07-12): a facility's tel / fax / email /
+// contact INHERIT the owning group's contact block (credentialing →
+// correspondence → billing, first non-empty) when the facility carries none
+// of its own. The facility UI displays exactly this; the fill must say the
+// same, so the inherited values are substituted on the picked row here —
+// never copied into the facility columns. All-or-nothing, like the UI: a
+// facility with any own channel keeps its own four values verbatim.
+function withInheritedFacilityContact(facilityRow: Row, groupRow: Row): Row {
+  const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+  const resolved = resolveFacilityContact(
+    {
+      contactName: text(facilityRow.contact_name),
+      phone: text(facilityRow.phone),
+      fax: text(facilityRow.fax),
+      email: text(facilityRow.email),
+    },
+    camelizeRow<ProviderGroup>(groupRow),
+  );
+  if (!resolved.inherited) return facilityRow;
+  return {
+    ...facilityRow,
+    contact_name: resolved.contactName,
+    phone: resolved.phone,
+    fax: resolved.fax,
+    email: resolved.email,
+  };
+}
+
+// jsonb columns have no single-line rendering. facilities.hours becomes the
+// hoursSummary() text (the facility.hours{Day}* composites carry the grid);
+// any other object resolves to null WITH a reason, so the extension reports a
+// data gap instead of typing "[object Object]" — which the {} column default
+// made happen even for a facility with no hours. Arrays and booleans pass
+// through unchanged (the PDF path renders them; see entityTokens.ts).
+function structuredValueText(
+  entry: CatalogEntry,
+  value: Json | null,
+): { value: Json | null; reason?: string } | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (entry.table === "facilities" && entry.column === "hours") {
+    const summary = hoursSummary(value);
+    return summary ? { value: summary } : { value: null, reason: "hours not entered" };
+  }
+  return { value: null, reason: "structured value has no single-line rendering" };
+}
 
 // One picked source row per table, or the reason none could be picked.
 interface SourcePick {
@@ -700,9 +758,15 @@ export async function getProviderProfile(
           if (facilityErr) throw facilityErr;
           return (facilityRow as unknown as Row | null) ?? null;
         })();
-    selectedFacilityRow = facilityRow as Row | null;
-    facilityPick = facilityRow
-      ? { row: facilityRow as Row }
+    // Owner-guarded: the resolved group may be a case / contract / override
+    // group, and the UI inherits only from the facility's OWNING group.
+    const ownedFacilityRow =
+      facilityRow && group && (facilityRow as Row).group_id === group.id
+        ? withInheritedFacilityContact(facilityRow as Row, group)
+        : ((facilityRow as Row | null) ?? null);
+    selectedFacilityRow = ownedFacilityRow;
+    facilityPick = ownedFacilityRow
+      ? { row: ownedFacilityRow }
       : {
           row: null,
           reason: caseContext ? "case facility not found" : "assigned facility not found",
@@ -768,6 +832,12 @@ export async function getProviderProfile(
       continue;
     }
     const value = (pick.row[entry.column] ?? null) as Json | null;
+    const structured = structuredValueText(entry, value);
+    if (structured) {
+      tokens.push({ token: entry.token, value: structured.value });
+      if (structured.reason) unresolved.push({ token: entry.token, reason: structured.reason });
+      continue;
+    }
     tokens.push({ token: entry.token, value });
     if (
       CONTRACT_GROUP_CONTACT_TOKENS.has(entry.token) &&
@@ -797,12 +867,21 @@ export async function getProviderProfile(
       } | null,
     ),
     ...composeGroupAddressTokens(group ? (camelizeRow<ProviderGroup>(group) as unknown as ProviderGroup) : null),
+    ...composeFacilityHoursTokens(selectedFacilityRow?.hours),
   };
+  const hoursReason = selectedFacilityRow
+    ? "hours not entered"
+    : (facilityPick.reason ?? "facility not resolved");
   for (const token of COMPUTED_PROFILE_TOKEN_KEYS) {
     const value = computedValues[token];
     tokens.push({ token, value: value ?? null });
     if (!value) {
-      unresolved.push({ token, reason: "required composite parts are not available" });
+      unresolved.push({
+        token,
+        reason: FACILITY_HOURS_TOKEN_KEY_SET.has(token)
+          ? hoursReason
+          : "required composite parts are not available",
+      });
     }
   }
 

@@ -36,6 +36,12 @@ describe("isPdfFillableToken", () => {
     expect(isPdfFillableToken("contractingSigner.email")).toBe(true);
   });
 
+  // DYN-TODAY-01 — no row at all: useFillPayerForm resolves it from the clock.
+  it("admits system.today, which the fill resolves from the device clock", () => {
+    expect(PDF_FILL_FAMILIES).toContain("system");
+    expect(isPdfFillableToken("system.today")).toBe(true);
+  });
+
   it("rejects every family with no row in hand on the case page", () => {
     for (const token of [
       "assignment.isPrimary",
@@ -80,6 +86,9 @@ describe("isWebFillableToken", () => {
       "billingContact.fullName",
       "credentialingContact.phoneOffice",
       "contractingSigner.email",
+      // DYN-TODAY-01 — the extension resolves it on the device before its
+      // profile join; the profile endpoint never emits it.
+      "system.today",
     ]) {
       expect(isWebFillableToken(token)).toBe(true);
     }
@@ -118,6 +127,7 @@ describe("isUnfillableToken / UNFILLABLE_FAMILIES", () => {
     expect(isUnfillableToken("user.name")).toBe(false);
     expect(isUnfillableToken("billingContact.fullName")).toBe(false);
     expect(isUnfillableToken("provider.npi")).toBe(false);
+    expect(isUnfillableToken("system.today")).toBe(false);
   });
 });
 
@@ -151,10 +161,30 @@ describe("WITHDRAWN_TOKENS (DYN-TOKEN-05)", () => {
     }
   });
 
-  it("names only provider.* tokens — a family withdrawal would be the wrong tool", () => {
+  it("names individual tokens, never a family — every withdrawn key has a family that still maps", () => {
     for (const token of WITHDRAWN_TOKENS) {
-      expect(token.startsWith("provider.")).toBe(true);
+      expect(token).toMatch(/^[a-z][A-Za-z]*\.[a-z][A-Za-z0-9]*$/);
+      expect(isUnfillableToken(token)).toBe(false);
     }
+  });
+
+  // 2026-10-15 (field-flow gap analysis G3): internal / audit columns the web
+  // profile never projects, so a mapping to them was a permanent blank.
+  it("withdraws the eight internal columns the web fill cannot resolve", () => {
+    for (const token of [
+      "provider.referenceOnly",
+      "provider.verificationState",
+      "provider.isTestProvider",
+      "facility.referenceOnly",
+      "license.verifiedStatus",
+      "license.verifiedBy",
+      "license.verifiedAt",
+      "license.verificationSourceUrl",
+    ]) {
+      expect(isWithdrawnToken(token)).toBe(true);
+    }
+    expect(isWithdrawnToken("license.state")).toBe(false);
+    expect(isWithdrawnToken("facility.name")).toBe(false);
   });
 });
 
@@ -176,6 +206,12 @@ describe("filterMappingTokens", () => {
       "user.name",
       "billingContact.fullName",
     ]);
+  });
+
+  it("offers system.today to both mapping pickers", () => {
+    const withSystem = [{ token: "system.today" }, { token: "payer.name" }];
+    expect(filterMappingTokens(withSystem).map((e) => e.token)).toEqual(["system.today"]);
+    expect(filterPdfMappingTokens(withSystem).map((e) => e.token)).toEqual(["system.today"]);
   });
 
   it("also drops the individually withdrawn tokens", () => {

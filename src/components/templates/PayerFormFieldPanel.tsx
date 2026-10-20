@@ -2,8 +2,8 @@
 // upload panel.
 //
 // Deliberately NOT a second trainer: it renders the same FieldRegistryList,
-// token picker, coverage read-out and three decisions (map to a token / fixed
-// value / a person fills this) the online-form trainer renders. The only
+// token picker, coverage read-out and four decisions (map to a token / fixed
+// value / a person fills this / leave blank) the online-form trainer renders. The only
 // differences are where the rows come from — imported from the blank PDF's
 // AcroForm fields instead of captured by the extension — and what they are
 // keyed on.
@@ -47,6 +47,7 @@ import { createFillRunGuard } from "@/lib/fillRunGuard";
 import { registryCoverage, sectionRenamePatches, type RegistryRow } from "@/lib/fieldRegistry";
 import { groupTokens } from "@/lib/tokenGroups";
 import { filterPdfMappingTokens, isPdfFillableToken } from "@/lib/fillTokenReach";
+import { isSystemToken } from "@/lib/systemTokens";
 import { isXlsxPayerForm } from "@/lib/payerForms";
 import type { GlobalTrainPatch } from "@/services/portalFieldMaps";
 import { FieldRegistryList, type RegistryDecision } from "./FieldRegistryList";
@@ -166,7 +167,7 @@ export function PayerFormFieldPanel({
     }
   }
 
-  // Every PDF row is shared-tier, so all three decisions route through the
+  // Every PDF row is shared-tier, so every decision routes through the
   // global training RPC — the same patch shapes the online-form trainer sends.
   async function decideRegistry(row: RegistryRow, decision: RegistryDecision) {
     const map = maps.find((m) => m.id === row.id);
@@ -187,14 +188,16 @@ export function PayerFormFieldPanel({
           ? { status: "approved", source: "hardcoded", hardcodedValue: decision.value }
           : decision.kind === "human"
             ? { status: "approved", source: "manual" }
-            : decision.kind === "transform"
-              ? {
-                  status: "approved",
-                  source: "token",
-                  token: map.token,
-                  transform: decision.transform,
-                }
-              : { status: "proposed", source: "manual" };
+            : decision.kind === "leave_blank"
+              ? { status: "approved", source: "leave_blank" }
+              : decision.kind === "transform"
+                ? {
+                    status: "approved",
+                    source: "token",
+                    token: map.token,
+                    transform: decision.transform,
+                  }
+                : { status: "proposed", source: "manual" };
     try {
       await trainMut.mutateAsync({
         id: map.id,
@@ -265,11 +268,16 @@ export function PayerFormFieldPanel({
   // (case page picks each). Keep `isPdfFillableToken` / `PDF_FILL_FAMILIES`
   // in step with that, or the sample fill will teach the opposite of the
   // case fill again.
+  //
+  // DYN-TODAY-01 — `system.*` is reachable but never MOCKED: `useFillPayerForm`
+  // resolves it from the device clock at fill click, so the sample carries the
+  // real date a case fill would, not a synthetic one.
   const sampleValues = useMemo(() => {
     const values: Record<string, string> = {};
     for (const map of maps) {
       const token = map.token?.trim();
-      if (token && isPdfFillableToken(token)) values[token] = mockValueForToken(token);
+      if (!token || isSystemToken(token) || !isPdfFillableToken(token)) continue;
+      values[token] = mockValueForToken(token);
     }
     return values;
   }, [maps]);

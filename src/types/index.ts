@@ -1764,7 +1764,11 @@ export interface CaseDetail extends CredentialCase {
   createdByName?: string | null;
 }
 
-export type PortalFieldMapSource = "token" | "manual" | "manual_partial" | "hardcoded";
+/** `leave_blank` is a reviewed decision that the field stays empty: approved,
+ * no token, no literal, nothing fills it, and it never lands on the
+ * specialist's post-fill list. Mirrored in the extension's apiTypes. */
+export type PortalFieldMapSource =
+  "token" | "manual" | "manual_partial" | "hardcoded" | "leave_blank";
 export type PortalFieldMapStatus = "proposed" | "approved" | "retired";
 export type FillMode = "web" | "pdf" | "xlsx";
 
@@ -1896,6 +1900,9 @@ export interface FillSession {
   fieldOutcomes?: FillEventV2FieldOutcome[] | null;
   /** E4.2 TE-17 — dry-run test fill marker; excluded from every metric reader. */
   isTest?: boolean;
+  /** DYN-TODAY-01 — the `YYYY-MM-DD` the device resolved `system.today` to,
+   * when the fill wrote that token; NULL/absent otherwise. Not PHI. */
+  systemTodayDate?: string | null;
 }
 
 // Cleanup surfaces (2026-07-06): the portals registry (Surface 3) and the

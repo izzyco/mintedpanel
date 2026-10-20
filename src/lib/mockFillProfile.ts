@@ -12,8 +12,10 @@
 // curated values or the heuristics change materially — recorded dry runs are
 // interpreted against the profile that produced them.
 
-export const MOCK_FILL_PROFILE_VERSION = 3;
+export const MOCK_FILL_PROFILE_VERSION = 4;
 
+// Curated values for the common catalog tokens (bare form, the extension join
+// contract). Everything else falls through to the field-name heuristics below.
 export const MOCK_FILL_VALUES: Readonly<Record<string, string>> = {
   // --- provider.* ---
   "provider.firstName": "Sample",
@@ -73,7 +75,6 @@ export const MOCK_FILL_VALUES: Readonly<Record<string, string>> = {
   "group.name": "Sample Provider Group",
   "group.tin": "123456789",
   "group.taxIdType": "EIN",
-  "group.npi": "1999999984",
   "group.npiType2": "1999999984",
   "group.states": "NC, SC, VA",
   "group.websiteUrl": "https://example.com",
@@ -152,7 +153,30 @@ export const MOCK_FILL_VALUES: Readonly<Record<string, string>> = {
   "facility.contactName": "Sample Clinic Manager",
   "facility.contactFullName": "Sample Clinic Manager",
   "facility.effectiveDate": "2020-01-15",
-  "facility.hours": "Mon-Fri 8:00am - 5:00pm",
+  // facility.hours is the hoursSummary() text; the per-day keys are the
+  // facility.hours{Day}{Status|Open|Close} composites (stored 24h HH:MM).
+  "facility.hours": "Open 7 days/week",
+  "facility.hoursMonStatus": "Open",
+  "facility.hoursMonOpen": "08:00",
+  "facility.hoursMonClose": "17:00",
+  "facility.hoursTueStatus": "Open",
+  "facility.hoursTueOpen": "08:00",
+  "facility.hoursTueClose": "17:00",
+  "facility.hoursWedStatus": "Open",
+  "facility.hoursWedOpen": "08:00",
+  "facility.hoursWedClose": "17:00",
+  "facility.hoursThuStatus": "Open",
+  "facility.hoursThuOpen": "08:00",
+  "facility.hoursThuClose": "17:00",
+  "facility.hoursFriStatus": "Open",
+  "facility.hoursFriOpen": "08:00",
+  "facility.hoursFriClose": "17:00",
+  "facility.hoursSatStatus": "Open",
+  "facility.hoursSatOpen": "09:00",
+  "facility.hoursSatClose": "13:00",
+  "facility.hoursSunStatus": "Open",
+  "facility.hoursSunOpen": "09:00",
+  "facility.hoursSunClose": "13:00",
   "facility.acceptingNewPatients": "Yes",
   "facility.adaCompliance": "Yes",
   "facility.languageLine": "Yes",
@@ -285,6 +309,8 @@ export const MOCK_FILL_VALUES: Readonly<Record<string, string>> = {
   "contract.notes": "Standard participating group agreement",
 };
 
+// Field-name heuristics for tokens outside the curated map, keyed on the part
+// after the last dot (camelCase). Deterministic; always non-empty.
 export function mockValueForToken(token: string): string {
   const curated = MOCK_FILL_VALUES[token];
   if (curated) return curated;
@@ -301,12 +327,14 @@ export function mockValueForToken(token: string): string {
   return `Sample ${words}`;
 }
 
+/** Build the resolved-token record a dry run feeds computeTestRun — one entry
+ * per distinct mapped token, every value synthetic and non-empty. */
 export function buildMockTokenMap(
   tokens: Iterable<string | null | undefined>,
 ): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const value of tokens) {
-    const token = value?.trim();
+  for (const t of tokens) {
+    const token = t?.trim();
     if (!token || out[token]) continue;
     out[token] = mockValueForToken(token);
   }

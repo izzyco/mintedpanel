@@ -112,9 +112,10 @@ describe("per-section header gates (F3.3.1 no-more-no-fewer)", () => {
     expect(Object.keys(PROVIDER_FORM_TEMPLATE_HEADERS).sort()).toEqual(
       Object.keys(emptyProviderFormState).sort(),
     );
-    // Gender is intentionally accounted for with no CSV header until the
-    // transactional import path persists it.
-    expect(PROVIDER_FORM_TEMPLATE_HEADERS.gender).toEqual([]);
+    // Gender rides an OPTIONAL column since the commit RPC persists it
+    // (2026-10-15); the form contract stays exhaustive either way.
+    expect(PROVIDER_FORM_TEMPLATE_HEADERS.gender).toEqual(["gender"]);
+    expect(PROVIDER_DESCRIPTOR.optionalHeaders).toContain("gender");
     const expectedHeaders = [
       ...Object.values(PROVIDER_FORM_TEMPLATE_HEADERS).flat(),
       ...PROVIDER_TEMPLATE_EXTRA_HEADERS,
@@ -266,9 +267,67 @@ describe("facility scan (TE-2/TE-3/TE-5)", () => {
     expect(row.errorColumn).toBe("group_name");
   });
 
-  it("has no hours column in the template (TE-3 deferral)", () => {
-    expect(FACILITY_DESCRIPTOR.headers).not.toContain("hours");
-    expect(FACILITY_DESCRIPTOR.headers.some((h) => h.includes("hours"))).toBe(false);
+  // TD-33 closed 2026-10-15: hours and the go-live date are OPTIONAL columns,
+  // so a template downloaded before them still passes the gate.
+  it("carries effective_date and the 14 per-day hours columns as optional headers", () => {
+    const hoursHeaders = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].flatMap((d) => [
+      `${d}_open`,
+      `${d}_close`,
+    ]);
+    for (const h of ["effective_date", ...hoursHeaders]) {
+      expect(FACILITY_DESCRIPTOR.headers).toContain(h);
+      expect(FACILITY_DESCRIPTOR.optionalHeaders).toContain(h);
+    }
+    const withoutHours = FACILITY_DESCRIPTOR.headers.filter(
+      (h) => h !== "effective_date" && !hoursHeaders.includes(h),
+    );
+    expect(
+      checkHeaders(
+        withoutHours,
+        FACILITY_DESCRIPTOR.headers,
+        FACILITY_DESCRIPTOR.optionalHeaders ?? [],
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("stages per-day hours and the go-live date; blank days stay blank", () => {
+    const row = scanRow(FACILITY_DESCRIPTOR, {
+      ...FACILITY_ROW,
+      effective_date: "3/1/2027",
+      mon_open: "07:00",
+      mon_close: "19:00",
+      sat_open: "",
+      sat_close: "",
+    });
+    expect(row.rowState).toBe("staged");
+    expect(row.mapped?.effective_date).toBe("2027-03-01");
+    expect(row.mapped?.mon_open).toBe("07:00");
+    expect(row.mapped?.mon_close).toBe("19:00");
+    expect(row.mapped?.sat_open).toBeNull();
+    expect(row.mapped?.sun_close).toBeNull();
+  });
+
+  it("rejects a one-sided day, a malformed time, and a close before open — naming the column", () => {
+    const oneSided = scanRow(FACILITY_DESCRIPTOR, { ...FACILITY_ROW, tue_open: "08:00" });
+    expect(oneSided.rowState).toBe("error");
+    expect(oneSided.errorColumn).toBe("tue_close");
+
+    const malformed = scanRow(FACILITY_DESCRIPTOR, {
+      ...FACILITY_ROW,
+      wed_open: "8am",
+      wed_close: "17:00",
+    });
+    expect(malformed.rowState).toBe("error");
+    expect(malformed.errorColumn).toBe("wed_open");
+
+    const inverted = scanRow(FACILITY_DESCRIPTOR, {
+      ...FACILITY_ROW,
+      thu_open: "17:00",
+      thu_close: "09:00",
+    });
+    expect(inverted.rowState).toBe("error");
+    expect(inverted.errorColumn).toBe("thu_close");
+    expect(inverted.errorReason).toContain("after");
   });
 });
 
@@ -286,21 +345,31 @@ const PROVIDER_ROW: Record<string, string> = {
 };
 
 describe("provider scan (TE-2/TE-6)", () => {
-  it("keeps gender and sex out of provider CSVs until the commit path persists them", () => {
-    expect(PROVIDER_FORM_TEMPLATE_HEADERS.gender).toEqual([]);
-    expect(PROVIDER_DESCRIPTOR.headers).not.toContain("gender");
+  it("carries gender as an optional column (the commit path persists it since 2026-10-15)", () => {
+    expect(PROVIDER_DESCRIPTOR.headers).toContain("gender");
     expect(PROVIDER_DESCRIPTOR.headers).not.toContain("sex");
-    expect(sectionTemplateCsv(PROVIDER_DESCRIPTOR)).not.toContain("gender");
-
-    for (const header of ["gender", "sex"]) {
-      const gate = checkHeaders(
-        [...PROVIDER_DESCRIPTOR.headers, header],
+    expect(sectionTemplateCsv(PROVIDER_DESCRIPTOR)).toContain("gender");
+    // An older file without the column still passes; a "sex" column never does.
+    const withoutGender = PROVIDER_DESCRIPTOR.headers.filter((h) => h !== "gender");
+    expect(
+      checkHeaders(
+        withoutGender,
         PROVIDER_DESCRIPTOR.headers,
         PROVIDER_DESCRIPTOR.optionalHeaders ?? [],
-      );
-      expect(gate.ok).toBe(false);
-      expect(gate.extra).toContain(header);
-    }
+      ).ok,
+    ).toBe(true);
+    const gate = checkHeaders(
+      [...PROVIDER_DESCRIPTOR.headers, "sex"],
+      PROVIDER_DESCRIPTOR.headers,
+      PROVIDER_DESCRIPTOR.optionalHeaders ?? [],
+    );
+    expect(gate.ok).toBe(false);
+    expect(gate.extra).toContain("sex");
+
+    const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, gender: "Female" });
+    expect(row.rowState).toBe("staged");
+    expect(row.mapped?.gender).toBe("Female");
+    expect(scanRow(PROVIDER_DESCRIPTOR, PROVIDER_ROW).mapped?.gender).toBeNull();
   });
 
   it("stages a valid provider row without any facility columns", () => {

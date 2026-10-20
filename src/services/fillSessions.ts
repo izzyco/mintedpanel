@@ -26,6 +26,7 @@ import {
   type WorkContextValidationRequest,
 } from "@/lib/workContext";
 import { validateWorkContext } from "@/services/workContext";
+import { isCalendarDateString } from "@/lib/systemTokens";
 
 export interface FillSessionServiceCtx {
   db: SupabaseClient<Database>;
@@ -75,6 +76,12 @@ export interface FillEventInput {
   fieldsVerified?: number;
   fieldsRejected?: number;
   fieldOutcomes?: unknown;
+  /** DYN-TODAY-01 — the calendar date (`YYYY-MM-DD`) the device resolved
+   * `system.today` to for this fill, when the fill wrote that token. Optional
+   * and additive: a date is not PHI, but it is the one value a fill event
+   * carries, so it is validated by shape, stored in its own column, and never
+   * logged or written to an audit row. */
+  systemTodayDate?: string | null;
 }
 
 export type RecordFillEventResult =
@@ -94,6 +101,42 @@ const FILL_SESSION_COLUMNS =
 const TYPED_CASE_FILL_SESSION_COLUMNS = `${FILL_SESSION_COLUMNS}, case_step_key`;
 const FILL_EVENT_V2_COLUMNS =
   "event_schema_version, fields_attempted, fields_verified, fields_rejected, field_outcomes";
+// DYN-TODAY-01 — probed only when a request carries `systemTodayDate` (or the
+// column is already known to exist), so a database that predates migration
+// 20261015130000 keeps accepting every other fill event unchanged (same
+// posture as case_step_key above).
+const SYSTEM_TODAY_COLUMN = "system_today_date";
+// Once one probe has seen the column it stays seen: the schema is additive, so
+// a column never goes away, and every later fill event (dated or not) can then
+// select it and compare it on replay without another round trip.
+let systemTodayColumnKnown = false;
+
+/** Test seam: forget that the column was seen. */
+export function resetSystemTodayColumnProbe(): void {
+  systemTodayColumnKnown = false;
+}
+
+/** PostgREST's two spellings of "that column does not exist": Postgres 42703
+ * from the statement, or PGRST204 from the schema cache. Anything else — a
+ * network fault, a permission error, a 5xx — is NOT "unsupported" and must
+ * propagate, or a transient error would silently drop the date from a fill. */
+function isMissingSystemTodayColumnError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const row = error as { code?: unknown; message?: unknown; details?: unknown };
+  const namesColumn = [row.message, row.details].some(
+    (value) => typeof value === "string" && value.includes(SYSTEM_TODAY_COLUMN),
+  );
+  return namesColumn && (row.code === "42703" || row.code === "PGRST204");
+}
+
+/** Replay rule for the resolved date. A stored row that recorded no date (it
+ * was written before the column existed, or the fill did not send one) cannot
+ * be contradicted by a retry, so it never conflicts; a stored date must be
+ * matched exactly, and a retry that omits it is a different request. */
+function sameSystemTodayDate(stored: unknown, incoming: string | null | undefined): boolean {
+  const storedDate = (stored ?? null) as string | null;
+  return storedDate == null || storedDate === (incoming ?? null);
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FILL_MODES = new Set<string>(["web", "pdf"]);
@@ -158,6 +201,7 @@ function sameStoredFill(
   row: Record<string, unknown>,
   input: FillEventInput,
   ctx: FillSessionServiceCtx,
+  compareSystemToday = false,
 ): boolean {
   const metadata = input.schemaVersion === 2 ? getV2Metadata(input) : null;
   const fieldsSkipped = metadata
@@ -189,7 +233,8 @@ function sameStoredFill(
     canonicalJson(row.fields_skipped ?? null) === canonicalJson(fieldsSkipped) &&
     canonicalJson(row.docs_attached ?? null) ===
       canonicalJson(metadata ? null : (input.docsAttached ?? null)) &&
-    row.performed_by === ctx.userId;
+    row.performed_by === ctx.userId &&
+    (!compareSystemToday || sameSystemTodayDate(row.system_today_date, input.systemTodayDate));
   if (!commonMatches) return false;
   if (input.startedAt != null && Date.parse(String(row.started_at)) !== Date.parse(input.startedAt))
     return false;
@@ -602,7 +647,7 @@ export async function recordFillEvent(
   const isContractReceipt = input.contractId != null;
   const isTypedCaseReceipt = workTuple?.ownerKind === "case";
   const isTypedWorkReceipt = workTuple !== null;
-  const sessionColumns: string = isTypedCaseReceipt
+  const baseSessionColumns: string = isTypedCaseReceipt
     ? TYPED_CASE_FILL_SESSION_COLUMNS
     : FILL_SESSION_COLUMNS;
   const hasUnownedContext =
@@ -738,6 +783,22 @@ export async function recordFillEvent(
   if (input.completedAt != null && !isValidTimestamp(input.completedAt)) {
     return reject(422, "completedAt must be an ISO timestamp");
   }
+  if (input.systemTodayDate != null && !isCalendarDateString(input.systemTodayDate)) {
+    return reject(422, "systemTodayDate must be a calendar date (YYYY-MM-DD)");
+  }
+  // The column is additive and may not be applied yet. A fill that resolved
+  // system.today is still a fill worth recording, so a MISSING column drops the
+  // date rather than the receipt (any other probe error propagates). Once the
+  // column has been seen, every request selects and compares it, so a replay
+  // that drops or changes a stored date is caught whichever side carries one.
+  const hasSystemToday = input.systemTodayDate != null;
+  const systemTodayColumn = hasSystemToday
+    ? await supportsSystemTodayDate({ db: ctx.db })
+    : systemTodayColumnKnown;
+  const storeSystemToday = hasSystemToday && systemTodayColumn;
+  const sessionColumns: string = systemTodayColumn
+    ? `${baseSessionColumns}, ${SYSTEM_TODAY_COLUMN}`
+    : baseSessionColumns;
 
   // V2 Work retries are checked against their immutable receipt before any
   // mutable owner/SOP/configuration validation. A completed step or later map
@@ -747,7 +808,7 @@ export async function recordFillEvent(
     const incomingIsV2 = v2Metadata !== null;
     if (
       (storedIsV2 || incomingIsV2) &&
-      (!storedIsV2 || !incomingIsV2 || !sameStoredFill(row, input, ctx))
+      (!storedIsV2 || !incomingIsV2 || !sameStoredFill(row, input, ctx, systemTodayColumn))
     ) {
       return reject(409, "Idempotency id was already used with a different fill event");
     }
@@ -862,6 +923,7 @@ export async function recordFillEvent(
   // Only a typed case receipt carries a selected SOP step. It is stored as the
   // text key; the deprecated uuid case_step_id is never written.
   if (isTypedCaseReceipt) row.case_step_key = input.caseStepId;
+  if (storeSystemToday) row[SYSTEM_TODAY_COLUMN] = input.systemTodayDate;
   // Omit started_at when absent so the column default (now()) applies.
   if (input.startedAt != null) row.started_at = input.startedAt;
 
@@ -941,6 +1003,23 @@ export async function supportsFillEventV2(
   } catch {
     return false;
   }
+}
+
+/** DYN-TODAY-01 — can this database hold the resolved `system.today` date?
+ * Probed on a request that carries one, until a probe has seen the column.
+ * Only "column does not exist" means no; any other error is thrown, never read
+ * as "unsupported". */
+export async function supportsSystemTodayDate(
+  ctx: Pick<FillSessionServiceCtx, "db">,
+): Promise<boolean> {
+  if (systemTodayColumnKnown) return true;
+  const { error } = await ctx.db.from("fill_sessions").select(SYSTEM_TODAY_COLUMN).limit(0);
+  if (error == null) {
+    systemTodayColumnKnown = true;
+    return true;
+  }
+  if (isMissingSystemTodayColumnError(error)) return false;
+  throw error;
 }
 
 // ---------------------------------------------------------------------------

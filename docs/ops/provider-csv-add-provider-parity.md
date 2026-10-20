@@ -30,8 +30,11 @@ import write path. Import still commits through `commit_import_run`, not
 | **Existing template relationship columns** (`group_*`, `facility_name`, `enrollment_*`)                 | Keep; already beyond single-group Add Provider and must not regress                                           |
 | **`providers` table / full `Provider` type**                                                            | **Not** the parity target (DEA, ethnicity, malpractice legacy columns, etc. stay out unless PM expands scope) |
 
-Roster edit (`ProviderRosterForm`) adds `gender` and richer license PSV UI;
-those are **out of scope** unless PM explicitly widens this ticket. Home
+Roster edit (`ProviderRosterForm`) adds richer license PSV UI; that is **out
+of scope** unless PM explicitly widens this ticket. (`gender` IS on Add
+Provider — `ProviderFormState.gender` → `toProviderInput` — and since
+2026-10-15 rides an optional `gender` CSV column persisted by
+`commit_import_run`; see the field-flow gap analysis, finding G6.) Home
 address is also out of Add Provider today (roster comment notes CSV as a
 possible address writer — treat as a **separate** PM decision, not part of
 this parity ticket).
@@ -71,7 +74,7 @@ this parity ticket).
 | -------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Full SSN                                                             | Vault-only; template stays `ssn_last4`                                     |
 | Home address                                                         | Not on Add Provider; separate PM call                                      |
-| Gender, suffix, DEA, ethnicity, languages, board flags, age groups   | Not on Add Provider                                                        |
+| Suffix, DEA, ethnicity, languages, board flags, age groups           | Not on Add Provider (gender IS, and is imported since 2026-10-15)          |
 | Malpractice\* on provider                                            | Moved to group insurance; form omits                                       |
 | License PSV (`verified_status`, URL, stamps)                         | Add Provider create does not set PSV (import already inserts `unverified`) |
 | `status`, `reference_only`, `is_test_provider`, `verification_state` | System / import-toggle / always `pending_verification` on create           |

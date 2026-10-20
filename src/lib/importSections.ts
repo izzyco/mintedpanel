@@ -22,12 +22,15 @@
 //   - the group's billing / correspondence / credentialing blocks → prefixed
 //     columns (billing_*, corr_*, cred_*); a blank corr/cred block INHERITS
 //     billing at scan time (the form's "Same as billing" quick-fill);
-//   - facility HOURS are omitted from the CSV (a jsonb weekly schedule, set in
-//     the facility form after import — TECH-DEBT, PM Open Q1 default);
+//   - facility HOURS ride 14 optional per-day columns (mon_open … sun_close,
+//     24h HH:MM; both blank = closed) and are encoded through
+//     src/lib/facilityHours (the locked jsonb contract) at commit — TD-33
+//     closed 2026-10-15;
 //   - provider LICENSES ride one row per license, folded into one provider on
 //     commit (the E3.1 grain).
 import type { CsvRecord } from "@/lib/csvImport";
 import { coerceBool, coerceDate } from "@/lib/csvImport";
+import { DAY_KEYS, isValidTime } from "@/lib/facilityHours";
 import { toCsv } from "@/lib/csv";
 import { matchFacilityLocator, type FacilityLocatorRecord } from "@/lib/facilityLocator";
 import { matchGroupLocator, type GroupMatchCandidate } from "@/lib/groupLocator";
@@ -153,6 +156,10 @@ export interface SectionDescriptor {
   /** Template columns a file may omit. Present on the download; old files still pass. */
   optionalHeaders?: readonly string[];
   spec: SectionScanSpec;
+  /** Optional cross-column format checks, run after the per-column checks and
+   * before buildMapped; return an error to block the row (one error per row,
+   * same discipline as the column checks). */
+  validateRow?(raw: Record<string, string>): { column: string; reason: string } | null;
   buildMapped(ctx: MapCtx): Record<string, string | null>;
   /** E6.2 — optional org-context validation AFTER the format scan: return an
    * error to block the row, or a patch of resolved columns merged into
@@ -204,9 +211,10 @@ export const GROUP_TEMPLATE_HEADERS = [
   "cred_email",
 ] as const;
 
-// facility ← FacilityForm / FacilityInput (E1.2). Hours are omitted (TE-3);
-// languages/interpreters are `;`-delimited; the parent group is keyed by
-// group_name or group_tin (TE-5).
+// facility ← FacilityForm / FacilityInput (E1.2). Languages/interpreters are
+// `;`-delimited; the parent group is keyed by group_name or group_tin (TE-5);
+// the go-live date and the per-day hours grid are OPTIONAL columns (an older
+// file without them still passes the gate) — 2026-10-15, closes TD-33.
 export const FACILITY_TEMPLATE_HEADERS = [
   "facility_name",
   "group_name",
@@ -228,7 +236,18 @@ export const FACILITY_TEMPLATE_HEADERS = [
   "interpreter_languages",
   "ada_accessible",
   "ada_notes",
+  "effective_date",
+  ...(["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const).flatMap(
+    (day) => [`${day}_open`, `${day}_close`] as const,
+  ),
 ] as const;
+
+/** The 15 optional facility columns: an older template without them is valid. */
+export const FACILITY_OPTIONAL_HEADERS: readonly string[] = [
+  "group_npi",
+  "effective_date",
+  ...DAY_KEYS.flatMap((day) => [`${day}_open`, `${day}_close`]),
+];
 
 // provider ← Add Provider / ProviderFormState. The mapping is a compile-time
 // exhaustiveness contract: a new form field must be deliberately represented
@@ -240,9 +259,9 @@ export const PROVIDER_FORM_TEMPLATE_HEADERS = {
   firstName: ["provider_first_name"],
   lastName: ["provider_last_name"],
   credentials: ["credentials"],
-  // The import commit RPC does not persist gender yet; keep the Add Provider
-  // form contract exhaustive without advertising a lossy import column.
-  gender: [],
+  // Optional column (2026-10-15): commit_import_run persists it since the
+  // gender/defaults migration; an older file without the column still passes.
+  gender: ["gender"],
   dateOfBirth: ["date_of_birth"],
   ssnLast4: ["ssn_last4"],
   email: ["email"],
@@ -283,6 +302,7 @@ export const PROVIDER_TEMPLATE_HEADERS = [
   "provider_middle_initial",
   "provider_last_name",
   "credentials",
+  "gender",
   "date_of_birth",
   "ssn_last4",
   "email",
@@ -420,6 +440,11 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
     }
   }
 
+  if (errorReason === null && descriptor.validateRow) {
+    const crossColumn = descriptor.validateRow(raw);
+    if (crossColumn) fail(crossColumn.column, crossColumn.reason);
+  }
+
   if (errorReason !== null) {
     return { line: record.line, raw, mapped: null, rowState: "error", errorColumn, errorReason };
   }
@@ -535,15 +560,15 @@ export const FACILITY_DESCRIPTOR: SectionDescriptor = {
   headers: FACILITY_TEMPLATE_HEADERS,
   templateFilename: "facility-import-template.csv",
   helperText:
-    "One row per location. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Each facility belongs to exactly ONE group, so a street address shared by two groups is entered once per group. Languages use ';'. Hours are set in the facility form after import.",
-  optionalHeaders: ["group_npi"],
+    "One row per location. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Each facility belongs to exactly ONE group, so a street address shared by two groups is entered once per group. Languages use ';'. effective_date is the go-live date. Hours: mon_open/mon_close … sun_open/sun_close in 24h HH:MM — fill both for an open day, leave both blank for a closed day (all blank = hours not entered yet).",
+  optionalHeaders: FACILITY_OPTIONAL_HEADERS,
   spec: {
     required: ["facility_name", "street", "city", "state", "zip"],
     requireGroupKey: true,
     tinColumns: ["group_tin"],
     npiColumns: ["group_npi"],
     stateColumns: ["state"],
-    dateColumns: [],
+    dateColumns: ["effective_date"],
     ssn4Columns: [],
     middleInitialColumns: [],
     boolColumns: ["accepting_new_patients", "ada_accessible"],
@@ -573,7 +598,37 @@ export const FACILITY_DESCRIPTOR: SectionDescriptor = {
       interpreter_languages: encodeDelimited(ctx.multi("interpreter_languages")),
       ada_accessible: ctx.bool("ada_accessible"),
       ada_notes: ctx.nullable("ada_notes"),
+      effective_date: ctx.date("effective_date"),
+      ...Object.fromEntries(
+        DAY_KEYS.flatMap((day) => [
+          [`${day}_open`, ctx.nullable(`${day}_open`)],
+          [`${day}_close`, ctx.nullable(`${day}_close`)],
+        ]),
+      ),
     };
+  },
+  // Per-day hours: a day is open (both times, HH:MM, close after open) or
+  // closed (both blank). One time without the other is a row error naming the
+  // column, like every other format check.
+  validateRow(raw) {
+    for (const day of DAY_KEYS) {
+      const open = (raw[`${day}_open`] ?? "").trim();
+      const close = (raw[`${day}_close`] ?? "").trim();
+      if (!open && !close) continue;
+      if (!open || !close) {
+        return {
+          column: open ? `${day}_close` : `${day}_open`,
+          reason: `${day}_open and ${day}_close must both be set (open day) or both be blank (closed)`,
+        };
+      }
+      if (!isValidTime(open))
+        return { column: `${day}_open`, reason: `${day}_open must be 24h HH:MM, got "${open}"` };
+      if (!isValidTime(close))
+        return { column: `${day}_close`, reason: `${day}_close must be 24h HH:MM, got "${close}"` };
+      if (close <= open)
+        return { column: `${day}_close`, reason: `${day}_close must be after ${day}_open` };
+    }
+    return null;
   },
 };
 
@@ -583,8 +638,8 @@ export const PROVIDER_DESCRIPTOR: SectionDescriptor = {
   headers: PROVIDER_TEMPLATE_HEADERS,
   templateFilename: "provider-import-template.csv",
   helperText:
-    "Re-download the current template; old versions are rejected. One row per provider × license (repeat identity columns for extra licenses, facilities, groups, or enrollments). Contact, education, start date, new-grad/CAQH, and license type fields are optional. facility_name accepts the exact facility name or the location's street address — the first facility on the file is the primary. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Only the last 4 SSN digits in ssn_last4.",
-  optionalHeaders: ["group_npi"],
+    "Re-download the current template; old versions are rejected. One row per provider × license (repeat identity columns for extra licenses, facilities, groups, or enrollments). Contact, education, gender, start date, new-grad/CAQH, and license type fields are optional. facility_name accepts the exact facility name or the location's street address — the first facility on the file is the primary. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Only the last 4 SSN digits in ssn_last4.",
+  optionalHeaders: ["group_npi", "gender"],
   spec: {
     required: ["provider_first_name", "provider_last_name", "npi"],
     requireGroupKey: true,
@@ -625,6 +680,7 @@ export const PROVIDER_DESCRIPTOR: SectionDescriptor = {
       provider_middle_initial: NULLABLE(middle ? middle.replace(".", "").toUpperCase() : ""),
       provider_last_name: ctx.nullable("provider_last_name"),
       credentials: ctx.nullable("credentials"),
+      gender: ctx.nullable("gender"),
       date_of_birth: ctx.date("date_of_birth"),
       ssn_last4: ctx.nullable("ssn_last4"),
       email: ctx.nullable("email"),

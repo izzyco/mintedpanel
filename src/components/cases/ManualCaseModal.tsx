@@ -37,11 +37,13 @@ import {
 } from "@/hooks/useProviders";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { usePayers, useSops } from "@/hooks/useAdmin";
+import { useTemplatePayerForms } from "@/hooks/usePayerForms";
 import { resolveCaseFacilityId } from "@/lib/caseFacility";
+import { hydratePayerFormTasks, payerFormsByFamily } from "@/lib/payerForms";
 import { manualCasePayers } from "@/lib/payerSetup";
 import { isFallbackTemplate, topRankedTemplates } from "@/lib/pickTemplate";
 import { resolveTemplate } from "@/lib/sopResolver";
-import { stampTasks } from "@/lib/sopStamp";
+import { stampExecutionTypes, stampTasks } from "@/lib/sopStamp";
 import { isAllStates, templateStates } from "@/lib/sopMatchKey";
 import { US_STATES } from "@/lib/usStates";
 import { useCanWrite, useIsAdmin } from "@/lib/permissions";
@@ -106,6 +108,10 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
     if (effectiveTemplateId === NONE) return null;
     return templateOptions.find((t) => t.id === effectiveTemplateId) ?? null;
   }, [effectiveTemplateId, templateOptions]);
+  // The template's LIVE payer forms, so Payer PDF actions are baked with a
+  // concrete form pointer here exactly as /generation does (a pdf step with no
+  // pointer has nothing to download or fill).
+  const payerFormsQ = useTemplatePayerForms(effectiveTemplate?.id);
 
   const roster = useMemo(
     () => (providersQ.data ?? []).filter((p) => p.status !== "terminated"),
@@ -189,6 +195,8 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
         facilitiesQ.isError ||
         templatesQ.isError ||
         casesQ.isError));
+  const payerFormsLoading = effectiveTemplate !== null && payerFormsQ.isLoading;
+  const payerFormsFailed = effectiveTemplate !== null && payerFormsQ.isError;
   const prerequisitesReady =
     payers.length > 0 &&
     (caseType === "contract" ? (groupsQ.data ?? []).length > 0 : providers.length > 0);
@@ -237,6 +245,7 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
     void payersQ.refetch();
     void templatesQ.refetch();
     void casesQ.refetch();
+    void payerFormsQ.refetch();
   };
 
   const submit = () => {
@@ -265,9 +274,22 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
       facilityId != null
         ? ((facilitiesQ.data ?? []).find((f) => f.id === facilityId) ?? null)
         : null;
+    if (template && payerFormsQ.data === undefined) return;
     // E2.2 F2.2.1: stamp the version resolved here (same head row, TE-2).
+    // E4.2 TE-12: stamp each task's execution type from its SOP definition —
+    // without it an online-form task lands as Manual and the exact Extension
+    // handoff refuses it. Both stamps pair by index with taskDefinitions, and
+    // hydratePayerFormTasks runs LAST (it is the only pass that can drop a
+    // task) so Payer PDF actions carry a live form pointer, as on /generation.
     const tasks = template
-      ? stampTasks(resolveTemplate(template, provider, group, facility, null), template)
+      ? hydratePayerFormTasks(
+          stampExecutionTypes(
+            stampTasks(resolveTemplate(template, provider, group, facility, null), template),
+            template.taskDefinitions,
+          ),
+          template.taskDefinitions,
+          payerFormsByFamily(payerFormsQ.data ?? []),
+        )
       : [];
 
     createCase.mutate(
@@ -580,6 +602,8 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
               (effectiveTemplateId !== NONE && !effectiveTemplate) ||
               loading ||
               failed ||
+              payerFormsLoading ||
+              payerFormsFailed ||
               createCase.isPending
             }
             onClick={submit}

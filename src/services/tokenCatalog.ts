@@ -4,12 +4,18 @@
 // route adds at read time (no schema backing) so the picker offers the full set
 // the fill engine can resolve. Tokens are the BARE catalog form.
 import { supabase } from "@/integrations/supabase/externalClient";
+import { FACILITY_HOURS_TOKEN_KEYS } from "@/lib/facilityHours";
 import { orgContactTokenKeys } from "@/lib/orgContactTokens";
+import { SYSTEM_TODAY_TOKEN, SYSTEM_TOKEN_FAMILY } from "@/lib/systemTokens";
 
 export interface TokenCatalogEntry {
   token: string;
   table: string;
   column: string;
+  /** `"device"` = resolved on the coordinator's device at fill time, never by
+   * the profile endpoint and never from a stored row. Absent = a stored or
+   * server-computed value. UI copy keys off this, not off the family name. */
+  resolution?: "device";
 }
 
 // Mirrors src/server/userTokens.ts — KEEP THE TWO IN LOCKSTEP: a key offered
@@ -64,6 +70,13 @@ const COMPUTED_TOKENS: TokenCatalogEntry[] = [
   { token: "group.contractingFullName", table: "provider_groups", column: "composite" },
   { token: "group.contractingContactFullName", table: "provider_groups", column: "composite" },
   { token: "group.contractSignerFullName", table: "provider_groups", column: "composite" },
+  // The per-day hours grid (facilities.hours jsonb) as fill tokens — the key
+  // list is owned by src/lib/facilityHours.ts.
+  ...FACILITY_HOURS_TOKEN_KEYS.map((token) => ({
+    token,
+    table: "facilities",
+    column: "composite",
+  })),
   // payer_network_targets is keyed by group × payer × state, so this value is
   // resolved only when the web fill has a validated case context. It is a
   // computed token, not a provider_groups column.
@@ -72,6 +85,15 @@ const COMPUTED_TOKENS: TokenCatalogEntry[] = [
     table: "payer_network_targets",
     column: "payer_issued_id",
   },
+];
+
+// DYN-TODAY-01 — `system.today`, the one family with no source table at all.
+// Both fill surfaces resolve it from the device clock at fill click
+// (`src/lib/systemTokens.ts`); the profile endpoint deliberately does NOT emit
+// it, so unlike every other key here an unresolved `system.today` on the
+// server is the contract working, not a permanent blank.
+const SYSTEM_TOKENS: TokenCatalogEntry[] = [
+  { token: SYSTEM_TODAY_TOKEN, table: SYSTEM_TOKEN_FAMILY, column: "today", resolution: "device" },
 ];
 
 // Role-specific contact tokens are code-owned (ROLE × FIELD), not emitted by
@@ -88,7 +110,13 @@ export async function listTokenCatalog(): Promise<TokenCatalogEntry[]> {
   if (error) throw error;
   const catalog = ((data ?? []) as TokenCatalogEntry[]).filter((e) => Boolean(e?.token));
   const byToken = new Map<string, TokenCatalogEntry>();
-  for (const entry of [...catalog, ...USER_TOKENS, ...CONTACT_TOKENS, ...COMPUTED_TOKENS]) {
+  for (const entry of [
+    ...catalog,
+    ...USER_TOKENS,
+    ...CONTACT_TOKENS,
+    ...COMPUTED_TOKENS,
+    ...SYSTEM_TOKENS,
+  ]) {
     if (!byToken.has(entry.token)) byToken.set(entry.token, entry);
   }
   return [...byToken.values()];

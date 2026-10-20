@@ -99,6 +99,9 @@ const FACILITY_HEADER_LINE = [
   "interpreter_languages",
   "ada_accessible",
   "ada_notes",
+  // 2026-10-15 (TD-33 closed): optional go-live date + per-day hours columns.
+  "effective_date",
+  ...["mon", "tue", "wed", "thu", "fri", "sat", "sun"].flatMap((d) => [`${d}_open`, `${d}_close`]),
 ].join(",");
 
 const PROVIDER_HEADER_LINE = [
@@ -109,6 +112,7 @@ const PROVIDER_HEADER_LINE = [
   "provider_middle_initial",
   "provider_last_name",
   "credentials",
+  "gender",
   "date_of_birth",
   "ssn_last4",
   "email",

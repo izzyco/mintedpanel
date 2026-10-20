@@ -11,18 +11,21 @@
 // providers/provider_groups/facilities/msos widens the picker on its own. What
 // remains hand-listed is the one exclusion below, which is a policy choice
 // rather than a resolution limit.
+import { FACILITY_HOURS_TOKEN_KEYS } from "@/lib/facilityHours";
 import { isEmailValuedToken, isResolvableToken } from "@/lib/sopResolver";
 
 /** Resolvable, but deliberately NOT authorable in a SOP.
  *
  * `provider.ssnLast4` resolves (the column is ordinary, E4.4 vault rules bind
  * the full SSN only) and the extension's quick cards offer it, because a payer
- * form asks for it at fill time. Computed payer-form name/address aliases are
- * also fill-time only: the SOP resolver does not build these values. A SOP body
+ * form asks for it at fill time. The per-day facility hours composites are
+ * also fill-time only: the SOP resolver does not build these values (the
+ * composite name/address tokens it does build are authorable). A SOP body
  * is different: resolution BAKES values into tasks.sop_content and drafted
  * email bodies, so only tokens actually supported there are authorable. */
 export const AUTHORING_EXCLUDED_TOKENS: readonly string[] = [
   "provider.ssnLast4",
+  ...FACILITY_HOURS_TOKEN_KEYS,
 ];
 
 export function filterAuthoringTokens<T extends { token: string }>(catalog: T[]): T[] {

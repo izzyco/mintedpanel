@@ -32,7 +32,7 @@ describe("groupTokens", () => {
   });
 
   it("covers the contact families the 2026-08-07 token work added", () => {
-    for (const p of ["billingContact", "credentialingContact", "contractingSigner"]) {
+    for (const p of ["billingContact", "credentialingContact", "contractingSigner", "system"]) {
       expect(TOKEN_GROUP_ORDER).toContain(p);
     }
   });

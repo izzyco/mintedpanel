@@ -27,6 +27,9 @@ vi.mock("@/integrations/supabase/externalClient", () => ({ supabase: {} }));
 vi.mock("@/hooks/useAdmin", () => ({
   useSops: () => ({ data: mockTemplates, isLoading: false }),
 }));
+vi.mock("@/hooks/usePayerForms", () => ({
+  useTemplatePayerForms: () => ({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
+}));
 vi.mock("@/hooks/useCases", () => ({
   useReapplyCase: () => ({ mutate: vi.fn(), isPending: false }),
 }));

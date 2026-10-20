@@ -18,6 +18,8 @@ import {
   composeProviderAddressTokens,
   composeProviderNameTokens,
 } from "@/lib/entityTokens";
+import { resolveFacilityContact } from "@/lib/facilityContact";
+import { composeFacilityHoursTokens } from "@/lib/facilityHours";
 import { normalizeFieldLabel } from "@/lib/tokenFormat";
 import type { Facility, FieldDictionaryEntry, Provider, ProviderGroup } from "@/types";
 // Type-only, like csvImport/payerForm/providerGroup do — no runtime edge from
@@ -131,6 +133,34 @@ export function resolvePdfValues(
 // Do NOT re-derive the picks in here. The state / group that disambiguates
 // them belongs to the case, which this pure function has no business knowing
 // about.
+// E1.2 TE-4: tel / fax / email / contact inherit the OWNING group's contact
+// block when the facility has none of its own — the rule the facility UI
+// displays, applied to the fill exactly as the web profile applies it
+// (services/providerProfile.ts). Owner-guarded; all-or-nothing.
+function withInheritedContact(
+  facility: Facility | null,
+  group: ProviderGroup | null,
+): Facility | null {
+  if (!facility || !group || facility.groupId !== group.id) return facility;
+  const resolved = resolveFacilityContact(
+    {
+      contactName: facility.contactName ?? null,
+      phone: facility.phone ?? null,
+      fax: facility.fax ?? null,
+      email: facility.email ?? null,
+    },
+    group,
+  );
+  if (!resolved.inherited) return facility;
+  return {
+    ...facility,
+    contactName: resolved.contactName,
+    phone: resolved.phone,
+    fax: resolved.fax,
+    email: resolved.email,
+  };
+}
+
 export function buildProviderTokenValues(
   provider: Provider | null,
   group: ProviderGroup | null,
@@ -138,17 +168,22 @@ export function buildProviderTokenValues(
   license: StateLicense | null = null,
   groupInsurance: InsurancePolicy | null = null,
 ): Record<string, string> {
+  // The contact-inherited row feeds the composites too, so the
+  // facility.contactFullName alias fills what facility.contactName does.
+  const filledFacility = withInheritedContact(facility, group);
   const out = buildEntityTokenValues({
     provider,
     group,
-    facility,
+    facility: filledFacility,
     license,
     groupInsurance,
   });
   Object.assign(out, composeProviderNameTokens(provider));
   Object.assign(out, composeProviderAddressTokens(provider));
-  Object.assign(out, composeFacilityAddressTokens(facility));
+  Object.assign(out, composeFacilityAddressTokens(filledFacility));
   Object.assign(out, composeGroupAddressTokens(group));
+  // The jsonb grid is omitted by the entity sweep; these are its fill form.
+  Object.assign(out, composeFacilityHoursTokens(facility?.hours));
   return out;
 }
 

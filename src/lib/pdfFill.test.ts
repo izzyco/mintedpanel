@@ -184,6 +184,67 @@ describe("buildProviderTokenValues", () => {
     expect("provider.email" in map).toBe(false);
   });
 
+  it("inherits the owning group's contact block for a facility with none of its own (E1.2 TE-4)", () => {
+    const owner = {
+      ...group,
+      id: "g-1",
+      credentialingPhone: "555-0100",
+      credentialingEmail: "cred@example.test",
+      billingPhone: "555-0200",
+    } as ProviderGroup;
+    const bare = {
+      ...facility,
+      groupId: "g-1",
+      phone: null,
+      fax: null,
+      email: null,
+      contactName: null,
+    } as Facility;
+    const map = buildProviderTokenValues(provider, owner, bare);
+    expect(map["facility.phone"]).toBe("555-0100");
+    expect(map["facility.email"]).toBe("cred@example.test");
+    expect("facility.fax" in map).toBe(false);
+    // Own values win outright, and a non-owning group never lends its contact.
+    expect(buildProviderTokenValues(provider, owner, facility)["facility.phone"]).toBe("555-0131");
+    const other = { ...owner, id: "g-2" } as ProviderGroup;
+    expect("facility.phone" in buildProviderTokenValues(provider, other, bare)).toBe(false);
+  });
+
+  it("fills the facility.contactFullName alias from the inherited contact name too", () => {
+    const owner = {
+      ...group,
+      id: "g-1",
+      credentialingContactName: "Cred Lead",
+      credentialingPhone: "555-0100",
+    } as ProviderGroup;
+    const bare = {
+      ...facility,
+      groupId: "g-1",
+      phone: null,
+      fax: null,
+      email: null,
+      contactName: null,
+    } as Facility;
+    const map = buildProviderTokenValues(provider, owner, bare);
+    expect(map["facility.contactName"]).toBe("Cred Lead");
+    expect(map["facility.contactFullName"]).toBe("Cred Lead");
+  });
+
+  it("emits the per-day hours composites and never the jsonb grid itself", () => {
+    const withHours = {
+      ...facility,
+      hours: { mon: { status: "open", open: "07:00", close: "19:00" }, sun: { status: "closed" } },
+    } as Facility;
+    const map = buildProviderTokenValues(provider, group, withHours);
+    expect(map["facility.hoursMonStatus"]).toBe("Open");
+    expect(map["facility.hoursMonOpen"]).toBe("07:00");
+    expect(map["facility.hoursSunStatus"]).toBe("Closed");
+    expect("facility.hours" in map).toBe(false);
+    expect("facility.hoursMonStatus" in buildProviderTokenValues(provider, group, facility)).toBe(
+      false,
+    );
+  });
+
   it("tolerates null provider/group/facility", () => {
     expect(buildProviderTokenValues(null, null, null)).toEqual({});
   });

@@ -9,6 +9,7 @@ import { queryKeys } from "@/hooks/queryKeys";
 import {
   approveFieldMap,
   markFieldMapManual,
+  markFieldMapLeaveBlank,
   reproposeFieldMap,
   setFieldMapHardcoded,
   setFieldMapTransform,
@@ -91,6 +92,20 @@ export function useManualField() {
       fieldLabel: string | null;
       expectedMappingGeneration?: number | null;
     }) => markFieldMapManual(id, expectedMappingGeneration, fieldLabel),
+  });
+}
+
+export function useLeaveBlankField() {
+  return useMutation({
+    mutationFn: ({
+      id,
+      fieldLabel,
+      expectedMappingGeneration,
+    }: {
+      id: string;
+      fieldLabel: string | null;
+      expectedMappingGeneration?: number | null;
+    }) => markFieldMapLeaveBlank(id, expectedMappingGeneration, fieldLabel),
   });
 }
 
