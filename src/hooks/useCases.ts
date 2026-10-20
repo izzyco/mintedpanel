@@ -121,17 +121,14 @@ export interface SetCaseFacilityVars {
   facilityId: string | null;
 }
 
-/** Overwrite the case's facility (provider×group assignment scoped). */
+/** Point the case's primary location (provider×group assignment scoped);
+ * writes `case_facilities` with the mirror, so it invalidates both. */
 export function useSetCaseFacility() {
   const qc = useQueryClient();
   const orgId = useActiveOrgId() ?? "no-org";
   return useMutation({
     mutationFn: (vars: SetCaseFacilityVars) => setCaseFacility(vars.caseId, vars.facilityId),
-    onSuccess: (_data, vars) => {
-      qc.invalidateQueries({ queryKey: ["cases", orgId] });
-      qc.invalidateQueries({ queryKey: queryKeys.case(orgId, vars.caseId) });
-      qc.invalidateQueries({ queryKey: ["audit-log", orgId] });
-    },
+    onSuccess: (_data, vars) => invalidateCaseFacilities(qc, orgId, vars.caseId),
   });
 }
 

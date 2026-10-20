@@ -14,6 +14,7 @@ vi.mock("@/integrations/supabase/externalClient", async () => {
 });
 
 import { getBillingReadinessSnapshot, type BillingReadinessServiceCtx } from "./billingReadiness";
+import { buildBillingFeed, evaluateBillingReadiness } from "@/lib/billingReadiness";
 
 type Row = Record<string, unknown>;
 const TABLES = [
@@ -216,5 +217,114 @@ describe("billing readiness service query boundary", () => {
     await expect(getBillingReadinessSnapshot(incomplete.ctx, "2026-09-25")).rejects.toThrow(
       "incomplete page set",
     );
+  });
+});
+
+describe("a generated case's location", () => {
+  const TODAY = "2026-09-25";
+  const selection = { providerId: "p1", facilityId: "f1", payerId: "pay1" };
+  const NOT_LINKED = "This facility is not linked to the enrollment case.";
+  // The row create_case_with_tasks writes alongside the facility_id it stamps
+  // (20261017120000_case_creation_primary_location.sql): primary, attributed
+  // to the creating coordinator.
+  const creationRow: Row = {
+    id: "cf-1",
+    org_id: "org-1",
+    case_id: "c1",
+    facility_id: "f1",
+    is_primary: true,
+    created_at: "2026-09-20T15:00:00.000Z",
+    created_by: "user-1",
+  };
+  const fixtures = (caseFacilities: Row[]): Record<string, Row[]> => ({
+    providers: [{ ...emptyProvider("p1"), npi: "1234567893" }],
+    provider_groups: [
+      {
+        id: "g1",
+        name: "North Clinic",
+        tin: "12-3456789",
+        npi_type2: "1234567890",
+        is_active: true,
+      },
+    ],
+    facilities: [
+      { id: "f1", name: "Boulder Clinic", group_id: "g1", state: "CO", is_active: true },
+    ],
+    payers: [
+      {
+        id: "pay1",
+        name: "Acme Health",
+        status: "active",
+        is_active: true,
+        avg_decision_days: 18,
+        org_id: null,
+      },
+    ],
+    provider_group_assignments: [
+      { provider_id: "p1", group_id: "g1", start_date: "2025-01-01", end_date: null },
+    ],
+    provider_facility_assignments: [
+      { provider_id: "p1", facility_id: "f1", start_date: "2025-01-01" },
+    ],
+    state_licenses: [
+      {
+        provider_id: "p1",
+        state: "CO",
+        license_number: "PT-123",
+        license_type: "full",
+        status: "active",
+        verified_status: "verified",
+        issue_date: "2020-01-01",
+        expiration_date: "2027-01-01",
+      },
+    ],
+    credential_cases: [
+      {
+        id: "c1",
+        provider_id: "p1",
+        group_id: "g1",
+        payer_id: "pay1",
+        state: "CO",
+        case_status: "not_started",
+        submitted_date: null,
+        approved_date: null,
+        confirmed_effective_date: null,
+        expected_effective_date: null,
+        termination_date: null,
+        created_at: "2026-09-20T15:00:00.000Z",
+      },
+    ],
+    case_facilities: caseFacilities,
+  });
+  const assess = async (caseFacilities: Row[]) => {
+    const snapshot = await getBillingReadinessSnapshot(
+      createFixtureDb(fixtures(caseFacilities)).ctx,
+      TODAY,
+    );
+    const assessment = evaluateBillingReadiness(snapshot, selection, TODAY);
+    return { snapshot, reasons: assessment?.reasons.map((reason) => reason.label) ?? [] };
+  };
+
+  it("is linked to the facility once creation writes the primary row", async () => {
+    const { snapshot, reasons } = await assess([creationRow]);
+    expect(reasons).not.toContain(NOT_LINKED);
+    // The case is found and judged on its own status, not on a missing link.
+    expect(reasons).toContain("Enrollment status is not started.");
+    expect(
+      buildBillingFeed(snapshot, TODAY).filter((event) => event.kind === "facility_added"),
+    ).toMatchObject([{ caseId: "c1", facilityId: "f1", facilityName: "Boulder Clinic" }]);
+  });
+
+  it("holds a case that has only the facility_id mirror as unlinked", async () => {
+    const { reasons } = await assess([]);
+    expect(reasons).toContain(NOT_LINKED);
+  });
+
+  it("a backfilled row links the facility without a coordinator feed event", async () => {
+    const { snapshot, reasons } = await assess([
+      { ...creationRow, created_at: "2026-10-17T12:00:00.000Z", created_by: null },
+    ]);
+    expect(reasons).not.toContain(NOT_LINKED);
+    expect(buildBillingFeed(snapshot, TODAY).some((e) => e.kind === "facility_added")).toBe(false);
   });
 });

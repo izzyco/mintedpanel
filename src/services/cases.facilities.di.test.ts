@@ -1,8 +1,8 @@
 // E1.1 (Track B) — the case_facilities service contract: addCaseFacility /
-// removeCaseFacility / setPrimaryCaseFacility / getCaseFacilities. Same
-// module family as cases.ts's setCaseFacility (browser-path: anon client +
-// audit helpers) — mock both so the suite drives the query builder and
-// observes audit writes, same shape as touches.di.test.ts.
+// removeCaseFacility / setPrimaryCaseFacility / getCaseFacilities, and
+// setCaseFacility composed from them (browser-path: anon client + audit
+// helpers) — mock both so the suite drives the query builder and observes
+// audit writes, same shape as touches.di.test.ts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const holder = vi.hoisted(() => ({
@@ -27,6 +27,7 @@ import {
   addCaseFacility,
   getCaseFacilities,
   removeCaseFacility,
+  setCaseFacility,
   setPrimaryCaseFacility,
 } from "./cases";
 
@@ -437,5 +438,151 @@ describe("getCaseFacilities", () => {
     expect(result.map((r) => r.facility.name)).toEqual(["Alpha Clinic", "Zebra Clinic"]);
     expect(result.map((r) => r.id)).toEqual(["cf-1", "cf-2"]);
     expect(result[0].isPrimary).toBe(true);
+  });
+});
+
+describe("setCaseFacility", () => {
+  const writes = (captures: Captured[]) => captures.filter((c) => c.op && c.op !== "select");
+
+  it("on a case with only the facility_id mirror, setting that facility adds its primary row", async () => {
+    const captures = installDb([
+      { data: { id: "case-1", facility_id: "fac-1" } }, // credential_cases read
+      { data: [] }, // case_facilities read (no child row)
+      { data: CASE_ROW }, // addCaseFacility: case
+      { data: FACILITIES },
+      { data: ASSIGNMENTS },
+      { data: [] }, // existing rows -> first location
+      { data: { id: "cf-1" } }, // insert
+      { data: null }, // mirror update
+      { data: [{ id: "cf-1", facility_id: "fac-1", is_primary: true }] }, // setPrimary read
+    ]);
+
+    await setCaseFacility("case-1", "fac-1");
+
+    expect(writes(captures).map((c) => [c.table, c.op])).toEqual([
+      ["case_facilities", "insert"],
+      ["credential_cases", "update"],
+    ]);
+    expect(writes(captures)[0].payload).toMatchObject({
+      case_id: "case-1",
+      facility_id: "fac-1",
+      is_primary: true,
+    });
+    expect(writeAuditMock).toHaveBeenCalledTimes(1);
+    expect(writeAuditMock.mock.calls[0][0]).toMatchObject({
+      actionType: "CREATE",
+      entityType: "case_facility",
+    });
+  });
+
+  it("switching to a facility not on the case adds it, makes it primary, and keeps the old one", async () => {
+    const captures = installDb([
+      { data: { id: "case-1", facility_id: "fac-1" } },
+      { data: [{ id: "cf-1", facility_id: "fac-1", is_primary: true }] },
+      { data: CASE_ROW },
+      { data: FACILITIES },
+      { data: ASSIGNMENTS },
+      { data: [{ id: "cf-1", facility_id: "fac-1", is_primary: true }] },
+      { data: { id: "cf-2" } }, // insert, non-primary
+      {
+        data: [
+          { id: "cf-1", facility_id: "fac-1", is_primary: true },
+          { id: "cf-2", facility_id: "fac-2", is_primary: false },
+        ],
+      }, // setPrimary read
+      { data: null }, // demote cf-1
+      { data: null }, // promote cf-2
+      { data: null }, // mirror update
+    ]);
+
+    await setCaseFacility("case-1", "fac-2");
+
+    const written = writes(captures);
+    expect(written.map((c) => [c.table, c.op])).toEqual([
+      ["case_facilities", "insert"],
+      ["case_facilities", "update"],
+      ["case_facilities", "update"],
+      ["credential_cases", "update"],
+    ]);
+    expect(written[0].payload).toMatchObject({ facility_id: "fac-2", is_primary: false });
+    expect(written[1].payload).toEqual({ is_primary: false });
+    expect(written[1].filters).toContainEqual(["id", "cf-1"]);
+    expect(written[2].payload).toEqual({ is_primary: true });
+    expect(written[3].payload).toEqual({ facility_id: "fac-2" });
+  });
+
+  it("refuses a facility outside the provider's assignments before writing anything", async () => {
+    const captures = installDb([
+      { data: { id: "case-1", facility_id: null } },
+      { data: [] },
+      { data: CASE_ROW },
+      { data: FACILITIES },
+      { data: ASSIGNMENTS },
+      { data: [] },
+    ]);
+
+    await expect(setCaseFacility("case-1", "fac-9")).rejects.toThrow(
+      /one of this provider's locations/,
+    );
+    expect(writes(captures)).toEqual([]);
+    expect(writeAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("clearing removes the case's only location and the mirror with it", async () => {
+    const only = { id: "cf-1", facility_id: "fac-1", is_primary: true };
+    const captures = installDb([
+      { data: { id: "case-1", facility_id: "fac-1" } },
+      { data: [only] },
+      { data: [{ ...only, facility: { name: "Alpha Clinic" } }] }, // removeCaseFacility read
+      { data: null }, // delete
+      { data: null }, // mirror update
+    ]);
+
+    await setCaseFacility("case-1", null);
+
+    expect(writes(captures).map((c) => [c.table, c.op, c.payload])).toEqual([
+      ["case_facilities", "delete", undefined],
+      ["credential_cases", "update", { facility_id: null }],
+    ]);
+  });
+
+  it("refuses to clear a case that has several locations", async () => {
+    const captures = installDb([
+      { data: { id: "case-1", facility_id: "fac-1" } },
+      {
+        data: [
+          { id: "cf-1", facility_id: "fac-1", is_primary: true },
+          { id: "cf-2", facility_id: "fac-2", is_primary: false },
+        ],
+      },
+    ]);
+
+    await expect(setCaseFacility("case-1", null)).rejects.toThrow(/several locations/);
+    expect(writes(captures)).toEqual([]);
+  });
+
+  it("clearing a case with only the facility_id mirror clears the mirror and audits it", async () => {
+    const captures = installDb([
+      { data: { id: "case-1", facility_id: "fac-1" } },
+      { data: [] },
+      { data: null }, // mirror update
+    ]);
+
+    await setCaseFacility("case-1", null);
+
+    expect(writes(captures).map((c) => [c.table, c.op, c.payload])).toEqual([
+      ["credential_cases", "update", { facility_id: null }],
+    ]);
+    expect(writeAuditMock.mock.calls[0][0]).toMatchObject({
+      actionType: "UPDATE",
+      entityType: "case",
+      before: { facilityId: "fac-1" },
+      after: { facilityId: null },
+    });
+  });
+
+  it("throws when the case is not found in the org", async () => {
+    installDb([{ data: null }, { data: [] }]);
+    await expect(setCaseFacility("case-x", "fac-1")).rejects.toThrow("Case not found");
   });
 });
