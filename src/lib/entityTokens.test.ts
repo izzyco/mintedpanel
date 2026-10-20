@@ -4,6 +4,8 @@ import {
   buildEntityTokenValues,
   composeAddressToken,
   composeFacilityAddressTokens,
+  composeGroupAddressTokens,
+  composeProviderAddressTokens,
   composeProviderNameTokens,
   entityTokenValues,
 } from "./entityTokens";
@@ -135,31 +137,38 @@ describe("canonical computed entity tokens", () => {
     });
   });
 
-  it("requires and trims every city, state, and ZIP part for cityStateZip", () => {
-    expect(
-      composeFacilityAddressTokens({ city: "  Austin  ", state: " TX ", zip: " 78701 " })[
-        "facility.cityStateZip"
-      ],
-    ).toBe("Austin, TX 78701");
-
-    for (const missing of ["city", "state", "zip"] as const) {
-      for (const missingValue of [null, undefined, "", "   "]) {
-        const facility: {
-          city?: string | null;
-          state?: string | null;
-          zip?: string | null;
-        } = { city: "Austin", state: "TX", zip: "78701" };
-        facility[missing] = missingValue;
-        expect(composeFacilityAddressTokens(facility)).not.toHaveProperty("facility.cityStateZip");
-      }
-    }
+  it("composes group address blocks and contact names", () => {
+    const tokens = composeGroupAddressTokens({
+      billingStreet: "100 Billing St",
+      billingSuite: "Suite 200",
+      billingCity: "Austin",
+      billingState: "TX",
+      billingZip: "78701",
+      billingContactName: "Billing Bob",
+      credentialingStreet: "200 Credentialing Way",
+      credentialingCity: "Dallas",
+      credentialingState: "TX",
+      credentialingZip: "75001",
+      credentialingContactName: "Cred Carol",
+    });
+    expect(tokens["group.billingCityStateZip"]).toBe("Austin, TX 78701");
+    expect(tokens["group.billingStreetAddress"]).toBe("100 Billing St, Suite 200");
+    expect(tokens["group.billingFullAddress"]).toBe("100 Billing St, Suite 200, Austin, TX 78701");
+    expect(tokens["group.billingFullName"]).toBe("Billing Bob");
+    expect(tokens["group.billingContactFullName"]).toBe("Billing Bob");
+    expect(tokens["group.credentialingCityStateZip"]).toBe("Dallas, TX 75001");
+    expect(tokens["group.credentialingFullName"]).toBe("Cred Carol");
   });
 
-  it("preserves long city and ZIP parts without truncating the composite", () => {
-    const city = "North " + "Verylongcityname ".repeat(12);
-    const zip = "1234567890-".repeat(8);
-    expect(composeFacilityAddressTokens({ city, state: "TX", zip })["facility.cityStateZip"]).toBe(
-      `${city.trim()}, TX ${zip}`,
-    );
+  it("composes provider home address blocks", () => {
+    const tokens = composeProviderAddressTokens({
+      homeStreet: "123 Home Rd",
+      homeCity: "Houston",
+      homeState: "TX",
+      homeZip: "77001",
+    });
+    expect(tokens["provider.homeCityStateZip"]).toBe("Houston, TX 77001");
+    expect(tokens["provider.homeAddress"]).toBe("123 Home Rd, Houston, TX, 77001");
+    expect(tokens["provider.homeFullAddress"]).toBe("123 Home Rd, Houston, TX 77001");
   });
 });

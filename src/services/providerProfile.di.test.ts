@@ -13,6 +13,7 @@ import {
 } from "@/services/contractFormContext";
 
 import {
+  COMPUTED_PROFILE_TOKEN_KEYS,
   getProviderProfile,
   type ProviderProfile,
   type ProviderProfileResult,
@@ -567,8 +568,11 @@ describe("provider profile service — injected server context", () => {
 
     expect(rpcCalls).toEqual(["get_sop_field_tokens"]);
     // Every catalog entry appears in tokens, resolved or not.
-    // + 7 name/address composites + 21 per-day hours composites + payerIssuedId.
-    expect(profile.tokens).toHaveLength((CATALOG as unknown[]).length + 29);
+    // 32 name/address composites + 21 per-day hours composites, then + payerIssuedId.
+    expect(COMPUTED_PROFILE_TOKEN_KEYS).toHaveLength(53);
+    expect(profile.tokens).toHaveLength(
+      (CATALOG as unknown[]).length + COMPUTED_PROFILE_TOKEN_KEYS.length + 1,
+    );
     expect(profile.case_id).toBeNull();
     expect(valueOf(profile, "provider.firstName")).toBe("Ana");
     expect(valueOf(profile, "group.name")).toBe("Group One");

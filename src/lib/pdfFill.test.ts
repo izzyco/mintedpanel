@@ -210,6 +210,26 @@ describe("buildProviderTokenValues", () => {
     expect("facility.phone" in buildProviderTokenValues(provider, other, bare)).toBe(false);
   });
 
+  it("fills the facility.contactFullName alias from the inherited contact name too", () => {
+    const owner = {
+      ...group,
+      id: "g-1",
+      credentialingContactName: "Cred Lead",
+      credentialingPhone: "555-0100",
+    } as ProviderGroup;
+    const bare = {
+      ...facility,
+      groupId: "g-1",
+      phone: null,
+      fax: null,
+      email: null,
+      contactName: null,
+    } as Facility;
+    const map = buildProviderTokenValues(provider, owner, bare);
+    expect(map["facility.contactName"]).toBe("Cred Lead");
+    expect(map["facility.contactFullName"]).toBe("Cred Lead");
+  });
+
   it("emits the per-day hours composites and never the jsonb grid itself", () => {
     const withHours = {
       ...facility,

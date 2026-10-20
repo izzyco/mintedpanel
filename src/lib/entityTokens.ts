@@ -155,31 +155,230 @@ export function composeFacilityAddressTokens(
         city?: string | null;
         state?: string | null;
         zip?: string | null;
+        contactName?: string | null;
+        contact_name?: string | null;
       }
     | null
     | undefined,
 ): Record<string, string> {
-  const street = cleanPart(facility?.street);
-  const legacyAddress = composeAddressToken([
-    facility?.street,
-    facility?.city,
-    facility?.state,
-    facility?.zip,
-  ]);
-  const tokens: Record<string, string> = legacyAddress ? { "facility.address": legacyAddress } : {};
-  const city = cleanPart(facility?.city);
-  const state = cleanPart(facility?.state);
-  const zip = cleanPart(facility?.zip);
+  const tokens: Record<string, string> = {};
+  if (!facility) return tokens;
+
+  const city = cleanPart(facility.city);
+  const state = cleanPart(facility.state);
+  const zip = cleanPart(facility.zip);
   if (city && state && zip) {
     tokens["facility.cityStateZip"] = `${city}, ${state} ${zip}`;
   }
+
+  const contactName = cleanPart(facility.contactName ?? facility.contact_name);
+  if (contactName) {
+    tokens["facility.contactFullName"] = contactName;
+  }
+
+  const street = cleanPart(facility.street);
+  const legacyAddress = composeAddressToken([
+    facility.street,
+    facility.city,
+    facility.state,
+    facility.zip,
+  ]);
+  if (legacyAddress) {
+    tokens["facility.address"] = legacyAddress;
+  }
   if (!street) return tokens;
 
-  const suite = cleanPart(facility?.suite);
+  const suite = cleanPart(facility.suite);
   const streetAddress = suite ? `${street}, ${suite}` : street;
   tokens["facility.streetAddress"] = streetAddress;
   if (city && state && zip) {
     tokens["facility.fullAddress"] = `${streetAddress}, ${city}, ${state} ${zip}`;
+  }
+  return tokens;
+}
+
+/**
+ * Canonical group address composites for billing, correspondence, and credentialing,
+ * as well as contact name aliases.
+ */
+export function composeGroupAddressTokens(
+  group:
+    | {
+        billingStreet?: string | null;
+        billing_street?: string | null;
+        billingSuite?: string | null;
+        billing_suite?: string | null;
+        billingCity?: string | null;
+        billing_city?: string | null;
+        billingState?: string | null;
+        billing_state?: string | null;
+        billingZip?: string | null;
+        billing_zip?: string | null;
+        billingContactName?: string | null;
+        billing_contact_name?: string | null;
+
+        correspondenceStreet?: string | null;
+        correspondence_street?: string | null;
+        correspondenceSuite?: string | null;
+        correspondence_suite?: string | null;
+        correspondenceCity?: string | null;
+        correspondence_city?: string | null;
+        correspondenceState?: string | null;
+        correspondence_state?: string | null;
+        correspondenceZip?: string | null;
+        correspondence_zip?: string | null;
+        correspondenceContactName?: string | null;
+        correspondence_contact_name?: string | null;
+
+        credentialingStreet?: string | null;
+        credentialing_street?: string | null;
+        credentialingSuite?: string | null;
+        credentialing_suite?: string | null;
+        credentialingCity?: string | null;
+        credentialing_city?: string | null;
+        credentialingState?: string | null;
+        credentialing_state?: string | null;
+        credentialingZip?: string | null;
+        credentialing_zip?: string | null;
+        credentialingContactName?: string | null;
+        credentialing_contact_name?: string | null;
+
+        contractingContactName?: string | null;
+        contracting_contact_name?: string | null;
+        contractSignerName?: string | null;
+        contract_signer_name?: string | null;
+      }
+    | null
+    | undefined,
+): Record<string, string> {
+  const tokens: Record<string, string> = {};
+  if (!group) return tokens;
+
+  // Billing
+  const bStreet = cleanPart(group.billingStreet ?? group.billing_street);
+  const bSuite = cleanPart(group.billingSuite ?? group.billing_suite);
+  const bCity = cleanPart(group.billingCity ?? group.billing_city);
+  const bState = cleanPart(group.billingState ?? group.billing_state);
+  const bZip = cleanPart(group.billingZip ?? group.billing_zip);
+  if (bCity && bState && bZip) {
+    tokens["group.billingCityStateZip"] = `${bCity}, ${bState} ${bZip}`;
+  }
+  const bStreetAddress = bStreet ? (bSuite ? `${bStreet}, ${bSuite}` : bStreet) : null;
+  if (bStreetAddress) tokens["group.billingStreetAddress"] = bStreetAddress;
+  const bLegacy = composeAddressToken([bStreet, bCity, bState, bZip]);
+  if (bLegacy) tokens["group.billingAddress"] = bLegacy;
+  if (bStreetAddress && bCity && bState && bZip) {
+    tokens["group.billingFullAddress"] = `${bStreetAddress}, ${bCity}, ${bState} ${bZip}`;
+  }
+
+  // Correspondence
+  const corrStreet = cleanPart(group.correspondenceStreet ?? group.correspondence_street);
+  const corrSuite = cleanPart(group.correspondenceSuite ?? group.correspondence_suite);
+  const corrCity = cleanPart(group.correspondenceCity ?? group.correspondence_city);
+  const corrState = cleanPart(group.correspondenceState ?? group.correspondence_state);
+  const corrZip = cleanPart(group.correspondenceZip ?? group.correspondence_zip);
+  if (corrCity && corrState && corrZip) {
+    tokens["group.correspondenceCityStateZip"] = `${corrCity}, ${corrState} ${corrZip}`;
+  }
+  const corrStreetAddress = corrStreet
+    ? corrSuite
+      ? `${corrStreet}, ${corrSuite}`
+      : corrStreet
+    : null;
+  if (corrStreetAddress) tokens["group.correspondenceStreetAddress"] = corrStreetAddress;
+  const corrLegacy = composeAddressToken([corrStreet, corrCity, corrState, corrZip]);
+  if (corrLegacy) tokens["group.correspondenceAddress"] = corrLegacy;
+  if (corrStreetAddress && corrCity && corrState && corrZip) {
+    tokens["group.correspondenceFullAddress"] =
+      `${corrStreetAddress}, ${corrCity}, ${corrState} ${corrZip}`;
+  }
+
+  // Credentialing
+  const credStreet = cleanPart(group.credentialingStreet ?? group.credentialing_street);
+  const credSuite = cleanPart(group.credentialingSuite ?? group.credentialing_suite);
+  const credCity = cleanPart(group.credentialingCity ?? group.credentialing_city);
+  const credState = cleanPart(group.credentialingState ?? group.credentialing_state);
+  const credZip = cleanPart(group.credentialingZip ?? group.credentialing_zip);
+  if (credCity && credState && credZip) {
+    tokens["group.credentialingCityStateZip"] = `${credCity}, ${credState} ${credZip}`;
+  }
+  const credStreetAddress = credStreet
+    ? credSuite
+      ? `${credStreet}, ${credSuite}`
+      : credStreet
+    : null;
+  if (credStreetAddress) tokens["group.credentialingStreetAddress"] = credStreetAddress;
+  const credLegacy = composeAddressToken([credStreet, credCity, credState, credZip]);
+  if (credLegacy) tokens["group.credentialingAddress"] = credLegacy;
+  if (credStreetAddress && credCity && credState && credZip) {
+    tokens["group.credentialingFullAddress"] =
+      `${credStreetAddress}, ${credCity}, ${credState} ${credZip}`;
+  }
+
+  // Contact full names
+  const bName = cleanPart(group.billingContactName ?? group.billing_contact_name);
+  if (bName) {
+    tokens["group.billingFullName"] = bName;
+    tokens["group.billingContactFullName"] = bName;
+  }
+  const corrName = cleanPart(group.correspondenceContactName ?? group.correspondence_contact_name);
+  if (corrName) {
+    tokens["group.correspondenceFullName"] = corrName;
+    tokens["group.correspondenceContactFullName"] = corrName;
+  }
+  const credName = cleanPart(group.credentialingContactName ?? group.credentialing_contact_name);
+  if (credName) {
+    tokens["group.credentialingFullName"] = credName;
+    tokens["group.credentialingContactFullName"] = credName;
+  }
+  const contName = cleanPart(group.contractingContactName ?? group.contracting_contact_name);
+  if (contName) {
+    tokens["group.contractingFullName"] = contName;
+    tokens["group.contractingContactFullName"] = contName;
+  }
+  const signerName = cleanPart(group.contractSignerName ?? group.contract_signer_name);
+  if (signerName) {
+    tokens["group.contractSignerFullName"] = signerName;
+  }
+
+  return tokens;
+}
+
+/**
+ * Canonical provider home address composites.
+ */
+export function composeProviderAddressTokens(
+  provider:
+    | {
+        homeStreet?: string | null;
+        home_street?: string | null;
+        homeCity?: string | null;
+        home_city?: string | null;
+        homeState?: string | null;
+        home_state?: string | null;
+        homeZip?: string | null;
+        home_zip?: string | null;
+      }
+    | null
+    | undefined,
+): Record<string, string> {
+  const tokens: Record<string, string> = {};
+  if (!provider) return tokens;
+
+  const street = cleanPart(provider.homeStreet ?? provider.home_street);
+  const city = cleanPart(provider.homeCity ?? provider.home_city);
+  const state = cleanPart(provider.homeState ?? provider.home_state);
+  const zip = cleanPart(provider.homeZip ?? provider.home_zip);
+
+  if (city && state && zip) {
+    tokens["provider.homeCityStateZip"] = `${city}, ${state} ${zip}`;
+  }
+  const legacyAddress = composeAddressToken([street, city, state, zip]);
+  if (legacyAddress) {
+    tokens["provider.homeAddress"] = legacyAddress;
+  }
+  if (street && city && state && zip) {
+    tokens["provider.homeFullAddress"] = `${street}, ${city}, ${state} ${zip}`;
   }
   return tokens;
 }

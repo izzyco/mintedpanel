@@ -6,6 +6,10 @@ import {
   ENTITY_TOKEN_FAMILIES,
   buildEntityTokenValues,
   composeAddressToken,
+  composeFacilityAddressTokens,
+  composeGroupAddressTokens,
+  composeProviderAddressTokens,
+  composeProviderNameTokens,
 } from "@/lib/entityTokens";
 import type {
   Facility,
@@ -48,7 +52,41 @@ interface ResolveContext {
 // value and keeps working, since SOP bodies in the wild use it. Never rename the
 // catalog side: catalog token names are a live wire contract (portal_field_maps,
 // view-prefs, the extension's field-map ↔ profile join).
-const COMPOSED_TOKENS = ["facility.address", "license.licenseNumber"] as const;
+const COMPOSED_TOKENS = [
+  "facility.address",
+  "facility.streetAddress",
+  "facility.fullAddress",
+  "facility.cityStateZip",
+  "facility.contactFullName",
+  "license.licenseNumber",
+  "provider.fullName",
+  "provider.fullNameWithCredentials",
+  "provider.lastFirst",
+  "provider.homeCityStateZip",
+  "provider.homeAddress",
+  "provider.homeFullAddress",
+  "group.billingCityStateZip",
+  "group.billingStreetAddress",
+  "group.billingAddress",
+  "group.billingFullAddress",
+  "group.billingFullName",
+  "group.billingContactFullName",
+  "group.correspondenceCityStateZip",
+  "group.correspondenceStreetAddress",
+  "group.correspondenceAddress",
+  "group.correspondenceFullAddress",
+  "group.correspondenceFullName",
+  "group.correspondenceContactFullName",
+  "group.credentialingCityStateZip",
+  "group.credentialingStreetAddress",
+  "group.credentialingAddress",
+  "group.credentialingFullAddress",
+  "group.credentialingFullName",
+  "group.credentialingContactFullName",
+  "group.contractingFullName",
+  "group.contractingContactFullName",
+  "group.contractSignerFullName",
+] as const;
 
 function buildTokenMap(ctx: ResolveContext): Record<string, string> {
   const { provider, group, facility, mso, stateLicenseNumber } = ctx;
@@ -57,10 +95,10 @@ function buildTokenMap(ctx: ResolveContext): Record<string, string> {
   // resolvable with no edit here.
   const tokens = buildEntityTokenValues({ provider, group, facility, mso });
 
-  const address = facility
-    ? composeAddressToken([facility.street, facility.city, facility.state, facility.zip])
-    : null;
-  if (address) tokens["facility.address"] = address;
+  Object.assign(tokens, composeProviderNameTokens(provider));
+  Object.assign(tokens, composeProviderAddressTokens(provider));
+  Object.assign(tokens, composeFacilityAddressTokens(facility));
+  Object.assign(tokens, composeGroupAddressTokens(group));
 
   // The state-specific license wins over the provider row's own column: the
   // case is filed in one state, and that is the number the payer wants.

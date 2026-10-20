@@ -14,6 +14,8 @@
 import {
   buildEntityTokenValues,
   composeFacilityAddressTokens,
+  composeGroupAddressTokens,
+  composeProviderAddressTokens,
   composeProviderNameTokens,
 } from "@/lib/entityTokens";
 import { resolveFacilityContact } from "@/lib/facilityContact";
@@ -166,15 +168,20 @@ export function buildProviderTokenValues(
   license: StateLicense | null = null,
   groupInsurance: InsurancePolicy | null = null,
 ): Record<string, string> {
+  // The contact-inherited row feeds the composites too, so the
+  // facility.contactFullName alias fills what facility.contactName does.
+  const filledFacility = withInheritedContact(facility, group);
   const out = buildEntityTokenValues({
     provider,
     group,
-    facility: withInheritedContact(facility, group),
+    facility: filledFacility,
     license,
     groupInsurance,
   });
   Object.assign(out, composeProviderNameTokens(provider));
-  Object.assign(out, composeFacilityAddressTokens(facility));
+  Object.assign(out, composeProviderAddressTokens(provider));
+  Object.assign(out, composeFacilityAddressTokens(filledFacility));
+  Object.assign(out, composeGroupAddressTokens(group));
   // The jsonb grid is omitted by the entity sweep; these are its fill form.
   Object.assign(out, composeFacilityHoursTokens(facility?.hours));
   return out;
