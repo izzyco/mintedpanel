@@ -51,10 +51,7 @@ import {
   portalDisplayName,
   portalsForPicker,
 } from "@/lib/portalRetirement";
-import {
-  checkPortalBindingEligibility,
-  eligiblePortalsForPicker,
-} from "@/lib/portalBinding";
+import { checkPortalBindingEligibility, eligiblePortalsForPicker } from "@/lib/portalBinding";
 import type { Portal, SOPStepType } from "@/types";
 import type { TokenGroup } from "@/lib/tokenGroups";
 
@@ -97,6 +94,10 @@ export interface TemplateTaskRowProps {
   /** E6.5 F6.5.6 — the template is a GLOBAL row: the step's form machinery
    * registers/trains against the global tier. Primitive (memo-safe). */
   isGlobalAuthoring: boolean;
+  /** The template row's owner org (null for a global row) — an org template
+   * resolves its own-org portal before the global one, exactly like
+   * validate_sop_template_portal_bindings. Primitive (memo-safe). */
+  templateOrgId: string | null;
   /** Slice F — the step a readiness deep-link (?intent=) landed on: that step's
    * form panel mounts EXPANDED. Stable string (memo-safe); null = none. */
   autoOpenStepId: string | null;
@@ -134,6 +135,7 @@ export const TemplateTaskRow = memo(function TemplateTaskRow({
   groupedTokens,
   portals,
   isGlobalAuthoring,
+  templateOrgId,
   templatePayerId,
   templateCaseType,
   templateId,
@@ -382,6 +384,7 @@ export const TemplateTaskRow = memo(function TemplateTaskRow({
               templatePayerName={templatePayerName}
               templateStates={templateStates}
               isGlobalAuthoring={isGlobalAuthoring}
+              templateOrgId={templateOrgId}
               autoOpenStepId={autoOpenStepId}
               updateStep={updateStep}
               addDataField={addDataField}
@@ -494,6 +497,7 @@ export const TemplateTaskRow = memo(function TemplateTaskRow({
                       templatePayerName={templatePayerName}
                       templateStates={templateStates}
                       isGlobalAuthoring={isGlobalAuthoring}
+                      templateOrgId={templateOrgId}
                       autoOpenStepId={autoOpenStepId}
                       updateStep={updateStep}
                       addDataField={addDataField}
@@ -537,6 +541,7 @@ function StepModeBody({
   templatePayerName,
   templateStates,
   isGlobalAuthoring,
+  templateOrgId,
   autoOpenStepId,
   updateStep,
   addDataField,
@@ -555,6 +560,7 @@ function StepModeBody({
   templatePayerName: string | null;
   templateStates: string[];
   isGlobalAuthoring: boolean;
+  templateOrgId: string | null;
   autoOpenStepId: string | null;
   updateStep: TemplateTaskRowProps["updateStep"];
   addDataField: TemplateTaskRowProps["addDataField"];
@@ -687,6 +693,7 @@ function StepModeBody({
                 templatePayerId={templatePayerId}
                 templateCaseType={templateCaseType}
                 isGlobalAuthoring={isGlobalAuthoring}
+                templateOrgId={templateOrgId}
                 canEdit={canEdit}
                 onChange={onPortalKeyChange}
                 onRequestRegister={
@@ -1077,6 +1084,7 @@ function PortalStepSelect({
   templatePayerId,
   templateCaseType,
   isGlobalAuthoring,
+  templateOrgId,
   canEdit,
   onChange,
   onRequestRegister,
@@ -1086,6 +1094,7 @@ function PortalStepSelect({
   templatePayerId: string | null;
   templateCaseType: CaseType | null;
   isGlobalAuthoring?: boolean;
+  templateOrgId?: string | null;
   canEdit: boolean;
   onChange: (portalKey: string) => void;
   /** Opens Form setup's Register portal dialog — the live registration path
@@ -1097,6 +1106,7 @@ function PortalStepSelect({
     templatePayerId,
     templateCaseType,
     isGlobalAuthoring,
+    templateOrgId,
   });
 
   const eligibility = checkPortalBindingEligibility({
@@ -1105,6 +1115,7 @@ function PortalStepSelect({
     templatePayerId,
     templateCaseType,
     isGlobalAuthoring,
+    templateOrgId,
   });
 
   const visiblePortals = portalsForPicker(portals, step.portalKey);
@@ -1196,7 +1207,7 @@ function PortalStepSelect({
                 </button>
               ) : null}
             </div>
-          ) : !eligibility.isEligible && !step.portalKey ? (
+          ) : !step.portalKey ? (
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#92400E]">
               <span>
                 This step won&apos;t be linked for extension fill until a compatible configuration

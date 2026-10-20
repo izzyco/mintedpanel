@@ -117,7 +117,7 @@ function task(stepPortalKey = ""): EditableTask {
   };
 }
 
-function renderPicker(stepPortalKey = "") {
+function renderPicker(stepPortalKey = "", overrides: Partial<TemplateTaskRowProps> = {}) {
   const noop = vi.fn();
   const props: TemplateTaskRowProps = {
     task: task(stepPortalKey),
@@ -132,6 +132,7 @@ function renderPicker(stepPortalKey = "") {
     templatePayerName: "Payer One",
     templateStates: ["CO"],
     isGlobalAuthoring: true,
+    templateOrgId: null,
     autoOpenStepId: null,
     dragTaskId: null,
     setDragTaskId: noop,
@@ -149,6 +150,7 @@ function renderPicker(stepPortalKey = "") {
     addDataField: noop,
     updateDataField: noop,
     removeDataField: noop,
+    ...overrides,
   };
   return renderToStaticMarkup(<TemplateTaskRow {...props} />);
 }
@@ -171,5 +173,19 @@ describe("TemplateTaskRow portal picker", () => {
       "belongs to a specific organization and cannot be bound to a global template",
     );
     expect(html).toContain("Unlink");
+  });
+
+  it("accepts an own-org portal on a legacy org template without a warning", () => {
+    const html = renderPicker("org_scoped", { isGlobalAuthoring: false, templateOrgId: "org-1" });
+
+    expect(html).toContain('data-value="org_scoped"');
+    expect(html).not.toContain("Unlink");
+    expect(html).not.toContain("not available for this template scope");
+  });
+
+  it("still tells the author an unlinked online-form step will not drive extension fill", () => {
+    const html = renderPicker("");
+
+    expect(html).toContain("be linked for extension fill until a compatible configuration");
   });
 });

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Portal } from "@/types";
-import {
-  checkPortalBindingEligibility,
-  eligiblePortalsForPicker,
-} from "./portalBinding";
+import { checkPortalBindingEligibility, eligiblePortalsForPicker } from "./portalBinding";
 
 function portal(overrides: Partial<Portal>): Portal {
   return {
@@ -81,7 +78,9 @@ describe("checkPortalBindingEligibility", () => {
       isGlobalAuthoring: true,
     });
     expect(res.isEligible).toBe(false);
-    expect(res.reason).toContain("belongs to a specific organization and cannot be bound to a global template");
+    expect(res.reason).toContain(
+      "belongs to a specific organization and cannot be bound to a global template",
+    );
   });
 
   it("rejects global portals with no assigned payer", () => {
@@ -135,7 +134,9 @@ describe("checkPortalBindingEligibility", () => {
       isGlobalAuthoring: true,
     });
     expect(res.isEligible).toBe(false);
-    expect(res.reason).toContain("configured for “enrollment” cases, but this template is for “contract”");
+    expect(res.reason).toContain(
+      "configured for “enrollment” cases, but this template is for “contract”",
+    );
   });
 
   it("rejects ambiguous global portal keys", () => {
@@ -245,5 +246,76 @@ describe("eligiblePortalsForPicker", () => {
     });
 
     expect(result.map((p) => p.id)).toEqual(["valid"]);
+  });
+
+  it("offers the own-org row of a key shadowing a global row on an org template, not an ambiguity", () => {
+    const globalP = portal({ id: "global-1", portalKey: "shared_key", orgId: null });
+    const orgP = portal({ id: "org-1", portalKey: "shared_key", orgId: "my-org" });
+
+    const orgTemplate = eligiblePortalsForPicker({
+      portals: [globalP, orgP],
+      templatePayerId: "payer-1",
+      templateCaseType: "enrollment",
+      isGlobalAuthoring: false,
+      templateOrgId: "my-org",
+    });
+    expect(orgTemplate.map((p) => p.id)).toEqual(["org-1"]);
+
+    const globalTemplate = eligiblePortalsForPicker({
+      portals: [globalP, orgP],
+      templatePayerId: "payer-1",
+      templateCaseType: "enrollment",
+      isGlobalAuthoring: true,
+    });
+    expect(globalTemplate.map((p) => p.id)).toEqual(["global-1"]);
+  });
+
+  it("offers nothing with a payer to a payerless template", () => {
+    const result = eligiblePortalsForPicker({
+      portals: [portal({ id: "global-1", portalKey: "k", orgId: null, payerId: "payer-1" })],
+      templatePayerId: null,
+      templateCaseType: "enrollment",
+      isGlobalAuthoring: true,
+    });
+    expect(result).toEqual([]);
+  });
+});
+
+describe("checkPortalBindingEligibility payer rule (IS DISTINCT FROM)", () => {
+  it("rejects a payer's portal on a payerless template, as Postgres does", () => {
+    const res = checkPortalBindingEligibility({
+      portalKey: "k",
+      portals: [portal({ portalKey: "k", orgId: null, payerId: "payer-1" })],
+      templatePayerId: null,
+      templateCaseType: "enrollment",
+      isGlobalAuthoring: true,
+    });
+    expect(res.isEligible).toBe(false);
+    expect(res.reason).toContain("this template has no payer");
+  });
+
+  it("accepts a payerless own-org portal on a payerless org template", () => {
+    const res = checkPortalBindingEligibility({
+      portalKey: "k",
+      portals: [portal({ portalKey: "k", orgId: "my-org", payerId: null })],
+      templatePayerId: null,
+      templateCaseType: "enrollment",
+      isGlobalAuthoring: false,
+      templateOrgId: "my-org",
+    });
+    expect(res.isEligible).toBe(true);
+  });
+
+  it("rejects a payerless own-org portal on an org template that has a payer", () => {
+    const res = checkPortalBindingEligibility({
+      portalKey: "k",
+      portals: [portal({ portalKey: "k", orgId: "my-org", payerId: null })],
+      templatePayerId: "payer-1",
+      templateCaseType: "enrollment",
+      isGlobalAuthoring: false,
+      templateOrgId: "my-org",
+    });
+    expect(res.isEligible).toBe(false);
+    expect(res.reason).toContain("belongs to a different payer");
   });
 });

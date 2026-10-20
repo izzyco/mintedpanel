@@ -15,8 +15,18 @@
 // 3. Unambiguous: a key with multiple configurations at the resolved scope
 //    is rejected (`sop_portal_binding_ambiguous`).
 // 4. Case type: the portal's `case_type` must match the template's `case_type`.
-// 5. Payer: the portal's `payer_id` must match the template's `payer_id`.
+// 5. Payer: the portal's `payer_id` must match the template's `payer_id`
+//    exactly (`IS DISTINCT FROM` — a payerless template only accepts a
+//    payerless portal).
 // 6. Global payer requirement: a global portal MUST have a non-null `payer_id`.
+//    (Postgres also requires that payer to be active/unmerged; the client does
+//    not load payer status, so that one rule is left to the server error.)
+//
+// Postgres validates bindings only for TYPED templates
+// (`guard_typed_sop_template` skips a NULL `case_type`). This helper still
+// evaluates an untyped template — the step editor uses it to show/unlink a
+// stale key — so callers that BLOCK a save must gate on the case type first,
+// as TemplateWizard's `portalConfigurationBlocked` does.
 import type { CaseType } from "@/lib/caseTypes";
 import { isPortalHiddenFromPickers } from "@/lib/portalRetirement";
 import { normalizePortalKey } from "@/lib/tokenFormat";
@@ -59,7 +69,7 @@ export function checkPortalBindingEligibility({
     };
   }
 
-  const isGlobal = isGlobalAuthoring ?? (templateOrgId == null);
+  const isGlobal = isGlobalAuthoring ?? templateOrgId == null;
   let selected: Portal | undefined;
 
   // 1. Org template resolves own-org configuration first
@@ -123,11 +133,14 @@ export function checkPortalBindingEligibility({
     };
   }
 
-  // 6. Payer compatibility
-  if (templatePayerId && selected.payerId !== templatePayerId) {
+  // 6. Payer compatibility — `payer_id IS DISTINCT FROM p_payer_id`, nulls
+  // included: a payerless template cannot bind a payer's portal.
+  if ((selected.payerId ?? null) !== (templatePayerId ?? null)) {
     return {
       isEligible: false,
-      reason: `Form configuration “${portalKey}” belongs to a different payer.`,
+      reason: templatePayerId
+        ? `Form configuration “${portalKey}” belongs to a different payer.`
+        : `Form configuration “${portalKey}” belongs to a payer, but this template has no payer.`,
       selectedPortal: selected,
     };
   }
@@ -138,13 +151,15 @@ export function checkPortalBindingEligibility({
 /**
  * Filter portals to the set of valid, compatible options for the template's
  * current owner scope, case type, and payer.
+ *
+ * Each key offers exactly the configuration `checkPortalBindingEligibility`
+ * would resolve and accept for it, so the picker can never offer a binding
+ * the save check (or Postgres) rejects — including the org-over-global
+ * shadowing of an org template, where a same-key global row is not ambiguous.
  */
 export function eligiblePortalsForPicker({
   portals,
-  templatePayerId,
-  templateCaseType,
-  isGlobalAuthoring,
-  templateOrgId,
+  ...scope
 }: {
   portals: readonly Portal[];
   templatePayerId?: string | null;
@@ -152,37 +167,24 @@ export function eligiblePortalsForPicker({
   isGlobalAuthoring?: boolean;
   templateOrgId?: string | null;
 }): Portal[] {
-  const isGlobal = isGlobalAuthoring ?? (templateOrgId == null);
-
-  const keyCounts = new Map<string, number>();
+  const byKey = new Map<string, Portal[]>();
   for (const portal of portals) {
     if (isPortalHiddenFromPickers(portal)) continue;
     const key = normalizePortalKey(portal.portalKey);
     if (!key) continue;
-    // Check owner scope
-    if (isGlobal && portal.orgId != null) continue;
-    if (!isGlobal && templateOrgId && portal.orgId != null && portal.orgId !== templateOrgId) continue;
-    keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+    const group = byKey.get(key);
+    if (group) group.push(portal);
+    else byKey.set(key, [portal]);
   }
 
-  return portals.filter((p) => {
-    if (isPortalHiddenFromPickers(p)) return false;
-    const key = normalizePortalKey(p.portalKey);
-    if (!key) return false;
-    // Disallow ambiguous visible configurations
-    if ((keyCounts.get(key) ?? 0) > 1) return false;
-
-    // Scope check
-    if (isGlobal && p.orgId != null) return false;
-    if (!isGlobal && templateOrgId && p.orgId != null && p.orgId !== templateOrgId) return false;
-
-    // Global portals must have a payer
-    if (p.orgId == null && !p.payerId) return false;
-
-    // Payer and Case Type
-    if (templatePayerId && p.payerId !== templatePayerId) return false;
-    if (templateCaseType && p.caseType !== templateCaseType) return false;
-
-    return true;
-  });
+  const eligible: Portal[] = [];
+  for (const [key, group] of byKey) {
+    const { isEligible, selectedPortal } = checkPortalBindingEligibility({
+      portalKey: key,
+      portals: group,
+      ...scope,
+    });
+    if (isEligible && selectedPortal) eligible.push(selectedPortal);
+  }
+  return eligible;
 }

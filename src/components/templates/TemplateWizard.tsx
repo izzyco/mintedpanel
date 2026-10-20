@@ -994,6 +994,13 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
   }
 
   function portalConfigurationBlocked(): boolean {
+    // Mirrors guard_typed_sop_template: Postgres runs
+    // validate_sop_template_portal_bindings only for TYPED templates (the
+    // validator also returns early on a NULL case_type), so an untyped legacy
+    // head is exempt. Publish/create/duplicate already refuse an untyped
+    // template with "Choose a case type…"; blocking here would only pre-empt
+    // that message (and the change-note dialog) for a merely incomplete draft.
+    if (!caseType) return false;
     if (portalsQ.isLoading) {
       toast.error("Wait for form configurations to load before publishing");
       setStep(2);
@@ -1025,9 +1032,7 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
           templateOrgId: initial?.orgId ?? null,
         });
         if (!eligibility.isEligible) {
-          toast.error(
-            `Action ${taskIndex + 1}, step ${stepIndex + 1}: ${eligibility.reason}`,
-          );
+          toast.error(`Action ${taskIndex + 1}, step ${stepIndex + 1}: ${eligibility.reason}`);
           setStep(2);
           return true;
         }
@@ -1546,6 +1551,7 @@ export function TemplateWizard({ initial, prefill, draft, intent }: TemplateWiza
                 templatePayerName={payerName}
                 templateStates={states}
                 isGlobalAuthoring={isGlobal}
+                templateOrgId={initial?.orgId ?? null}
                 autoOpenStepId={intentStepId}
                 dragTaskId={dragTaskId}
                 setDragTaskId={setDragTaskId}
