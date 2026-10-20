@@ -12,7 +12,7 @@
 // curated values or the heuristics change materially — recorded dry runs are
 // interpreted against the profile that produced them.
 
-export const MOCK_FILL_PROFILE_VERSION = 4;
+export const MOCK_FILL_PROFILE_VERSION = 5;
 
 // Curated values for the common catalog tokens (bare form, the extension join
 // contract). Everything else falls through to the field-name heuristics below.
