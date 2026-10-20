@@ -280,6 +280,22 @@ export function mapLegacyCaseStatus(
   }
 }
 
+/**
+ * True for a `case_status_history` SEED row: from_status NULL with actor
+ * 'system'. The E6.0 unified-status migration (20260719120000) gave every
+ * existing case one such row naming its status on migration day, and
+ * `create_case_with_tasks` writes one for a new case's starting status.
+ * A seed records where the case stood, not a transition that happened at
+ * `changed_at`, so every derivation that dates an event (an approval, a
+ * denial) skips it. A partial projection (fields undefined) is not a seed.
+ */
+export function isStatusHistorySeed(row: {
+  fromStatus: string | null | undefined;
+  actorKind: string | null | undefined;
+}): boolean {
+  return row.fromStatus === null && row.actorKind === "system";
+}
+
 // ---------------------------------------------------------------------------
 // Transition-shim mirrors. Canonical `case_status` is THE truth; until the
 // remaining legacy readers retire (E6.1–E6.4 repoint or remove them), the

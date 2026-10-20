@@ -1,8 +1,9 @@
 // E4.5 F4.5.2 — the org-level expiring-credentials table: every CURRENT
 // document version that tracks an expiration date, sorted by soonest
 // expiration, with derived expired / expiring-soon / current states (never a
-// stored flag). Org-scoped: renders a select-an-organization state when none
-// is active (the Reporting Center itself is cross-org).
+// stored flag). The designated test provider's documents are excluded.
+// Org-scoped: renders a select-an-organization state when none is active
+// (the Reporting Center itself is cross-org).
 import { useMemo } from "react";
 import { Link } from "@tanstack/react-router";
 import {
@@ -18,6 +19,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { fmtDate } from "@/lib/format";
 import { documentKindLabel, expiringCredentialRows } from "@/lib/documents";
+import { excludeTestProviderRows, testProviderIds } from "@/lib/testProvider";
 import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
 import { useOrgDocuments } from "@/hooks/useDocuments";
 import { useProviders } from "@/hooks/useProviders";
@@ -43,12 +45,19 @@ export function ExpiringCredentialsTable() {
     return m;
   }, [groupsQ.data]);
 
-  const rows = useMemo(() => expiringCredentialRows(docsQ.data ?? [], today), [docsQ.data, today]);
+  const rows = useMemo(
+    () =>
+      expiringCredentialRows(
+        excludeTestProviderRows(docsQ.data ?? [], testProviderIds(providersQ.data ?? [])),
+        today,
+      ),
+    [docsQ.data, providersQ.data, today],
+  );
 
   if (!orgId) {
     return <EmptyState message="Select an organization to see its expiring credentials." />;
   }
-  if (docsQ.isLoading) {
+  if (docsQ.isLoading || providersQ.isLoading) {
     return (
       <div className="space-y-2">
         <Skeleton className="h-6 w-full" />

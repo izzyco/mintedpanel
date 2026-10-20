@@ -9,7 +9,10 @@ export interface AuditFilters {
   entityId?: string;
   actionType?: AuditActionType;
   userId?: string;
+  /** Inclusive lower bound on `ts` (ISO instant). */
   since?: string;
+  /** Exclusive upper bound on `ts` (ISO instant) — see auditDateBounds. */
+  until?: string;
   limit?: number;
 }
 
@@ -26,6 +29,7 @@ export async function listAuditLog(filters: AuditFilters = {}): Promise<AuditLog
   if (filters.actionType) query = query.eq("action_type", filters.actionType);
   if (filters.userId) query = query.eq("user_id", filters.userId);
   if (filters.since) query = query.gte("ts", filters.since);
+  if (filters.until) query = query.lt("ts", filters.until);
   const { data, error } = await query;
   if (error) throw error;
   return camelizeRow<AuditLogEntry[]>(data ?? []);
