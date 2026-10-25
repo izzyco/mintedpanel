@@ -1,6 +1,6 @@
 # Provider onboarding R1: UI pass plan and spec
 
-Status: v4, Oct 25, 2026 (grill-me round folded in: decisions 17–21). Revised after a Fable review and a zen (gpt-5.5) review. The six UI-blocking questions are answered (decisions 9–16). Nothing built.
+Status: v4, Oct 25, 2026 (grill-me round folded in: decisions 17–21). Revised after a Fable review and a zen (gpt-5.5) review. The six UI-blocking questions are answered (decisions 9–16). Built so far: §10 step 1 (types, fixtures, pure derivations and their tests) and, through `slice-1-invite-to-form.md`, the provider identify → code → consent → form screens as the real `/intake/$token` route. The `/dev/provider-onboarding` preview shell (decision 18) is not built; the fixtures' only consumer today is `src/lib/providerOnboarding.test.ts`.
 
 ## 1. Goal
 

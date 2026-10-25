@@ -1670,7 +1670,10 @@ export async function createMockApiServer(options = {}) {
       if (!target || (target.orgId !== orgId && leak !== "providerinvites")) {
         return envelope(res, 404, null, "Invite not found");
       }
-      return envelope(res, 200, { delivery: "sent" });
+      return envelope(res, 200, {
+        delivery: "sent",
+        email: `${target.firstName}.${target.lastName}@example.test`.toLowerCase(),
+      });
     }
 
     if (url.pathname === "/api/payer-forms/upload-intent" && method === "POST") {

@@ -1,11 +1,14 @@
 -- Smoke test for 20261025120000_provider_intake_invites.sql. Run it after the
--- migration is applied, as a role that can SET ROLE service_role (the postgres
--- user on a local `supabase start`, or the SQL editor on staging):
+-- migration is applied, as the postgres user (the owner of the tables and the
+-- SECURITY DEFINER functions: on a local `supabase start`, or the SQL editor
+-- on staging). The RPCs run as their owner, so no SET ROLE is needed:
 --
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/provider-intake-smoke.sql
 --
 -- Everything runs in one transaction and is rolled back, so it leaves no rows.
--- Any failed check raises and stops the script.
+-- Every UPDATE that moves a clock is scoped to the smoke's own rows, so a run
+-- on staging never locks a real invite. Any failed check raises and stops the
+-- script.
 BEGIN;
 
 DO $$
@@ -17,7 +20,7 @@ DECLARE
   v_actor uuid := gen_random_uuid();
   r jsonb;
   v_provider uuid;
-  v_text text;
+  v_key bigint;
   i int;
 BEGIN
   INSERT INTO public.organizations (name) VALUES ('Smoke Rehab') RETURNING id INTO v_org;
@@ -74,7 +77,8 @@ BEGIN
   ASSERT public.verify_intake_code('hash-link-1', 'code-c', 'hash-sess-0', now() + interval '2 hours') = 'invalid', 'locked after 5';
 
   -- A fresh code (limits reset by moving earlier codes back in time) opens a session.
-  UPDATE public.provider_intake_codes SET created_at = created_at - interval '1 day';
+  UPDATE public.provider_intake_codes SET created_at = created_at - interval '1 day'
+   WHERE invite_id IN (SELECT id FROM public.provider_intake_invites WHERE provider_id = v_provider);
   ASSERT (public.issue_intake_code('hash-link-1', 'code-e')->>'send')::boolean, 'fresh code';
   ASSERT public.verify_intake_code('hash-link-1', 'code-e', 'hash-sess-1', now() + interval '2 hours') = 'ok', 'right code';
   ASSERT public.verify_intake_code('hash-link-1', 'code-e', 'hash-sess-2', now() + interval '2 hours') = 'invalid', 'code is single use';
@@ -86,19 +90,45 @@ BEGIN
   -- Resend: cooldown first, then a new link that ends the old session.
   r := public.resend_provider_intake_invite(v_org, v_actor, 'Smoke', v_provider, 'hash-link-2', now() + interval '30 days');
   ASSERT r->>'result' = 'cooldown', format('cooldown: %s', r);
-  UPDATE public.provider_intake_invites SET created_at = created_at - interval '11 minutes';
+  -- Every resend serializes on the provider (transaction advisory lock), so a
+  -- double submit answers cooldown instead of racing the one-open-invite index.
+  v_key := hashtextextended('provider_intake_invite:' || v_provider::text, 0);
+  ASSERT EXISTS (
+    SELECT 1 FROM pg_locks
+     WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND objsubid = 1
+       AND classid::bigint = ((v_key >> 32) & 4294967295)
+       AND objid::bigint = (v_key & 4294967295)), 'resend holds the provider lock';
+  UPDATE public.provider_intake_invites SET created_at = created_at - interval '11 minutes'
+   WHERE provider_id = v_provider AND revoked_at IS NULL;
   r := public.resend_provider_intake_invite(v_org, v_actor, 'Smoke', v_provider, 'hash-link-2', now() + interval '30 days');
-  ASSERT r->>'result' = 'resent', format('resend: %s', r);
+  ASSERT r->>'result' = 'resent' AND r->>'email' = 'anita@example.test', format('resend: %s', r);
   ASSERT public.read_intake_link('hash-link-1') IS NULL, 'old link dead';
   ASSERT public.read_intake_session('hash-sess-1', 'hash-link-1') IS NULL, 'old session dead';
-  r := public.resend_provider_intake_invite(v_other_org, v_actor, 'Smoke', v_provider, 'hash-link-3', now() + interval '30 days');
+  ASSERT (SELECT count(*) FROM public.provider_intake_invites
+           WHERE provider_id = v_provider AND revoked_at IS NULL) = 1, 'one open invite';
+
+  -- A corrected record email is where the next resend goes.
+  UPDATE public.providers SET email = 'Anita.New@example.test' WHERE id = v_provider;
+  UPDATE public.provider_intake_invites SET created_at = created_at - interval '11 minutes'
+   WHERE provider_id = v_provider AND revoked_at IS NULL;
+  r := public.resend_provider_intake_invite(v_org, v_actor, 'Smoke', v_provider, 'hash-link-3', now() + interval '30 days');
+  ASSERT r->>'result' = 'resent' AND r->>'email' = 'anita.new@example.test', format('resend to corrected email: %s', r);
+  ASSERT public.read_intake_link('hash-link-3')->>'email' = 'anita.new@example.test', 'new link carries the corrected email';
+  ASSERT public.read_intake_link('hash-link-2') IS NULL, 'replaced link dead';
+
+  r := public.resend_provider_intake_invite(v_other_org, v_actor, 'Smoke', v_provider, 'hash-link-4', now() + interval '30 days');
   ASSERT r->>'result' = 'not_found', 'cross-org resend';
 
   -- A provider added by hand (no invite yet) gets a first invite, no cooldown.
   INSERT INTO public.providers (org_id, first_name, last_name, email, status)
     VALUES (v_org, 'Hand', 'Added', 'hand@example.test', 'active') RETURNING id INTO v_provider;
-  r := public.resend_provider_intake_invite(v_org, v_actor, 'Smoke', v_provider, 'hash-link-4', now() + interval '30 days');
+  r := public.resend_provider_intake_invite(v_org, v_actor, 'Smoke', v_provider, 'hash-link-5', now() + interval '30 days');
   ASSERT r->>'result' = 'resent' AND r->>'email' = 'hand@example.test', format('first invite: %s', r);
+  -- A provider with no email on record can't be invited.
+  INSERT INTO public.providers (org_id, first_name, last_name, status)
+    VALUES (v_org, 'No', 'Email', 'active') RETURNING id INTO v_provider;
+  r := public.resend_provider_intake_invite(v_org, v_actor, 'Smoke', v_provider, 'hash-link-6', now() + interval '30 days');
+  ASSERT r->>'result' = 'not_found', format('no email: %s', r);
 
   -- Sign-out.
   PERFORM public.revoke_intake_session('hash-sess-1');

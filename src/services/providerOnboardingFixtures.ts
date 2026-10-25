@@ -1,4 +1,5 @@
-// Sample data for the /dev/provider-onboarding preview (spec decision 18).
+// Sample data for the planned /dev/provider-onboarding preview (r1-ui-spec
+// decision 18; not built yet — the derivation tests are the only consumer).
 // Synthetic canvas names only, no real PHI. Every count a screen shows is
 // computed from these rows, never typed in separately.
 import type { IntakeDraft, OnboardingHire, VerificationCheck } from "@/types/providerOnboarding";

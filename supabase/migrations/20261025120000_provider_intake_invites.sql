@@ -176,6 +176,9 @@ $$;
 -- Revoking the old invite also ends any session opened from it. A provider in
 -- the org with an email but no open invite (added by hand or by import) gets
 -- a first invite, with no cooldown, so a duplicate is never a dead end.
+-- The new invite goes to the provider record's CURRENT email (the old
+-- invite's address only when the record has none), so a mistyped address is
+-- fixed by correcting the record and resending.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.resend_provider_intake_invite(
   p_org_id uuid,
@@ -193,61 +196,58 @@ DECLARE
   v_old public.provider_intake_invites%ROWTYPE;
   v_invite_id uuid;
   v_email text;
+  v_first text;
 BEGIN
+  -- One resend per provider at a time. Without this, a double submit on the
+  -- first-invite path has both callers miss the open-invite lookup and the
+  -- second hits provider_intake_invites_one_open (23505, a 500) instead of
+  -- answering cooldown.
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('provider_intake_invite:' || p_provider_id::text, 0));
+
+  SELECT lower(nullif(btrim(email), '')), first_name INTO v_email, v_first
+    FROM public.providers
+   WHERE id = p_provider_id AND org_id = p_org_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('result', 'not_found');
+  END IF;
+
+  -- No row leaves v_old all NULL, so v_old.id IS NULL marks a first invite.
   SELECT * INTO v_old
     FROM public.provider_intake_invites
    WHERE org_id = p_org_id AND provider_id = p_provider_id AND revoked_at IS NULL
    FOR UPDATE;
 
-  IF NOT FOUND THEN
-    SELECT lower(nullif(btrim(email), '')) INTO v_email
-      FROM public.providers
-     WHERE id = p_provider_id AND org_id = p_org_id;
-    IF v_email IS NULL THEN
-      RETURN jsonb_build_object('result', 'not_found');
+  IF FOUND THEN
+    IF v_old.created_at > now() - interval '10 minutes' THEN
+      RETURN jsonb_build_object('result', 'cooldown');
     END IF;
+    v_email := coalesce(v_email, v_old.email);
 
-    INSERT INTO public.provider_intake_invites
-      (org_id, provider_id, email, token_hash, created_by, expires_at)
-      VALUES (p_org_id, p_provider_id, v_email, p_token_hash, p_actor_id, p_expires_at)
-      RETURNING id INTO v_invite_id;
+    UPDATE public.provider_intake_invites SET revoked_at = now() WHERE id = v_old.id;
 
     INSERT INTO public.audit_log (org_id, user_id, user_name, action_type, entity_type, entity_id, description)
-      VALUES (p_org_id, p_actor_id, p_actor_name, 'CREATE', 'provider_intake_invite', v_invite_id,
-              'Invited existing provider to onboarding');
-
-    RETURN jsonb_build_object(
-      'result', 'resent',
-      'invite_id', v_invite_id,
-      'email', v_email,
-      'first_name', (SELECT first_name FROM public.providers WHERE id = p_provider_id),
-      'practice_name', (SELECT name FROM public.organizations WHERE id = p_org_id)
-    );
+      VALUES (p_org_id, p_actor_id, p_actor_name, 'UPDATE', 'provider_intake_invite', v_old.id,
+              'Revoked onboarding invite (replaced by a resend)');
+  ELSIF v_email IS NULL THEN
+    RETURN jsonb_build_object('result', 'not_found');
   END IF;
-
-  IF v_old.created_at > now() - interval '10 minutes' THEN
-    RETURN jsonb_build_object('result', 'cooldown');
-  END IF;
-
-  UPDATE public.provider_intake_invites SET revoked_at = now() WHERE id = v_old.id;
 
   INSERT INTO public.provider_intake_invites
     (org_id, provider_id, email, token_hash, created_by, expires_at)
-    VALUES (p_org_id, p_provider_id, v_old.email, p_token_hash, p_actor_id, p_expires_at)
+    VALUES (p_org_id, p_provider_id, v_email, p_token_hash, p_actor_id, p_expires_at)
     RETURNING id INTO v_invite_id;
 
   INSERT INTO public.audit_log (org_id, user_id, user_name, action_type, entity_type, entity_id, description)
-    VALUES
-      (p_org_id, p_actor_id, p_actor_name, 'UPDATE', 'provider_intake_invite', v_old.id,
-       'Revoked onboarding invite (replaced by a resend)'),
-      (p_org_id, p_actor_id, p_actor_name, 'CREATE', 'provider_intake_invite', v_invite_id,
-       'Resent onboarding invite');
+    VALUES (p_org_id, p_actor_id, p_actor_name, 'CREATE', 'provider_intake_invite', v_invite_id,
+            CASE WHEN v_old.id IS NULL THEN 'Invited existing provider to onboarding'
+                 ELSE 'Resent onboarding invite' END);
 
   RETURN jsonb_build_object(
     'result', 'resent',
     'invite_id', v_invite_id,
-    'email', v_old.email,
-    'first_name', (SELECT first_name FROM public.providers WHERE id = p_provider_id),
+    'email', v_email,
+    'first_name', v_first,
     'practice_name', (SELECT name FROM public.organizations WHERE id = p_org_id)
   );
 END;

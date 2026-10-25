@@ -182,7 +182,7 @@ describe("POST /api/provider-invites/:id/resend", () => {
     }
   });
 
-  it("emails the new link to the invited address", async () => {
+  it("emails the new link to the address the RPC chose, and tells staff which one", async () => {
     const db = fakeDb({
       result: "resent",
       email: "anita.rao@example.test",
@@ -192,6 +192,8 @@ describe("POST /api/provider-invites/:id/resend", () => {
     const { deps, send } = makeDeps();
     const res = await handleResendProviderInvite(PROVIDER, ctx(db), deps);
     expect(res.status).toBe(200);
+    // The record's current email, not what staff typed, so the toast must say.
+    expect((await body(res)).data).toEqual({ delivery: "sent", email: "anita.rao@example.test" });
     expect(send.mock.calls[0][0]).toMatchObject({ to: "anita.rao@example.test" });
     const token = send.mock.calls[0][0].data.link.split("/intake/")[1];
     expect(hashToken(token)).toBe(db.rpc.mock.calls[0][1].p_token_hash);

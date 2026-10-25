@@ -206,8 +206,11 @@ export async function handleResendProviderInvite(
       return fail(429, "An invite was sent in the last 10 minutes. Try again shortly.");
     case "resent": {
       const practiceName = String(result.practice_name ?? "");
+      // The RPC picks the address (the record's current email), which may not
+      // be what staff typed into the dialog, so the response says which it was.
+      const email = String(result.email);
       const delivery = await trySend(deps, {
-        to: String(result.email),
+        to: email,
         template: "provider_invitation",
         data: {
           practiceName,
@@ -217,7 +220,7 @@ export async function handleResendProviderInvite(
         practiceName,
         replyTo: replyToFor(ctx, deps.config),
       });
-      return ok({ delivery });
+      return ok({ delivery, email });
     }
     default:
       throw new Error("resend_provider_intake_invite returned an unknown result");

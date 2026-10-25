@@ -219,11 +219,12 @@ production). Each write is one `SECURITY DEFINER` RPC granted to
 - `POST /api/provider-invites`, `POST /api/provider-invites/:providerId/resend`
   (full `authenticate()`, writers): create the onboarding provider + primary
   group assignment + invite and email the link; a duplicate returns
-  `outcome: "already_exists"`; resend has a 10-minute cooldown, and gives a
-  provider with an email but no open invite a first one. Both report
-  `delivery: "sent" | "sandbox" | "failed"` — a failed send is never an
-  error, the invite is already saved. Missing email env or a non-origin
-  `APP_BASE_URL` → 500 before any write.
+  `outcome: "already_exists"`; resend has a 10-minute cooldown, serializes on
+  the provider id (advisory lock), sends to the record's **current** email
+  (returned as `email`), and gives a provider with an email but no open
+  invite a first one. Both report `delivery: "sent" | "sandbox" | "failed"` —
+  a failed send is never an error, the invite is already saved. Missing email
+  env or a non-origin `APP_BASE_URL` → 500 before any write.
 - `POST /api/intake/{link,code,session,me,signout}` (no JWT; POST + JSON
   only; dispatched before operation-context resolution): the code always goes
   to the invited address, `code` answers `sent` for every link state (a

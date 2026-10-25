@@ -25,8 +25,14 @@ export function createProviderInvite(input: ProviderInviteInput): Promise<Provid
   });
 }
 
-export function resendProviderInvite(providerId: string): Promise<{ delivery: InviteDelivery }> {
-  return authedApiFetch<{ delivery: InviteDelivery }>(
+/** `email` is where the invite went: the provider record's current address. */
+export interface ResendInviteResult {
+  delivery: InviteDelivery;
+  email: string;
+}
+
+export function resendProviderInvite(providerId: string): Promise<ResendInviteResult> {
+  return authedApiFetch<ResendInviteResult>(
     `/api/provider-invites/${encodeURIComponent(providerId)}/resend`,
     { method: "POST", body: "{}" },
   );

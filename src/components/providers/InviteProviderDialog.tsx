@@ -76,8 +76,8 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
     if (!existingId) return;
     setError(null);
     try {
-      const { delivery } = await resend.mutateAsync(existingId);
-      notifyDelivery(delivery, "Invite sent");
+      const { delivery, email: sentTo } = await resend.mutateAsync(existingId);
+      notifyDelivery(delivery, `Invite sent to ${sentTo}`);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "The invite couldn't be resent.");
@@ -98,7 +98,8 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
           <div className="space-y-2 text-[13px]">
             <p>A provider with this email or NPI is already in this organization.</p>
             <p className="text-muted-foreground">
-              Sending replaces any earlier link. To check their details first, open their{" "}
+              The invite goes to the email on their record and replaces any earlier link. To check
+              or correct their details first, open their{" "}
               <Link
                 to="/providers/$id"
                 params={{ id: existingId }}
