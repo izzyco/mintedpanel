@@ -134,7 +134,7 @@ public.provider_intake_sessions (
 
 - Anonymous routes are POST-only and reject any `Content-Type` other than `application/json` with 415. That, plus `SameSite=Strict`, is the CSRF defence.
 - Bodies (intake and invite) are read with `readBoundedJsonBody(request, 4096)`.
-- Matching goes into `routeApiRequest`. `resolveOperationContext` already returns null for a bearer-less request (`api.ts:345-351`).
+- The invite routes match in `routeApiRequest` behind the normal guard. `/api/intake/*` is dispatched in `handleApiRequest` before `resolveOperationContext`, so no bearer is ever looked for there (`src/server/api.intake.test.ts`).
 
 **Responses:**
 
@@ -164,7 +164,7 @@ public.provider_intake_sessions (
 
 ## 7. Frontend
 
-- **Staff.** `InviteProviderDialog` on `/providers`, mounted only while open (the modal convention) and behind `VITE_ENABLE_PROVIDER_ONBOARDING`. The chain is hook `useInviteProvider` → service `src/services/providerInvites.ts` → `fetch('/api/provider-invites')` with the user's JWT and `x-org-id`.
+- **Staff.** `InviteProviderDialog` on `/providers`, mounted only while open (the modal convention) and behind `VITE_ENABLE_PROVIDER_ONBOARDING`. The chain is hooks `useCreateProviderInvite` / `useResendProviderInvite` (`src/hooks/useProviderInvites.ts`) → service `src/services/providerInvites.ts` → `authedApiFetch('/api/provider-invites…')` with the user's JWT and `x-org-id`.
   - On `delivery: "failed"`, a toast says the invite was saved and to resend in 10 minutes; on `"sandbox"`, that nothing was delivered.
   - `outcome: "already_exists"` shows the existing-provider note with a Resend button; the success toast names the address the resend went to (the record's email, not the typed one). Only active groups are offered.
 - **Provider.** The route is `src/routes/intake.$token.tsx`, added to the chromeless public list in `__root.tsx`.
