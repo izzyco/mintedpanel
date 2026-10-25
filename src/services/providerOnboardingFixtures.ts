@@ -2,6 +2,7 @@
 // Synthetic canvas names only, no real PHI. Every count a screen shows is
 // computed from these rows, never typed in separately.
 import type { IntakeDraft, OnboardingHire, VerificationCheck } from "@/types/providerOnboarding";
+export { CONSENT } from "@/lib/intakeConsent";
 
 export const PRACTICE = {
   name: "Shelby Sports Rehab",
@@ -9,15 +10,6 @@ export const PRACTICE = {
   groups: ["Shelby Sports Rehab"],
   locations: ["Charlotte", "Concord"],
   address: "410 Mint St, Charlotte, NC 28202",
-};
-
-// The practice's consent text, version 1. {practiceName} is the merge field.
-export const CONSENT = {
-  version: 1,
-  paragraphs: [
-    "We at {practiceName} recognize the challenges of maintaining your NPI, PECOS File, and CAQH File. As a benefit to our new employees and existing staff, we would like to extend our services to you to maintain your NPI and your PECOS and CAQH file. This includes the 120 day re-attestation by CAQH. We request that you provide us with your NPI and CAQH and PECOS login. Upon receipt of your User Name & Password we will only make necessary changes to reflect your current employment status.",
-    "By signing below, you will be giving your consent for us to provide any information needed to complete all insurance credentialing. Without this, we cannot enroll/update you in the necessary programs; thus denying us the ability to receive reimbursement for services you rendered to Medicare and Commercial patients. Your cooperation in providing this information is vital to all parties involved and is most appreciated.",
-  ],
 };
 
 const hire = (h: Omit<OnboardingHire, "groupName" | "source">): OnboardingHire => ({

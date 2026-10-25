@@ -53,6 +53,8 @@ export default defineConfig({
       // guarded staging ID and is tracked separately under H10.
       VITE_MINTED_EXTENSION_ID:
         process.env.VITE_MINTED_EXTENSION_ID ?? "abcdefghijklmnopabcdefghijklmnop",
+      // Provider onboarding slice 1 routes (e2e/provider-intake.spec.ts).
+      VITE_ENABLE_PROVIDER_ONBOARDING: "true",
     },
   },
 });
