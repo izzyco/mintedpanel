@@ -199,6 +199,9 @@ export function CodeStep({
         )}
         .
       </p>
+      <p className="text-[12px] text-muted-foreground">
+        You can ask for up to 3 codes every 10 minutes. Use the newest one.
+      </p>
     </>
   );
 }

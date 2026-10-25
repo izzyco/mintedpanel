@@ -339,9 +339,12 @@ DECLARE
   v_code public.provider_intake_codes%ROWTYPE;
   v_session_id uuid;
 BEGIN
+  -- Locked so a resend running at the same moment can't revoke this invite
+  -- between the check and the new session.
   SELECT * INTO v_invite
     FROM public.provider_intake_invites
-   WHERE token_hash = p_token_hash AND revoked_at IS NULL AND expires_at > now();
+   WHERE token_hash = p_token_hash AND revoked_at IS NULL AND expires_at > now()
+   FOR UPDATE;
 
   IF NOT FOUND THEN
     RETURN 'invalid';

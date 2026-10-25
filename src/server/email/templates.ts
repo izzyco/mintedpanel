@@ -50,7 +50,7 @@ export function escapeHtml(value: string): string {
 export const TEMPLATES: { [K in TemplateKey]: (data: TemplateDataMap[K]) => RenderedEmail } = {
   test: ({ practiceName }) => ({
     subject: `Test email from ${practiceName}`,
-    text: `This is a test email from ${practiceName} via Minted Panel.\n\nIf you received it, sending works.`,
+    text: `This is a test email from ${plainInline(practiceName)} via Minted Panel.\n\nIf you received it, sending works.`,
     html: `<p>This is a test email from <strong>${escapeHtml(practiceName)}</strong> via Minted Panel.</p><p>If you received it, sending works.</p>`,
   }),
   provider_invitation: ({ practiceName, firstName, link }) => {
@@ -82,7 +82,8 @@ export const TEMPLATES: { [K in TemplateKey]: (data: TemplateDataMap[K]) => Rend
     };
   },
   intake_code: ({ practiceName, code }) => ({
-    subject: `Your code for ${practiceName}: ${code}`,
+    // The code stays out of the subject, so lock-screen previews don't show it.
+    subject: `Your sign-in code for ${practiceName}`,
     text: `Your code is ${code}. It expires in 10 minutes.\n\nIf you didn't ask for a code, you can ignore this email.`,
     html: `<p>Your code is <strong>${escapeHtml(code)}</strong>. It expires in 10 minutes.</p><p>If you didn't ask for a code, you can ignore this email.</p>`,
   }),

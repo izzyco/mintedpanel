@@ -26,7 +26,8 @@ describe("provider_invitation", () => {
 describe("intake_code", () => {
   it("shows the code and its 10-minute expiry, with no link", () => {
     const email = TEMPLATES.intake_code({ practiceName: "Shelby", code: "012345" });
-    expect(email.subject).toBe("Your code for Shelby: 012345");
+    expect(email.subject).toBe("Your sign-in code for Shelby");
+    expect(email.subject).not.toContain("012345");
     expect(email.text).toContain("012345");
     expect(email.text).toContain("10 minutes");
     expect(email.html).not.toContain("href");
