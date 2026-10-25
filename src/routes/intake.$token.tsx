@@ -124,6 +124,9 @@ function IntakePage() {
     );
   }
 
+  // Signed in, but her details didn't load: offer a retry rather than an
+  // endless spinner (a definite "no session" is handled by the effect above).
+  if (me.isError) return <TryAgain onRetry={() => void me.refetch()} />;
   if (!me.data) {
     return (
       <IntakeShell practiceName={practiceName}>

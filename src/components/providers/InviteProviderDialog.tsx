@@ -149,11 +149,13 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
                   <SelectItem value={NONE} disabled>
                     Choose a group
                   </SelectItem>
-                  {(groups.data ?? []).map((g) => (
-                    <SelectItem key={g.id} value={g.id}>
-                      {g.name}
-                    </SelectItem>
-                  ))}
+                  {(groups.data ?? [])
+                    .filter((g) => g.isActive)
+                    .map((g) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {g.name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>

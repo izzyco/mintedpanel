@@ -268,14 +268,17 @@ async function readLink(body: unknown, db: SupabaseClient<Database>): Promise<Re
   return ok({ practiceName: String(link.practice_name), email: String(link.email) });
 }
 
-// Always the same answer, whether or not a code was created or sent.
+// Always the same answer, whether or not a code was created or sent. A missing
+// email env is the one exception: that is a server fault, not a link state, so
+// it is a 500 before any code is issued, never a "sent" nobody can receive.
 async function issueCode(
   body: unknown,
   db: SupabaseClient<Database>,
   deps: IntakeDeps,
 ): Promise<Response> {
+  if (!deps.config.emailReady) return fail(500, "Provider intake is not configured");
   const token = field(body, "t");
-  if (token && !notConfigured(deps.config)) {
+  if (token) {
     const code = newCode();
     const linkHash = hashToken(token);
     const { data, error } = await db.rpc("issue_intake_code", {

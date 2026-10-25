@@ -5,8 +5,9 @@ import { test, expect, type Route } from "@playwright/test";
 // always answers sent, a session that opens only for code 123456, and /me
 // that reads only once that session exists. Synthetic canvas names.
 
-function intakeApi() {
+function intakeApi({ failMeOnce = false } = {}) {
   let signedIn = false;
+  let meFailuresLeft = failMeOnce ? 1 : 0;
   return async (route: Route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -29,6 +30,10 @@ function intakeApi() {
       return json(200, { signedIn: true });
     }
     if (path.endsWith("/me")) {
+      if (signedIn && meFailuresLeft > 0) {
+        meFailuresLeft -= 1;
+        return json(500, null, "Internal server error");
+      }
       return signedIn
         ? json(200, {
             practiceName: "Shelby Sports Rehab",
@@ -69,6 +74,20 @@ test("a provider signs in with the emailed code and reaches consent, then the fo
 
   await expect(page.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
   await expect(page.getByText("Signed in as anita.rao@example.test")).toBeVisible();
+});
+
+test("a failed details read after sign-in offers Try again instead of an endless spinner", async ({
+  context,
+  page,
+}) => {
+  await context.route("**/api/intake/**", intakeApi({ failMeOnce: true }));
+  await page.goto("/intake/live-token");
+  await page.getByRole("button", { name: "Send me a code" }).click();
+  await page.getByLabel("6-digit code").fill("123456");
+
+  await expect(page.getByRole("heading", { name: "Something went wrong" })).toBeVisible();
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByRole("heading", { name: "Your consent" })).toBeVisible();
 });
 
 test("an unknown, expired or revoked link shows one invalid-link screen", async ({

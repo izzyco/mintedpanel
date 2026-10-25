@@ -283,6 +283,21 @@ describe("/api/intake/*", () => {
     expect(quiet.send).not.toHaveBeenCalled();
   });
 
+  it("code: a missing email env is a 500 before any database call, never a quiet sent", async () => {
+    const db = fakeDb({ send: true, email: "a@b.test", practice_name: "Shelby" });
+    const unconfigured = makeDeps({ config: { ...CONFIG, emailReady: false, fromEmail: null } });
+    const res = await call("code", db, { json: { t: "tok" } }, unconfigured.deps);
+    expect(res.status).toBe(500);
+    expect(db.rpc).not.toHaveBeenCalled();
+    expect(unconfigured.send).not.toHaveBeenCalled();
+
+    // The code email needs no link origin, so APP_BASE_URL alone doesn't block it.
+    const noBaseUrl = makeDeps({ config: { ...CONFIG, appBaseUrl: null } });
+    const sent = await call("code", db, { json: { t: "tok" } }, noBaseUrl.deps);
+    expect(sent.status).toBe(200);
+    expect(noBaseUrl.send).toHaveBeenCalledOnce();
+  });
+
   it("session: a right code sets the HttpOnly cookie; a wrong one gets one generic 400", async () => {
     const good = await call("session", fakeDb("ok"), { json: { t: "tok", code: "012345" } });
     expect(good.status).toBe(200);
