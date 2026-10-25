@@ -219,12 +219,18 @@ production). Each write is one `SECURITY DEFINER` RPC granted to
 - `POST /api/provider-invites`, `POST /api/provider-invites/:providerId/resend`
   (full `authenticate()`, writers): create the onboarding provider + primary
   group assignment + invite and email the link; a duplicate returns
-  `outcome: "already_exists"`; resend has a 10-minute cooldown.
-- `POST /api/intake/{link,code,session,signout}`, `GET /api/intake/me` (no
-  JWT; dispatched before operation-context resolution): the code always goes
-  to the invited address, `code` always answers `sent`, and a right code sets
-  the `mp_intake` cookie (`HttpOnly; SameSite=Strict; Path=/api/intake`, 2
-  hours). Tokens and codes are hashed before they reach SQL.
+  `outcome: "already_exists"`; resend has a 10-minute cooldown, and gives a
+  provider with an email but no open invite a first one. Both report
+  `delivery: "sent" | "sandbox" | "failed"` — a failed send is never an
+  error, the invite is already saved. Missing email env or a non-origin
+  `APP_BASE_URL` → 500 before any write.
+- `POST /api/intake/{link,code,session,me,signout}` (no JWT; POST + JSON
+  only; dispatched before operation-context resolution): the code always goes
+  to the invited address, `code` answers `sent` for every link state (a
+  missing email env is the one 500), a right code sets the `mp_intake` cookie
+  (`HttpOnly; SameSite=Strict; Path=/api/intake`, 2 hours), and `me` takes
+  `{ t }` so a session reads back only under its own link. Tokens and codes
+  are hashed before they reach SQL.
 
 ### Contracts worth knowing before you touch them
 
@@ -326,7 +332,8 @@ before any schema work.
   drops only the date when it is absent, so the apply can follow the merge.
 - `20261025120000_provider_intake_invites.sql` — provider onboarding slice 1
   (three token tables + seven RPCs). Not applied anywhere yet; staging first.
-  Verify: `pg_proc.proname = 'verify_intake_code'` exists.
+  Verify: `pg_proc.proname = 'verify_intake_code'` exists, then run
+  `scripts/sql/provider-intake-smoke.sql` (every RPC, rolled back).
 - `20261017120000_case_creation_primary_location.sql` — **needs PM
   sign-off.** `create_case_with_tasks` writes the primary `case_facilities`
   row, plus a backfill of cases that have only the `facility_id` mirror (36
