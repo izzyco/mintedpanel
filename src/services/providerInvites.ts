@@ -11,8 +11,11 @@ export interface ProviderInviteInput {
   startDate?: string;
 }
 
+/** "sandbox": SendGrid accepted it in sandbox mode, so nothing was delivered. */
+export type InviteDelivery = "sent" | "sandbox" | "failed";
+
 export type ProviderInviteResult =
-  | { outcome: "created"; providerId: string; emailSent: boolean }
+  | { outcome: "created"; providerId: string; delivery: InviteDelivery }
   | { outcome: "already_exists"; providerId: string };
 
 export function createProviderInvite(input: ProviderInviteInput): Promise<ProviderInviteResult> {
@@ -22,8 +25,8 @@ export function createProviderInvite(input: ProviderInviteInput): Promise<Provid
   });
 }
 
-export function resendProviderInvite(providerId: string): Promise<{ emailSent: boolean }> {
-  return authedApiFetch<{ emailSent: boolean }>(
+export function resendProviderInvite(providerId: string): Promise<{ delivery: InviteDelivery }> {
+  return authedApiFetch<{ delivery: InviteDelivery }>(
     `/api/provider-invites/${encodeURIComponent(providerId)}/resend`,
     { method: "POST", body: "{}" },
   );

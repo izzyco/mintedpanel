@@ -4,6 +4,7 @@ import type { AuthContext } from "./guard";
 import { EmailError } from "./email/sendgrid";
 import { INTAKE_COOKIE, hashCode, hashToken } from "./intakeTokens";
 import {
+  resolveAppBaseUrl,
   handleCreateProviderInvite,
   handleIntakeRequest,
   handleResendProviderInvite,
@@ -24,7 +25,7 @@ const CONFIG: IntakeConfig = {
 };
 
 function makeDeps(overrides: Partial<IntakeDeps> = {}) {
-  const send = vi.fn().mockResolvedValue({ status: 202 });
+  const send = vi.fn().mockResolvedValue({ status: 202, sandbox: false });
   const deps: IntakeDeps = { config: CONFIG, send, now: () => NOW, ...overrides };
   return { deps, send: deps.send as ReturnType<typeof vi.fn> };
 }
@@ -73,7 +74,7 @@ describe("POST /api/provider-invites", () => {
     expect((await body(res)).data).toEqual({
       outcome: "created",
       providerId: PROVIDER,
-      emailSent: true,
+      delivery: "sent",
     });
     const [rpcName, args] = db.rpc.mock.calls[0];
     expect(rpcName).toBe("create_provider_intake_invite");
@@ -139,12 +140,25 @@ describe("POST /api/provider-invites", () => {
     expect((await handleCreateProviderInvite(INVITE, ctx(db), makeDeps().deps)).status).toBe(404);
   });
 
-  it("reports a failed send as emailSent false, because the invite is already saved", async () => {
+  it("reports a failed send as delivery failed, because the invite is already saved", async () => {
     const db = fakeDb({ result: "created", provider_id: PROVIDER, practice_name: "Shelby" });
     const send = vi.fn().mockRejectedValue(new EmailError("provider_rejected", "x", 400));
     const res = await handleCreateProviderInvite(INVITE, ctx(db), makeDeps({ send }).deps);
     expect(res.status).toBe(201);
-    expect((await body(res)).data).toMatchObject({ emailSent: false });
+    expect((await body(res)).data).toMatchObject({ delivery: "failed" });
+  });
+
+  it("says sandbox when SendGrid accepted the mail in sandbox mode, so nobody thinks it arrived", async () => {
+    const db = fakeDb({ result: "created", provider_id: PROVIDER, practice_name: "Shelby" });
+    const send = vi.fn().mockResolvedValue({ status: 200, sandbox: true });
+    const res = await handleCreateProviderInvite(INVITE, ctx(db), makeDeps({ send }).deps);
+    expect((await body(res)).data).toMatchObject({ delivery: "sandbox" });
+  });
+
+  it("falls back to the caller's email for the audit actor name", async () => {
+    const db = fakeDb({ result: "created", provider_id: PROVIDER, practice_name: "Shelby" });
+    await handleCreateProviderInvite(INVITE, { ...ctx(db), userName: null }, makeDeps().deps);
+    expect(db.rpc.mock.calls[0][1].p_actor_name).toBe("jordan@minted.example");
   });
 
   it("falls back to the from address for reply-to when the caller has no email", async () => {
@@ -285,8 +299,13 @@ describe("/api/intake/*", () => {
     expect(bad.headers.get("set-cookie")).toBeNull();
   });
 
-  it("me: needs the cookie and returns only display fields", async () => {
-    expect((await call("me", fakeDb())).status).toBe(401);
+  it("me: needs the cookie and the link, and returns only display fields", async () => {
+    expect((await call("me", fakeDb(), { json: { t: "tok" } })).status).toBe(401);
+    const noLink = await call("me", fakeDb(), {
+      json: {},
+      headers: { cookie: `${INTAKE_COOKIE}=sess` },
+    });
+    expect(noLink.status).toBe(401);
 
     const db = fakeDb({
       practice_name: "Shelby",
@@ -294,7 +313,10 @@ describe("/api/intake/*", () => {
       last_name: "Rao",
       email: "a@b.test",
     });
-    const res = await call("me", db, { headers: { cookie: `${INTAKE_COOKIE}=sess` } });
+    const res = await call("me", db, {
+      json: { t: "tok" },
+      headers: { cookie: `${INTAKE_COOKIE}=sess` },
+    });
     expect((await body(res)).data).toEqual({
       practiceName: "Shelby",
       firstName: "Anita",
@@ -303,10 +325,14 @@ describe("/api/intake/*", () => {
     });
     expect(db.rpc).toHaveBeenCalledWith("read_intake_session", {
       p_session_hash: hashToken("sess"),
+      p_token_hash: hashToken("tok"),
     });
 
-    const ended = await call("me", fakeDb(null), { headers: { cookie: `${INTAKE_COOKIE}=sess` } });
-    expect(ended.status).toBe(401);
+    const otherLink = await call("me", fakeDb(null), {
+      json: { t: "someone-elses-link" },
+      headers: { cookie: `${INTAKE_COOKIE}=sess` },
+    });
+    expect(otherLink.status).toBe(401);
   });
 
   it("signout: revokes the session and clears the cookie", async () => {
@@ -319,5 +345,28 @@ describe("/api/intake/*", () => {
       p_session_hash: hashToken("sess"),
     });
     expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+});
+
+describe("resolveAppBaseUrl", () => {
+  it("accepts a bare https origin and normalizes a trailing slash", () => {
+    expect(resolveAppBaseUrl("https://staging.mintedpanel.com/", false)).toBe(
+      "https://staging.mintedpanel.com",
+    );
+  });
+
+  it("treats anything else as missing, so a typo fails closed instead of mailing a bad link", () => {
+    for (const raw of [
+      undefined,
+      "",
+      "http://staging.mintedpanel.com",
+      "staging.mintedpanel.com",
+      "https://staging.mintedpanel.com/intake",
+      "https://x.test/?a=1",
+    ]) {
+      expect(resolveAppBaseUrl(raw, false)).toBeNull();
+    }
+    expect(resolveAppBaseUrl("http://localhost:8080", false)).toBeNull();
+    expect(resolveAppBaseUrl("http://localhost:8080", true)).toBe("http://localhost:8080");
   });
 });

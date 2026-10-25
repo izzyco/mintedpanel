@@ -7,6 +7,7 @@ vi.mock("./guard", async () => {
 
 import { authenticate, authenticateUser, GuardError } from "./guard";
 import { handleApiRequest } from "./api";
+import * as intakeRoutes from "./providerIntakeRoutes";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -27,6 +28,26 @@ describe("api dispatch for provider onboarding", () => {
     expect(await res.json()).toEqual({ data: null, error: "Not found", meta: null });
     expect(authenticate).not.toHaveBeenCalled();
     expect(authenticateUser).not.toHaveBeenCalled();
+  });
+
+  it("dispatches /api/intake/* before any JWT work, even when a bearer is sent", async () => {
+    const spy = vi
+      .spyOn(intakeRoutes, "handleIntakeRequest")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ data: { sent: true }, error: null, meta: null })),
+      );
+    const res = await handleApiRequest(
+      new Request("https://x.test/api/intake/code", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer staff-token" },
+        body: JSON.stringify({ t: "x" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(spy).toHaveBeenCalledOnce();
+    expect(authenticateUser).not.toHaveBeenCalled();
+    expect(authenticate).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("puts /api/provider-invites behind the normal org guard", async () => {

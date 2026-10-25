@@ -821,7 +821,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
     if (isProviderInvites) {
       if (method !== "POST") return fail(405, "Method not allowed");
       const routes = await loadProviderIntakeRoutes();
-      return await routes.handleCreateProviderInvite(await readJsonBody(request), ctx);
+      return await routes.handleCreateProviderInvite(await readBoundedJsonBody(request, 4096), ctx);
     }
     if (providerInviteResendMatch) {
       if (method !== "POST") return fail(405, "Method not allowed");

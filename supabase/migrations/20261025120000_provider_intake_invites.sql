@@ -115,7 +115,11 @@ BEGIN
 
   -- Serialize invites for the same address in the same org, so two
   -- simultaneous invites can't both pass the duplicate check.
-  PERFORM pg_advisory_xact_lock(hashtextextended(p_org_id::text || ':' || v_email, 0));
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_org_id::text || ':email:' || v_email, 0));
+  IF v_npi IS NOT NULL THEN
+    PERFORM pg_advisory_xact_lock(
+      hashtextextended(p_org_id::text || ':npi:' || v_group_id::text || ':' || v_npi, 0));
+  END IF;
 
   SELECT id INTO v_existing
     FROM public.providers
@@ -169,7 +173,9 @@ $$;
 -- ---------------------------------------------------------------------------
 -- resend_provider_intake_invite: replace the provider's unrevoked invite (even
 -- an expired one) with a new token. 10-minute cooldown from the last send.
--- Revoking the old invite also ends any session opened from it.
+-- Revoking the old invite also ends any session opened from it. A provider in
+-- the org with an email but no open invite (added by hand or by import) gets
+-- a first invite, with no cooldown, so a duplicate is never a dead end.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.resend_provider_intake_invite(
   p_org_id uuid,
@@ -186,6 +192,7 @@ AS $$
 DECLARE
   v_old public.provider_intake_invites%ROWTYPE;
   v_invite_id uuid;
+  v_email text;
 BEGIN
   SELECT * INTO v_old
     FROM public.provider_intake_invites
@@ -193,7 +200,29 @@ BEGIN
    FOR UPDATE;
 
   IF NOT FOUND THEN
-    RETURN jsonb_build_object('result', 'not_found');
+    SELECT lower(nullif(btrim(email), '')) INTO v_email
+      FROM public.providers
+     WHERE id = p_provider_id AND org_id = p_org_id;
+    IF v_email IS NULL THEN
+      RETURN jsonb_build_object('result', 'not_found');
+    END IF;
+
+    INSERT INTO public.provider_intake_invites
+      (org_id, provider_id, email, token_hash, created_by, expires_at)
+      VALUES (p_org_id, p_provider_id, v_email, p_token_hash, p_actor_id, p_expires_at)
+      RETURNING id INTO v_invite_id;
+
+    INSERT INTO public.audit_log (org_id, user_id, user_name, action_type, entity_type, entity_id, description)
+      VALUES (p_org_id, p_actor_id, p_actor_name, 'CREATE', 'provider_intake_invite', v_invite_id,
+              'Invited existing provider to onboarding');
+
+    RETURN jsonb_build_object(
+      'result', 'resent',
+      'invite_id', v_invite_id,
+      'email', v_email,
+      'first_name', (SELECT first_name FROM public.providers WHERE id = p_provider_id),
+      'practice_name', (SELECT name FROM public.organizations WHERE id = p_org_id)
+    );
   END IF;
 
   IF v_old.created_at > now() - interval '10 minutes' THEN
@@ -351,10 +380,12 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
--- read_intake_session: the signed-in provider's own display fields. Null when
--- the session is expired or revoked, or its invite was revoked by a resend.
+-- read_intake_session: the signed-in provider's own display fields, only when
+-- the session belongs to the link being opened (a shared browser can't show
+-- one provider's session under another's link). Null when the session is
+-- expired or revoked, or its invite was revoked by a resend.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.read_intake_session(p_session_hash text)
+CREATE OR REPLACE FUNCTION public.read_intake_session(p_session_hash text, p_token_hash text)
 RETURNS jsonb
 LANGUAGE sql
 STABLE
@@ -371,6 +402,7 @@ AS $$
     JOIN public.providers p ON p.id = i.provider_id
     JOIN public.organizations o ON o.id = i.org_id
    WHERE s.token_hash = p_session_hash
+     AND i.token_hash = p_token_hash
      AND s.revoked_at IS NULL
      AND s.expires_at > now()
      AND i.revoked_at IS NULL;
@@ -392,7 +424,7 @@ REVOKE ALL ON FUNCTION public.resend_provider_intake_invite(uuid, uuid, text, uu
 REVOKE ALL ON FUNCTION public.read_intake_link(text) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.issue_intake_code(text, text) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.verify_intake_code(text, text, text, timestamptz) FROM public, anon, authenticated;
-REVOKE ALL ON FUNCTION public.read_intake_session(text) FROM public, anon, authenticated;
+REVOKE ALL ON FUNCTION public.read_intake_session(text, text) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.revoke_intake_session(text) FROM public, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION public.create_provider_intake_invite(uuid, uuid, text, jsonb, text, timestamptz) TO service_role;
@@ -400,5 +432,7 @@ GRANT EXECUTE ON FUNCTION public.resend_provider_intake_invite(uuid, uuid, text,
 GRANT EXECUTE ON FUNCTION public.read_intake_link(text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.issue_intake_code(text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.verify_intake_code(text, text, text, timestamptz) TO service_role;
-GRANT EXECUTE ON FUNCTION public.read_intake_session(text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.read_intake_session(text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.revoke_intake_session(text) TO service_role;
+
+NOTIFY pgrst, 'reload schema';

@@ -4494,7 +4494,10 @@ export type Database = {
         Returns: Json;
       };
       read_intake_link: { Args: { p_token_hash: string }; Returns: Json };
-      read_intake_session: { Args: { p_session_hash: string }; Returns: Json };
+      read_intake_session: {
+        Args: { p_session_hash: string; p_token_hash: string };
+        Returns: Json;
+      };
       resend_provider_intake_invite: {
         Args: {
           p_actor_id: string;

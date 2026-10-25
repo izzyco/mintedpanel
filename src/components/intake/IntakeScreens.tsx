@@ -79,6 +79,20 @@ export function InvalidLink() {
   );
 }
 
+// A server or network failure, kept apart from an invalid link so a provider
+// with a good link isn't told it's dead.
+export function TryAgain({ onRetry }: { onRetry: () => void }) {
+  return (
+    <IntakeShell practiceName={null}>
+      <Heading>Something went wrong</Heading>
+      <Body>We couldn't open your form just now. Please try again in a moment.</Body>
+      <Button className="h-10 w-full" onClick={onRetry}>
+        Try again
+      </Button>
+    </IntakeShell>
+  );
+}
+
 // Board 3. The code always goes to the invited address (slice 1, S6).
 export function IdentifyStep({
   email,
@@ -124,7 +138,7 @@ export function CodeStep({
   checking: boolean;
   error: string | null;
   onSubmit: (code: string) => void;
-  onResend: () => void;
+  onResend: () => Promise<boolean>;
 }) {
   const [code, setCode] = useState("");
   const [wait, setWait] = useState(RESEND_AFTER_SECONDS);
@@ -175,10 +189,9 @@ export function CodeStep({
           <button
             type="button"
             className="font-medium text-foreground underline"
-            onClick={() => {
+            onClick={async () => {
               setCode("");
-              setWait(RESEND_AFTER_SECONDS);
-              onResend();
+              if (await onResend()) setWait(RESEND_AFTER_SECONDS);
             }}
           >
             send a new code

@@ -1849,7 +1849,11 @@ function looksLikeVercelGate(r) {
       .getSetCookie()
       .map((c) => c.split(";")[0])
       .join("; ");
-    const me = await apiGet("/api/intake/me", { extraHeaders: { cookie } });
+    const me = await apiPost(
+      "/api/intake/me",
+      { t: env.KANSAS_INTAKE_TOKEN },
+      { extraHeaders: { cookie } },
+    );
     check(
       "35d. A Kansas intake session reads only its own invite's provider",
       signIn.status === 200 &&

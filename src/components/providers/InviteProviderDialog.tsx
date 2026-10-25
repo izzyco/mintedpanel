@@ -24,8 +24,16 @@ import {
 } from "@/components/ui/select";
 import { useProviderGroups } from "@/hooks/useLookups";
 import { useCreateProviderInvite, useResendProviderInvite } from "@/hooks/useProviderInvites";
+import type { InviteDelivery } from "@/services/providerInvites";
 
 const NONE = "__none__";
+
+function notifyDelivery(delivery: InviteDelivery, sentMessage: string) {
+  if (delivery === "sent") toast.success(sentMessage);
+  else if (delivery === "sandbox")
+    toast.warning("Invite saved. Email is in sandbox mode, so nothing was delivered.");
+  else toast.warning("Invite saved, but the email didn't send. Resend it in 10 minutes.");
+}
 
 export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
   const groups = useProviderGroups();
@@ -57,8 +65,7 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
         setExistingId(result.providerId);
         return;
       }
-      if (result.emailSent) toast.success(`Invite sent to ${email.trim()}`);
-      else toast.warning("Invite saved, but the email didn't send. Resend it in 10 minutes.");
+      notifyDelivery(result.delivery, `Invite sent to ${email.trim()}`);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "The invite couldn't be sent.");
@@ -69,9 +76,8 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
     if (!existingId) return;
     setError(null);
     try {
-      const { emailSent } = await resend.mutateAsync(existingId);
-      if (emailSent) toast.success("Invite resent");
-      else toast.warning("Invite renewed, but the email didn't send.");
+      const { delivery } = await resend.mutateAsync(existingId);
+      notifyDelivery(delivery, "Invite sent");
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "The invite couldn't be resent.");
@@ -90,9 +96,9 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
 
         {existingId ? (
           <div className="space-y-2 text-[13px]">
-            <p>This provider is already in this organization.</p>
+            <p>A provider with this email or NPI is already in this organization.</p>
             <p className="text-muted-foreground">
-              Resend replaces their earlier link. If they have no open invite, open their{" "}
+              Sending replaces any earlier link. To check their details first, open their{" "}
               <Link
                 to="/providers/$id"
                 params={{ id: existingId }}
@@ -192,7 +198,7 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
           </Button>
           {existingId ? (
             <Button onClick={onResend} disabled={resend.isPending}>
-              {resend.isPending ? "Resending…" : "Resend invite"}
+              {resend.isPending ? "Sending…" : "Send them an invite"}
             </Button>
           ) : (
             <Button onClick={onSend} disabled={!ready || invite.isPending}>

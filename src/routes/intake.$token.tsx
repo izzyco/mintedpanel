@@ -12,6 +12,7 @@ import {
   IdentifyStep,
   IntakeShell,
   InvalidLink,
+  TryAgain,
 } from "@/components/intake/IntakeScreens";
 import {
   useIntakeLink,
@@ -47,15 +48,16 @@ function IntakePage() {
   const requestCode = useRequestIntakeCode();
   const openSession = useOpenIntakeSession();
   const signedIn = step === "consent" || step === "details";
-  const me = useIntakeMe(link.data != null);
+  const me = useIntakeMe(token, link.data != null);
 
   // A live session from earlier in this browser (2 hours) skips the code; a
   // session that ended (expired, or replaced by a resend) goes back to the start.
   useEffect(() => {
-    if (!me.isFetched) return;
+    // Only a definite "no session" sends her back; a failed read doesn't.
+    if (!me.isSuccess) return;
     if (step === "identify" && me.data) setStep("consent");
-    if (signedIn && !me.data) setStep("identify");
-  }, [me.isFetched, me.data, step, signedIn]);
+    if (signedIn && me.data === null) setStep("identify");
+  }, [me.isSuccess, me.data, step, signedIn]);
 
   if (link.isLoading) {
     return (
@@ -64,16 +66,19 @@ function IntakePage() {
       </IntakeShell>
     );
   }
-  if (link.isError || !link.data) return <InvalidLink />;
+  if (link.isError) return <TryAgain onRetry={() => void link.refetch()} />;
+  if (!link.data) return <InvalidLink />;
   const { practiceName, email } = link.data;
 
-  async function sendCode() {
+  async function sendCode(): Promise<boolean> {
     setError(null);
     try {
       await requestCode.mutateAsync(token);
       setStep("code");
+      return true;
     } catch {
       setError("We couldn't send a code just now. Please try again.");
+      return false;
     }
   }
 
@@ -85,7 +90,7 @@ function IntakePage() {
         setError("That code didn't work. Use the newest code we sent, or send a new one.");
         return;
       }
-      await qc.invalidateQueries({ queryKey: ["intake-me"] });
+      await qc.invalidateQueries({ queryKey: ["intake-me", token] });
       setStep("consent");
     } catch {
       setError("Something went wrong. Please try again.");
@@ -99,7 +104,7 @@ function IntakePage() {
           email={email}
           sending={requestCode.isPending}
           error={error}
-          onSend={sendCode}
+          onSend={() => void sendCode()}
         />
       </IntakeShell>
     );

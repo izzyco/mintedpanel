@@ -61,9 +61,9 @@ export interface IntakeMe {
   email: string;
 }
 
-/** Null when there is no live session. */
-export async function readIntakeMe(): Promise<IntakeMe | null> {
-  const { status, body } = await intakeFetch<IntakeMe>("me");
+/** Null when there is no live session for this link. */
+export async function readIntakeMe(token: string): Promise<IntakeMe | null> {
+  const { status, body } = await intakeFetch<IntakeMe>("me", post({ t: token }));
   if (status === 401) return null;
   if (!body.data) throw new Error(body.error ?? `Request failed (${status})`);
   return body.data;

@@ -738,9 +738,13 @@ export async function createMockApiServer(options = {}) {
       );
       return envelope(res, 200, { signedIn: true });
     }
-    if (url.pathname === "/api/intake/me" && method === "GET") {
+    if (url.pathname === "/api/intake/me" && method === "POST") {
       const cookie = req.headers.cookie ?? "";
-      if (!cookie.includes("mp_intake=mock-session-kansas")) {
+      const body = (await readBody(req)) ?? {};
+      if (
+        !cookie.includes("mp_intake=mock-session-kansas") ||
+        body.t !== FIXTURES.KANSAS_INTAKE_TOKEN
+      ) {
         return envelope(res, 401, null, "signed_out");
       }
       const sp = leak === "intakesession";
@@ -1655,7 +1659,7 @@ export async function createMockApiServer(options = {}) {
       return envelope(res, 201, {
         outcome: "created",
         providerId: `invited-${Date.now()}`,
-        emailSent: true,
+        delivery: "sent",
       });
     }
     const resendMatch = url.pathname.match(/^\/api\/provider-invites\/([^/]+)\/resend\/?$/);
@@ -1666,7 +1670,7 @@ export async function createMockApiServer(options = {}) {
       if (!target || (target.orgId !== orgId && leak !== "providerinvites")) {
         return envelope(res, 404, null, "Invite not found");
       }
-      return envelope(res, 200, { emailSent: true });
+      return envelope(res, 200, { delivery: "sent" });
     }
 
     if (url.pathname === "/api/payer-forms/upload-intent" && method === "POST") {

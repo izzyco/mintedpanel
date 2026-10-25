@@ -29,6 +29,15 @@ export interface RenderedEmail {
   html: string;
 }
 
+// Names inside the text/plain part: one line, no control characters.
+/* eslint-disable no-control-regex */
+const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/g;
+/* eslint-enable no-control-regex */
+
+function plainInline(value: string): string {
+  return value.replace(CONTROL_CHARS, " ").replace(/\s+/g, " ").trim();
+}
+
 export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -51,14 +60,14 @@ export const TEMPLATES: { [K in TemplateKey]: (data: TemplateDataMap[K]) => Rend
     return {
       subject: `Welcome to ${practiceName}: your credentialing form`,
       text: [
-        `Hi ${firstName},`,
+        `Hi ${plainInline(firstName)},`,
         intro,
         "Make sure you have these on hand before you start:",
         HAVE_READY.map((item) => `- ${item}`).join("\n"),
         `Get started: ${link}`,
         codeLine,
         "Questions? Just reply to this email.",
-        `Thanks,\n${practiceName}`,
+        `Thanks,\n${plainInline(practiceName)}`,
       ].join("\n\n"),
       html: [
         `<p>Hi ${escapeHtml(firstName)},</p>`,

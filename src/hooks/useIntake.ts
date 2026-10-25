@@ -17,10 +17,10 @@ export function useIntakeLink(token: string) {
   });
 }
 
-export function useIntakeMe(enabled: boolean) {
+export function useIntakeMe(token: string, enabled: boolean) {
   return useQuery({
-    queryKey: ["intake-me"],
-    queryFn: readIntakeMe,
+    queryKey: ["intake-me", token],
+    queryFn: () => readIntakeMe(token),
     enabled,
     retry: false,
   });

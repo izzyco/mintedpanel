@@ -36,11 +36,27 @@ export interface IntakeConfig {
   secureCookie: boolean;
 }
 
+// The origin the invite email links to. Anything but a bare https origin (or
+// http://localhost in dev) counts as missing, so a typo is a 500, not a bad link.
+export function resolveAppBaseUrl(raw: string | undefined, dev: boolean): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    if (url.protocol !== "https:" && !(dev && local && url.protocol === "http:")) return null;
+    if (url.pathname !== "/" || url.search || url.hash) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 export function resolveIntakeConfig(): IntakeConfig {
   const email = resolveEmailEnv();
   return {
     enabled: process.env.PROVIDER_ONBOARDING_ENABLED === "true",
-    appBaseUrl: process.env.APP_BASE_URL?.trim().replace(/\/+$/, "") || null,
+    appBaseUrl: resolveAppBaseUrl(process.env.APP_BASE_URL, Boolean(import.meta.env.DEV)),
     fromEmail: email.fromEmail ?? null,
     emailReady: Boolean(email.apiKey && email.fromEmail),
     // Safari drops Secure cookies on http://localhost.
@@ -50,7 +66,7 @@ export function resolveIntakeConfig(): IntakeConfig {
 
 export interface IntakeDeps {
   config: IntakeConfig;
-  send: <K extends TemplateKey>(input: SendEmailInput<K>) => Promise<unknown>;
+  send: <K extends TemplateKey>(input: SendEmailInput<K>) => Promise<{ sandbox: boolean }>;
   now: () => Date;
 }
 
@@ -74,24 +90,31 @@ function noStore(response: Response): Response {
   return response;
 }
 
-// A failed send is reported to the caller as a flag (staff) or not at all
-// (provider), never as an error, because the invite or code is already saved.
+// What staff are told about the email. "sandbox" means SendGrid accepted it
+// in sandbox mode (SENDGRID_SANDBOX is not exactly "false"), so nothing was
+// delivered. A failure is never an error, because the invite is already saved.
+export type Delivery = "sent" | "sandbox" | "failed";
+
 async function trySend<K extends TemplateKey>(
   deps: IntakeDeps,
   input: SendEmailInput<K>,
-): Promise<boolean> {
+): Promise<Delivery> {
   try {
-    await deps.send(input);
-    return true;
+    const { sandbox } = await deps.send(input);
+    return sandbox ? "sandbox" : "sent";
   } catch (error) {
     if (!(error instanceof EmailError)) throw error;
     console.warn("[intake] email not sent:", error.kind, error.status ?? "");
-    return false;
+    return "failed";
   }
 }
 
 function notConfigured(config: IntakeConfig): boolean {
   return !config.emailReady || !config.appBaseUrl || !config.fromEmail;
+}
+
+function actorName(ctx: AuthContext): string {
+  return ctx.userName ?? ctx.email ?? "";
 }
 
 function replyToFor(ctx: AuthContext, config: IntakeConfig) {
@@ -115,7 +138,7 @@ export async function handleCreateProviderInvite(
   const { data, error } = await ctx.db.rpc("create_provider_intake_invite", {
     p_org_id: ctx.orgId,
     p_actor_id: ctx.userId,
-    p_actor_name: ctx.userName ?? "",
+    p_actor_name: actorName(ctx),
     p_input: { ...parsed.input },
     p_token_hash: hashToken(token),
     p_expires_at: inviteExpiry(deps.now()),
@@ -132,7 +155,7 @@ export async function handleCreateProviderInvite(
       return ok({ outcome: "already_exists", providerId: result.provider_id as string });
     case "created": {
       const practiceName = String(result.practice_name ?? "");
-      const emailSent = await trySend(deps, {
+      const delivery = await trySend(deps, {
         to: parsed.input.email,
         template: "provider_invitation",
         data: {
@@ -144,7 +167,7 @@ export async function handleCreateProviderInvite(
         replyTo: replyToFor(ctx, deps.config),
       });
       return ok(
-        { outcome: "created", providerId: result.provider_id as string, emailSent },
+        { outcome: "created", providerId: result.provider_id as string, delivery },
         null,
         201,
       );
@@ -168,7 +191,7 @@ export async function handleResendProviderInvite(
   const { data, error } = await ctx.db.rpc("resend_provider_intake_invite", {
     p_org_id: ctx.orgId,
     p_actor_id: ctx.userId,
-    p_actor_name: ctx.userName ?? "",
+    p_actor_name: actorName(ctx),
     p_provider_id: providerId,
     p_token_hash: hashToken(token),
     p_expires_at: inviteExpiry(deps.now()),
@@ -183,7 +206,7 @@ export async function handleResendProviderInvite(
       return fail(429, "An invite was sent in the last 10 minutes. Try again shortly.");
     case "resent": {
       const practiceName = String(result.practice_name ?? "");
-      const emailSent = await trySend(deps, {
+      const delivery = await trySend(deps, {
         to: String(result.email),
         template: "provider_invitation",
         data: {
@@ -194,7 +217,7 @@ export async function handleResendProviderInvite(
         practiceName,
         replyTo: replyToFor(ctx, deps.config),
       });
-      return ok({ emailSent });
+      return ok({ delivery });
     }
     default:
       throw new Error("resend_provider_intake_invite returned an unknown result");
@@ -224,11 +247,6 @@ export async function handleIntakeRequest(
   const action = match[1];
   const method = request.method.toUpperCase();
 
-  if (action === "me") {
-    if (method !== "GET") return noStore(fail(405, "Method not allowed"));
-    return noStore(await readMe(request, db));
-  }
-
   if (method !== "POST") return noStore(fail(405, "Method not allowed"));
   if (!isJsonRequest(request)) return noStore(fail(415, "Send application/json"));
   const body = await readBody();
@@ -236,6 +254,7 @@ export async function handleIntakeRequest(
   if (action === "link") return noStore(await readLink(body, db));
   if (action === "code") return noStore(await issueCode(body, db, deps));
   if (action === "session") return noStore(await openSession(body, db, deps));
+  if (action === "me") return noStore(await readMe(request, body, db));
   return noStore(await signOut(request, db, deps));
 }
 
@@ -308,11 +327,18 @@ async function openSession(
   return response;
 }
 
-async function readMe(request: Request, db: SupabaseClient<Database>): Promise<Response> {
+// Bound to the link being opened: a session from another invite is signed out.
+async function readMe(
+  request: Request,
+  body: unknown,
+  db: SupabaseClient<Database>,
+): Promise<Response> {
   const sessionToken = readSessionToken(request);
-  if (!sessionToken) return fail(401, "signed_out");
+  const token = field(body, "t");
+  if (!sessionToken || !token) return fail(401, "signed_out");
   const { data, error } = await db.rpc("read_intake_session", {
     p_session_hash: hashToken(sessionToken),
+    p_token_hash: hashToken(token),
   });
   if (error) throw error;
   const me = data as RpcResult;

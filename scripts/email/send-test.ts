@@ -49,7 +49,7 @@ const SAMPLES: { [K in TemplateKey]: TemplateDataMap[K] } = {
 };
 
 const template = (values.template ?? "test") as TemplateKey;
-if (!(template in SAMPLES)) {
+if (!Object.hasOwn(SAMPLES, template)) {
   process.stderr.write(USAGE);
   process.exit(2);
 }
