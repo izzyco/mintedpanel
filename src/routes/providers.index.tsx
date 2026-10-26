@@ -42,8 +42,6 @@ import { fmtDate } from "@/lib/format";
 import type { Provider } from "@/types";
 import { InviteProviderDialog } from "@/components/providers/InviteProviderDialog";
 
-const INVITES_ENABLED = import.meta.env.VITE_ENABLE_PROVIDER_ONBOARDING === "true";
-
 export const Route = createFileRoute("/providers/")({
   component: ProvidersRoster,
 });
@@ -339,7 +337,7 @@ function ProvidersRoster() {
             >
               Export roster
             </Button>
-            {canWrite && INVITES_ENABLED ? (
+            {canWrite ? (
               <Button variant="outline" size="sm" className="h-8" onClick={() => setInviting(true)}>
                 Invite provider
               </Button>

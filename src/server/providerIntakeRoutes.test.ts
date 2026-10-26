@@ -17,7 +17,6 @@ const PROVIDER = "5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f";
 const NOW = new Date("2026-10-25T12:00:00Z");
 
 const CONFIG: IntakeConfig = {
-  enabled: true,
   appBaseUrl: "https://staging.example.test",
   fromEmail: "no-reply@mintedpanel.com",
   emailReady: true,
@@ -105,10 +104,8 @@ describe("POST /api/provider-invites", () => {
     expect(db.rpc).not.toHaveBeenCalled();
   });
 
-  it("is a 404 when the kill switch is off, and a 403 for billing", async () => {
+  it("is a 403 for billing", async () => {
     const db = fakeDb();
-    const off = makeDeps({ config: { ...CONFIG, enabled: false } }).deps;
-    expect((await handleCreateProviderInvite(INVITE, ctx(db), off)).status).toBe(404);
     expect(
       (await handleCreateProviderInvite(INVITE, ctx(db, "billing"), makeDeps().deps)).status,
     ).toBe(403);
@@ -227,13 +224,6 @@ async function call(
 }
 
 describe("/api/intake/*", () => {
-  it("is a 404 everywhere when the kill switch is off", async () => {
-    const off = makeDeps({ config: { ...CONFIG, enabled: false } }).deps;
-    const db = fakeDb();
-    expect((await call("link", db, { json: { t: "x" } }, off)).status).toBe(404);
-    expect(db.rpc).not.toHaveBeenCalled();
-  });
-
   it("refuses a POST that isn't application/json", async () => {
     const db = fakeDb();
     const { request } = intake("code", {

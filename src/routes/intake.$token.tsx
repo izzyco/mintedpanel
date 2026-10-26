@@ -3,7 +3,7 @@
 // emailed code is the key. The session that follows is an HttpOnly cookie, so
 // nothing here stores a token. One route, the step in component state.
 import { useEffect, useState } from "react";
-import { createFileRoute, notFound } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   CodeStep,
@@ -21,12 +21,7 @@ import {
   useRequestIntakeCode,
 } from "@/hooks/useIntake";
 
-const enabled = import.meta.env.VITE_ENABLE_PROVIDER_ONBOARDING === "true";
-
 export const Route = createFileRoute("/intake/$token")({
-  beforeLoad: () => {
-    if (!enabled) throw notFound();
-  },
   head: () => ({
     meta: [
       { title: "Secure intake — Minted Panel" },

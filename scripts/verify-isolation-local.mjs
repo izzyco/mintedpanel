@@ -40,7 +40,7 @@ function runGate(baseUrl) {
         SOUTHPARK_CASE_ID: FIXTURES.SOUTHPARK_CASE_ID,
         SOUTHPARK_FACILITY_ID: FIXTURES.SOUTHPARK_FACILITY_ID,
         // Provider onboarding slice 1 (35-35d) — always set here; optional in
-        // the real gate, where the kill switch keeps the routes off.
+        // the real gate.
         KANSAS_GROUP_ID: FIXTURES.KANSAS_GROUP_ID,
         SOUTHPARK_GROUP_ID: FIXTURES.SOUTHPARK_GROUP_ID,
         KANSAS_INTAKE_TOKEN: FIXTURES.KANSAS_INTAKE_TOKEN,

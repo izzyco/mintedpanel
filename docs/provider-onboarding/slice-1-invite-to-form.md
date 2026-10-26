@@ -143,7 +143,7 @@ public.provider_intake_sessions (
 - Nothing logs a body, email, code or token.
 - The intake page sets `Referrer-Policy: no-referrer`.
 
-**Kill switch.** If the server env `PROVIDER_ONBOARDING_ENABLED` isn't exactly `"true"`, every route above returns a JSON 404. It is off in production.
+**No kill switch.** Pre-launch the only users are internal (Oct 26), so the routes and the Invite button are live wherever the code runs. Without the migration or the email env they return 500.
 
 **Not in this slice: per-IP limiting.** `check_rpc_throttle` keys on `inet_client_addr()`, which is the pooler's address, not the caller's (`20260710130000:57`). The link token has 256 bits, so nobody can guess invites, and the per-invite limits bound what one leaked link can do. Per-IP limiting from Vercel's `x-forwarded-for` comes with the practice-key route (reminders), where an email can be typed without a link.
 
@@ -160,11 +160,11 @@ public.provider_intake_sessions (
 - **Reply-to:** the inviting staff user's email. It falls back to `SENDGRID_FROM_EMAIL` when `ctx.email` is null (`guard.ts:39`). For the code email, which has no inviter, it is `SENDGRID_FROM_EMAIL`.
 - **Link:** built from `APP_BASE_URL` (a new server env var) + `/intake/<token>`. The value must be a bare `https` origin (no path, query or fragment; `http://localhost` only in dev). Anything else counts as missing, so a typo is a 500 on the invite routes, not a bad link in a provider's inbox.
 
-**Delivery.** This slice delivers on staging, so `SENDGRID_SANDBOX=false` there supersedes `docs/sendgrid-email.md`'s "sandbox until launch" for staging only.
+**Delivery.** Sends deliver unless `SENDGRID_SANDBOX=true` (`docs/sendgrid-email.md`).
 
 ## 7. Frontend
 
-- **Staff.** `InviteProviderDialog` on `/providers`, mounted only while open (the modal convention) and behind `VITE_ENABLE_PROVIDER_ONBOARDING`. The chain is hooks `useCreateProviderInvite` / `useResendProviderInvite` (`src/hooks/useProviderInvites.ts`) → service `src/services/providerInvites.ts` → `authedApiFetch('/api/provider-invites…')` with the user's JWT and `x-org-id`.
+- **Staff.** `InviteProviderDialog` on `/providers`, mounted only while open (the modal convention). The chain is hooks `useCreateProviderInvite` / `useResendProviderInvite` (`src/hooks/useProviderInvites.ts`) → service `src/services/providerInvites.ts` → `authedApiFetch('/api/provider-invites…')` with the user's JWT and `x-org-id`.
   - On `delivery: "failed"`, a toast says the invite was saved and to resend in 10 minutes; on `"sandbox"`, that nothing was delivered.
   - `outcome: "already_exists"` shows the existing-provider note with a Resend button; the success toast names the address the resend went to (the record's email, not the typed one). Only active groups are offered.
 - **Provider.** The route is `src/routes/intake.$token.tsx`, added to the chromeless public list in `__root.tsx`.
@@ -180,7 +180,7 @@ public.provider_intake_sessions (
 
 **Gate assertions** 35–35d in `scripts/verify-org-isolation.mjs` (leak modes `providerinvites` and `intakesession` in `mock-api-server.mjs`, registered in `verify-isolation-local.mjs`):
 
-- **35. Positive control.** `POST /api/provider-invites` with an empty body returns 422, which proves the route is live. If it returns 404 (kill switch off), 35–35c report SKIP, so they can't pass by accident.
+- **35. Positive control.** `POST /api/provider-invites` with an empty body returns 422, which proves the route is live. If it returns 404 (code not deployed) or the 500 "Provider invites are not configured" (no email env), 35–35c report SKIP, so they can't pass by accident.
 - **35b. Cross-org group.** `POST /api/provider-invites` with another org's `groupId` (`SOUTHPARK_GROUP_ID`) returns 404 and creates nothing (`leak: true`).
 - **35c. Cross-org resend.** A resend for another org's provider returns 404 (`leak: true`).
 - **35d. Session scope.** Under `IS_LOCAL_MOCK_API` only, a session from org A's invite never returns org B data. Node's `fetch` keeps no cookie jar, so the gate forwards `getSetCookie()` by hand.
@@ -210,14 +210,11 @@ public.provider_intake_sessions (
 2. Set these in the Vercel **staging** project:
    - `SENDGRID_API_KEY`
    - `SENDGRID_FROM_EMAIL`
-   - `SENDGRID_SANDBOX=false`
    - `APP_BASE_URL`
-   - `PROVIDER_ONBOARDING_ENABLED=true`
-   - `VITE_ENABLE_PROVIDER_ONBOARDING=true`
 
    Set them per project in the Vercel UI, not in `vercel.json`, whose env block is shared by both projects.
 
-3. Production stays off: no flags, no migration.
+3. Production: no migration yet, so the Invite button there returns 500 until it is applied.
 
 ## 10. Build order and verification
 

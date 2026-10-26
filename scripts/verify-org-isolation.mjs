@@ -1791,12 +1791,17 @@ function looksLikeVercelGate(r) {
 
   // 35-35d — provider onboarding slice 1. 35 is the positive control: an
   // empty body must 422, which proves the route is live, so 35b/35c can't pass
-  // against a dead route. With the kill switch off (production today) every
-  // invite route 404s and the set reports SKIP. 35b/35c write nothing on a
+  // against a dead route. A deploy without the code (404) or without the
+  // email env (that exact 500) reports SKIP. 35b/35c write nothing on a
   // correct server: the cross-org group or provider misses before any insert.
   const inviteProbe = await apiPost("/api/provider-invites", {}, { token: kansasTok });
   if (inviteProbe.status === 404) {
-    console.log("SKIP  35/35b/35c. provider invites — routes are off (kill switch)");
+    console.log("SKIP  35/35b/35c. provider invites — route not deployed");
+  } else if (
+    inviteProbe.status === 500 &&
+    inviteProbe.body?.error === "Provider invites are not configured"
+  ) {
+    console.log("SKIP  35/35b/35c. provider invites — email env not configured on this deploy");
   } else {
     check(
       "35. Kansas POST /api/provider-invites with an empty body -> 422 (route is live)",

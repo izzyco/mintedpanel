@@ -29,7 +29,6 @@ import {
 } from "./intakeTokens";
 
 export interface IntakeConfig {
-  enabled: boolean;
   appBaseUrl: string | null;
   fromEmail: string | null;
   emailReady: boolean;
@@ -55,7 +54,6 @@ export function resolveAppBaseUrl(raw: string | undefined, dev: boolean): string
 export function resolveIntakeConfig(): IntakeConfig {
   const email = resolveEmailEnv();
   return {
-    enabled: process.env.PROVIDER_ONBOARDING_ENABLED === "true",
     appBaseUrl: resolveAppBaseUrl(process.env.APP_BASE_URL, Boolean(import.meta.env.DEV)),
     fromEmail: email.fromEmail ?? null,
     emailReady: Boolean(email.apiKey && email.fromEmail),
@@ -128,7 +126,6 @@ export async function handleCreateProviderInvite(
   ctx: AuthContext,
   deps: IntakeDeps = defaultDeps(),
 ): Promise<Response> {
-  if (!deps.config.enabled) return fail(404, "Not found");
   if (!isWriter(ctx)) return fail(403, "Only admins and specialists can invite providers");
   if (notConfigured(deps.config)) return fail(500, "Provider invites are not configured");
   const parsed = validateInviteInput(body);
@@ -182,7 +179,6 @@ export async function handleResendProviderInvite(
   ctx: AuthContext,
   deps: IntakeDeps = defaultDeps(),
 ): Promise<Response> {
-  if (!deps.config.enabled) return fail(404, "Not found");
   if (!isWriter(ctx)) return fail(403, "Only admins and specialists can resend invites");
   if (notConfigured(deps.config)) return fail(500, "Provider invites are not configured");
   if (!UUID.test(providerId)) return fail(404, "Invite not found");
@@ -243,7 +239,6 @@ export async function handleIntakeRequest(
   deps: IntakeDeps = defaultDeps(),
   injectedDb?: SupabaseClient<Database>,
 ): Promise<Response> {
-  if (!deps.config.enabled) return fail(404, "Not found");
   const match = new URL(request.url).pathname.match(INTAKE_ROUTE);
   if (!match) return fail(404, "Not found");
   const db = injectedDb ?? getServiceClient();

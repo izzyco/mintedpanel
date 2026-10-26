@@ -212,8 +212,8 @@ User-scoped (`authenticateUser()`, no org resolution):
 | `GET/POST /api/shared-field-maps`, `GET /api/shared-portals`, `POST /api/shared-portals/prove`, `POST /api/shared-test-fills` | the shared training tier belongs to **no org**; global rows only, so there is nothing to widen to |
 
 **Provider onboarding** (`docs/provider-onboarding/slice-1-invite-to-form.md`).
-Every route is a JSON 404 unless `PROVIDER_ONBOARDING_ENABLED=true` (off in
-production). Each write is one `SECURITY DEFINER` RPC granted to
+There is no on/off switch: the routes and the Invite button are live wherever
+the code runs, and need the migration plus the email env. Each write is one `SECURITY DEFINER` RPC granted to
 `service_role` only, which writes its own audit rows.
 
 - `POST /api/provider-invites`, `POST /api/provider-invites/:providerId/resend`
