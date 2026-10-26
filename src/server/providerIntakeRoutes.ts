@@ -91,7 +91,7 @@ function noStore(response: Response): Response {
 }
 
 // What staff are told about the email. "sandbox" means SendGrid accepted it
-// in sandbox mode (SENDGRID_SANDBOX is not exactly "false"), so nothing was
+// in sandbox mode (SENDGRID_SANDBOX is exactly "true"), so nothing was
 // delivered. A failure is never an error, because the invite is already saved.
 export type Delivery = "sent" | "sandbox" | "failed";
 
