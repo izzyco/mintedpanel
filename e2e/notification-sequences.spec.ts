@@ -98,9 +98,9 @@ function fixtures(role: "admin" | "specialist"): Rows {
       },
     ],
     notification_sequence_default_steps: [
-      ["intake_reminder", 1, 2, "intake_reminder_first"],
-      ["intake_reminder", 2, 4, "intake_reminder_second"],
-      ["intake_reminder", 3, 7, "intake_reminder_final"],
+      ["intake_reminder", 1, 1, "intake_reminder_first"],
+      ["intake_reminder", 2, 2, "intake_reminder_second"],
+      ["intake_reminder", 3, 3, "intake_reminder_final"],
       ["followup_digest", 1, 0, "followup_digest_daily"],
     ].map(([purpose, position, offset, key]) => ({
       id: `default-${purpose}-${position}`,
@@ -160,6 +160,8 @@ function savedIntake(rows: Rows, over: Record<string, unknown> = {}) {
       ...over,
     },
   ];
+  // The org's own steps on days 2, 4 and 7: its schedule, not Minted's
+  // default (days 1, 2 and 3).
   rows.notification_sequence_steps = [2, 4, 7].map((offset, i) => ({
     id: `step-${i + 1}`,
     sequence_id: "seq-intake",
@@ -335,7 +337,7 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
   await expect(intake.getByText("Not set up")).toBeVisible();
   await expect(
     intake.getByText(
-      /Set up starts you with Minted's default: 3 emails, on day 2, day 4 and day 7 after the invite/,
+      /Set up starts you with Minted's default: 3 emails, on day 1, day 2 and day 3 after the invite/,
     ),
   ).toBeVisible();
 
@@ -343,7 +345,7 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
   // Minted's default, read-only until the admin customizes it.
   await expect(intake.getByRole("heading", { name: "Minted's default steps" })).toBeVisible();
   await expect(
-    intake.getByText("Step 3 · day 7 after the invite · Email · Final reminder"),
+    intake.getByText("Step 3 · day 3 after the invite · Email · Final reminder"),
   ).toBeVisible();
   await expect(intake.getByLabel("Target days from invite to ready")).toHaveValue("");
   await expect(intake.getByLabel("Target days from invite to ready")).toHaveAttribute(
@@ -357,12 +359,12 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
   ).toBeVisible();
 
   await intake.getByRole("button", { name: "Customize steps" }).click();
-  await expect(intake.getByLabel("Step 1 days after invite")).toHaveValue("2");
-  await expect(intake.getByLabel("Step 3 days after invite")).toHaveValue("7");
+  await expect(intake.getByLabel("Step 1 days after invite")).toHaveValue("1");
+  await expect(intake.getByLabel("Step 3 days after invite")).toHaveValue("3");
   await expect(intake.getByText("No one is cc'd on this step.")).toHaveCount(3);
 
   // Edit an offset.
-  await intake.getByLabel("Step 2 days after invite").fill("5");
+  await intake.getByLabel("Step 3 days after invite").fill("5");
 
   // Fill step 1's empty cc list: a member, then a role, then put the role first.
   await intake.getByRole("combobox", { name: "Add someone to cc on step 1" }).click();
@@ -403,13 +405,13 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
       expected_revision: null,
       steps: [
         {
-          offset_days: 2,
+          offset_days: 1,
           channel: "email",
           template_key: "intake_reminder_final",
           cc_recipients: [],
         },
         {
-          offset_days: 5,
+          offset_days: 2,
           channel: "email",
           template_key: "intake_reminder_first",
           cc_recipients: [
@@ -418,7 +420,7 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
           ],
         },
         {
-          offset_days: 7,
+          offset_days: 5,
           channel: "email",
           template_key: "intake_reminder_second",
           cc_recipients: [],

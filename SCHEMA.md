@@ -724,7 +724,7 @@ effective sequence is `resolveNotificationSequence()` in
   steps, `template_key` prefixed by `purpose` (row CHECK). No `cc_recipients`:
   a default names no one. Deferred constraint triggers on both default
   tables keep each default complete: at least one step, exactly one for the
-  digest, offsets strictly increasing. Seeded: intake 2/4/7
+  digest, offsets strictly increasing. Seeded: intake 1/2/3
   (`intake_reminder_first|second|final`), digest one step at 0
   (`followup_digest_daily`), all email.
 - **`notification_sequences`**: one org row per `(org_id, purpose)`. No row

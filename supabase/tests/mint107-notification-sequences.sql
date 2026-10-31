@@ -387,7 +387,8 @@ SELECT pg_temp.m107_mark('defaults_seeded_with_compression_off_and_8am_central',
               AND stop_conditions IS NULL AND target_days_to_ready IS NULL
               AND compress_toward_start_date IS NULL
          FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest')
-  AND (SELECT array_agg(offset_days ORDER BY position) = '{2,4,7}'
+  -- Days 1, 2 and 3 after the invite (Sowmya, Oct 31; was 2, 4 and 7).
+  AND (SELECT array_agg(offset_days ORDER BY position) = '{1,2,3}'
               AND array_agg(template_key ORDER BY position)
                   = '{intake_reminder_first,intake_reminder_second,intake_reminder_final}'
               AND bool_and(channel = 'email')
@@ -1124,10 +1125,11 @@ SELECT pg_temp.m107_mark('default_steps_keep_the_step_rules',
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)
     VALUES ('followup_digest', 2, 1, 'email', 'followup_digest_daily')$$)
+  -- Day 3 again after the default's last step on day 3: not increasing.
   AND pg_temp.m107_expect_message('notification_step_offsets_not_increasing', $$
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)
-    VALUES ('intake_reminder', 4, 7, 'email', 'intake_reminder_final')$$)
+    VALUES ('intake_reminder', 4, 3, 'email', 'intake_reminder_final')$$)
   AND pg_temp.m107_expect_state('23514', $$
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)

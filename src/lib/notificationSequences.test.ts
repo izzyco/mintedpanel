@@ -66,9 +66,9 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   createdAt: "",
   updatedAt: "",
   steps: [
-    ["intake_reminder_final", 7, 3],
-    ["intake_reminder_first", 2, 1],
-    ["intake_reminder_second", 4, 2],
+    ["intake_reminder_final", 3, 3],
+    ["intake_reminder_first", 1, 1],
+    ["intake_reminder_second", 2, 2],
   ].map(([templateKey, offsetDays, position]) => ({
     id: `d${position}`,
     purpose: "intake_reminder" as const,
@@ -198,9 +198,9 @@ describe("starter and Minted's default steps", () => {
   it("customizes from Minted's default steps in position order, cc'ing no one", () => {
     const steps = stepsFromDefault(INTAKE_DEFAULT);
     expect(steps.map((s) => [s.offsetDays, s.templateKey])).toEqual([
-      [2, "intake_reminder_first"],
-      [4, "intake_reminder_second"],
-      [7, "intake_reminder_final"],
+      [1, "intake_reminder_first"],
+      [2, "intake_reminder_second"],
+      [3, "intake_reminder_final"],
     ]);
     expect(steps.every((s) => s.channel === "email" && s.ccRecipients.length === 0)).toBe(true);
     expect(validateDraft("intake_reminder", intake())).toEqual([]);
@@ -217,9 +217,9 @@ describe("starter and Minted's default steps", () => {
 
 describe("validateDraft: offsets", () => {
   it("requires offsets to strictly increase with position", () => {
-    const draft = updateStep(intake(), 1, { offsetDays: 2 });
+    const draft = updateStep(intake(), 1, { offsetDays: 1 });
     expect(messages(validateDraft("intake_reminder", draft))).toEqual([
-      "Step 2 must go out after step 1 (later than day 2).",
+      "Step 2 must go out after step 1 (later than day 1).",
     ]);
   });
 
@@ -434,7 +434,7 @@ describe("reorder", () => {
       ccRecipients: [{ kind: "role", role: "admin" }],
     });
     const moved = own(moveStep(draft, 2, -1));
-    expect(moved.map((s) => s.offsetDays)).toEqual([2, 4, 7]);
+    expect(moved.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
     expect(moved.map((s) => s.templateKey)).toEqual([
       "intake_reminder_first",
       "intake_reminder_final",
@@ -479,8 +479,9 @@ describe("reorder", () => {
   it("adds a step three days after the last with the next unused message, up to the cap", () => {
     const removed = removeStep(intake(), 2);
     const added = own(addStep("intake_reminder", removed));
+    // The last kept step is on day 2.
     expect(added.at(-1)).toEqual({
-      offsetDays: 7,
+      offsetDays: 5,
       channel: "email",
       templateKey: "intake_reminder_final",
       ccRecipients: [],
@@ -523,19 +524,19 @@ describe("payload building", () => {
       expected_revision: 3,
       steps: [
         {
-          offset_days: 2,
+          offset_days: 1,
           channel: "email",
           template_key: "intake_reminder_first",
           cc_recipients: [],
         },
         {
-          offset_days: 4,
+          offset_days: 2,
           channel: "email",
           template_key: "intake_reminder_second",
           cc_recipients: [],
         },
         {
-          offset_days: 7,
+          offset_days: 3,
           channel: "email",
           template_key: "intake_reminder_final",
           cc_recipients: [
@@ -690,21 +691,21 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
       steps: [
         {
           position: 1,
-          offsetDays: 2,
+          offsetDays: 1,
           channel: "email",
           templateKey: "intake_reminder_first",
           ccRecipients: [],
         },
         {
           position: 2,
-          offsetDays: 4,
+          offsetDays: 2,
           channel: "email",
           templateKey: "intake_reminder_second",
           ccRecipients: [],
         },
         {
           position: 3,
-          offsetDays: 7,
+          offsetDays: 3,
           channel: "email",
           templateKey: "intake_reminder_final",
           ccRecipients: [],
@@ -751,7 +752,7 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
     expect(effective.inherited.targetDaysToReady).toBe(false);
     expect(effective.stopConditions).toEqual([...ALL_STOPS]);
     expect(effective.inherited.stopConditions).toBe(true);
-    expect(effective.steps.map((s) => s.offsetDays)).toEqual([2, 4, 7]);
+    expect(effective.steps.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
     expect(effective.inherited.steps).toBe(true);
   });
 
@@ -912,7 +913,7 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
       compressTowardStartDate: effective.compressTowardStartDate,
     });
     expect(result.compressed).toBe(false);
-    expect(result.sends.map((s) => s.offsetDays)).toEqual([2, 4, 7]);
+    expect(result.sends.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
   });
 
   it("feeds the bounce rule: Minted's default steps escalate to no one", () => {
@@ -1026,6 +1027,8 @@ describe("bounce rule (decision 4)", () => {
 });
 
 describe("scheduleSequenceSends (start-date compression)", () => {
+  // Spread-out offsets exercise the scaling; an org could save these. Minted's
+  // own default (days 1, 2 and 3) is pinned in the test after these.
   const base = {
     offsets: [2, 4, 7],
     inviteDate: "2026-11-02",
@@ -1122,6 +1125,7 @@ describe("scheduleSequenceSends (start-date compression)", () => {
 describe("copy helpers", () => {
   it("describes offsets for the card's summary line", () => {
     expect(describeOffsets([2, 4, 7])).toBe("day 2, day 4 and day 7");
+    expect(describeOffsets([1, 2, 3])).toBe("day 1, day 2 and day 3");
     expect(describeOffsets([0])).toBe("day 0");
     expect(describeOffsets([])).toBe("");
   });
@@ -1640,5 +1644,38 @@ describe("draftsEqual", () => {
     const legacy = { ...a } as Partial<SequenceDraft>;
     delete legacy.bounceEscalationStep;
     expect(draftsEqual(a, legacy as SequenceDraft)).toBe(true);
+  });
+});
+
+describe("Minted's intake default: days 1, 2 and 3 (Sowmya, Oct 31)", () => {
+  const offsets = stepsFromDefault(INTAKE_DEFAULT).map((s) => s.offsetDays as number);
+
+  it("sends on days 1, 2 and 3 after the invite, by email, with compression off", () => {
+    expect(offsets).toEqual([1, 2, 3]);
+    expect(INTAKE_DEFAULT.steps.every((s) => s.channel === "email")).toBe(true);
+    const result = scheduleSequenceSends({
+      offsets,
+      inviteDate: "2026-11-02",
+      startDate: "2026-11-04",
+      targetDaysToReady: 14,
+      compressTowardStartDate: false,
+    });
+    expect(result.sends.map((s) => s.sendOn)).toEqual(["2026-11-03", "2026-11-04", "2026-11-05"]);
+    expect(result.readyBy).toBe("2026-11-16");
+  });
+
+  it("would keep its days under compression unless the start date is within three days", () => {
+    const at = (startDate: string) =>
+      scheduleSequenceSends({
+        offsets,
+        inviteDate: "2026-11-02",
+        startDate,
+        targetDaysToReady: 14,
+        compressTowardStartDate: true,
+      });
+    expect(at("2026-11-10").sends.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
+    const near = at("2026-11-04");
+    expect(near.sends.map((s) => s.offsetDays)).toEqual([1]);
+    expect(near.skipped.map((s) => s.position)).toEqual([2, 3]);
   });
 });

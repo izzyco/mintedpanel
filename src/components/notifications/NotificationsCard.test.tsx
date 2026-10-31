@@ -30,7 +30,7 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   sendTimeZone: null,
   createdAt: "",
   updatedAt: "",
-  steps: [2, 4, 7].map((offsetDays, i) => ({
+  steps: [1, 2, 3].map((offsetDays, i) => ({
     id: `d${i + 1}`,
     purpose: "intake_reminder" as const,
     position: i + 1,
@@ -109,6 +109,8 @@ import { NotificationsCard } from "./NotificationsCard";
 const ORG = "66666666-6666-4666-8666-666666666666";
 const JANE = "11111111-1111-4111-8111-111111111111";
 
+/** An org's saved intake row with steps of its own on days 2, 4 and 7: the
+ *  org's schedule, not Minted's default (days 1, 2 and 3). */
 function intakeConfig(over: Partial<NotificationSequenceConfig> = {}): NotificationSequenceConfig {
   return {
     id: "seq-intake",
@@ -238,7 +240,7 @@ describe("NotificationsCard: admin", () => {
     expect(html).toContain("Daily follow-up digest");
     expect(html.match(/>Set up</g)).toHaveLength(2);
     expect(html).toContain(
-      "Set up starts you with Minted&#x27;s default: 3 emails, on day 2, day 4 and day 7 after the invite, cc&#x27;ing no one, switched off until you turn it on. You can change any of it before you save.",
+      "Set up starts you with Minted&#x27;s default: 3 emails, on day 1, day 2 and day 3 after the invite, cc&#x27;ing no one, switched off until you turn it on. You can change any of it before you save.",
     );
     expect(html).toContain(
       "Set up starts you with Minted&#x27;s default: one email a day to each coordinator, switched off until you turn it on.",
@@ -352,7 +354,7 @@ describe("NotificationsCard: other members", () => {
     };
     const html = renderToStaticMarkup(<NotificationsCard />);
     expect(html).toContain("Minted&#x27;s default steps");
-    expect(html).toContain("Step 3 · day 7 after the invite · Email · Final reminder");
+    expect(html).toContain("Step 3 · day 3 after the invite · Email · Final reminder");
     expect(html).toContain("14 days from invite to ready (Minted&#x27;s default)");
     expect(html).toContain(
       "the provider submits the intake form; onboarding is paused; the provider withdraws; the provider replies (Minted&#x27;s default)",
@@ -400,12 +402,12 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
   it("routes an offset edit through onChange, then saves the edited draft", () => {
     const props = editorProps();
     const tree = NotificationSequenceEditor(props);
-    const offset = byLabel(tree, "Step 2 days after invite");
+    const offset = byLabel(tree, "Step 3 days after invite");
     (offset.props.onChange as (e: { target: { value: string } }) => void)({
       target: { value: "5" },
     });
     const edited = props.onChange.mock.calls[0][0] as SequenceDraft;
-    expect(edited.steps?.map((s) => s.offsetDays)).toEqual([2, 5, 7]);
+    expect(edited.steps?.map((s) => s.offsetDays)).toEqual([1, 2, 5]);
 
     // Re-render with the edit, as the section does: Save is now enabled.
     const saveProps = editorProps({ draft: edited, dirty: true });
@@ -421,7 +423,7 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     draft.steps = draft.steps.map((s, i) => (i === 1 ? { ...s, offsetDays: 1 } : s));
     const props = editorProps({ draft, dirty: true });
     const html = renderToStaticMarkup(<NotificationSequenceEditor {...props} />);
-    expect(html).toContain("Step 2 must go out after step 1 (later than day 2).");
+    expect(html).toContain("Step 2 must go out after step 1 (later than day 1).");
     expect(html).toContain("Fix the messages above to save.");
     expect(byText(NotificationSequenceEditor(props), "Save").props.disabled).toBe(true);
   });
@@ -432,7 +434,7 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     expect(byLabel(tree, "Move step 1 up").props.disabled).toBe(true);
     (byLabel(tree, "Move step 3 up").props.onClick as () => void)();
     const moved = props.onChange.mock.calls[0][0] as SequenceDraft;
-    expect(moved.steps?.map((s) => s.offsetDays)).toEqual([2, 4, 7]);
+    expect(moved.steps?.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
     expect(moved.steps?.[1].templateKey).toBe("intake_reminder_final");
   });
 
@@ -497,7 +499,7 @@ describe("NotificationSequenceEditor: Minted's default and going back to it (ans
       <NotificationSequenceEditor {...editorProps({ draft: starterDraft(), isNew: true })} />,
     );
     expect(html).toContain("Minted&#x27;s default steps");
-    expect(html).toContain("Step 2 · day 4 after the invite · Email · Second reminder");
+    expect(html).toContain("Step 2 · day 2 after the invite · Email · Second reminder");
     expect(html).toContain(
       "Minted&#x27;s default steps cc no one, so a bounce on step 1 reaches no one.",
     );
@@ -516,9 +518,9 @@ describe("NotificationSequenceEditor: Minted's default and going back to it (ans
     (byText(NotificationSequenceEditor(props), "Customize steps").props.onClick as () => void)();
     const customized = props.onChange.mock.calls[0][0] as SequenceDraft;
     expect(customized.steps?.map((s) => [s.offsetDays, s.ccRecipients])).toEqual([
+      [1, []],
       [2, []],
-      [4, []],
-      [7, []],
+      [3, []],
     ]);
 
     const ownProps = editorProps({ draft: customized, dirty: true });

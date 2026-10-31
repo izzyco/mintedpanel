@@ -1066,9 +1066,9 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM public.notification_sequence_defaults WHERE purpose = 'intake_reminder'
   ) THEN
-    -- Three emails on days 2, 4 and 7, stopping on any of the four events,
-    -- a 14-day target, compression off (R1), and a bounce on step 1
-    -- escalating to step 1's cc list (Oct 30).
+    -- Three emails on days 1, 2 and 3 after the invite (Oct 31), stopping on
+    -- any of the four events, a 14-day target, compression off (R1), and a
+    -- bounce on step 1 escalating to step 1's cc list (Oct 30).
     INSERT INTO public.notification_sequence_defaults
       (purpose, stop_conditions, target_days_to_ready, compress_toward_start_date,
        bounce_escalation_step)
@@ -1078,9 +1078,9 @@ BEGIN
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)
     VALUES
-      ('intake_reminder', 1, 2, 'email', 'intake_reminder_first'),
-      ('intake_reminder', 2, 4, 'email', 'intake_reminder_second'),
-      ('intake_reminder', 3, 7, 'email', 'intake_reminder_final');
+      ('intake_reminder', 1, 1, 'email', 'intake_reminder_first'),
+      ('intake_reminder', 2, 2, 'email', 'intake_reminder_second'),
+      ('intake_reminder', 3, 3, 'email', 'intake_reminder_final');
   END IF;
 
   IF NOT EXISTS (

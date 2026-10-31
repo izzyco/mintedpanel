@@ -66,9 +66,9 @@ const defaultStep = (purpose: string, position: number, offset: number, key: str
   updated_at: "2026-10-31T00:00:00Z",
 });
 const DEFAULT_STEP_ROWS = [
-  defaultStep("intake_reminder", 3, 7, "intake_reminder_final"),
-  defaultStep("intake_reminder", 1, 2, "intake_reminder_first"),
-  defaultStep("intake_reminder", 2, 4, "intake_reminder_second"),
+  defaultStep("intake_reminder", 3, 3, "intake_reminder_final"),
+  defaultStep("intake_reminder", 1, 1, "intake_reminder_first"),
+  defaultStep("intake_reminder", 2, 2, "intake_reminder_second"),
   defaultStep("followup_digest", 1, 0, "followup_digest_daily"),
 ];
 const WITH_DEFAULTS = {
@@ -76,10 +76,10 @@ const WITH_DEFAULTS = {
   notification_sequence_default_steps: DEFAULT_STEP_ROWS,
 };
 
-/** An intake draft with its own steps, from the seeded default. */
+/** An intake draft with its own steps, from the seeded default (days 1, 2 and 3). */
 const OWN_INTAKE: SequenceDraft = {
   ...starterDraft(),
-  steps: [2, 4, 7].map((offsetDays, i) => ({
+  steps: [1, 2, 3].map((offsetDays, i) => ({
     offsetDays,
     channel: "email",
     templateKey: ["intake_reminder_first", "intake_reminder_second", "intake_reminder_final"][i],
@@ -200,9 +200,9 @@ describe("notification sequences service", () => {
       sendTimeZone: null,
     });
     expect(listed.defaults.intake_reminder.steps.map((s) => [s.position, s.offsetDays])).toEqual([
-      [1, 2],
-      [2, 4],
-      [3, 7],
+      [1, 1],
+      [2, 2],
+      [3, 3],
     ]);
     expect(listed.defaults.followup_digest).toMatchObject({
       sendHour: 8,

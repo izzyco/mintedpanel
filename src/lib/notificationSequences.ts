@@ -1400,7 +1400,7 @@ export function scheduleSequenceSends(input: ScheduleInput): ScheduleResult {
   return { compressed: true, readyBy: fromUtcDay(invite + readyAfterDays), sends, skipped };
 }
 
-/** "day 2, day 4 and day 7" for the card's one-line schedule summary. */
+/** "day 1, day 2 and day 3" for the card's one-line schedule summary. */
 export function describeOffsets(offsets: readonly number[]): string {
   const parts = offsets.map((offset) => `day ${offset}`);
   if (parts.length <= 1) return parts.join("");
