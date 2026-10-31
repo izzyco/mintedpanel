@@ -268,13 +268,15 @@ SELECT pg_temp.m107_mark('authenticated_table_grants',
   AND NOT has_table_privilege('authenticated', 'public.sms_consents', 'INSERT')
   AND NOT has_table_privilege('authenticated', 'public.sms_consents', 'UPDATE')
   AND NOT has_table_privilege('service_role', 'public.sms_consents', 'DELETE'));
--- Answer 4 and 5: compression, the send hour and the time zone are Minted's.
+-- Answer 4 and 5, and S7: compression, the send hour, the time zone and the
+-- digest cc setting are Minted's.
 SELECT pg_temp.m107_mark('platform_columns_have_no_authenticated_write_grant',
   (SELECT bool_and(
             NOT has_column_privilege('authenticated', 'public.notification_sequences', c, 'INSERT')
             AND NOT has_column_privilege('authenticated', 'public.notification_sequences', c, 'UPDATE')
             AND has_column_privilege('service_role', 'public.notification_sequences', c, 'UPDATE'))
-     FROM unnest(ARRAY['compress_toward_start_date', 'send_hour', 'send_time_zone']) AS c)
+     FROM unnest(ARRAY['compress_toward_start_date', 'send_hour', 'send_time_zone',
+                       'digest_cc_allowed']) AS c)
   -- Nor the columns the stamp trigger owns.
   AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
     'updated_by', 'UPDATE')
@@ -392,11 +394,12 @@ SELECT pg_temp.m107_mark('defaults_have_no_org_no_enabled_no_cc',
        AND column_name IN ('org_id', 'enabled', 'cc_recipients')));
 -- An org row's settings start unset (inherit); enabled starts false.
 SELECT pg_temp.m107_mark('org_settings_default_to_inherit',
-  (SELECT count(*) = 5 AND bool_and(is_nullable = 'YES' AND column_default IS NULL)
+  (SELECT count(*) = 7 AND bool_and(is_nullable = 'YES' AND column_default IS NULL)
      FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'notification_sequences'
-      AND column_name IN ('stop_conditions', 'target_days_to_ready',
-                          'compress_toward_start_date', 'send_hour', 'send_time_zone'))
+      AND column_name IN ('stop_conditions', 'target_days_to_ready', 'bounce_escalation_step',
+                          'compress_toward_start_date', 'send_hour', 'send_time_zone',
+                          'digest_cc_allowed'))
   AND (SELECT is_nullable = 'NO' AND column_default = 'false'
          FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'notification_sequences'
@@ -430,7 +433,8 @@ SELECT pg_temp.m107_mark('defaults_seed_the_decided_policy_settings',
          FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest'));
 -- The bounce step is the org's own (like its cc lists): column grants for
 -- authenticated, nullable, no default (NULL inherits). digest_cc_allowed is
--- Minted's: only on the defaults, which authenticated cannot write.
+-- Minted's on both layers (S7): the default and the org row's override
+-- exist, and authenticated can write neither; service_role can.
 SELECT pg_temp.m107_mark('bounce_step_is_org_owned_and_digest_cc_is_minted_only',
   has_column_privilege('authenticated', 'public.notification_sequences',
     'bounce_escalation_step', 'INSERT')
@@ -440,10 +444,16 @@ SELECT pg_temp.m107_mark('bounce_step_is_org_owned_and_digest_cc_is_minted_only'
          FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'notification_sequences'
           AND column_name = 'bounce_escalation_step')
-  AND NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-     WHERE table_schema = 'public' AND table_name = 'notification_sequences'
-       AND column_name = 'digest_cc_allowed')
+  AND (SELECT count(*) = 2 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name IN ('notification_sequences', 'notification_sequence_defaults')
+          AND column_name = 'digest_cc_allowed')
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
+    'digest_cc_allowed', 'INSERT')
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
+    'digest_cc_allowed', 'UPDATE')
+  AND has_column_privilege('service_role', 'public.notification_sequences',
+    'digest_cc_allowed', 'UPDATE')
   AND NOT has_column_privilege('authenticated', 'public.notification_sequence_defaults',
     'digest_cc_allowed', 'UPDATE')
   AND NOT has_column_privilege('authenticated', 'public.notification_sequence_defaults',
@@ -561,6 +571,7 @@ SELECT pg_temp.m107_mark('digest_saves_one_step_with_no_intake_settings',
   (SELECT enabled AND target_days_to_ready IS NULL AND stop_conditions IS NULL
       AND compress_toward_start_date IS NULL
       AND send_hour IS NULL AND send_time_zone IS NULL
+      AND bounce_escalation_step IS NULL AND digest_cc_allowed IS NULL
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
   AND (SELECT count(*) = 1 AND bool_and(cc_recipients = '[]'::jsonb)
@@ -634,6 +645,7 @@ SELECT pg_temp.m107_mark('failed_saves_left_the_saved_rows_alone',
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder')
   AND (SELECT revision = 1 AND send_hour IS NULL AND send_time_zone IS NULL
+              AND digest_cc_allowed IS NULL
          FROM public.notification_sequences
         WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
   AND (SELECT array_agg(offset_days ORDER BY position) = '{3,9}'
