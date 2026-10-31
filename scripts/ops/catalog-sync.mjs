@@ -143,6 +143,24 @@ export function isBindablePayer(payer) {
 
 /** The migrations whose function bodies templateRefusal restates. A test
  * fails when a later migration redefines either function. */
+/** Everything on public.sop_templates that can refuse an insert, as the repo's
+ * migrations leave it: its triggers and its foreign keys. stagingRefusal
+ * covers each one (the seed-version trigger only adds a row; the update guard
+ * never fires on an insert). A test rebuilds this from supabase/migrations
+ * and fails when it changes. */
+export const SOP_TEMPLATE_INSERT_SURFACE = Object.freeze({
+  triggers: Object.freeze([
+    "sop_templates_guard_typed_insert",
+    "sop_templates_guard_typed_update",
+    "sop_templates_seed_version",
+  ]),
+  foreignKeys: Object.freeze({
+    group_id: "provider_groups",
+    org_id: "organizations",
+    payer_id: "payers",
+  }),
+});
+
 export const TEMPLATE_GUARD_MIGRATIONS = Object.freeze({
   guard_typed_sop_template: "20261003120000_mint44_typed_sops.sql",
   validate_sop_template_portal_bindings: "20261006164500_mint44_org_portal_binding_precedence.sql",
@@ -183,7 +201,14 @@ export function templateRefusal(template, { portals, payersById }) {
   const payerId = template.payer_id ?? null;
   for (const task of tasks) {
     const isObject = task !== null && typeof task === "object" && !Array.isArray(task);
-    if (isObject && "steps" in task && !Array.isArray(task.steps))
+    // jsonb `task ? 'steps'`: a key of an object, a string element of an
+    // array, or the string itself. Only an object can then carry an array.
+    const hasSteps = isObject
+      ? Object.hasOwn(task, "steps")
+      : Array.isArray(task)
+        ? task.includes("steps")
+        : task === "steps";
+    if (hasSteps && !(isObject && Array.isArray(task.steps)))
       return refuse("sop_task_steps_invalid", "sop_task_steps_invalid");
     const steps = isObject && Array.isArray(task.steps) ? task.steps : [];
     for (const step of steps) {
@@ -242,17 +267,46 @@ export function templateRefusal(template, { portals, payersById }) {
 }
 
 /**
- * The templates staging would refuse, by the guards above or because their
- * organization is not on staging, and the rest.
+ * Why staging would refuse to insert a template, or null: the insert guards
+ * above, then the three foreign keys in SOP_TEMPLATE_INSERT_SURFACE (an org,
+ * a group or a payer that is not on staging). Groups are org-owned rows the
+ * sync never copies, so a production group is often missing on staging.
+ *
+ * @param targetOrgIds    organizations on staging
+ * @param targetGroupIds  provider_groups on staging
+ * @param payersById      staging's payers plus the rows this run adds
  */
-export function splitTemplatesByGuard(templates, { portals, payersById, targetOrgIds }) {
+export function stagingRefusal(
+  template,
+  { portals, payersById, targetOrgIds, targetGroupIds = new Set() },
+) {
+  const fk = (code, column, table, value) => ({
+    code,
+    key: null,
+    message: `${column.replace(/_id$/, "")} ${value} is not on staging (sop_templates_${column}_fkey -> ${table})`,
+  });
+  const keyRefusal =
+    template.org_id != null && !targetOrgIds.has(template.org_id)
+      ? fk("org_not_on_target", "org_id", "organizations", template.org_id)
+      : template.group_id != null && !targetGroupIds.has(template.group_id)
+        ? fk("group_not_on_target", "group_id", "provider_groups", template.group_id)
+        : template.payer_id != null && !payersById.has(template.payer_id)
+          ? fk("payer_not_on_target", "payer_id", "payers", template.payer_id)
+          : null;
+  // The BEFORE INSERT guards fire before the foreign keys are checked, so
+  // their refusal is the one staging reports. A missing org, group or payer
+  // is added to the message, since fixing only the first would not be enough.
+  const guard = templateRefusal(template, { portals, payersById });
+  if (guard && keyRefusal)
+    return { ...guard, message: `${guard.message}; also ${keyRefusal.message}` };
+  return guard ?? keyRefusal;
+}
+
+export function splitTemplatesByGuard(templates, context) {
   const ok = [];
   const refused = [];
   for (const t of templates) {
-    const refusal =
-      t.org_id != null && !targetOrgIds.has(t.org_id)
-        ? { code: "org_not_on_target", key: null, message: `org ${t.org_id} is not on staging` }
-        : templateRefusal(t, { portals, payersById });
+    const refusal = stagingRefusal(t, context);
     if (refusal) refused.push({ row: t, refusal });
     else ok.push(t);
   }
@@ -272,7 +326,7 @@ export function splitTemplatesByGuard(templates, { portals, payersById, targetOr
  */
 export function planCreatedPortals(
   entries,
-  { templates, targetPortals, targetOrgIds, payersById },
+  { templates, targetPortals, targetOrgIds, targetGroupIds = new Set(), payersById },
 ) {
   const create = [];
   const skipped = [];
@@ -341,9 +395,12 @@ export function planCreatedPortals(
   for (let changed = true; changed;) {
     changed = false;
     for (const candidate of [...create]) {
-      const refusal = templateRefusal(candidate.template, {
+      // The same check the templates themselves get (splitTemplatesByGuard).
+      const refusal = stagingRefusal(candidate.template, {
         portals: [...targetPortals, ...create.map((c) => c.row)],
         payersById,
+        targetOrgIds,
+        targetGroupIds,
       });
       if (!refusal) continue;
       create.splice(create.indexOf(candidate), 1);
@@ -351,8 +408,8 @@ export function planCreatedPortals(
         id: candidate.row.portal_key,
         label: candidate.entry.name,
         reason: `template ${candidate.template.id} would still be refused: ${
-          refusal.key ? `key "${refusal.key}"` : refusal.code
-        } (${refusal.code}); nothing created`,
+          refusal.key ? `key "${refusal.key}" (${refusal.code})` : refusal.message
+        }; nothing created`,
       });
       changed = true;
     }
@@ -381,6 +438,42 @@ export function formatReport(report, { apply }) {
     for (const reason of r.reasons) lines.push(`  - ${reason}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * The field maps to copy for the portals this run adds. A map goes with the
+ * portal of its own org and key; an org's override of a NEW global portal
+ * (same key, org_id set) goes too when that org is on staging and has no
+ * portal of its own with that key there (which keeps its own maps). Every
+ * other override of a new global portal is reported with the reason. Maps of
+ * portals staging already had are not considered.
+ */
+export function planFieldMaps(maps, { addedPortals, targetPortals, targetOrgIds }) {
+  const scope = (row) => `${row.org_id ?? ""}|${row.portal_key}`;
+  const added = new Set(addedPortals.map(scope));
+  const newGlobalKeys = new Set(
+    addedPortals.filter((p) => p.org_id == null).map((p) => p.portal_key),
+  );
+  const stagingScopes = new Set(targetPortals.map(scope));
+  const ok = [];
+  const skipped = [];
+  for (const m of maps) {
+    if (added.has(scope(m))) ok.push(m);
+    else if (m.org_id != null && newGlobalKeys.has(m.portal_key)) {
+      if (!targetOrgIds.has(m.org_id))
+        skipped.push({
+          row: m,
+          reason: `org ${m.org_id} is not on staging, so its override of new global portal ${m.portal_key} is not copied`,
+        });
+      else if (stagingScopes.has(scope(m)))
+        skipped.push({
+          row: m,
+          reason: `org ${m.org_id} already has its own ${m.portal_key} portal on staging, which keeps its own maps`,
+        });
+      else ok.push(m);
+    }
+  }
+  return { ok, skipped };
 }
 
 /**

@@ -5,6 +5,7 @@ import { SYNC_CREATED_PORTALS } from "./catalog-sync-created-portals.mjs";
 import {
   CASE_TYPE_PRECONDITION,
   PROD_REF,
+  SOP_TEMPLATE_INSERT_SURFACE,
   STAGING_REF,
   TEMPLATE_GUARD_MIGRATIONS,
   assertClientDirection,
@@ -18,11 +19,13 @@ import {
   parentsFirst,
   planAdds,
   planCreatedPortals,
+  planFieldMaps,
   projectRef,
   splitByOrg,
   splitForms,
   splitTemplatesByCaseType,
   splitTemplatesByGuard,
+  stagingRefusal,
   stripUserColumns,
   templatePortalKeys,
   templateRefusal,
@@ -469,4 +472,144 @@ test("the client direction check reads each client's own project URL", () => {
   assert.throws(() => assertClientDirection(client(url(STAGING_REF)), client(url(PROD_REF))));
   assert.throws(() => clientUrl({}), /cannot tell which project/);
   assert.throws(() => clientUrl(null), /cannot tell which project/);
+});
+
+// ---------- re-review: foreign keys, the insert surface, field maps ----------
+
+test("a missing org, group or payer refuses a template; the guard's message comes first", () => {
+  const context = {
+    portals: [portal()],
+    payersById: new Map([[activePayer.id, activePayer]]),
+    targetOrgIds: new Set(["org-1"]),
+    targetGroupIds: new Set(["group-1"]),
+  };
+  const codeOf = (template) => stagingRefusal(template, context)?.code ?? null;
+  assert.equal(codeOf(typed()), null);
+  assert.equal(codeOf(typed({ group_id: "group-1" })), null);
+  assert.equal(codeOf(typed({ group_id: "group-gone" })), "group_not_on_target");
+  assert.equal(codeOf(typed({ org_id: "org-gone" })), "org_not_on_target");
+  assert.equal(
+    codeOf(typed({ payer_id: "payer-gone", task_definitions: [] })),
+    "payer_not_on_target",
+  );
+  assert.equal(
+    stagingRefusal(typed({ group_id: "group-gone" }), context).message,
+    "group group-gone is not on staging (sop_templates_group_id_fkey -> provider_groups)",
+  );
+  // Both kinds: the guard's refusal, with the missing group added.
+  const both = stagingRefusal(typed({ group_id: "group-gone" }), { ...context, portals: [] });
+  assert.equal(both.code, "sop_portal_binding_ineligible");
+  assert.match(both.message, /; also group group-gone is not on staging/);
+  // The split and the created-portal planner use the same check.
+  const split = splitTemplatesByGuard([typed({ group_id: "group-gone" })], context);
+  assert.equal(split.refused[0].refusal.code, "group_not_on_target");
+  const plan = planFor([aetnaTemplate({ group_id: "group-gone" })], { targetGroupIds: new Set() });
+  assert.equal(plan.create.length, 0);
+  assert.match(
+    plan.skipped[0].reason,
+    /would still be refused: group group-gone is not on staging \(sop_templates_group_id_fkey -> provider_groups\); nothing created$/,
+  );
+  assert.equal(
+    planFor([aetnaTemplate({ group_id: "group-1" })], { targetGroupIds: new Set(["group-1"]) })
+      .create.length,
+    1,
+  );
+});
+
+test("everything on sop_templates that can refuse an insert is pinned to the migrations", async () => {
+  const dir = new URL("../../supabase/migrations/", import.meta.url);
+  const files = (await readdir(dir)).filter((name) => name.endsWith(".sql")).sort();
+  const triggers = new Set();
+  const foreignKeys = new Map();
+  const target = String.raw`(?:public\.)?sop_templates\b`;
+  for (const name of files) {
+    const text = await readFile(new URL(name, dir), "utf8");
+    const events = [];
+    for (const m of text.matchAll(
+      new RegExp(
+        String.raw`CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\s+(\w+)\s[^;]*?\bON\s+${target}`,
+        "gi",
+      ),
+    ))
+      events.push([m.index, "trigger+", m[1]]);
+    for (const m of text.matchAll(
+      new RegExp(String.raw`DROP\s+TRIGGER\s+(?:IF\s+EXISTS\s+)?(\w+)\s+ON\s+${target}`, "gi"),
+    ))
+      events.push([m.index, "trigger-", m[1]]);
+    for (const m of text.matchAll(
+      new RegExp(
+        String.raw`ALTER\s+TABLE\s+(?:ONLY\s+)?(?:IF\s+EXISTS\s+)?${target}([^;]*);`,
+        "gi",
+      ),
+    )) {
+      const body = m[1];
+      for (const fk of body.matchAll(
+        /ADD\s+CONSTRAINT\s+\w+\s+FOREIGN\s+KEY\s*\((\w+)\)\s*REFERENCES\s+(?:public\.)?(\w+)/gi,
+      ))
+        events.push([m.index, "fk+", fk[1], fk[2]]);
+      for (const col of body.matchAll(
+        /ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)[^,]*?\bREFERENCES\s+(?:public\.)?(\w+)/gi,
+      ))
+        events.push([m.index, "fk+", col[1], col[2]]);
+      for (const drop of body.matchAll(
+        /DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?sop_templates_(\w+)_fkey/gi,
+      ))
+        events.push([m.index, "fk-", drop[1]]);
+    }
+    for (const [, kind, a, b] of events.sort((x, y) => x[0] - y[0])) {
+      if (kind === "trigger+") triggers.add(a);
+      else if (kind === "trigger-") triggers.delete(a);
+      else if (kind === "fk+") foreignKeys.set(a, b);
+      else foreignKeys.delete(a);
+    }
+  }
+  assert.deepEqual(
+    [...triggers].sort(),
+    [...SOP_TEMPLATE_INSERT_SURFACE.triggers],
+    "sop_templates triggers changed: restate the new one in stagingRefusal, then update the pin",
+  );
+  assert.deepEqual(
+    Object.fromEntries([...foreignKeys].sort()),
+    { ...SOP_TEMPLATE_INSERT_SURFACE.foreignKeys },
+    "sop_templates foreign keys changed: check them in stagingRefusal, then update the pin",
+  );
+  assert.equal(
+    triggers.has("trg_sop_template_state_overlap"),
+    false,
+    "the overlap trigger is gone",
+  );
+});
+
+test("field maps: own org and key, plus org overrides of a new global portal", () => {
+  const added = [
+    { org_id: null, portal_key: "g" },
+    { org_id: "org-1", portal_key: "o" },
+  ];
+  const { ok, skipped } = planFieldMaps(
+    [
+      { id: 1, org_id: null, portal_key: "g" },
+      { id: 2, org_id: "org-1", portal_key: "g" },
+      { id: 3, org_id: "org-gone", portal_key: "g" },
+      { id: 4, org_id: "org-2", portal_key: "g" },
+      { id: 5, org_id: "org-1", portal_key: "o" },
+      { id: 6, org_id: null, portal_key: "o" },
+      { id: 7, org_id: null, portal_key: "old" },
+    ],
+    {
+      addedPortals: added,
+      targetPortals: [{ org_id: "org-2", portal_key: "g" }],
+      targetOrgIds: new Set(["org-1", "org-2"]),
+    },
+  );
+  assert.deepEqual(
+    ok.map((m) => m.id),
+    [1, 2, 5],
+  );
+  assert.deepEqual(
+    skipped.map((s) => [s.row.id, s.reason.split(",")[0]]),
+    [
+      [3, "org org-gone is not on staging"],
+      [4, "org org-2 already has its own g portal on staging"],
+    ],
+  );
 });

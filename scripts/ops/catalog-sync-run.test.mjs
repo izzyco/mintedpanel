@@ -156,6 +156,11 @@ function stagingGuards(table, row, tables) {
     if (!bound)
       return `sop_portal_binding_ineligible: portal key "${key}" has no compatible case type, payer, or owner scope`;
   }
+  // The foreign keys, checked after the BEFORE INSERT guards.
+  if (row.group_id && !(tables.provider_groups ?? []).some((g) => g.id === row.group_id))
+    return 'insert or update on table "sop_templates" violates foreign key constraint "sop_templates_group_id_fkey"';
+  if (row.payer_id && !(tables.payers ?? []).some((p) => p.id === row.payer_id))
+    return 'insert or update on table "sop_templates" violates foreign key constraint "sop_templates_payer_id_fkey"';
   return null;
 }
 
@@ -684,4 +689,128 @@ test("runCatalogSync itself refuses any pair of clients but production -> stagin
     );
     assert.deepEqual([...src.calls, ...dst.calls], [], "refused before any read");
   }
+});
+
+// ---------- re-review: foreign keys, org overrides, degenerate tasks ----------
+
+test("no portal is created when its template names a group staging lacks", async () => {
+  const tpl = aetnaTemplate({ group_id: "prod-group-1" });
+  const production = emptyProject({ payers: [payer("aetna")], sop_templates: [tpl] });
+  const staging = emptyProject({ payers: [payer("aetna")], provider_groups: [] });
+  const dry = await runCatalogSync({ ...clients(production, clone(staging)), apply: false });
+  assert.equal(byTable(dry, CREATED).added, 0);
+  assert.match(
+    byTable(dry, CREATED).reasons[0],
+    /template tpl-aetna would still be refused: group prod-group-1 is not on staging \(sop_templates_group_id_fkey -> provider_groups\); nothing created/,
+  );
+  assert.match(
+    byTable(dry, "sop_templates").reasons[0],
+    /would be refused: .*also group prod-group-1/,
+  );
+
+  const { src, dst } = clients(production, staging);
+  const app = await runCatalogSync({ src, dst, apply: true });
+  assert.deepEqual(staging.portals, [], "no portal left behind for a template that cannot go in");
+  assert.ok(!dst.calls.some(([kind]) => kind === "insert"), "nothing is sent");
+  for (const row of dry)
+    assert.deepEqual(
+      [row.added, row.skipped],
+      [byTable(app, row.table).added, byTable(app, row.table).skipped],
+    );
+
+  // With the group on staging, the portal and the template both go in.
+  const withGroup = emptyProject({
+    payers: [payer("aetna")],
+    provider_groups: [{ id: "prod-group-1" }],
+  });
+  await runCatalogSync({ ...clients(production, withGroup), apply: true });
+  assert.equal(withGroup.portals.length, 1);
+  assert.deepEqual(
+    withGroup.sop_templates.map((t) => t.id),
+    ["tpl-aetna"],
+  );
+});
+
+test("a template whose payer is on neither project is not sent, in either mode", async () => {
+  const tpl = {
+    ...aetnaTemplate(),
+    id: "tpl-ghost",
+    name: "Ghost",
+    payer_id: "payer-ghost",
+    task_definitions: [],
+  };
+  const production = emptyProject({ sop_templates: [tpl] });
+  const dry = await runCatalogSync({ ...clients(production, emptyProject()), apply: false });
+  assert.equal(byTable(dry, "sop_templates").added, 0);
+  assert.match(
+    byTable(dry, "sop_templates").reasons[0],
+    /would be refused: payer payer-ghost is not on staging \(sop_templates_payer_id_fkey -> payers\)/,
+  );
+  const staging = emptyProject();
+  const { src, dst } = clients(production, staging);
+  await runCatalogSync({ src, dst, apply: true });
+  assert.ok(!dst.calls.some(([kind, table]) => kind === "insert" && table === "sop_templates"));
+});
+
+test("an org's override of a new global portal goes with it when the org is on staging", async () => {
+  const globalPortal = {
+    id: "portal-k",
+    org_id: null,
+    portal_key: "k",
+    name: "K",
+    payer_id: "payer-aetna",
+    case_type: null,
+  };
+  const production = emptyProject({
+    organizations: [{ id: "org-x" }, { id: "org-y" }, { id: "org-z" }],
+    payers: [payer("aetna")],
+    portals: [globalPortal],
+    portal_field_maps: [
+      { id: "m-global", org_id: null, portal_key: "k" },
+      { id: "m-orgx", org_id: "org-x", portal_key: "k" },
+      { id: "m-orgy", org_id: "org-y", portal_key: "k" },
+      { id: "m-orgz", org_id: "org-z", portal_key: "k" },
+    ],
+  });
+  const staging = emptyProject({
+    organizations: [{ id: "org-x" }, { id: "org-z" }],
+    payers: [payer("aetna")],
+    // org-z already has its own k portal on staging, which keeps its own maps.
+    portals: [{ ...globalPortal, id: "portal-k-z", org_id: "org-z", name: "K for Z" }],
+  });
+  const dry = await runCatalogSync({ ...clients(production, clone(staging)), apply: false });
+  const maps = byTable(dry, "portal_field_maps");
+  assert.equal(maps.added, 2);
+  assert.ok(maps.reasons.some((r) => r.startsWith('m-orgy "k": org org-y is not on staging')));
+  assert.ok(
+    maps.reasons.some((r) => r.startsWith('m-orgz "k": org org-z already has its own k portal')),
+  );
+  await runCatalogSync({ ...clients(production, staging), apply: true });
+  assert.deepEqual(
+    staging.portal_field_maps.map((m) => m.id),
+    ["m-global", "m-orgx"],
+  );
+});
+
+test("degenerate task shapes are refused the way jsonb's ? operator reads them", async () => {
+  const shapes = [["steps"], "steps", { steps: null }];
+  const production = emptyProject({
+    payers: [payer("aetna")],
+    sop_templates: shapes.map((task, i) => ({
+      ...aetnaTemplate(),
+      id: `tpl-shape-${i}`,
+      name: `Shape ${i}`,
+      task_definitions: [task],
+    })),
+  });
+  const dry = await runCatalogSync({
+    ...clients(production, emptyProject({ payers: [payer("aetna")] })),
+    apply: false,
+  });
+  const templates = byTable(dry, "sop_templates");
+  assert.equal(templates.added, 0);
+  assert.equal(
+    templates.reasons.filter((r) => r.includes("would be refused: sop_task_steps_invalid")).length,
+    3,
+  );
 });

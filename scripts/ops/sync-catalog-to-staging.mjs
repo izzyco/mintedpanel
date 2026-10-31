@@ -33,6 +33,7 @@ import {
   parentsFirst,
   planAdds,
   planCreatedPortals,
+  planFieldMaps,
   splitByOrg,
   splitForms,
   splitTemplatesByCaseType,
@@ -116,6 +117,9 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
   }
 
   const orgs = new Set((await readAll(dst, "organizations", "id")).map((o) => o.id));
+  // Org-owned rows the sync never copies; a template naming a group staging
+  // lacks fails sop_templates_group_id_fkey.
+  const groups = new Set((await readAll(dst, "provider_groups", "id")).map((g) => g.id));
 
   // 1. payers (global catalog)
   const targetPayers = await readAll(dst, "payers");
@@ -138,14 +142,18 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
   ]);
 
   // 3. portal_field_maps, only for portals added now: same org (NULL for a
-  //    global portal) and same key.
-  const scopeKey = (row) => `${row.org_id ?? ""}|${row.portal_key}`;
-  const newPortals = new Set(portals.added.map(scopeKey));
-  const maps = (await readAll(src, "portal_field_maps"))
-    .filter((row) => newPortals.has(scopeKey(row)))
-    .map(stripUserColumns);
-  const m = await insertBatches("portal_field_maps", maps);
-  note("portal_field_maps", m.added.length, m.skipped);
+  //    global portal) and same key, plus each org's override of a new global
+  //    portal when that org is on staging (planFieldMaps).
+  const mapPlan = planFieldMaps((await readAll(src, "portal_field_maps")).map(stripUserColumns), {
+    addedPortals: portals.added,
+    targetPortals,
+    targetOrgIds: orgs,
+  });
+  const m = await insertBatches("portal_field_maps", mapPlan.ok);
+  note("portal_field_maps", m.added.length, [
+    ...mapPlan.skipped.map((s) => ({ id: s.row.id, label: s.row.portal_key, reason: s.reason })),
+    ...m.skipped,
+  ]);
 
   // 4. sop_templates. Precondition 1 first: a NULL case type is skipped, never
   //    defaulted. Then the named portals the remaining templates need, so they
@@ -163,6 +171,7 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
     templates: tplSplit.ok,
     targetPortals: bindablePortals,
     targetOrgIds: orgs,
+    targetGroupIds: groups,
     payersById,
   });
   const created = [];
@@ -188,6 +197,7 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
     portals: bindablePortals,
     payersById,
     targetOrgIds: orgs,
+    targetGroupIds: groups,
   });
   const refusedReason = (message) =>
     apply ? `not sent: staging would refuse it: ${message}` : `would be refused: ${message}`;
