@@ -7,7 +7,7 @@ import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
 import { resolveActiveFollowUp, type FollowUpTouch } from "@/lib/followUps";
-import { todayLocal } from "@/lib/format";
+import { activityDateRules, todayForActivity } from "@/lib/activityDate";
 import type { Touch, TouchEntryType, TouchOutcome, TouchType } from "@/types";
 
 // E4.1 structured touch input. `touchType` is required; everything else is
@@ -219,8 +219,9 @@ export async function bulkLogTouch(caseIds: string[], input: TouchInput): Promis
 }
 
 // Story 1: append a note entry to the touchlog, optionally task-linked. Content
-// lives in `notes`; touch_type/outcome are null. touch_date is the entry date,
-// the coordinator's local day (the touch form defaults to the same one).
+// lives in `notes`; touch_type/outcome are null. touch_date is the entry date:
+// by default the coordinator's local day, which the touch form also defaults
+// to (ActivityDateRules, MINT-129).
 export async function logNote(caseId: string, input: NoteInput): Promise<Touch> {
   const orgId = requireActiveOrg();
   const payload = {
@@ -228,7 +229,7 @@ export async function logNote(caseId: string, input: NoteInput): Promise<Touch> 
     org_id: orgId,
     case_id: caseId,
     task_id: input.taskId ?? null,
-    touch_date: todayLocal(),
+    touch_date: todayForActivity(new Date(), activityDateRules()),
     notes: input.content,
     coordinator_id: currentUserId(),
     source: "manual",

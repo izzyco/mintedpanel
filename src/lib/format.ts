@@ -4,6 +4,7 @@
 // day it happened on, and a calendar-only `yyyy-MM-dd` value renders as that
 // same day in every zone (parseISO reads it as local midnight, not UTC).
 import { format, parseISO } from "date-fns";
+import { VIEWER_ZONE, todayForActivity } from "@/lib/activityDate";
 
 export function fmtDate(value: string | null | undefined): string {
   if (!value) return "—";
@@ -23,11 +24,12 @@ export function fmtDateTime(value: string | null | undefined): string {
   }
 }
 
-/** Today as a local calendar date (`yyyy-MM-dd`): the day a browser write
- * records an activity under, such as a task's completed_date or a note's
- * touch_date. Not `toISOString().slice(0, 10)`, which is UTC's day and is
- * already tomorrow in Denver from 6 pm (5 pm in winter), while the audit row
- * and the touch form's default both still say today. */
+/** Today as the browser's local calendar date (`yyyy-MM-dd`). Not
+ * `toISOString().slice(0, 10)`, which is UTC's day and is already tomorrow in
+ * Denver from 6 pm (5 pm in winter), while the audit row and the touch form's
+ * default both still say today. Activity writes (a task's completed_date, a
+ * note's touch_date) call todayForActivity with the rules in force; under the
+ * default rules that is this same day. */
 export function todayLocal(now: Date = new Date()): string {
-  return format(now, "yyyy-MM-dd");
+  return todayForActivity(now, { zone: VIEWER_ZONE });
 }
