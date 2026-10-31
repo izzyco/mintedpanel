@@ -134,9 +134,11 @@ export const LEAK_MODES = [
   "intakesession",
 ];
 
-// GET /api/cases?q= result limit — mirrors CASE_SEARCH_DEFAULT_LIMIT in
-// src/server/caseSearchLimit.ts (no platform setting exists before M6).
+// GET /api/cases?q= result limit — mirrors CASE_SEARCH_DEFAULT_LIMIT and
+// CASE_SEARCH_MAX_LIMIT in src/server/caseSearchLimit.ts (no platform setting
+// exists before M6; a request may name &limit= from 1 to the cap of 50).
 const CASE_SEARCH_DEFAULT_LIMIT = 5;
+const CASE_SEARCH_MAX_LIMIT = 50;
 
 const USERS = {
   [FIXTURES.KANSAS_EMAIL]: {
@@ -1905,12 +1907,23 @@ export async function createMockApiServer(options = {}) {
                     (caseDigits != null && digits !== "" && digits.includes(caseDigits))
                   );
                 });
-        // At most meta.limit rows — the platform-admin case-search limit,
-        // which is the default 5 until Mission Control M6 adds the setting
-        // (src/server/caseSearchLimit.ts). meta.total counts every match and
-        // meta.truncated says whether data holds all of them; all three are
-        // always sent on this mode.
-        const limit = CASE_SEARCH_DEFAULT_LIMIT;
+        // At most meta.limit rows — the request's &limit= (a whole number from
+        // 1 to 50, else a 422), or the platform case-search limit, which is the
+        // default 5 until Mission Control M6 adds the setting
+        // (src/server/caseSearchLimit.ts). meta.limit is the limit applied,
+        // meta.total counts every match and meta.truncated says whether data
+        // holds all of them; all three are always sent on this mode.
+        const rawLimit = url.searchParams.get("limit");
+        const requested = rawLimit !== null && /^\d+$/.test(rawLimit) ? Number(rawLimit) : null;
+        if (rawLimit !== null && !(requested >= 1 && requested <= CASE_SEARCH_MAX_LIMIT)) {
+          return envelope(
+            res,
+            422,
+            null,
+            `limit must be a whole number from 1 to ${CASE_SEARCH_MAX_LIMIT}`,
+          );
+        }
+        const limit = requested ?? CASE_SEARCH_DEFAULT_LIMIT;
         return envelope(res, 200, rows.slice(0, limit), null, {
           total: rows.length,
           truncated: rows.length > limit,

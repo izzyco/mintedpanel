@@ -1468,12 +1468,48 @@ describe("provider cases handler", () => {
     expect(listCasesMock).not.toHaveBeenCalled();
   });
 
-  it("resolves the ?q= limit for the request's organization (MINT-112 per-org override)", async () => {
+  // S2/S3 (Sowmya, Oct 31): a platform default with no org override, and an
+  // optional &limit= so the extension can offer "Show more" up to the cap.
+  it("reads only the platform setting when the request names no limit", async () => {
     searchCasesMock.mockResolvedValue({ rows: [], total: 0, truncated: false });
     const request = ctx();
     const b = await body(await handleListProviderCases(url("?q=a"), request));
-    expect(vi.mocked(resolveCaseSearchLimit)).toHaveBeenCalledWith(request.db, "org-1");
+    expect(vi.mocked(resolveCaseSearchLimit).mock.calls).toEqual([[request.db]]);
     expect(b.meta).toEqual({ total: 0, truncated: false, limit: 5 });
+  });
+
+  it.each([
+    ["50", 50],
+    ["12", 12],
+    ["1", 1],
+  ])("honours &limit=%s up to the cap and reports it as meta.limit", async (raw, limit) => {
+    searchCasesMock.mockResolvedValue({ rows: [], total: 312, truncated: true });
+    const b = await body(await handleListProviderCases(url(`?q=a&limit=${raw}`), ctx()));
+    expect(searchCasesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: "org-1" }),
+      "a",
+      limit,
+    );
+    expect(b.meta).toEqual({ total: 312, truncated: true, limit });
+    // A request that names its limit does not need the platform setting.
+    expect(vi.mocked(resolveCaseSearchLimit)).not.toHaveBeenCalled();
+  });
+
+  it.each(["0", "51", "2.5", "-1", "abc", ""])(
+    "refuses &limit=%j with a 422 before any search",
+    async (raw) => {
+      const res = await handleListProviderCases(url(`?q=a&limit=${raw}`), ctx());
+      expect(res.status).toBe(422);
+      expect((await body(res)).error).toBe("limit must be a whole number from 1 to 50");
+      expect(searchCasesMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ignores &limit= on the providerId dropdown mode", async () => {
+    listCasesMock.mockResolvedValue([]);
+    const res = await handleListProviderCases(url(`?providerId=${PROVIDER_ID}&limit=abc`), ctx());
+    expect(res.status).toBe(200);
+    expect(listCasesMock).toHaveBeenCalled();
   });
 
   it("says a capped ?q= answer is truncated, with the total of every match and the limit", async () => {
