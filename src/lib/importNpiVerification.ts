@@ -209,6 +209,41 @@ export function importNpiRowResult(
   };
 }
 
+/** Every checked row's result, keyed by its anchor line, plus what the review
+ * needs from them: the plain reason for each row a block holds back (never a
+ * skip: it writes nothing), the summary counts, and how many rows that would
+ * be committed (creates and updates; never a skip) have no registry answer. */
+export function summarizeImportNpiRows(
+  items: readonly ImportNpiCheckItem[],
+  snapshot: ImportNpiSnapshot,
+  policy: NpiRegistryPolicy = DEFAULT_NPI_REGISTRY_POLICY,
+): {
+  byLine: Map<number, ImportNpiRowResult>;
+  blockReasonByLine: Map<number, string>;
+  counts: ImportNpiCounts;
+  /** Rows to be committed (create / update) that were not checked. */
+  unchecked: number;
+} {
+  const byLine = new Map<number, ImportNpiRowResult>();
+  const blockReasonByLine = new Map<number, string>();
+  const counts: ImportNpiCounts = { notes: 0, blocked: 0 };
+  let unchecked = 0;
+  for (const item of items) {
+    const outcome = snapshot.results.get(item.npi);
+    const committed = item.disposition !== "skip";
+    if (committed && outcome?.status !== "checked") unchecked += 1;
+    const result = importNpiRowResult(outcome, item, snapshot.phase, policy);
+    byLine.set(item.line, result);
+    if (result.blockReason && committed) {
+      blockReasonByLine.set(item.line, result.blockReason);
+      counts.blocked += 1;
+    } else if (outcome?.status === "checked" && result.severity !== "ok") {
+      counts.notes += 1;
+    }
+  }
+  return { byLine, blockReasonByLine, counts, unchecked };
+}
+
 /** The dispositions the review shows and commits once registry blocks apply:
  * a create or update whose row is blocked becomes one blocked entry per source
  * line (so the counts still reconcile with the staged rows), excluded from the

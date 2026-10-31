@@ -394,15 +394,54 @@ describe("ImportNpiVerifier edges (review findings)", () => {
     }
   });
 
-  it("any unexpected failure inside the run also ends it as not checked", async () => {
+  it("a failure past the shape guard reaches the run's safety net: not checked, no hang, no unhandled rejection", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      // A results array passes the guard, but reading an entry throws — after
+      // the request's try/catch, inside the run itself.
+      const poisoned = {
+        get npi(): string {
+          throw new Error("synthetic: unreadable entry");
+        },
+      };
+      const verifyBatch = vi.fn(async () => ({
+        results: [poisoned] as unknown as NpiRegistryBatchResult["results"],
+      }));
+      const verifier = new ImportNpiVerifier(items(3), {
+        now: () => 0,
+        sleep: async () => {},
+        verifyBatch,
+      });
+      verifier.start();
+      const end = await settle(verifier);
+      expect(verifyBatch).toHaveBeenCalledTimes(1);
+      expect(end).toMatchObject({ phase: "done", done: 3, checked: 0 });
+      expect([...end.results.values()]).toEqual(
+        Array(3).fill({
+          status: "not_checked",
+          reason: "unavailable",
+          message: "NPI Registry is unavailable",
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  it("a results value that is not an array takes the shape guard (an outage batch)", async () => {
+    const verifyBatch = vi.fn(async () => ({ results: null as unknown as [] }));
     const verifier = new ImportNpiVerifier(items(3), {
       now: () => 0,
       sleep: async () => {},
-      // A results array of junk: reading it throws inside the run.
-      verifyBatch: async () => ({ results: null as unknown as [] }),
+      verifyBatch,
     });
     verifier.start();
-    expect((await settle(verifier)).phase).toBe("done");
+    expect(await settle(verifier)).toMatchObject({ phase: "done", done: 3, checked: 0 });
+    expect(verifyBatch).toHaveBeenCalledTimes(1);
   });
 
   it("paces against a shared bucket, so a second run does not start with a full burst", async () => {
@@ -452,7 +491,7 @@ describe("ImportNpiVerificationSession (what useImportNpiVerification drives)", 
     await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(2));
     h.session.end();
     expect(h.signals[1].aborted).toBe(true);
-    expect(run.getSnapshot()).toMatchObject({ phase: "stopped", checked: 10 });
+    expect(run?.getSnapshot()).toMatchObject({ phase: "stopped", checked: 10 });
     // Its snapshot stays readable after the end.
     expect(h.session.current).toBe(run);
   });
@@ -477,13 +516,57 @@ describe("ImportNpiVerificationSession (what useImportNpiVerification drives)", 
     const first = h.session.begin(all.slice(0, 20));
     await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(2));
     const second = h.session.begin(all);
-    expect(first.getSnapshot().phase).toBe("stopped");
+    expect(first?.getSnapshot().phase).toBe("stopped");
     expect(h.signals[1].aborted).toBe(true);
     await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(3));
     // The 10 checked in the first run are not asked again.
     expect(h.sent[2]).toEqual(all.slice(10, 20).map((item) => item.npi));
-    expect(second.getSnapshot()).toMatchObject({ phase: "running", checked: 10, total: 25 });
+    expect(second?.getSnapshot()).toMatchObject({ phase: "running", checked: 10, total: 25 });
     expect(h.session.current).toBe(second);
+    h.session.end();
+  });
+
+  it("stop() — the user's Stop — is final for the visit: new rows or a recovery never restart it", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = sessionHarness();
+      const all = items(30);
+      const run = h.session.begin(all.slice(0, 20));
+      await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(2));
+      h.session.stop();
+      expect(h.session.stopped).toBe(true);
+      expect(h.signals[1].aborted).toBe(true);
+      // The rows change (the effect ends and begins again)…
+      h.session.end();
+      expect(h.session.begin(all)).toBe(run);
+      // …or a refetch error turns checking off and recovery turns it back on.
+      h.session.end();
+      expect(h.session.begin(all)).toBe(run);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(h.verifyBatch).toHaveBeenCalledTimes(2);
+      expect(h.session.current).toBe(run);
+      expect(run?.getSnapshot()).toMatchObject({ phase: "stopped", checked: 10 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stop() before any run means none starts", () => {
+    const h = sessionHarness();
+    h.session.stop();
+    expect(h.session.begin(items(5))).toBeNull();
+    expect(h.verifyBatch).not.toHaveBeenCalled();
+  });
+
+  it("end() alone is not a Stop: the next begin() starts again", async () => {
+    const h = sessionHarness();
+    h.session.begin(items(5));
+    await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(1));
+    h.session.end();
+    expect(h.session.stopped).toBe(false);
+    const again = h.session.begin(items(15));
+    expect(again?.getSnapshot().phase).not.toBe("stopped");
+    await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(2));
     h.session.end();
   });
 });

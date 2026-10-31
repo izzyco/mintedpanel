@@ -335,9 +335,13 @@ export class ImportNpiVerifier {
  * drives it from an effect: begin() when the rows are known and checking is
  * enabled, end() in the effect's cleanup (the page goes away, checking is
  * disabled, or the rows change). A new set of rows reuses every NPI already
- * checked, and every run paces against the same bucket. */
+ * checked, and every run paces against the same bucket. stop() is the user's
+ * Stop (and Commit, and Cancel Import): it is final for this review visit, so
+ * a later begin() — new rows, or a refetch error and recovery — never starts
+ * the checks again. The session lives as long as the review screen does. */
 export class ImportNpiVerificationSession {
   private verifier: ImportNpiVerifier | null = null;
+  private stoppedByUser = false;
 
   constructor(
     private readonly deps: ImportNpiVerifierDeps,
@@ -349,8 +353,16 @@ export class ImportNpiVerificationSession {
     return this.verifier;
   }
 
-  /** Stop any run, then start one over `items`, seeded with what is known. */
-  begin(items: readonly ImportNpiCheckItem[]): ImportNpiVerifier {
+  /** Whether Stop ended checking for this visit. */
+  get stopped(): boolean {
+    return this.stoppedByUser;
+  }
+
+  /** Stop any run, then start one over `items`, seeded with what is known —
+   * unless the user stopped the checks, in which case nothing starts and the
+   * stopped run (or null, if none ever ran) stays current. */
+  begin(items: readonly ImportNpiCheckItem[]): ImportNpiVerifier | null {
+    if (this.stoppedByUser) return this.verifier;
     const previous = this.verifier;
     previous?.stop();
     const next = new ImportNpiVerifier(items, this.deps, {
@@ -362,8 +374,15 @@ export class ImportNpiVerificationSession {
     return next;
   }
 
-  /** Stop the current run; its snapshot stays readable. */
+  /** Stop the current run (the effect's cleanup); its snapshot stays
+   * readable, and a later begin() may start again. */
   end(): void {
+    this.verifier?.stop();
+  }
+
+  /** The user's Stop: stop the current run and start none for this visit. */
+  stop(): void {
+    this.stoppedByUser = true;
     this.verifier?.stop();
   }
 }

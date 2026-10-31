@@ -24,6 +24,7 @@ import {
   importNpiStatusText,
   npiPolicyCanBlock,
   selectImportNpiChecks,
+  summarizeImportNpiRows,
   type ImportNpiCheckItem,
   type ImportNpiOutcome,
   type ImportNpiSnapshot,
@@ -466,6 +467,58 @@ function snapshot(over: Partial<ImportNpiSnapshot>): ImportNpiSnapshot {
 }
 
 const counts = (notes: number, blocked = 0) => ({ notes, blocked });
+
+describe("summarizeImportNpiRows", () => {
+  const item = (n: number, disposition: ImportNpiCheckItem["disposition"]): ImportNpiCheckItem => ({
+    npi: fakeNpi(100 + n),
+    line: n + 2,
+    firstName: "Avery",
+    lastName: "Quill",
+    disposition,
+  });
+  const items = [item(0, "create"), item(1, "update"), item(2, "skip"), item(3, "create")];
+  const blockNotFound = resolveNpiRegistryPolicy(null, { severity: { notFound: "block" } });
+
+  it('under "all rows" counts only rows that would be committed as unchecked — never a skip', () => {
+    const stopped = snapshot({ phase: "stopped", total: 4, done: 0 });
+    const summary = summarizeImportNpiRows(items, stopped, blockNotFound);
+    expect(summary.unchecked).toBe(3);
+    expect(
+      importNpiCommitWarning({ phase: "stopped", unchecked: summary.unchecked, canBlock: true }),
+    ).toBe(
+      "3 rows were not checked against the NPI Registry and go in without the check your NPI policy blocks on.",
+    );
+    // Once the create and update rows are checked, only the skip is left: no warning.
+    const results = new Map<string, ImportNpiOutcome>(
+      [items[0], items[1], items[3]].map((i) => [
+        i.npi,
+        { status: "checked", record: record({ npi: i.npi }) },
+      ]),
+    );
+    const later = summarizeImportNpiRows(
+      items,
+      snapshot({ phase: "stopped", total: 4, done: 3, checked: 3, results }),
+      blockNotFound,
+    );
+    expect(later.unchecked).toBe(0);
+    expect(
+      importNpiCommitWarning({ phase: "stopped", unchecked: later.unchecked, canBlock: true }),
+    ).toBeNull();
+  });
+
+  it("holds back blocked creates and updates, never a skip, and counts notes on the rest", () => {
+    const results = new Map<string, ImportNpiOutcome>(
+      items.map((i) => [i.npi, { status: "checked", record: null }]),
+    );
+    const done = snapshot({ phase: "done", total: 4, done: 4, checked: 4, results });
+    const summary = summarizeImportNpiRows(items, done, blockNotFound);
+    expect([...summary.blockReasonByLine.keys()]).toEqual([2, 3, 5]);
+    expect(summary.counts).toEqual({ notes: 1, blocked: 3 });
+    expect(summary.byLine.get(4)).toMatchObject({ kind: "notFound", severity: "block" });
+    // The default policy blocks nothing: four notes.
+    expect(summarizeImportNpiRows(items, done).counts).toEqual({ notes: 4, blocked: 0 });
+  });
+});
 
 describe("importNpiCommitWarning", () => {
   it("says committing stops the checks while they run", () => {

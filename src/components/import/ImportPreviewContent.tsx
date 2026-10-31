@@ -57,9 +57,9 @@ import {
 import {
   applyImportNpiBlocks,
   importNpiCommitWarning,
-  importNpiRowResult,
   npiPolicyCanBlock,
   selectImportNpiChecks,
+  summarizeImportNpiRows,
   type ImportNpiRowResult,
 } from "@/lib/importNpiVerification";
 import type { NpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
@@ -268,25 +268,10 @@ export function ImportPreviewContent({
     previewReady && isAdmin && run?.state === "ready_for_review" && npiChecks.length > 0,
   );
   const npiSnapshot = npiVerification.snapshot;
-  const npi = useMemo(() => {
-    const byLine = new Map<number, ImportNpiRowResult>();
-    const blockReasonByLine = new Map<number, string>();
-    const counts = { notes: 0, blocked: 0 };
-    let unchecked = 0;
-    for (const item of npiChecks) {
-      const outcome = npiSnapshot.results.get(item.npi);
-      if (outcome?.status !== "checked") unchecked += 1;
-      const result = importNpiRowResult(outcome, item, npiSnapshot.phase, policy);
-      byLine.set(item.line, result);
-      if (result.blockReason && item.disposition !== "skip") {
-        blockReasonByLine.set(item.line, result.blockReason);
-        counts.blocked += 1;
-      } else if (outcome?.status === "checked" && result.severity !== "ok") {
-        counts.notes += 1;
-      }
-    }
-    return { byLine, blockReasonByLine, counts, unchecked };
-  }, [npiChecks, npiSnapshot, policy]);
+  const npi = useMemo(
+    () => summarizeImportNpiRows(npiChecks, npiSnapshot, policy),
+    [npiChecks, npiSnapshot, policy],
+  );
   const npiCanBlock = npiPolicyCanBlock(policy);
 
   // A "block" outcome holds its row back; with the default policy this is the

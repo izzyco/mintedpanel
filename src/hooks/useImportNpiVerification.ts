@@ -5,8 +5,10 @@
 // that is ready for review, with every existing-provider read loaded), and its
 // cleanup ends it — when the page goes away, checking is disabled, or the rows
 // change (rare: the existing-provider data changed under the review), in which
-// case the next run reuses every NPI already checked. Outcomes live in memory
-// only.
+// case the next run reuses every NPI already checked. `stop` (Stop, Commit,
+// Cancel Import) is final for this visit: the session never begins again after
+// it, so new rows or a refetch error and recovery do not restart the checks.
+// Outcomes live in memory only.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ImportNpiVerificationSession, type ImportNpiVerifier } from "@/lib/importNpiVerifier";
 import {
@@ -66,6 +68,6 @@ export function useImportNpiVerification(
     verifier ? verifier.getSnapshot : () => fallback,
     verifier ? verifier.getSnapshot : () => fallback,
   );
-  const stop = useCallback(() => session.end(), [session]);
+  const stop = useCallback(() => session.stop(), [session]);
   return { snapshot: verifier ? snapshot : { ...snapshot, total: items.length }, stop };
 }
