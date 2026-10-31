@@ -34,6 +34,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { usePayers, useReactivatePayer, useSops } from "@/hooks/useAdmin";
 import { useActiveNetworkPayerIds } from "@/hooks/useActiveNetworkPayerIds";
 import { usePayerReadinessFunnel } from "@/hooks/usePayerReadinessFunnel";
+import { useTemplateDraftRules } from "@/hooks/useSopTemplateDrafts";
+import { newTemplateSearch } from "@/lib/payerDetailView";
 import { fmtDate } from "@/lib/format";
 import { catalogSetupPayers } from "@/lib/payerSetup";
 import { resolvePayerNextAction } from "@/lib/payerNextAction";
@@ -265,6 +267,7 @@ function NextActionCell({
   inNetwork: boolean;
   readinessUnavailable: boolean;
 }) {
+  const draftRules = useTemplateDraftRules();
   if (row.archived) {
     // Badge lives under Template status — do not repeat "Archived" here
     // (strict-mode e2e and visual noise).
@@ -283,7 +286,7 @@ function NextActionCell({
     return (
       <Link
         to="/admin/templates/new"
-        search={{ payerId: row.payerId, tier: "global" }}
+        search={newTemplateSearch(row.payerId, draftRules)}
         className="inline-flex items-center gap-1 text-[12.5px] font-medium text-[#1B4D3E] underline-offset-2 hover:underline"
       >
         {action.label} <ArrowRight className="h-3 w-3" />

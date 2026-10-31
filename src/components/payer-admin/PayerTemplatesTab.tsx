@@ -12,7 +12,8 @@ import { useSops } from "@/hooks/useAdmin";
 import { useProviderGroups } from "@/hooks/useLookups";
 import { formatSopStateLabel } from "@/lib/sopMatchKey";
 import { fmtDate } from "@/lib/format";
-import { payerTemplateRows, templateStateCoverage } from "@/lib/payerDetailView";
+import { newTemplateSearch, payerTemplateRows, templateStateCoverage } from "@/lib/payerDetailView";
+import { useTemplateDraftRules } from "@/hooks/useSopTemplateDrafts";
 import { CASE_TYPES, type CaseType } from "@/lib/caseTypes";
 import { useIsAdmin } from "@/lib/permissions";
 import type { Payer } from "@/types";
@@ -44,6 +45,8 @@ export function PayerTemplatesTab({ payer }: { payer: Payer }) {
   const groupsQ = useProviderGroups();
   // Saved drafts are admin-only under RLS, so only an admin sees the group.
   const isAdmin = useIsAdmin();
+  // "New template" with saved drafts is configuration (MINT-129).
+  const newSearch = newTemplateSearch(payer.id, useTemplateDraftRules());
   const [typeFilter, setTypeFilter] = useState<TemplateTypeFilter>("all");
 
   const rows = useMemo(
@@ -128,7 +131,7 @@ export function PayerTemplatesTab({ payer }: { payer: Payer }) {
           ) : null}
           {rows.length > 0 ? (
             <Button asChild variant="outline" size="sm" className="h-8 flex-none px-3 text-[12px]">
-              <Link to="/admin/templates/new" search={{ payerId: payer.id, tier: "global" }}>
+              <Link to="/admin/templates/new" search={newSearch}>
                 + New template
               </Link>
             </Button>
@@ -145,7 +148,7 @@ export function PayerTemplatesTab({ payer }: { payer: Payer }) {
                 Cases will fall back to the default template until you author one.
               </p>
               <Button asChild className="mt-4 bg-[#1B4D3E] text-white hover:bg-[#163F33]">
-                <Link to="/admin/templates/new" search={{ payerId: payer.id, tier: "global" }}>
+                <Link to="/admin/templates/new" search={newSearch}>
                   + Author template
                 </Link>
               </Button>

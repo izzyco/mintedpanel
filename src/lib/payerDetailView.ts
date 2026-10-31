@@ -167,6 +167,95 @@ export function draftResumeSearch(payerId: string, draftId: string) {
   return { payerId, tier: "global" as const, draftId };
 }
 
+// ---------------------------------------------------------------------------
+// Draft rules
+//
+// What "New template" does when the payer already has saved drafts is
+// business policy, so it is configuration (TemplateDraftRules), never a
+// constant: it resolves from the decided default, then a platform override,
+// then an organization override (resolveTemplateDraftRules), and
+// validateTemplateDraftRules is the check an override must pass before it
+// goes live. Nothing stores an override yet; the Mission Control setting is
+// MINT-129. Who sees drafts (admins only, the sop_template_drafts RLS) is
+// access control, not a rule here.
+
+/** Sowmya, D23: a payer can hold several drafts, "New template" always starts
+ * a fresh one, and the Drafts list is the way back. Only that value exists:
+ * the alternative ("resume_latest", open the payer's newest draft instead)
+ * is not built and is tracked in MINT-129, so an override naming it is
+ * refused rather than half-applied. */
+export type NewTemplateWhenDraftsExist = "start_fresh";
+
+/** Each field names its default. */
+export interface TemplateDraftRules {
+  /** "start_fresh" (default): "New template" opens a blank wizard on the
+   * payer even when the payer has saved drafts; each first save is a new
+   * draft. */
+  newTemplateWhenDraftsExist: NewTemplateWhenDraftsExist;
+}
+
+/** The platform default: the decided rule. */
+export const DEFAULT_TEMPLATE_DRAFT_RULES: Readonly<TemplateDraftRules> = Object.freeze({
+  newTemplateWhenDraftsExist: "start_fresh",
+});
+
+/** A platform or organization override. A null or missing field inherits. */
+export type TemplateDraftRulesOverride = {
+  readonly [K in keyof TemplateDraftRules]?: TemplateDraftRules[K] | null;
+};
+
+const NEW_TEMPLATE_WHEN_DRAFTS_EXIST: readonly NewTemplateWhenDraftsExist[] = ["start_fresh"];
+
+const isNewTemplateWhenDraftsExist = (value: unknown): value is NewTemplateWhenDraftsExist =>
+  NEW_TEMPLATE_WHEN_DRAFTS_EXIST.includes(value as NewTemplateWhenDraftsExist);
+
+/** Field by field: the organization's value, else the platform's, else the
+ * default. A stored value of the wrong shape is skipped like a missing one. */
+export function resolveTemplateDraftRules(
+  platform?: TemplateDraftRulesOverride | null,
+  organization?: TemplateDraftRulesOverride | null,
+): TemplateDraftRules {
+  for (const override of [organization, platform]) {
+    const value: unknown = override?.newTemplateWhenDraftsExist;
+    if (value != null && isNewTemplateWhenDraftsExist(value))
+      return { newTemplateWhenDraftsExist: value };
+  }
+  return { newTemplateWhenDraftsExist: DEFAULT_TEMPLATE_DRAFT_RULES.newTemplateWhenDraftsExist };
+}
+
+/** Plain-language problems with an override; empty when it can go live. */
+export function validateTemplateDraftRules(override: unknown): string[] {
+  if (override == null) return [];
+  if (typeof override !== "object" || Array.isArray(override))
+    return ["The template draft rules must be a set of named rules."];
+  const errors: string[] = [];
+  const given = override as Record<string, unknown>;
+  for (const key of Object.keys(given)) {
+    if (key !== "newTemplateWhenDraftsExist") errors.push(`"${key}" is not a template draft rule.`);
+  }
+  const value = given.newTemplateWhenDraftsExist;
+  if (value === "resume_latest")
+    errors.push(
+      'Resuming the newest draft from "New template" is not available yet; "New template" always starts a fresh draft.',
+    );
+  else if (value != null && !isNewTemplateWhenDraftsExist(value))
+    errors.push('"New template" with saved drafts can only start a fresh draft ("start_fresh").');
+  return errors;
+}
+
+/** Search params for a payer's "New template" (and "Author template")
+ * links, under the rules in force. */
+export function newTemplateSearch(
+  payerId: string,
+  rules: TemplateDraftRules = DEFAULT_TEMPLATE_DRAFT_RULES,
+): { payerId: string; tier: "global" } {
+  switch (rules.newTemplateWhenDraftsExist) {
+    case "start_fresh":
+      // A blank wizard on the payer; the Drafts list is the way back.
+      return { payerId, tier: "global" };
+  }
+}
+
 export interface TemplateStateCoverage {
   covered: number;
   total: number;

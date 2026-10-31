@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_TEMPLATE_DRAFT_RULES,
   PAYER_DETAIL_TABS,
   UNTITLED_DRAFT_LABEL,
   buildPayerCaseRows,
   buildPayerEnrollmentRows,
   draftResumeSearch,
+  newTemplateSearch,
   parsePayerDetailTab,
   payerMergeCandidates,
   payerTemplateDraftRows,
   payerTemplateRows,
+  resolveTemplateDraftRules,
   templateIntentForFormSuggestion,
   templateStateCoverage,
+  validateTemplateDraftRules,
   type PayerCaseSlice,
   type PayerEnrollmentCaseSlice,
 } from "@/lib/payerDetailView";
@@ -409,6 +413,78 @@ describe("draftResumeSearch", () => {
       payerId: PAYER_ID,
       tier: "global",
       draftId: "d-1",
+    });
+  });
+});
+
+describe("TemplateDraftRules (MINT-129)", () => {
+  it("defaults to the decided rule: New template starts a fresh draft", () => {
+    expect(DEFAULT_TEMPLATE_DRAFT_RULES).toEqual({ newTemplateWhenDraftsExist: "start_fresh" });
+    expect(Object.isFrozen(DEFAULT_TEMPLATE_DRAFT_RULES)).toBe(true);
+  });
+
+  it("New template opens a blank wizard on the payer, with or without saved drafts", () => {
+    // The same params the links carried before the rule existed, and never a
+    // draftId: the Drafts list is the way back to a draft.
+    expect(newTemplateSearch(PAYER_ID)).toEqual({ payerId: PAYER_ID, tier: "global" });
+    expect(newTemplateSearch(PAYER_ID, DEFAULT_TEMPLATE_DRAFT_RULES)).toEqual({
+      payerId: PAYER_ID,
+      tier: "global",
+    });
+    expect(newTemplateSearch(PAYER_ID)).not.toHaveProperty("draftId");
+  });
+
+  describe("resolveTemplateDraftRules", () => {
+    it("is the default with nothing stored", () => {
+      expect(resolveTemplateDraftRules()).toEqual(DEFAULT_TEMPLATE_DRAFT_RULES);
+      expect(resolveTemplateDraftRules(null, null)).toEqual(DEFAULT_TEMPLATE_DRAFT_RULES);
+    });
+
+    it("takes the organization's value, else the platform's, else the default", () => {
+      const fresh = { newTemplateWhenDraftsExist: "start_fresh" as const };
+      expect(resolveTemplateDraftRules(fresh)).toEqual(fresh);
+      expect(resolveTemplateDraftRules(null, fresh)).toEqual(fresh);
+      expect(resolveTemplateDraftRules(fresh, { newTemplateWhenDraftsExist: null })).toEqual(fresh);
+      expect(resolveTemplateDraftRules({}, { newTemplateWhenDraftsExist: undefined })).toEqual(
+        DEFAULT_TEMPLATE_DRAFT_RULES,
+      );
+    });
+
+    it("ignores the unbuilt alternative and any other value, like a missing one", () => {
+      for (const bad of ["resume_latest", "prompt", "", true, 1]) {
+        const override = { newTemplateWhenDraftsExist: bad } as unknown as Parameters<
+          typeof resolveTemplateDraftRules
+        >[0];
+        expect(resolveTemplateDraftRules(override)).toEqual(DEFAULT_TEMPLATE_DRAFT_RULES);
+        expect(resolveTemplateDraftRules(null, override)).toEqual(DEFAULT_TEMPLATE_DRAFT_RULES);
+      }
+    });
+  });
+
+  describe("validateTemplateDraftRules", () => {
+    it("passes the decided value, an empty override, and nothing", () => {
+      expect(validateTemplateDraftRules(DEFAULT_TEMPLATE_DRAFT_RULES)).toEqual([]);
+      expect(validateTemplateDraftRules({})).toEqual([]);
+      expect(validateTemplateDraftRules({ newTemplateWhenDraftsExist: null })).toEqual([]);
+      expect(validateTemplateDraftRules(null)).toEqual([]);
+    });
+
+    it("refuses resume_latest until it is built, in plain language", () => {
+      expect(validateTemplateDraftRules({ newTemplateWhenDraftsExist: "resume_latest" })).toEqual([
+        'Resuming the newest draft from "New template" is not available yet; "New template" always starts a fresh draft.',
+      ]);
+    });
+
+    it("rejects unknown values and rules", () => {
+      expect(validateTemplateDraftRules({ newTemplateWhenDraftsExist: "prompt" })).toEqual([
+        '"New template" with saved drafts can only start a fresh draft ("start_fresh").',
+      ]);
+      expect(validateTemplateDraftRules({ draftsPerPayer: 1 })).toEqual([
+        '"draftsPerPayer" is not a template draft rule.',
+      ]);
+      expect(validateTemplateDraftRules("start_fresh")).toEqual([
+        "The template draft rules must be a set of named rules.",
+      ]);
     });
   });
 });
