@@ -4,13 +4,18 @@
 // deliberately NOT in the roster cache set, whose awaited "all" refetch would
 // make every provider write wait on this seven-table read. Invited shows only
 // once the read can see the intake tables (intakeReadable; MINT-89). The
-// funnel rules come with the read, resolved for the org.
+// funnel configuration (stages and rules) comes with the read, resolved for
+// the org; while it loads, the platform default stages show.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
 import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
 import { useActiveOrgId } from "@/lib/auth-store";
-import { buildOnboardingFunnelRows, visibleOnboardingFunnelStages } from "@/lib/onboardingFunnel";
+import {
+  buildOnboardingFunnelRows,
+  DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+  visibleOnboardingFunnelStages,
+} from "@/lib/onboardingFunnel";
 import { getOnboardingFunnelInput } from "@/services/onboardingFunnel";
 
 export function useOnboardingFunnel() {
@@ -25,12 +30,16 @@ export function useOnboardingFunnel() {
   const rows = useMemo(
     () =>
       query.data
-        ? buildOnboardingFunnelRows(query.data, localTodayIso(), query.data.rules)
+        ? buildOnboardingFunnelRows(query.data, localTodayIso(), query.data.config)
         : undefined,
     [query.data],
   );
   const intakeReadable = query.data?.intakeReadable ?? false;
-  const stages = useMemo(() => visibleOnboardingFunnelStages(intakeReadable), [intakeReadable]);
+  const configStages = query.data?.config.stages ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG.stages;
+  const stages = useMemo(
+    () => visibleOnboardingFunnelStages(configStages, intakeReadable),
+    [configStages, intakeReadable],
+  );
   return {
     orgId,
     rows,

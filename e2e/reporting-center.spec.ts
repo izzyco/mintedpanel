@@ -597,7 +597,11 @@ test("RC-06 — Provider Onboarding places each provider in one stage and lists 
   // Date of birth and SSN last 4 are presence checks only; neither value renders.
   await expect(page.getByText(/1990/)).toHaveCount(0);
   await expect(page.getByText("1234", { exact: true })).toHaveCount(0);
-  // Submitted is information in, not yet verified.
+  // Submitted means the information is complete and not yet verified; it
+  // says nothing about anything being sent.
+  await expect(stages.getByRole("button", { name: /Submitted/ })).toContainText(
+    "Information is complete but not yet verified.",
+  );
   await stages.getByRole("button", { name: /Submitted/ }).click();
   await expect(page.locator("tr", { hasText: "Bea Pending" })).toContainText(
     "TX license not board-verified",

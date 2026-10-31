@@ -1,10 +1,12 @@
 // useOnboardingFunnel wires the read to the report: rows from the funnel,
-// under the rules that came with the read, and the stages to show, which hide
-// Invited until the read says the intake tables can be seen.
+// under the configuration that came with the read, and the stages to show
+// from it, which hide Invited until the read says the intake tables can be
+// seen.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_ONBOARDING_FUNNEL_RULES,
-  resolveOnboardingFunnelRules,
+  DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+  DEFAULT_ONBOARDING_FUNNEL_STAGES,
+  resolveOnboardingFunnelConfig,
   type OnboardingFunnelRead,
 } from "@/lib/onboardingFunnel";
 
@@ -44,7 +46,7 @@ function data(intakeReadable: boolean): OnboardingFunnelRead {
     groupMemberships: [],
     cases: [],
     intakeReadable,
-    rules: DEFAULT_ONBOARDING_FUNNEL_RULES,
+    config: DEFAULT_ONBOARDING_FUNNEL_CONFIG,
   };
 }
 
@@ -72,15 +74,15 @@ describe("useOnboardingFunnel", () => {
     ]);
   });
 
-  it("builds the rows under the rules that came with the read", () => {
+  it("builds the rows under the configuration that came with the read", () => {
     const read = data(false);
     read.cases = [{ providerId: "p-1", state: "NC", status: "not_pursuing" }];
     holder.data = read;
     expect(useOnboardingFunnel().rows?.[0].stage).toBe("credentialing");
     holder.data = {
       ...read,
-      rules: resolveOnboardingFunnelRules(null, {
-        caseStatusesNotCountedAsCredentialing: ["not_pursuing"],
+      config: resolveOnboardingFunnelConfig(null, {
+        rules: { caseStatusesNotCountedAsCredentialing: ["not_pursuing"] },
       }),
     };
     expect(useOnboardingFunnel().rows?.[0].stage).toBe("verified_awaiting_assignment");

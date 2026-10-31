@@ -6,8 +6,9 @@
 // only (MINT-89), so this browser read cannot see them: intakeReadable is
 // false and the funnel hides its Invited stage.
 //
-// Rules: nothing stores a platform or organization override yet (Mission
-// Control will), so the read resolves to the platform default.
+// Configuration (stages and rules): nothing stores a platform or organization
+// override yet; the Mission Control setting is MINT-125. Until then the read
+// resolves to the platform default.
 //
 // PHI boundary: date of birth and SSN last-4 are read ONLY to reduce them to
 // presence booleans right here. The values never leave this module, never
@@ -16,7 +17,7 @@ import { supabase } from "@/integrations/supabase/externalClient";
 import { requireActiveOrg } from "@/lib/audit";
 import { isCaseStatus } from "@/lib/caseStatus";
 import { readCompletePages } from "@/lib/completePages";
-import { resolveOnboardingFunnelRules, type OnboardingFunnelRead } from "@/lib/onboardingFunnel";
+import { resolveOnboardingFunnelConfig, type OnboardingFunnelRead } from "@/lib/onboardingFunnel";
 
 type Row = Record<string, unknown>;
 
@@ -151,7 +152,7 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> 
       status: isCaseStatus(row.case_status) ? row.case_status : null,
     })),
     intakeReadable: false,
-    // Platform default, no organization override: neither is stored yet.
-    rules: resolveOnboardingFunnelRules(null, null),
+    // Platform default, no organization override: neither is stored yet (MINT-125).
+    config: resolveOnboardingFunnelConfig(null, null),
   };
 }

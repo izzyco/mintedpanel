@@ -2,16 +2,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildOnboardingFunnelRows,
-  DEFAULT_ONBOARDING_FUNNEL_RULES,
+  DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+  DEFAULT_ONBOARDING_FUNNEL_STAGES,
   visibleOnboardingFunnelStages,
   type OnboardingFunnelInput,
+  type OnboardingFunnelConfig,
   type OnboardingFunnelProviderFacts,
-  type OnboardingFunnelStage,
+  type OnboardingFunnelStageKey,
 } from "@/lib/onboardingFunnel";
 
 const state = vi.hoisted(() => ({
   stage: null as string | null,
   intakeReadable: false,
+  config: null as OnboardingFunnelConfig | null,
 }));
 
 // The report opens on Profile incomplete; a test can open another stage.
@@ -26,8 +29,15 @@ vi.mock("react", async (importOriginal) => {
 vi.mock("@/hooks/useOnboardingFunnel", () => ({
   useOnboardingFunnel: () => ({
     orgId: "org-1",
-    rows: buildOnboardingFunnelRows(funnelInput(), "2026-10-20", DEFAULT_ONBOARDING_FUNNEL_RULES),
-    stages: visibleOnboardingFunnelStages(state.intakeReadable),
+    rows: buildOnboardingFunnelRows(
+      funnelInput(),
+      "2026-10-20",
+      state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+    ),
+    stages: visibleOnboardingFunnelStages(
+      (state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG).stages,
+      state.intakeReadable,
+    ),
     isLoading: false,
     isError: false,
     refetch: vi.fn(),
@@ -79,7 +89,7 @@ function funnelInput(): OnboardingFunnelInput {
   };
 }
 
-function render(stage: OnboardingFunnelStage | null = null): string {
+function render(stage: OnboardingFunnelStageKey | null = null): string {
   state.stage = stage;
   return renderToStaticMarkup(<OnboardingFunnelReport />);
 }
@@ -92,6 +102,7 @@ function cardTitles(html: string): string[] {
 beforeEach(() => {
   state.stage = null;
   state.intakeReadable = false;
+  state.config = null;
 });
 
 describe("Provider Onboarding report", () => {
@@ -118,9 +129,10 @@ describe("Provider Onboarding report", () => {
     expect(html).not.toContain("Eve Pending");
   });
 
-  it("lists only unverified providers under Submitted", () => {
+  it("lists only unverified providers under Submitted, described as complete and not verified", () => {
     const html = render("submitted");
     expect(html).toContain("Submitted · 1");
+    expect(html).toContain("Information is complete but not yet verified.");
     expect(html).toContain("Eve Pending");
     expect(html).toContain("Record pending verification");
     expect(html).not.toContain("Bea Unassigned");
@@ -146,5 +158,35 @@ describe("Provider Onboarding report", () => {
       "Credentialing",
     ]);
     expect(html).toContain("xl:grid-cols-6");
+  });
+
+  it("renders the organization's labels, gates and order", () => {
+    state.config = {
+      stages: [
+        {
+          key: "not_ready",
+          label: "Not ready",
+          description: "Anything short of Ready.",
+          gate: "not_ready",
+        },
+        {
+          key: "ready_for_credentialing",
+          label: "Ready to start",
+          description: "Ready for payer work.",
+          gate: "ready",
+        },
+        { key: "credentialing", label: "Credentialing", description: "Has a case.", gate: "any" },
+      ],
+      rules: DEFAULT_ONBOARDING_FUNNEL_CONFIG.rules,
+    };
+    const html = render();
+    expect(cardTitles(html)).toEqual(["Not ready", "Ready to start", "Credentialing"]);
+    expect(html).toContain("lg:grid-cols-3");
+    // Opens on the first stage that lists what is needed.
+    expect(html).toContain("Not ready · 3");
+    expect(html).toContain("No NPI");
+    expect(html).toContain("Needs a group and a location");
+    expect(html).not.toContain("Submitted");
+    expect(DEFAULT_ONBOARDING_FUNNEL_STAGES[2].label).toBe("Submitted");
   });
 });

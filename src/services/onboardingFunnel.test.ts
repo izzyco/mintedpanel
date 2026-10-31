@@ -55,7 +55,7 @@ vi.mock("@/lib/audit", () => ({ requireActiveOrg: () => "org-1" }));
 
 import {
   buildOnboardingFunnelRows,
-  DEFAULT_ONBOARDING_FUNNEL_RULES,
+  DEFAULT_ONBOARDING_FUNNEL_CONFIG,
   onboardingFunnelStageCounts,
   resolveOnboardingFunnelRules,
 } from "@/lib/onboardingFunnel";
@@ -264,7 +264,7 @@ describe("onboarding funnel service", () => {
     const input = await getOnboardingFunnelInput();
     expect(holder.calls.facilities.select[0][0]).toContain("reference_only");
     expect(input.locations).toEqual([]);
-    expect(buildOnboardingFunnelRows(input, "2026-10-20", input.rules)).toMatchObject([
+    expect(buildOnboardingFunnelRows(input, "2026-10-20", input.config)).toMatchObject([
       { providerId: "p-ref", stage: "verified_awaiting_assignment", gaps: ["Needs a location"] },
     ]);
   });
@@ -325,7 +325,7 @@ describe("onboarding funnel service", () => {
     const input = await getOnboardingFunnelInput();
     expect(holder.calls.facilities.select[0][0]).toContain("group_id");
     expect(holder.calls.provider_groups.select[0][0]).toContain("name");
-    expect(buildOnboardingFunnelRows(input, "2026-10-20", input.rules)).toMatchObject([
+    expect(buildOnboardingFunnelRows(input, "2026-10-20", input.config)).toMatchObject([
       {
         providerId: "p-moved",
         stage: "verified_awaiting_assignment",
@@ -334,9 +334,9 @@ describe("onboarding funnel service", () => {
     ]);
   });
 
-  it("resolves the rules to the platform default, since nothing stores an override yet", async () => {
+  it("resolves stages and rules to the platform default, since nothing stores an override yet", async () => {
     const input = await getOnboardingFunnelInput();
-    expect(input.rules).toEqual(DEFAULT_ONBOARDING_FUNNEL_RULES);
+    expect(input.config).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
   });
 
   it("cannot read the intake tables, so the Invited stage stays hidden", async () => {
@@ -357,9 +357,9 @@ describe("onboarding funnel service", () => {
     // The status is read for the case-status rule; by default every case counts.
     expect(holder.calls.credential_cases.select[0][0]).toContain("case_status");
     expect(input.cases).toEqual([{ providerId: "p-denied", state: "NC", status: "denied" }]);
-    const rows = buildOnboardingFunnelRows(input, "2026-10-20", input.rules);
+    const rows = buildOnboardingFunnelRows(input, "2026-10-20", input.config);
     expect(rows.map((row) => [row.providerId, row.stage])).toEqual([["p-denied", "credentialing"]]);
-    expect(onboardingFunnelStageCounts(rows)).toEqual({
+    expect(onboardingFunnelStageCounts(rows, input.config.stages)).toEqual({
       invited: 0,
       profile_incomplete: 0,
       submitted: 0,
@@ -371,7 +371,9 @@ describe("onboarding funnel service", () => {
       caseStatusesNotCountedAsCredentialing: ["denied"],
     });
     // With denied listed as not counting, her record places her instead (no license).
-    expect(buildOnboardingFunnelRows(input, "2026-10-20", rules)[0]).toMatchObject({
+    expect(
+      buildOnboardingFunnelRows(input, "2026-10-20", { ...input.config, rules })[0],
+    ).toMatchObject({
       stage: "profile_incomplete",
       gaps: ["No state license"],
     });
