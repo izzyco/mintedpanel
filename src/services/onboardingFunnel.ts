@@ -6,19 +6,23 @@
 // only (MINT-89), so this browser read cannot see them: intakeReadable is
 // false and the funnel hides its Invited stage.
 //
+// Rules: nothing stores a platform or organization override yet (Mission
+// Control will), so the read resolves to the platform default.
+//
 // PHI boundary: date of birth and SSN last-4 are read ONLY to reduce them to
 // presence booleans right here. The values never leave this module, never
 // enter the cache, and never render.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { requireActiveOrg } from "@/lib/audit";
+import { isCaseStatus } from "@/lib/caseStatus";
 import { readCompletePages } from "@/lib/completePages";
-import type { OnboardingFunnelInput } from "@/lib/onboardingFunnel";
+import { resolveOnboardingFunnelRules, type OnboardingFunnelRead } from "@/lib/onboardingFunnel";
 
 type Row = Record<string, unknown>;
 
 const text = (value: unknown) => (typeof value === "string" ? value : null);
 
-export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelInput> {
+export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> {
   const orgId = requireActiveOrg();
   const providersQuery = supabase
     .from("providers")
@@ -39,7 +43,7 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelInput>
     .order("id", { ascending: true });
   const facilitiesQuery = supabase
     .from("facilities")
-    .select("id, state, is_active, reference_only", { count: "exact" })
+    .select("id, name, group_id, state, is_active, reference_only", { count: "exact" })
     .eq("org_id", orgId)
     .order("id", { ascending: true });
   const assignmentsQuery = supabase
@@ -49,19 +53,17 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelInput>
     .order("id", { ascending: true });
   const groupsQuery = supabase
     .from("provider_groups")
-    .select("id, is_active", { count: "exact" })
+    .select("id, name, is_active", { count: "exact" })
     .eq("org_id", orgId)
     .order("id", { ascending: true });
-  // start_date is deliberately not read: a future membership already counts
-  // (src/lib/onboardingFunnel.ts header).
   const membershipsQuery = supabase
     .from("provider_group_assignments")
-    .select("id, provider_id, group_id, end_date", { count: "exact" })
+    .select("id, provider_id, group_id, start_date, end_date", { count: "exact" })
     .eq("org_id", orgId)
     .order("id", { ascending: true });
   const casesQuery = supabase
     .from("credential_cases")
-    .select("id, provider_id, state", { count: "exact" })
+    .select("id, provider_id, state, case_status", { count: "exact" })
     .eq("org_id", orgId)
     .order("id", { ascending: true });
 
@@ -90,14 +92,15 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelInput>
       }),
     ])) as unknown as Row[][];
 
+  const groupNames = new Map(groups.map((row) => [row.id, text(row.name)]));
+  const activeGroups = new Set(groups.filter((row) => row.is_active === true).map((row) => row.id));
   // A reference-only location exists to be referenced, not worked: like the
   // Portfolio footprint, it never counts as a place the provider works.
-  const activeFacilityStates = new Map(
+  const activeFacilities = new Map(
     facilities
       .filter((row) => row.is_active === true && row.reference_only !== true)
-      .map((row) => [row.id, text(row.state)]),
+      .map((row) => [row.id, row]),
   );
-  const activeGroups = new Set(groups.filter((row) => row.is_active === true).map((row) => row.id));
   return {
     providers: providers
       .filter((row) => row.reference_only !== true)
@@ -119,17 +122,36 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelInput>
         verifiedStatus: text(row.verified_status) ?? "unverified",
         expirationDate: text(row.expiration_date),
       })),
-    workStates: assignments
-      .filter((row) => activeFacilityStates.has(row.facility_id))
-      .map((row) => ({
-        providerId: text(row.provider_id),
-        state: activeFacilityStates.get(row.facility_id) ?? null,
-      })),
+    locations: assignments.flatMap((row) => {
+      const facility = activeFacilities.get(row.facility_id);
+      if (!facility) return [];
+      const groupId = text(facility.group_id);
+      return [
+        {
+          providerId: text(row.provider_id),
+          locationId: String(facility.id),
+          locationName: text(facility.name)?.trim() || "with no name",
+          state: text(facility.state),
+          groupId,
+          groupName: groupId === null ? null : (groupNames.get(groupId) ?? null),
+        },
+      ];
+    }),
     groupMemberships: memberships
       .filter((row) => activeGroups.has(row.group_id))
-      .map((row) => ({ providerId: text(row.provider_id), endDate: text(row.end_date) })),
-    // Every case counts, whatever its status: no status column is read.
-    cases: cases.map((row) => ({ providerId: text(row.provider_id), state: text(row.state) })),
+      .map((row) => ({
+        providerId: text(row.provider_id),
+        groupId: text(row.group_id),
+        startDate: text(row.start_date),
+        endDate: text(row.end_date),
+      })),
+    cases: cases.map((row) => ({
+      providerId: text(row.provider_id),
+      state: text(row.state),
+      status: isCaseStatus(row.case_status) ? row.case_status : null,
+    })),
     intakeReadable: false,
+    // Platform default, no organization override: neither is stored yet.
+    rules: resolveOnboardingFunnelRules(null, null),
   };
 }

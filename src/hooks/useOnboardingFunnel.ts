@@ -3,7 +3,8 @@
 // time it opens. Case creation also marks the key stale (not awaited); it is
 // deliberately NOT in the roster cache set, whose awaited "all" refetch would
 // make every provider write wait on this seven-table read. Invited shows only
-// once the read can see the intake tables (intakeReadable; MINT-89).
+// once the read can see the intake tables (intakeReadable; MINT-89). The
+// funnel rules come with the read, resolved for the org.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
@@ -22,7 +23,10 @@ export function useOnboardingFunnel() {
     refetchOnMount: "always",
   });
   const rows = useMemo(
-    () => (query.data ? buildOnboardingFunnelRows(query.data, localTodayIso()) : undefined),
+    () =>
+      query.data
+        ? buildOnboardingFunnelRows(query.data, localTodayIso(), query.data.rules)
+        : undefined,
     [query.data],
   );
   const intakeReadable = query.data?.intakeReadable ?? false;

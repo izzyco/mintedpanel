@@ -1,8 +1,8 @@
 // Provider Onboarding funnel (Oct 20 review, RC-06; stage names from the PM,
-// Oct 30). Provider stages from today's data, in funnel order: Profile
-// incomplete, Submitted, Ready for credentialing, Credentialing (Invited joins
-// first once the intake tables can be read). Click a stage to see who is in it
-// and what holds them there. Credentialing is one stage, never split by case
+// Oct 30 and 31). Provider stages from today's data, in funnel order: Profile
+// incomplete, Submitted, Verified awaiting assignment, Ready for credentialing,
+// Credentialing (Invited joins first once the intake tables can be read).
+// Click a stage to see who is in it and what holds them there. Credentialing is one stage, never split by case
 // status: that belongs on the case board. State filter only, per the Oct 19
 // Luna prep (no date range). Read-only.
 import { useMemo, useState } from "react";
@@ -35,8 +35,8 @@ const PAGE_SIZE = 100;
 
 /** Wide-screen columns by visible stage count; Tailwind needs literal class names. */
 const LG_COLUMNS: Readonly<Record<number, string>> = {
-  4: "lg:grid-cols-4",
   5: "lg:grid-cols-5",
+  6: "lg:grid-cols-3 xl:grid-cols-6",
 };
 
 function percent(count: number, total: number): number {
@@ -60,7 +60,7 @@ export function OnboardingFunnelReport() {
   const visibleCount = shown.key === viewKey ? shown.count : PAGE_SIZE;
   const stageInfo = stages.find((entry) => entry.key === stage);
   const showGaps = stageInfo?.listsGaps ?? false;
-  const columns = LG_COLUMNS[stages.length] ?? "lg:grid-cols-4";
+  const columns = LG_COLUMNS[stages.length] ?? "lg:grid-cols-5";
 
   if (!orgId) {
     return <EmptyState message="Select an organization to see provider onboarding." />;

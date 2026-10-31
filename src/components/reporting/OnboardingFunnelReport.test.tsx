@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildOnboardingFunnelRows,
+  DEFAULT_ONBOARDING_FUNNEL_RULES,
   visibleOnboardingFunnelStages,
   type OnboardingFunnelInput,
   type OnboardingFunnelProviderFacts,
@@ -25,7 +26,7 @@ vi.mock("react", async (importOriginal) => {
 vi.mock("@/hooks/useOnboardingFunnel", () => ({
   useOnboardingFunnel: () => ({
     orgId: "org-1",
-    rows: buildOnboardingFunnelRows(funnelInput(), "2026-10-20"),
+    rows: buildOnboardingFunnelRows(funnelInput(), "2026-10-20", DEFAULT_ONBOARDING_FUNNEL_RULES),
     stages: visibleOnboardingFunnelStages(state.intakeReadable),
     isLoading: false,
     isError: false,
@@ -53,17 +54,27 @@ function funnelInput(): OnboardingFunnelInput {
       complete("p-unassigned", "Bea Unassigned"),
       complete("p-ready", "Cal Ready"),
       complete("p-denied", "Dee Enrolling"),
+      { ...complete("p-pending", "Eve Pending"), pendingVerification: true },
     ],
-    licenses: ["p-new", "p-unassigned", "p-ready"].map((providerId) => ({
+    licenses: ["p-new", "p-unassigned", "p-ready", "p-pending"].map((providerId) => ({
       providerId,
       state: "TX",
       verifiedStatus: "verified",
       expirationDate: "2027-06-30",
     })),
-    workStates: [{ providerId: "p-ready", state: "TX" }],
-    groupMemberships: [{ providerId: "p-ready", endDate: null }],
-    // Dee's only case was denied; the service reads no status, so it is a case.
-    cases: [{ providerId: "p-denied", state: "TX" }],
+    locations: [
+      {
+        providerId: "p-ready",
+        locationId: "f-dallas",
+        locationName: "Dallas",
+        state: "TX",
+        groupId: "g-1",
+        groupName: "Rose City Rehab",
+      },
+    ],
+    groupMemberships: [{ providerId: "p-ready", groupId: "g-1", startDate: null, endDate: null }],
+    // Dee's only case was denied; by default every case counts.
+    cases: [{ providerId: "p-denied", state: "TX", status: "denied" }],
     intakeReadable: false,
   };
 }
@@ -84,25 +95,35 @@ beforeEach(() => {
 });
 
 describe("Provider Onboarding report", () => {
-  it("shows the four provider stages in funnel order, without Invited", () => {
+  it("shows the five provider stages in funnel order, without Invited", () => {
     const html = render();
     expect(cardTitles(html)).toEqual([
       "Profile incomplete",
       "Submitted",
+      "Verified, awaiting assignment",
       "Ready for credentialing",
       "Credentialing",
     ]);
     expect(html).not.toContain("Awaiting verification");
     expect(html).not.toContain("Ready to credential<");
-    expect(html).toContain("lg:grid-cols-4");
+    expect(html).toContain("lg:grid-cols-5");
   });
 
-  it("lists a verified provider with no group or location under Submitted", () => {
-    const html = render("submitted");
-    expect(html).toContain("Submitted · 1");
+  it("lists a verified provider with no group or location under Verified, awaiting assignment", () => {
+    const html = render("verified_awaiting_assignment");
+    expect(html).toContain("Verified, awaiting assignment · 1");
     expect(html).toContain("What&#x27;s needed");
     expect(html).toContain("Bea Unassigned");
     expect(html).toContain("Needs a group and a location");
+    expect(html).not.toContain("Eve Pending");
+  });
+
+  it("lists only unverified providers under Submitted", () => {
+    const html = render("submitted");
+    expect(html).toContain("Submitted · 1");
+    expect(html).toContain("Eve Pending");
+    expect(html).toContain("Record pending verification");
+    expect(html).not.toContain("Bea Unassigned");
   });
 
   it("keeps Credentialing to one count with no case-status breakdown", () => {
@@ -120,9 +141,10 @@ describe("Provider Onboarding report", () => {
       "Invited",
       "Profile incomplete",
       "Submitted",
+      "Verified, awaiting assignment",
       "Ready for credentialing",
       "Credentialing",
     ]);
-    expect(html).toContain("lg:grid-cols-5");
+    expect(html).toContain("xl:grid-cols-6");
   });
 });

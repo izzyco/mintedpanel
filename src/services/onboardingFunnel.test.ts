@@ -53,7 +53,12 @@ vi.mock("@/integrations/supabase/externalClient", () => ({
 }));
 vi.mock("@/lib/audit", () => ({ requireActiveOrg: () => "org-1" }));
 
-import { buildOnboardingFunnelRows, onboardingFunnelStageCounts } from "@/lib/onboardingFunnel";
+import {
+  buildOnboardingFunnelRows,
+  DEFAULT_ONBOARDING_FUNNEL_RULES,
+  onboardingFunnelStageCounts,
+  resolveOnboardingFunnelRules,
+} from "@/lib/onboardingFunnel";
 import { getOnboardingFunnelInput } from "./onboardingFunnel";
 
 const DOB = "1987-06-05";
@@ -100,24 +105,48 @@ describe("onboarding funnel service", () => {
         expiration_date: "2027-06-30",
       })),
       facilities: [
-        { id: "f-on", org_id: "org-1", state: "NC", is_active: true, reference_only: false },
-        { id: "f-off", org_id: "org-1", state: "SC", is_active: false, reference_only: false },
+        {
+          id: "f-on",
+          org_id: "org-1",
+          name: "Durham",
+          group_id: "g-on",
+          state: "NC",
+          is_active: true,
+          reference_only: false,
+        },
+        {
+          id: "f-off",
+          org_id: "org-1",
+          name: "Columbia",
+          group_id: "g-on",
+          state: "SC",
+          is_active: false,
+          reference_only: false,
+        },
       ],
       provider_facility_assignments: [
         { id: "a-1", org_id: "org-1", provider_id: "p-active", facility_id: "f-on" },
         { id: "a-2", org_id: "org-1", provider_id: "p-active", facility_id: "f-off" },
       ],
       provider_groups: [
-        { id: "g-on", org_id: "org-1", is_active: true },
-        { id: "g-off", org_id: "org-1", is_active: false },
+        { id: "g-on", org_id: "org-1", name: "Rose City Rehab", is_active: true },
+        { id: "g-off", org_id: "org-1", name: "Closed Rehab", is_active: false },
       ],
       provider_group_assignments: [
-        { id: "m-1", org_id: "org-1", provider_id: "p-active", group_id: "g-on", end_date: null },
+        {
+          id: "m-1",
+          org_id: "org-1",
+          provider_id: "p-active",
+          group_id: "g-on",
+          start_date: "2026-01-05",
+          end_date: null,
+        },
         {
           id: "m-2",
           org_id: "org-1",
           provider_id: "p-onboarding",
           group_id: "g-on",
+          start_date: null,
           end_date: "2026-01-31",
         },
         {
@@ -125,6 +154,7 @@ describe("onboarding funnel service", () => {
           org_id: "org-1",
           provider_id: "p-onboarding",
           group_id: "g-off",
+          start_date: null,
           end_date: null,
         },
       ],
@@ -180,8 +210,17 @@ describe("onboarding funnel service", () => {
       [500, 999],
     ]);
     expect(input.licenses).toHaveLength(619);
-    expect(input.workStates).toEqual([{ providerId: "p-active", state: "NC" }]);
-    expect(input.cases).toEqual([{ providerId: "p-active", state: "NC" }]);
+    expect(input.locations).toEqual([
+      {
+        providerId: "p-active",
+        locationId: "f-on",
+        locationName: "Durham",
+        state: "NC",
+        groupId: "g-on",
+        groupName: "Rose City Rehab",
+      },
+    ]);
+    expect(input.cases).toEqual([{ providerId: "p-active", state: "NC", status: "submitted" }]);
   });
 
   it("leaves reference-only locations out, so they never make a provider Ready", async () => {
@@ -198,31 +237,106 @@ describe("onboarding funnel service", () => {
       },
     ];
     holder.tables.facilities = [
-      { id: "f-ref", org_id: "org-1", state: "TX", is_active: true, reference_only: true },
+      {
+        id: "f-ref",
+        org_id: "org-1",
+        name: "Austin",
+        group_id: "g-on",
+        state: "TX",
+        is_active: true,
+        reference_only: true,
+      },
     ];
     holder.tables.provider_facility_assignments = [
       { id: "a-ref", org_id: "org-1", provider_id: "p-ref", facility_id: "f-ref" },
     ];
     holder.tables.provider_group_assignments = [
-      { id: "m-ref", org_id: "org-1", provider_id: "p-ref", group_id: "g-on", end_date: null },
+      {
+        id: "m-ref",
+        org_id: "org-1",
+        provider_id: "p-ref",
+        group_id: "g-on",
+        start_date: null,
+        end_date: null,
+      },
     ];
     holder.tables.credential_cases = [];
     const input = await getOnboardingFunnelInput();
     expect(holder.calls.facilities.select[0][0]).toContain("reference_only");
-    expect(input.workStates).toEqual([]);
-    expect(buildOnboardingFunnelRows(input, "2026-10-20")).toMatchObject([
-      { providerId: "p-ref", stage: "submitted", gaps: ["Needs a location"] },
+    expect(input.locations).toEqual([]);
+    expect(buildOnboardingFunnelRows(input, "2026-10-20", input.rules)).toMatchObject([
+      { providerId: "p-ref", stage: "verified_awaiting_assignment", gaps: ["Needs a location"] },
     ]);
   });
 
-  it("reads group memberships in active groups only and leaves the end date to the funnel", async () => {
+  it("reads group memberships in active groups only and leaves both dates to the funnel", async () => {
     const input = await getOnboardingFunnelInput();
-    // A membership that starts in the future already counts: no start date.
-    expect(holder.calls.provider_group_assignments.select[0][0]).not.toContain("start_date");
+    // The start date is read for the future-membership rule; by default a
+    // membership that starts in the future already counts.
+    expect(holder.calls.provider_group_assignments.select[0][0]).toContain("start_date");
     expect(input.groupMemberships).toEqual([
-      { providerId: "p-active", endDate: null },
-      { providerId: "p-onboarding", endDate: "2026-01-31" },
+      { providerId: "p-active", groupId: "g-on", startDate: "2026-01-05", endDate: null },
+      { providerId: "p-onboarding", groupId: "g-on", startDate: null, endDate: "2026-01-31" },
     ]);
+  });
+
+  it("names the location and its group when the location is under another group", async () => {
+    holder.tables.providers = [provider("p-moved")];
+    holder.tables.state_licenses = [
+      {
+        id: "l-moved",
+        org_id: "org-1",
+        provider_id: "p-moved",
+        state: "NC",
+        status: "active",
+        verified_status: "verified",
+        expiration_date: "2027-06-30",
+      },
+    ];
+    holder.tables.provider_groups = [
+      { id: "g-on", org_id: "org-1", name: "Rose City Rehab", is_active: true },
+      { id: "g-other", org_id: "org-1", name: "Shelby Sports Rehab", is_active: true },
+    ];
+    holder.tables.facilities = [
+      {
+        id: "f-shelby",
+        org_id: "org-1",
+        name: "Shelby Clinic",
+        group_id: "g-other",
+        state: "NC",
+        is_active: true,
+        reference_only: false,
+      },
+    ];
+    holder.tables.provider_facility_assignments = [
+      { id: "a-moved", org_id: "org-1", provider_id: "p-moved", facility_id: "f-shelby" },
+    ];
+    holder.tables.provider_group_assignments = [
+      {
+        id: "m-moved",
+        org_id: "org-1",
+        provider_id: "p-moved",
+        group_id: "g-on",
+        start_date: null,
+        end_date: null,
+      },
+    ];
+    holder.tables.credential_cases = [];
+    const input = await getOnboardingFunnelInput();
+    expect(holder.calls.facilities.select[0][0]).toContain("group_id");
+    expect(holder.calls.provider_groups.select[0][0]).toContain("name");
+    expect(buildOnboardingFunnelRows(input, "2026-10-20", input.rules)).toMatchObject([
+      {
+        providerId: "p-moved",
+        stage: "verified_awaiting_assignment",
+        gaps: ["Location Shelby Clinic is under Shelby Sports Rehab, not the provider's group"],
+      },
+    ]);
+  });
+
+  it("resolves the rules to the platform default, since nothing stores an override yet", async () => {
+    const input = await getOnboardingFunnelInput();
+    expect(input.rules).toEqual(DEFAULT_ONBOARDING_FUNNEL_RULES);
   });
 
   it("cannot read the intake tables, so the Invited stage stays hidden", async () => {
@@ -231,7 +345,7 @@ describe("onboarding funnel service", () => {
     expect(Object.keys(holder.calls).filter((table) => table.includes("intake"))).toEqual([]);
   });
 
-  it("counts a provider whose only case is denied in Credentialing", async () => {
+  it("counts a provider whose only case is denied in Credentialing by default", async () => {
     holder.tables.providers = [provider("p-denied")];
     holder.tables.state_licenses = [];
     holder.tables.provider_facility_assignments = [];
@@ -240,16 +354,26 @@ describe("onboarding funnel service", () => {
       { id: "c-9", org_id: "org-1", provider_id: "p-denied", state: "NC", case_status: "denied" },
     ];
     const input = await getOnboardingFunnelInput();
-    // No case-status column is read: every case counts.
-    expect(String(holder.calls.credential_cases.select[0][0])).not.toMatch(/status/);
-    const rows = buildOnboardingFunnelRows(input, "2026-10-20");
+    // The status is read for the case-status rule; by default every case counts.
+    expect(holder.calls.credential_cases.select[0][0]).toContain("case_status");
+    expect(input.cases).toEqual([{ providerId: "p-denied", state: "NC", status: "denied" }]);
+    const rows = buildOnboardingFunnelRows(input, "2026-10-20", input.rules);
     expect(rows.map((row) => [row.providerId, row.stage])).toEqual([["p-denied", "credentialing"]]);
     expect(onboardingFunnelStageCounts(rows)).toEqual({
       invited: 0,
       profile_incomplete: 0,
       submitted: 0,
+      verified_awaiting_assignment: 0,
       ready_for_credentialing: 0,
       credentialing: 1,
+    });
+    const rules = resolveOnboardingFunnelRules(null, {
+      caseStatusesNotCountedAsCredentialing: ["denied"],
+    });
+    // With denied listed as not counting, her record places her instead (no license).
+    expect(buildOnboardingFunnelRows(input, "2026-10-20", rules)[0]).toMatchObject({
+      stage: "profile_incomplete",
+      gaps: ["No state license"],
     });
   });
 });
