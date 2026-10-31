@@ -69,8 +69,12 @@
 --     CHECK. A cc'd user must be a member of the org when the step is saved
 --     (BEFORE trigger); membership can lapse later, so the sender re-checks.
 --     cc'd copies are always emailed, whatever the step's channel.
---   * The digest has no cc list unless Minted's digest_cc_allowed says so: a
---     digest step's cc_recipients must be empty while it is false.
+--   * The digest has no cc list unless digest_cc_allowed says so for the org:
+--     while it is effectively false, no write may put a cc list on a digest
+--     step. A cc list stored while it was true is inert after it goes false:
+--     it no longer blocks writes that leave it unchanged, the readers
+--     (resolveNotificationSequence, the card's draft) drop it, nothing sends
+--     to it, and the next save of the digest clears it.
 --   * Channels email and sms. SMS needs recorded consent: sms_consents holds
 --     who (provider), which number, when, how (source), which consent text
 --     version, and when it was revoked. No UI writes it here; the intake form
@@ -108,6 +112,12 @@
 -- would fail on re-run because the constraint or trigger depends on it, and
 -- their signatures are new, so no PostgREST overload can arise. The RPC is
 -- DROP + CREATE.
+--
+-- Edited in place before any apply (Oct 31 2026: the bounce escalation step,
+-- digest_cc_allowed with its org override, the sms_consents SET NULL FK, and
+-- the days 1/2/3 intake default). It has never been applied to a hosted
+-- database; it has only run in CI's ephemeral Migration dry-run. Once it is
+-- applied anywhere, further changes go in a new migration.
 --
 -- Additive and re-runnable. REPO-ONLY until an operator applies it, staging
 -- first. The app reads these tables from the Org Detail Notifications card;
@@ -487,6 +497,11 @@ DECLARE
   -- admin itself: inside it current_user is postgres, so it passes here.
   v_platform_writer boolean := current_user IN ('service_role', 'postgres', 'supabase_admin');
   v_platform_changed boolean;
+  -- The platform-managed columns and the ones this trigger stamps.
+  v_not_org_owned constant text[] := ARRAY[
+    'compress_toward_start_date', 'send_hour', 'send_time_zone', 'digest_cc_allowed',
+    'revision', 'created_at', 'updated_at', 'updated_by'
+  ];
 BEGIN
   IF TG_OP = 'INSERT' THEN
     v_platform_changed := NEW.compress_toward_start_date IS NOT NULL
@@ -514,16 +529,17 @@ BEGIN
     END IF;
     NEW.created_at := OLD.created_at;
     -- revision, updated_at and updated_by describe the org's own settings
-    -- (enabled, stop conditions, target, bounce escalation step, steps). A
-    -- change by Minted to its settings alone leaves them as they are, so an
-    -- admin editing at that moment saves cleanly instead of getting the
-    -- conflict; the save RPC never names these columns, so that save cannot
-    -- undo Minted's change.
+    -- (enabled, stop conditions, target, bounce escalation step, steps: every
+    -- column not in v_not_org_owned). A change by Minted to its settings
+    -- alone leaves them as they are, so an admin editing at that moment saves
+    -- cleanly instead of getting the conflict; the save RPC never names these
+    -- columns, so that save cannot undo Minted's change.
+    -- "Org settings unchanged" is the whole row minus the platform-managed
+    -- and stamp columns, so a column added later is covered without editing
+    -- this list.
     IF v_platform_changed
-       AND NEW.enabled IS NOT DISTINCT FROM OLD.enabled
-       AND NEW.stop_conditions IS NOT DISTINCT FROM OLD.stop_conditions
-       AND NEW.target_days_to_ready IS NOT DISTINCT FROM OLD.target_days_to_ready
-       AND NEW.bounce_escalation_step IS NOT DISTINCT FROM OLD.bounce_escalation_step THEN
+       AND (pg_catalog.to_jsonb(NEW) - v_not_org_owned)
+           = (pg_catalog.to_jsonb(OLD) - v_not_org_owned) THEN
       NEW.revision := OLD.revision;
       NEW.updated_at := OLD.updated_at;
       NEW.updated_by := OLD.updated_by;
@@ -618,16 +634,22 @@ $function$;
 
 -- Cross-row rules, checked at commit (or at SET CONSTRAINTS ... IMMEDIATE)
 -- so a save may delete and re-insert every step in one transaction.
+-- SECURITY DEFINER (it only reads, with an empty search_path): the rules must
+-- see the sequence, its steps and the default whoever commits. As the writer,
+-- a role that cannot see the sequence row (a future definer RPC committing as
+-- a platform admin who is not an org member) would read it as deleted and
+-- skip every rule.
 CREATE OR REPLACE FUNCTION private.notification_sequence_steps_check_set()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = ''
 AS $function$
 DECLARE
   v_sequence_id uuid;
   v_purpose text;
   v_org_digest_cc_allowed boolean;
+  v_cc_written boolean;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     v_sequence_id := OLD.sequence_id;
@@ -650,22 +672,28 @@ BEGIN
   END IF;
 
   -- The digest goes to coordinators only (D59): nobody is cc'd on it, unless
-  -- Minted's digest_cc_allowed says so for this org: the org row's override,
-  -- else the default, else false. Read as the writer, who can read both (any
-  -- member, or service_role).
-  IF v_purpose = 'followup_digest'
-     AND NOT COALESCE(
-       v_org_digest_cc_allowed,
-       (SELECT d.digest_cc_allowed FROM public.notification_sequence_defaults AS d
-         WHERE d.purpose = 'followup_digest'),
-       false
-     )
-     AND EXISTS (
-       SELECT 1 FROM public.notification_sequence_steps AS st
-        WHERE st.sequence_id = v_sequence_id
-          AND st.cc_recipients <> '[]'::jsonb
-     ) THEN
-    RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'notification_digest_has_no_cc';
+  -- digest_cc_allowed says so for this org: the org row's override, else
+  -- Minted's default, else false. Only a write that puts a cc list on the
+  -- step is refused (an insert with one, or an update that changes it to a
+  -- non-empty one). A list stored while the setting was on is inert once it
+  -- goes off: an unrelated write that leaves it as it is passes, the readers
+  -- drop it, and the next save clears it.
+  -- (Nested so OLD and NEW are read only where they are assigned.)
+  IF v_purpose = 'followup_digest' AND TG_OP <> 'DELETE' THEN
+    IF TG_OP = 'INSERT' THEN
+      v_cc_written := NEW.cc_recipients <> '[]'::jsonb;
+    ELSE
+      v_cc_written := NEW.cc_recipients <> '[]'::jsonb
+                      AND NEW.cc_recipients IS DISTINCT FROM OLD.cc_recipients;
+    END IF;
+    IF v_cc_written AND NOT COALESCE(
+         v_org_digest_cc_allowed,
+         (SELECT d.digest_cc_allowed FROM public.notification_sequence_defaults AS d
+           WHERE d.purpose = 'followup_digest'),
+         false
+       ) THEN
+      RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'notification_digest_has_no_cc';
+    END IF;
   END IF;
 
   IF EXISTS (

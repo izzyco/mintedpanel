@@ -75,27 +75,35 @@ function AdminSequence({
   memberUserIds: ReadonlySet<string> | undefined;
 }) {
   const save = useSaveNotificationSequence();
+  // digest_cc_allowed (the org's override, else Minted's default) decides
+  // whether a digest step may cc anyone; a stored list it no longer allows is
+  // left out of the draft, so Save is never stuck on it.
+  const digestCcAllowed = resolveNotificationPolicyRules(
+    { digestCcAllowed: platformDefault.digestCcAllowed },
+    { digestCcAllowed: saved?.digestCcAllowed },
+  ).digestCcAllowed;
+  const draftOptions = { digestCcAllowed };
   // `base` is the saved config the open draft started from. A refetch that
   // brings a new revision is reconciled against it below, so another admin's
   // save never silently replaces unsaved edits.
   const [base, setBase] = useState<NotificationSequenceConfig | undefined>(saved);
   const [draft, setDraft] = useState<SequenceDraft | null>(() =>
-    saved ? draftFromSequence(saved) : null,
+    saved ? draftFromSequence(saved, draftOptions) : null,
   );
   const [ownSavedRevision, setOwnSavedRevision] = useState<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
 
-  const sync = reconcileWithServer({ base, saved, draft, ownSavedRevision });
+  const sync = reconcileWithServer({ base, saved, draft, ownSavedRevision, digestCcAllowed });
   if (sync === "adopt_server") {
     // Nothing unsaved would be lost: follow the server. Setting state while
     // rendering makes React re-render at once with it; the next pass is in
     // sync, so this cannot loop.
     setBase(saved);
-    setDraft(saved ? draftFromSequence(saved) : null);
+    setDraft(saved ? draftFromSequence(saved, draftOptions) : null);
   }
   const followServer = () => {
     setBase(saved);
-    setDraft(saved ? draftFromSequence(saved) : null);
+    setDraft(saved ? draftFromSequence(saved, draftOptions) : null);
   };
 
   if (!draft) {
@@ -116,17 +124,9 @@ function AdminSequence({
     );
   }
 
-  // digest_cc_allowed (the org's override, else Minted's default) decides
-  // whether a digest step may cc anyone.
-  const options = {
-    memberUserIds,
-    digestCcAllowed: resolveNotificationPolicyRules(
-      { digestCcAllowed: platformDefault.digestCcAllowed },
-      { digestCcAllowed: saved?.digestCcAllowed },
-    ).digestCcAllowed,
-  };
+  const options = { memberUserIds, digestCcAllowed };
   const issues = validateDraft(purpose, draft, options);
-  const dirty = base ? !draftsEqual(draft, draftFromSequence(base)) : true;
+  const dirty = base ? !draftsEqual(draft, draftFromSequence(base, draftOptions)) : true;
 
   const handleSave = () => {
     // The revision the draft started from: if another admin has saved since,

@@ -720,14 +720,15 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     expect(html.match(/Add a member or a role to copy them on this step\./g)).toHaveLength(2);
   });
 
-  it("shows no bounce note anywhere when escalation is off", () => {
+  it("says escalation is off, without a cc bounce note, when the step is 0", () => {
     const own = renderToStaticMarkup(
       <NotificationSequenceEditor
         {...editorProps({ draft: { ...ownIntake(), bounceEscalationStep: 0 } })}
       />,
     );
-    expect(own).not.toContain("bounces");
+    expect(own).not.toContain("bounces, the people");
     expect(own.match(/Add a member or a role to copy them on this step\./g)).toHaveLength(3);
+    expect(own.match(/Bounce escalation is off, so a bounce reaches no one\./g)).toHaveLength(1);
     const inherited = renderToStaticMarkup(
       <NotificationSequenceEditor
         {...editorProps({
@@ -740,7 +741,32 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     expect(inherited).toContain(
       "Minted&#x27;s default steps cc no one. Customize the steps to cc a member or a role.",
     );
-    expect(inherited).not.toContain("bounce");
+    expect(inherited).toContain("Bounce escalation is off, so a bounce reaches no one.");
+  });
+
+  it("says a step past the last one reaches no one, without blocking Save", () => {
+    const draft = { ...ownIntake(), bounceEscalationStep: 5 };
+    const props = editorProps({ draft, dirty: true });
+    const html = renderToStaticMarkup(<NotificationSequenceEditor {...props} />);
+    expect(html).toContain("Step 5 doesn&#x27;t exist, so a bounce reaches no one.");
+    expect(html).not.toContain("bounces, the people");
+    expect(props.issues).toEqual([]);
+    expect(byText(NotificationSequenceEditor(props), "Save").props.disabled).toBe(false);
+    // The default steps (three) say so too.
+    const inherited = renderToStaticMarkup(
+      <NotificationSequenceEditor
+        {...editorProps({
+          draft: { ...starterDraft(), bounceEscalationStep: 4 },
+          isNew: true,
+        })}
+      />,
+    );
+    expect(inherited).toContain("Step 4 doesn&#x27;t exist, so a bounce reaches no one.");
+    // At the default (step 1 of 3) there is no such note.
+    const normal = renderToStaticMarkup(<NotificationSequenceEditor {...editorProps()} />);
+    expect(normal).not.toContain("reaches no one.</p><p");
+    expect(normal).not.toContain("doesn&#x27;t exist");
+    expect(normal).not.toContain("Bounce escalation is off");
   });
 
   it("names Minted's step on the default steps when the org has none of its own", () => {
@@ -783,6 +809,30 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     const allowed = renderToStaticMarkup(<NotificationsCard />);
     expect(allowed).not.toContain("Goes to each coordinator only");
     expect(allowed.match(/Cc: /g)).toHaveLength(1);
+  });
+
+  it("is not stuck on a digest cc list stored while the setting was on", () => {
+    state.isAdmin = true;
+    const stale = {
+      ...intakeConfig({ stopConditions: null, targetDaysToReady: null }),
+      id: "seq-digest",
+      purpose: "followup_digest" as const,
+      digestCcAllowed: null,
+      steps: [
+        {
+          ...intakeConfig().steps[0],
+          sequenceId: "seq-digest",
+          offsetDays: 0,
+          templateKey: "followup_digest_daily",
+          ccRecipients: [{ kind: "role" as const, role: "admin" as const }],
+        },
+      ],
+    };
+    state.sequences = { followup_digest: stale };
+    const html = renderToStaticMarkup(<NotificationsCard />);
+    expect(html).not.toContain("so it has no cc list");
+    expect(html).not.toContain("Fix the messages above to save.");
+    expect(html).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
   });
 
   it("follows the org's own digest cc override, which Minted sets, over the default", () => {

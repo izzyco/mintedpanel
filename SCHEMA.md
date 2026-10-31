@@ -761,11 +761,13 @@ bounce_escalation_step, updated_at)`; the platform-managed
   at most 20, distinct; CHECK `private.notification_cc_recipients_valid`). The
   composite FK `(org_id, sequence_id) → notification_sequences(org_id, id)`
   ties a step to its sequence's org. A BEFORE trigger refuses a cc'd user who
-  is not a member of the org. A deferred constraint trigger enforces offsets
-  strictly increasing by position, at most one digest step, **no cc on a
+  is not a member of the org. A deferred constraint trigger (SECURITY
+  DEFINER, so it sees every row whoever commits) enforces offsets strictly
+  increasing by position, at most one digest step, **no cc written onto a
   digest step** while the org's effective `digest_cc_allowed` is false
-  (`notification_digest_has_no_cc`: the digest goes to coordinators only),
-  and a `template_key` prefixed by the sequence's purpose.
+  (`notification_digest_has_no_cc`: the digest goes to coordinators only; a
+  list stored while it was on is inert, and the next save clears it), and a
+  `template_key` prefixed by the sequence's purpose.
 - **`sms_consents`**: `(org_id, provider_id) → providers(org_id, id)` ON
   DELETE SET NULL (`provider_id`): deleting a provider (the staging UAT reseed
   hard-deletes its synthetic ones; no app path does) keeps the consent and

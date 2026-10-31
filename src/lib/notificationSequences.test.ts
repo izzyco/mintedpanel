@@ -12,6 +12,7 @@ import {
   addStep,
   bounceCcNote,
   bounceEscalationRecipients,
+  bounceStepNote,
   buildSavePayload,
   ccRecipientLabel,
   defaultStepsCcNote,
@@ -1672,6 +1673,52 @@ describe("digest audience per org (S7: platform default, org override, platform 
     const draft = draftFromSequence(digestRow(true));
     expect("digestCcAllowed" in draft).toBe(false);
     expect("digest_cc_allowed" in buildSavePayload("followup_digest", digest(), null)).toBe(false);
+  });
+});
+
+describe("stale digest cc after the setting goes off (review)", () => {
+  it("leaves a digest cc list the setting does not allow out of the draft", () => {
+    expect(own(draftFromSequence(digestWithCc()))[0].ccRecipients).toEqual([]);
+    expect(
+      own(draftFromSequence(digestWithCc(), { digestCcAllowed: false }))[0].ccRecipients,
+    ).toEqual([]);
+    expect(
+      own(draftFromSequence(digestWithCc(), { digestCcAllowed: true }))[0].ccRecipients,
+    ).toEqual(CC_ADMINS);
+    expect(
+      own(draftFromSequence({ ...digestWithCc(), digestCcAllowed: true }))[0].ccRecipients,
+    ).toEqual(CC_ADMINS);
+    // Intake keeps its cc lists whatever the digest setting.
+    expect(
+      own(draftFromSequence(intakeWithCc(), { digestCcAllowed: false }))[0].ccRecipients,
+    ).toEqual(CC_A);
+  });
+
+  it("so the draft validates, and the save clears the stale list", () => {
+    const draft = { ...draftFromSequence(digestWithCc()), enabled: true };
+    expect(validateDraft("followup_digest", draft)).toEqual([]);
+    expect(buildSavePayload("followup_digest", draft, 1).steps?.[0].cc_recipients).toEqual([]);
+  });
+
+  it("reconciles with the same setting the draft was built with", () => {
+    const base = { ...digestWithCc(), revision: 1 };
+    const saved = { ...digestWithCc(), revision: 2 };
+    expect(
+      reconcileWithServer({
+        base,
+        saved,
+        draft: draftFromSequence(base, { digestCcAllowed: false }),
+        ownSavedRevision: null,
+        digestCcAllowed: false,
+      }),
+    ).toBe("adopt_server");
+  });
+
+  it("notes a bounce step that reaches no one by construction", () => {
+    expect(bounceStepNote(1, 3)).toBeNull();
+    expect(bounceStepNote(3, 3)).toBeNull();
+    expect(bounceStepNote(4, 3)).toBe("Step 4 doesn't exist, so a bounce reaches no one.");
+    expect(bounceStepNote(0, 3)).toBe("Bounce escalation is off, so a bounce reaches no one.");
   });
 });
 

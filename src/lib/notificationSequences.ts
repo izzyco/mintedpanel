@@ -360,6 +360,22 @@ export function defaultStepsCcNote(bounceEscalationStep: number): string {
 /** The card's note on a purpose whose steps may not carry a cc list. */
 export const COORDINATORS_ONLY_NOTE = "Goes to each coordinator only. No one is cc'd.";
 
+/**
+ * A non-blocking note when the bounce escalation step reaches no one by
+ * construction: escalation is off, or the step is past the sequence's last
+ * step. Null when the step exists (its cc list may still be empty; the cc
+ * editor says so).
+ */
+export function bounceStepNote(bounceEscalationStep: number, stepCount: number): string | null {
+  if (bounceEscalationStep === BOUNCE_ESCALATION_OFF) {
+    return "Bounce escalation is off, so a bounce reaches no one.";
+  }
+  if (bounceEscalationStep > stepCount) {
+    return `Step ${bounceEscalationStep} doesn't exist, so a bounce reaches no one.`;
+  }
+  return null;
+}
+
 /* ---------------------------------- Drafts --------------------------------- */
 
 /** One step while it is being edited. `offsetDays` is null while the input is blank. */
@@ -417,7 +433,26 @@ export function starterDraft(): SequenceDraft {
   };
 }
 
-export function draftFromSequence(config: NotificationSequenceConfig): SequenceDraft {
+export interface DraftOptions {
+  /**
+   * The org's effective digest_cc_allowed. Default: the row's own override,
+   * else the decided false. A digest cc list it does not allow (one stored
+   * while the setting was on) is left out of the draft, so the card is never
+   * stuck on it and the next save clears it.
+   */
+  digestCcAllowed?: boolean;
+}
+
+export function draftFromSequence(
+  config: NotificationSequenceConfig,
+  options: DraftOptions = {},
+): SequenceDraft {
+  const ccAllowed = purposeAllowsCc(config.purpose, {
+    digestCcAllowed:
+      options.digestCcAllowed ??
+      config.digestCcAllowed ??
+      DEFAULT_NOTIFICATION_POLICY_RULES.digestCcAllowed,
+  });
   return {
     enabled: config.enabled,
     stopConditions: config.stopConditions ? [...config.stopConditions] : null,
@@ -432,7 +467,7 @@ export function draftFromSequence(config: NotificationSequenceConfig): SequenceD
               offsetDays: step.offsetDays,
               channel: step.channel,
               templateKey: step.templateKey,
-              ccRecipients: step.ccRecipients.map((r) => ({ ...r })),
+              ccRecipients: ccAllowed ? step.ccRecipients.map((r) => ({ ...r })) : [],
             })),
   };
 }
@@ -922,6 +957,8 @@ export interface ReconcileInput {
   draft: SequenceDraft | null;
   /** The revision this editor's own last save produced, if any. */
   ownSavedRevision: number | null;
+  /** As for draftFromSequence. */
+  digestCcAllowed?: boolean;
 }
 
 /**
@@ -939,10 +976,11 @@ export function reconcileWithServer(
   input: ReconcileInput,
 ): "in_sync" | "adopt_server" | "keep_draft" {
   const { base, saved, draft, ownSavedRevision } = input;
+  const options = { digestCcAllowed: input.digestCcAllowed };
   if (base?.revision === saved?.revision) return "in_sync";
   if (draft == null) return "adopt_server";
-  if (base && draftsEqual(draft, draftFromSequence(base))) return "adopt_server";
-  if (saved && draftsEqual(draft, draftFromSequence(saved))) return "adopt_server";
+  if (base && draftsEqual(draft, draftFromSequence(base, options))) return "adopt_server";
+  if (saved && draftsEqual(draft, draftFromSequence(saved, options))) return "adopt_server";
   if (saved && ownSavedRevision != null && saved.revision === ownSavedRevision) {
     return "adopt_server";
   }
