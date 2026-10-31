@@ -116,12 +116,14 @@ function AdminSequence({
     );
   }
 
-  // Minted's digest_cc_allowed decides whether a digest step may cc anyone.
+  // digest_cc_allowed (the org's override, else Minted's default) decides
+  // whether a digest step may cc anyone.
   const options = {
     memberUserIds,
-    digestCcAllowed: resolveNotificationPolicyRules({
-      digestCcAllowed: platformDefault.digestCcAllowed,
-    }).digestCcAllowed,
+    digestCcAllowed: resolveNotificationPolicyRules(
+      { digestCcAllowed: platformDefault.digestCcAllowed },
+      { digestCcAllowed: saved?.digestCcAllowed },
+    ).digestCcAllowed,
   };
   const issues = validateDraft(purpose, draft, options);
   const dirty = base ? !draftsEqual(draft, draftFromSequence(base)) : true;

@@ -36,8 +36,9 @@
 --   * compress_toward_start_date (intake). Off in R1: the default is false.
 --   * send_hour (0-23) and send_time_zone (an IANA zone) (digest). The default
 --     is 8 in America/Chicago, the old fixed cron's 13:00 UTC in CDT.
+--   * digest_cc_allowed (digest). The default is false: coordinators only.
 -- On notification_sequences, authenticated holds no INSERT or UPDATE privilege
--- on those three columns (column grants); the stamp trigger, as a second wall,
+-- on those four columns (column grants); the stamp trigger, as a second wall,
 -- refuses a change to them from any role but Minted's own (an allow-list:
 -- service_role, postgres, supabase_admin), and save_notification_sequence
 -- refuses a payload that names them. A change to them alone does not bump the
@@ -52,12 +53,14 @@
 --     on email 1"); 0 means no bounce escalates. Org-owned, like the cc lists:
 --     an org row overrides it (NULL inherits) through the save RPC or a direct
 --     admin write.
---   * digest_cc_allowed (digest default only): whether a digest step may carry
---     a cc list. false (D59: coordinators only). Platform-managed: only
---     Minted's roles write the defaults. The RPC and the deferred step check
---     read it, so Mission Control can relax it without a migration. Relaxing
---     it only lets an org store a digest cc list; nothing renders or sends a
---     cc copy of the digest until a later PR adds one.
+--   * digest_cc_allowed (digest): whether a digest step may carry a cc list.
+--     Minted's default is false (D59 / S7: coordinators only); an org row may
+--     override it (NULL inherits), but like send_hour only Minted writes
+--     either. The RPC and the deferred step check read the org's effective
+--     value (org row, else default, else false), so Mission Control can relax
+--     it per org without a migration. Relaxing it only lets an org store a
+--     digest cc list; nothing renders or sends a cc copy of the digest until a
+--     later PR adds one.
 --
 -- Other product rules this schema encodes:
 --   * No default escalation chain. cc_recipients is an ordered jsonb array of
@@ -353,6 +356,7 @@ CREATE TABLE IF NOT EXISTS public.notification_sequences (
   compress_toward_start_date boolean,
   send_hour smallint,
   send_time_zone text,
+  digest_cc_allowed boolean,
   revision integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -374,7 +378,12 @@ CREATE TABLE IF NOT EXISTS public.notification_sequences (
   -- send_time_zone is checked by the notification_send_time_zone_check trigger.
   -- Each purpose's row carries only its own settings.
   CONSTRAINT notification_sequences_purpose_settings_check CHECK (
-    (purpose = 'intake_reminder' AND send_hour IS NULL AND send_time_zone IS NULL)
+    (
+      purpose = 'intake_reminder'
+      AND send_hour IS NULL
+      AND send_time_zone IS NULL
+      AND digest_cc_allowed IS NULL
+    )
     OR (
       purpose = 'followup_digest'
       AND stop_conditions IS NULL
@@ -482,12 +491,14 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     v_platform_changed := NEW.compress_toward_start_date IS NOT NULL
                           OR NEW.send_hour IS NOT NULL
-                          OR NEW.send_time_zone IS NOT NULL;
+                          OR NEW.send_time_zone IS NOT NULL
+                          OR NEW.digest_cc_allowed IS NOT NULL;
   ELSE
     v_platform_changed :=
       NEW.compress_toward_start_date IS DISTINCT FROM OLD.compress_toward_start_date
       OR NEW.send_hour IS DISTINCT FROM OLD.send_hour
-      OR NEW.send_time_zone IS DISTINCT FROM OLD.send_time_zone;
+      OR NEW.send_time_zone IS DISTINCT FROM OLD.send_time_zone
+      OR NEW.digest_cc_allowed IS DISTINCT FROM OLD.digest_cc_allowed;
   END IF;
   IF v_platform_changed AND NOT v_platform_writer THEN
     RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'notification_platform_setting';
@@ -616,6 +627,7 @@ AS $function$
 DECLARE
   v_sequence_id uuid;
   v_purpose text;
+  v_org_digest_cc_allowed boolean;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     v_sequence_id := OLD.sequence_id;
@@ -623,7 +635,7 @@ BEGIN
     v_sequence_id := NEW.sequence_id;
   END IF;
 
-  SELECT s.purpose INTO v_purpose
+  SELECT s.purpose, s.digest_cc_allowed INTO v_purpose, v_org_digest_cc_allowed
     FROM public.notification_sequences AS s
    WHERE s.id = v_sequence_id;
   IF NOT FOUND THEN
@@ -638,13 +650,16 @@ BEGIN
   END IF;
 
   -- The digest goes to coordinators only (D59): nobody is cc'd on it, unless
-  -- Minted's digest_cc_allowed says so. Read as the writer, who can read the
-  -- defaults (any member, or service_role); a missing default reads as false.
+  -- Minted's digest_cc_allowed says so for this org: the org row's override,
+  -- else the default, else false. Read as the writer, who can read both (any
+  -- member, or service_role).
   IF v_purpose = 'followup_digest'
-     AND NOT COALESCE((
-       SELECT d.digest_cc_allowed FROM public.notification_sequence_defaults AS d
-        WHERE d.purpose = 'followup_digest'
-     ), false)
+     AND NOT COALESCE(
+       v_org_digest_cc_allowed,
+       (SELECT d.digest_cc_allowed FROM public.notification_sequence_defaults AS d
+         WHERE d.purpose = 'followup_digest'),
+       false
+     )
      AND EXISTS (
        SELECT 1 FROM public.notification_sequence_steps AS st
         WHERE st.sequence_id = v_sequence_id
@@ -1034,7 +1049,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.notification_sequence_defau
 -- An org admin writes only the org-owned columns (bounce_escalation_step is
 -- one: the org owns its cc lists and which bounce reaches them). The
 -- platform-managed ones (compress_toward_start_date, send_hour,
--- send_time_zone), and the columns
+-- send_time_zone, digest_cc_allowed), and the columns
 -- the stamp trigger owns (id, revision, created_at, updated_by), have no
 -- authenticated grant. updated_at is granted because a step write touches
 -- its sequence (notification_sequence_steps_touch_parent runs as the caller);
@@ -1113,10 +1128,11 @@ $seed$;
 --                                                     -- = default
 --      expected_revision: int | null                  -- null when creating
 --    }
---    Any other key is refused. Naming compress_toward_start_date, send_hour or
---    send_time_zone is refused with 42501 notification_platform_setting:
---    Minted sets those. A digest step's cc list is refused
---    (notification_digest_has_no_cc) unless Minted's digest_cc_allowed is on.
+--    Any other key is refused. Naming compress_toward_start_date, send_hour,
+--    send_time_zone or digest_cc_allowed is refused with 42501
+--    notification_platform_setting: Minted sets those. A digest step's cc list
+--    is refused (notification_digest_has_no_cc) unless the org's effective
+--    digest_cc_allowed (its override, else Minted's default) is on.
 --    Returns { sequence: <row>, steps: [<row>, ...] }.
 -- ---------------------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.save_notification_sequence(uuid, text, jsonb);
@@ -1163,7 +1179,8 @@ BEGIN
 
   -- Only the org's own settings. The platform-managed ones are Minted's.
   FOR v_key IN SELECT k.setting FROM pg_catalog.jsonb_object_keys(p_payload) AS k(setting) LOOP
-    IF v_key IN ('compress_toward_start_date', 'send_hour', 'send_time_zone') THEN
+    IF v_key IN ('compress_toward_start_date', 'send_hour', 'send_time_zone',
+                 'digest_cc_allowed') THEN
       RAISE EXCEPTION USING ERRCODE = '42501',
         MESSAGE = 'notification_platform_setting: ' || v_key;
     END IF;
@@ -1189,13 +1206,17 @@ BEGIN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'notification_sequence_invalid: steps';
   END IF;
 
-  -- Minted's setting: whether a digest step may carry a cc list (D59: no).
-  -- The caller is an org member, so RLS lets it read the default; a missing
-  -- default reads as false. The deferred step check reads the same value.
-  v_digest_cc_allowed := COALESCE((
-    SELECT d.digest_cc_allowed FROM public.notification_sequence_defaults AS d
-     WHERE d.purpose = 'followup_digest'
-  ), false);
+  -- Minted's setting: whether this org's digest step may carry a cc list
+  -- (D59: no). The org row's override, else the default, else false. The
+  -- caller is an org member, so RLS lets it read both; this RPC never writes
+  -- the column. The deferred step check reads the same value at the end.
+  v_digest_cc_allowed := COALESCE(
+    (SELECT s.digest_cc_allowed FROM public.notification_sequences AS s
+      WHERE s.org_id = p_org_id AND s.purpose = 'followup_digest'),
+    (SELECT d.digest_cc_allowed FROM public.notification_sequence_defaults AS d
+      WHERE d.purpose = 'followup_digest'),
+    false
+  );
 
   IF v_steps IS NOT NULL THEN
     IF p_purpose = 'followup_digest' AND pg_catalog.jsonb_array_length(v_steps) <> 1 THEN
@@ -1313,7 +1334,7 @@ BEGIN
      WHERE s.id = v_existing.id;
 
     -- The platform-managed columns are not named, so an override Minted set
-    -- stays as it is.
+    -- (compression, the send time, digest cc) stays as it is.
     UPDATE public.notification_sequences AS s
        SET enabled = v_enabled,
            stop_conditions = v_stop,
@@ -1402,7 +1423,7 @@ COMMENT ON COLUMN public.notification_sequence_defaults.compress_toward_start_da
 COMMENT ON COLUMN public.notification_sequence_defaults.bounce_escalation_step IS
   'Intake: the one step whose bounce escalates, to that step''s own cc list, with the bounce notice (bounceEscalationRecipients). 1 by default (Oct 30); 0 = no bounce escalates. An org row overrides it. Mission Control edits it (MINT-113).';
 COMMENT ON COLUMN public.notification_sequence_defaults.digest_cc_allowed IS
-  'Digest: whether a digest step may carry a cc list. Platform-managed; false by default (D59: coordinators only). save_notification_sequence and notification_sequence_steps_set_check read it. Turning it on only lets an org store a digest cc list: nothing renders or sends a cc copy of the digest yet. Mission Control edits it (MINT-113).';
+  'Digest: whether a digest step may carry a cc list. Platform-managed; false by default (D59 / S7: coordinators only); an org row may override it (notification_sequences.digest_cc_allowed). save_notification_sequence and notification_sequence_steps_set_check read the org''s effective value. Turning it on only lets an org store a digest cc list: nothing renders or sends a cc copy of the digest yet. Mission Control edits it (MINT-113).';
 COMMENT ON COLUMN public.notification_sequence_defaults.send_hour IS
   'Digest: the local hour (0 to 23) the digest goes out, in send_time_zone. Platform-managed; 8 by default.';
 COMMENT ON COLUMN public.notification_sequence_defaults.send_time_zone IS
@@ -1426,13 +1447,15 @@ COMMENT ON COLUMN public.notification_sequences.send_hour IS
   'Digest only, platform-managed: an org override of the local send hour (0 to 23). NULL uses Minted''s default (8).';
 COMMENT ON COLUMN public.notification_sequences.send_time_zone IS
   'Digest only, platform-managed: an org override of the IANA zone of send_hour. NULL uses Minted''s default (America/Chicago).';
+COMMENT ON COLUMN public.notification_sequences.digest_cc_allowed IS
+  'Digest only, platform-managed: an org override of whether its digest step may carry a cc list. NULL uses Minted''s default (false: coordinators only). Only Minted writes it (no authenticated grant; stamp-trigger allow-list; the save RPC refuses it); a change to it alone keeps revision and updated_by. Turning it on only lets the org store a digest cc list: nothing sends a cc copy of the digest yet. Mission Control edits it (MINT-113).';
 COMMENT ON COLUMN public.notification_sequences.revision IS
   'Optimistic-concurrency counter for the org''s own settings: 1 on insert, +1 on every update (trigger) except one that changes only the platform-managed columns, and +1 when a direct write changes its steps (once per transaction). save_notification_sequence refuses a save whose expected_revision is stale with PT409 (HTTP 409).';
 COMMENT ON COLUMN public.notification_sequences.updated_by IS
   'Who last changed the org''s own settings: the org admin (auth.uid(), stamped by trigger), or NULL when the writer was not an org member (service_role, Mission Control). Not changed by a platform-only change. An actor id, not a foreign key.';
 
 COMMENT ON TABLE public.notification_sequence_steps IS
-  'MINT-107: an org''s own ordered messages for a sequence; none means the org uses Minted''s default steps. offset_days strictly increase with position; the digest has at most one step and no cc unless Minted''s digest_cc_allowed is on; template_key starts with the sequence''s purpose (deferred constraint trigger notification_sequence_steps_set_check).';
+  'MINT-107: an org''s own ordered messages for a sequence; none means the org uses Minted''s default steps. offset_days strictly increase with position; the digest has at most one step and no cc unless the org''s effective digest_cc_allowed is on; template_key starts with the sequence''s purpose (deferred constraint trigger notification_sequence_steps_set_check).';
 COMMENT ON COLUMN public.notification_sequence_steps.offset_days IS
   'Days after the anchor (the invite, for intake reminders) that this step goes out, before any start-date compression. 0 to 90.';
 COMMENT ON COLUMN public.notification_sequence_steps.channel IS
@@ -1440,7 +1463,7 @@ COMMENT ON COLUMN public.notification_sequence_steps.channel IS
 COMMENT ON COLUMN public.notification_sequence_steps.template_key IS
   'A key from the template catalog (src/lib/notificationTemplates.ts), registered in src/server/email/templates.ts by the PR that sends it. No free-form body. The database checks only the format and the purpose prefix, so a sender must look the key up in NOTIFICATION_TEMPLATES (and require selectable) before rendering.';
 COMMENT ON COLUMN public.notification_sequence_steps.cc_recipients IS
-  'Ordered escalation list for this step, empty by default and empty for the digest while Minted''s digest_cc_allowed is off: [{"kind":"user","user_id":uuid} | {"kind":"role","role":"admin"|"specialist"|"billing"}]. Users must be org members when saved. A cc''d copy never carries SSN, date of birth or document contents.';
+  'Ordered escalation list for this step, empty by default and empty for the digest while the org''s effective digest_cc_allowed is off: [{"kind":"user","user_id":uuid} | {"kind":"role","role":"admin"|"specialist"|"billing"}]. Users must be org members when saved. A cc''d copy never carries SSN, date of birth or document contents.';
 
 COMMENT ON TABLE public.sms_consents IS
   'MINT-107: a provider''s recorded agreement to receive texts at one number: when, how (source), which consent text version, and revocation. Evidence: the allowed updates are stamping revoked_at + revoked_source once and the provider FK nulling provider_id when the provider row is deleted (ON DELETE SET NULL (provider_id)); no DELETE grant. Members read; only service_role writes (the intake form, later). staff_recorded rows name recorded_by.';
@@ -1453,6 +1476,6 @@ COMMENT ON COLUMN public.sms_consents.source IS
   'How consent was given: intake_form, staff_recorded (paper or verbal, with recorded_by), or sms_keyword (a START reply).';
 
 COMMENT ON FUNCTION public.save_notification_sequence(uuid, text, jsonb) IS
-  'MINT-107: admin-only, SECURITY INVOKER. Creates or replaces one purpose''s org sequence and its own steps in one transaction (steps null = use Minted''s default steps; a null or absent setting = use Minted''s default; intake bounce_escalation_step 0 to 10, 0 = none), checks expected_revision (PT409, HTTP 409, notification_sequence_conflict when stale), and writes one audit_log row. Refuses the platform-managed settings (42501 notification_platform_setting), any unknown key, and a digest cc list unless Minted''s digest_cc_allowed is on (notification_digest_has_no_cc). Returns {sequence, steps}. Never call it with the service key.';
+  'MINT-107: admin-only, SECURITY INVOKER. Creates or replaces one purpose''s org sequence and its own steps in one transaction (steps null = use Minted''s default steps; a null or absent setting = use Minted''s default; intake bounce_escalation_step 0 to 10, 0 = none), checks expected_revision (PT409, HTTP 409, notification_sequence_conflict when stale), and writes one audit_log row. Refuses the platform-managed settings (42501 notification_platform_setting: compress_toward_start_date, send_hour, send_time_zone, digest_cc_allowed), any unknown key, and a digest cc list unless the org''s effective digest_cc_allowed is on (notification_digest_has_no_cc). Returns {sequence, steps}. Never call it with the service key.';
 
 NOTIFY pgrst, 'reload schema';

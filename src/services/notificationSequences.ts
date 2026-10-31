@@ -52,7 +52,7 @@ function browserCtx(): NotificationSequenceServiceCtx {
 }
 
 const SEQUENCE_COLUMNS =
-  "id, org_id, purpose, enabled, stop_conditions, target_days_to_ready, bounce_escalation_step, compress_toward_start_date, send_hour, send_time_zone, revision, created_at, updated_at, updated_by";
+  "id, org_id, purpose, enabled, stop_conditions, target_days_to_ready, bounce_escalation_step, compress_toward_start_date, send_hour, send_time_zone, digest_cc_allowed, revision, created_at, updated_at, updated_by";
 const STEP_COLUMNS =
   "id, sequence_id, org_id, position, offset_days, channel, template_key, cc_recipients, created_at, updated_at";
 const DEFAULT_COLUMNS =
@@ -72,6 +72,7 @@ type SequenceRow = Pick<
   | "compress_toward_start_date"
   | "send_hour"
   | "send_time_zone"
+  | "digest_cc_allowed"
   | "revision"
   | "created_at"
   | "updated_at"
@@ -138,6 +139,7 @@ function toConfig(row: SequenceRow, steps: StepRow[]): NotificationSequenceConfi
     compressTowardStartDate: row.compress_toward_start_date,
     sendHour: row.send_hour,
     sendTimeZone: row.send_time_zone,
+    digestCcAllowed: row.digest_cc_allowed ?? null,
     revision: row.revision,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

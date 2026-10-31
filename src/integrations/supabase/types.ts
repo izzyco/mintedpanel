@@ -2005,6 +2005,7 @@ export type Database = {
           bounce_escalation_step: number | null;
           compress_toward_start_date: boolean | null;
           created_at: string;
+          digest_cc_allowed: boolean | null;
           enabled: boolean;
           id: string;
           org_id: string;
@@ -2021,6 +2022,7 @@ export type Database = {
           bounce_escalation_step?: number | null;
           compress_toward_start_date?: boolean | null;
           created_at?: string;
+          digest_cc_allowed?: boolean | null;
           enabled?: boolean;
           id?: string;
           org_id: string;
@@ -2037,6 +2039,7 @@ export type Database = {
           bounce_escalation_step?: number | null;
           compress_toward_start_date?: boolean | null;
           created_at?: string;
+          digest_cc_allowed?: boolean | null;
           enabled?: boolean;
           id?: string;
           org_id?: string;

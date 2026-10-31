@@ -123,6 +123,7 @@ function intakeConfig(over: Partial<NotificationSequenceConfig> = {}): Notificat
     compressTowardStartDate: null,
     sendHour: null,
     sendTimeZone: null,
+    digestCcAllowed: null,
     revision: 2,
     createdAt: "2026-10-30T00:00:00Z",
     updatedAt: "2026-10-30T00:00:00Z",
@@ -782,5 +783,27 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     const allowed = renderToStaticMarkup(<NotificationsCard />);
     expect(allowed).not.toContain("Goes to each coordinator only");
     expect(allowed.match(/Cc: /g)).toHaveLength(1);
+  });
+
+  it("follows the org's own digest cc override, which Minted sets, over the default", () => {
+    state.isAdmin = false;
+    const digestRow = (digestCcAllowed: boolean | null) => ({
+      ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+      id: "seq-digest",
+      purpose: "followup_digest" as const,
+      digestCcAllowed,
+    });
+    state.sequences = { followup_digest: digestRow(true) };
+    const on = renderToStaticMarkup(<NotificationsCard />);
+    expect(on).not.toContain("Goes to each coordinator only");
+    expect(on.match(/Cc: /g)).toHaveLength(1);
+    state.defaults = {
+      intake_reminder: INTAKE_DEFAULT,
+      followup_digest: { ...DIGEST_DEFAULT, digestCcAllowed: true },
+    };
+    state.sequences = { followup_digest: digestRow(false) };
+    const off = renderToStaticMarkup(<NotificationsCard />);
+    expect(off).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
+    expect(off).not.toContain("Cc: ");
   });
 });

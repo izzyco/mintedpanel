@@ -431,7 +431,17 @@ describe("notification sequences service", () => {
         { ...DEFAULT_ROWS[1], bounce_escalation_step: null, digest_cc_allowed: false },
       ],
       notification_sequence_default_steps: DEFAULT_STEP_ROWS,
-      notification_sequences: [{ ...SEQUENCE_ROW, bounce_escalation_step: 0 }],
+      notification_sequences: [
+        { ...SEQUENCE_ROW, bounce_escalation_step: 0 },
+        {
+          ...SEQUENCE_ROW,
+          id: "seq-digest",
+          purpose: "followup_digest",
+          stop_conditions: null,
+          target_days_to_ready: null,
+          digest_cc_allowed: true,
+        },
+      ],
       notification_sequence_steps: [],
     });
     const listed = await listNotificationSequences(ctxFor({ from }));
@@ -446,6 +456,7 @@ describe("notification sequences service", () => {
       digestCcAllowed: false,
     });
     expect(listed.sequences.intake_reminder?.bounceEscalationStep).toBe(0);
+    expect(listed.sequences.followup_digest?.digestCcAllowed).toBe(true);
 
     // Rows from a reader that does not select the columns: unset, not undefined.
     const bareReads = fakeReads({
@@ -458,6 +469,7 @@ describe("notification sequences service", () => {
     expect(bare.defaults.intake_reminder.bounceEscalationStep).toBeNull();
     expect(bare.defaults.followup_digest.digestCcAllowed).toBeNull();
     expect(bare.sequences.intake_reminder?.bounceEscalationStep).toBeNull();
+    expect(bare.sequences.intake_reminder?.digestCcAllowed).toBeNull();
   });
 
   it("sends the org's own bounce escalation step through the RPC", async () => {

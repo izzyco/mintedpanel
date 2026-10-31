@@ -153,6 +153,7 @@ function orgRow(over: Partial<NotificationSequenceConfig> = {}): NotificationSeq
     compressTowardStartDate: null,
     sendHour: null,
     sendTimeZone: null,
+    digestCcAllowed: null,
     revision: 1,
     createdAt: "",
     updatedAt: "",
@@ -723,6 +724,7 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
         stopConditions: true,
         targetDaysToReady: true,
         bounceEscalationStep: true,
+        digestCcAllowed: false,
         compressTowardStartDate: true,
         sendHour: false,
         sendTimeZone: false,
@@ -1388,12 +1390,15 @@ describe("resolveNotificationPolicyRules: org over platform over default, field 
     ).toMatchObject({ bounceEscalationStep: 2 });
   });
 
-  it("never lets an org relax the digest's audience: that is Minted's alone", () => {
+  it("takes an org's digest cc override (which only Minted writes) over the default (S7)", () => {
     expect(resolveNotificationPolicyRules(null, { digestCcAllowed: true })).toMatchObject({
-      digestCcAllowed: false,
+      digestCcAllowed: true,
     });
     expect(
       resolveNotificationPolicyRules({ digestCcAllowed: true }, { digestCcAllowed: false }),
+    ).toMatchObject({ digestCcAllowed: false });
+    expect(
+      resolveNotificationPolicyRules({ digestCcAllowed: true }, { digestCcAllowed: null }),
     ).toMatchObject({ digestCcAllowed: true });
   });
 });
@@ -1407,9 +1412,7 @@ describe("validateNotificationPolicyRules", () => {
     expect(
       validateNotificationPolicyRules({ bounceEscalationStep: null, digestCcAllowed: null }),
     ).toEqual([]);
-    expect(validateNotificationPolicyRules({ bounceEscalationStep: 3 }, "organization")).toEqual(
-      [],
-    );
+    expect(validateNotificationPolicyRules({ bounceEscalationStep: 3 }, "org_admin")).toEqual([]);
   });
 
   it("names every invalid or unknown value in plain language", () => {
@@ -1429,11 +1432,14 @@ describe("validateNotificationPolicyRules", () => {
     expect(validateNotificationPolicyRules([1])).toHaveLength(1);
   });
 
-  it("refuses digestCcAllowed from an organization", () => {
-    expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "organization")).toEqual([
+  it("refuses digestCcAllowed from an org admin; Minted may set it as a default or org override", () => {
+    expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "org_admin")).toEqual([
       "Only Minted decides whether the daily digest may cc anyone.",
     ]);
-    expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "platform")).toEqual([]);
+    expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "platform_admin")).toEqual(
+      [],
+    );
+    expect(validateNotificationPolicyRules({ digestCcAllowed: false })).toEqual([]);
   });
 });
 
@@ -1627,6 +1633,45 @@ describe("digest audience (D59, now Minted's setting digest_cc_allowed)", () => 
       buildSavePayload("followup_digest", withCc, null, { digestCcAllowed: true }).steps?.[0]
         .cc_recipients,
     ).toEqual([{ kind: "role", role: "admin" }]);
+  });
+});
+
+describe("digest audience per org (S7: platform default, org override, platform admin)", () => {
+  const digestRow = (digestCcAllowed: boolean | null) => ({
+    ...digestWithCc(),
+    digestCcAllowed,
+  });
+
+  it("follows the org's override over Minted's default, both ways", () => {
+    const on = resolveNotificationSequence("followup_digest", digestRow(true), DIGEST_DEFAULT);
+    expect([on.ccAllowed, on.inherited.digestCcAllowed]).toEqual([true, false]);
+    expect(on.steps[0].ccRecipients).toEqual(CC_ADMINS);
+    const off = resolveNotificationSequence("followup_digest", digestRow(false), {
+      ...DIGEST_DEFAULT,
+      digestCcAllowed: true,
+    });
+    expect([off.ccAllowed, off.inherited.digestCcAllowed]).toEqual([false, false]);
+    expect(off.steps[0].ccRecipients).toEqual([]);
+  });
+
+  it("inherits Minted's default when the org has no override", () => {
+    const inherits = resolveNotificationSequence(
+      "followup_digest",
+      digestRow(null),
+      DIGEST_DEFAULT,
+    );
+    expect([inherits.ccAllowed, inherits.inherited.digestCcAllowed]).toEqual([false, true]);
+    const noRow = resolveNotificationSequence("followup_digest", undefined, {
+      ...DIGEST_DEFAULT,
+      digestCcAllowed: true,
+    });
+    expect([noRow.ccAllowed, noRow.inherited.digestCcAllowed]).toEqual([true, true]);
+  });
+
+  it("is not in the draft or the payload: an org admin cannot send it", () => {
+    const draft = draftFromSequence(digestRow(true));
+    expect("digestCcAllowed" in draft).toBe(false);
+    expect("digest_cc_allowed" in buildSavePayload("followup_digest", digest(), null)).toBe(false);
   });
 });
 

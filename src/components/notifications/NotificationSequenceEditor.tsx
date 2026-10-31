@@ -182,10 +182,14 @@ export function NotificationSequenceEditor({
   const stops = draft.stopConditions ?? platformDefault.stopConditions ?? [];
   // The step whose bounce escalates to its cc list (the org's, else Minted's).
   const bounceStep = draftBounceEscalationStep(draft, platformDefault);
-  // Whether this purpose's steps may cc anyone (the digest: Minted's setting).
+  // Whether this purpose's steps may cc anyone (the digest: digest_cc_allowed,
+  // the org's override Minted set, else Minted's default).
   const ccAllowed = purposeAllowsCc(
     purpose,
-    resolveNotificationPolicyRules({ digestCcAllowed: platformDefault.digestCcAllowed }),
+    resolveNotificationPolicyRules(
+      { digestCcAllowed: platformDefault.digestCcAllowed },
+      { digestCcAllowed: saved?.digestCcAllowed },
+    ),
   );
   const stepsNote = rules.hasCcList
     ? defaultStepsCcNote(bounceStep)
