@@ -7,11 +7,18 @@ import {
   buildLaunchReportRows,
   buildNoGoLiveDateRows,
   daysUntil,
+  DEFAULT_LAUNCH_REPORT_RULES,
   groupLaunchRows,
+  LAUNCH_REPORT_MAX_WINDOW_DAYS,
+  launchAtRiskRuleText,
+  launchEmptyStateText,
   launchRiskLabel,
   openCasesByFacility,
   providerCountsByFacility,
+  resolveLaunchReportRules,
+  validateLaunchReportRules,
   type LaunchFacilityInput,
+  type LaunchReportRules,
 } from "./launchReport";
 
 const TODAY = "2026-07-19";
@@ -397,5 +404,242 @@ describe("buildNoGoLiveDateRows", () => {
     // The dated report still leaves them out: one list, never both.
     const dated = buildLaunchReportRows(facilities, new Map(), new Map(), TODAY);
     expect(dated.map((r) => r.facilityId)).toEqual(["dated"]);
+  });
+});
+
+describe("LaunchReportRules (MINT-116)", () => {
+  const DEFAULT = DEFAULT_LAUNCH_REPORT_RULES;
+  const rulesWith = (over: Partial<LaunchReportRules>): LaunchReportRules => ({
+    ...DEFAULT,
+    ...over,
+  });
+  // Go-lives N days past (negative) or ahead of TODAY.
+  const at = (id: string, days: number) => {
+    const d = new Date(Date.UTC(2026, 6, 19 + days));
+    return facility({ id, effectiveDate: d.toISOString().slice(0, 10) });
+  };
+  const ids = (rules?: LaunchReportRules, staffed: string[] = []) =>
+    buildLaunchReportRows(
+      [
+        at("risk-past-45", -45),
+        at("risk-past-46", -46),
+        at("risk-past-90", -90),
+        at("risk-past-91", -91),
+        at("clean-past-7", -7),
+        at("clean-past-8", -8),
+        at("clean-past-30", -30),
+        at("clean-past-31", -31),
+        at("ahead-14", 14),
+        at("ahead-15", 15),
+        at("ahead-30", 30),
+        at("ahead-31", 31),
+      ],
+      new Map(staffed.map((id) => [id, 1])),
+      new Map(),
+      TODAY,
+      rules,
+    );
+  const CLEAN = ["clean-past-7", "clean-past-8", "clean-past-30", "clean-past-31"];
+  const STAFFED_AHEAD = ["ahead-14", "ahead-15", "ahead-30", "ahead-31"];
+
+  it("defaults to the decided windows: 90 overdue, 30 recent, 30 upcoming", () => {
+    expect(DEFAULT).toEqual({
+      overdueWindowDays: 90,
+      recentWindowDays: 30,
+      upcomingWindowDays: 30,
+    });
+    expect(Object.isFrozen(DEFAULT)).toBe(true);
+    // Passing the defaults is the same as passing nothing.
+    expect(ids(DEFAULT, CLEAN)).toEqual(ids(undefined, CLEAN));
+    expect(ids(DEFAULT, CLEAN).map((r) => r.facilityId)).toEqual([
+      "risk-past-90",
+      "risk-past-46",
+      "risk-past-45",
+      "clean-past-30",
+      "clean-past-8",
+      "clean-past-7",
+      "ahead-14",
+      "ahead-15",
+      "ahead-30",
+      "ahead-31",
+    ]);
+  });
+
+  it("a shorter overdue window drops an at-risk location sooner", () => {
+    const rows = ids(rulesWith({ overdueWindowDays: 45 }), CLEAN);
+    const shown = rows.map((r) => r.facilityId);
+    expect(shown).toContain("risk-past-45");
+    expect(shown).not.toContain("risk-past-46");
+    expect(shown).not.toContain("risk-past-90");
+    expect(rows.find((r) => r.facilityId === "risk-past-45")?.riskKind).toBe("overdue");
+  });
+
+  it("a longer overdue window keeps an at-risk location longer", () => {
+    const shown = ids(rulesWith({ overdueWindowDays: 120 }), CLEAN).map((r) => r.facilityId);
+    expect(shown).toContain("risk-past-91");
+  });
+
+  it("the recent window bounds how long an opened location with nothing outstanding shows", () => {
+    const short = ids(rulesWith({ recentWindowDays: 7 }), CLEAN).map((r) => r.facilityId);
+    expect(short).toContain("clean-past-7");
+    expect(short).not.toContain("clean-past-8");
+    expect(short).not.toContain("clean-past-30");
+    const long = ids(rulesWith({ recentWindowDays: 31 }), CLEAN).map((r) => r.facilityId);
+    expect(long).toContain("clean-past-31");
+    // The at-risk ones still follow the overdue window, not the recent one.
+    expect(short).toContain("risk-past-90");
+  });
+
+  it("the upcoming window bounds when an approaching go-live is checked", () => {
+    const byDefault = new Map(ids(DEFAULT).map((r) => [r.facilityId, r]));
+    expect(byDefault.get("ahead-15")?.riskKind).toBe("upcoming");
+    expect(byDefault.get("ahead-30")?.riskKind).toBe("upcoming");
+    expect(byDefault.get("ahead-31")?.atRisk).toBe(false);
+    const narrow = new Map(
+      ids(rulesWith({ upcomingWindowDays: 14 }), [...CLEAN]).map((r) => [r.facilityId, r]),
+    );
+    expect(narrow.get("ahead-14")?.riskKind).toBe("upcoming");
+    expect(narrow.get("ahead-15")).toMatchObject({ atRisk: false, riskKind: null });
+    expect(narrow.get("ahead-30")?.atRisk).toBe(false);
+    // Every future go-live still lists; the window only decides the flag.
+    expect(ids(rulesWith({ upcomingWindowDays: 14 }), STAFFED_AHEAD)).toHaveLength(
+      ids(DEFAULT, STAFFED_AHEAD).length,
+    );
+  });
+
+  it("states the rule it applies, today's text with the defaults", () => {
+    expect(launchAtRiskRuleText(DEFAULT)).toBe(
+      "At risk = go-live within 30 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 90 days and either is still true. Opened locations with neither show for 30 days.",
+    );
+    expect(launchAtRiskRuleText()).toBe(launchAtRiskRuleText(DEFAULT));
+    expect(
+      launchAtRiskRuleText({ overdueWindowDays: 60, recentWindowDays: 1, upcomingWindowDays: 14 }),
+    ).toBe(
+      "At risk = go-live within 14 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 60 days and either is still true. Opened locations with neither show for 1 day.",
+    );
+  });
+
+  it("names the same windows in the empty state", () => {
+    expect(launchEmptyStateText(DEFAULT)).toBe(
+      "No locations opening soon, opened in the last 30 days, overdue within the last 90 days, or waiting for a go-live date.",
+    );
+    expect(launchEmptyStateText(rulesWith({ overdueWindowDays: 180, recentWindowDays: 14 }))).toBe(
+      "No locations opening soon, opened in the last 14 days, overdue within the last 180 days, or waiting for a go-live date.",
+    );
+  });
+
+  describe("resolveLaunchReportRules", () => {
+    it("is the defaults with nothing stored", () => {
+      expect(resolveLaunchReportRules()).toEqual(DEFAULT);
+      expect(resolveLaunchReportRules(null, null)).toEqual(DEFAULT);
+    });
+
+    it("takes the organization's value, else the platform's, else the default, field by field", () => {
+      const platform = { overdueWindowDays: 120, recentWindowDays: 14 };
+      expect(resolveLaunchReportRules(platform)).toEqual({ ...DEFAULT, ...platform });
+      expect(resolveLaunchReportRules(platform, { overdueWindowDays: 60 })).toEqual({
+        overdueWindowDays: 60,
+        recentWindowDays: 14,
+        upcomingWindowDays: 30,
+      });
+      expect(resolveLaunchReportRules(null, { upcomingWindowDays: 45 })).toEqual({
+        ...DEFAULT,
+        upcomingWindowDays: 45,
+      });
+    });
+
+    it("inherits on null or undefined", () => {
+      expect(
+        resolveLaunchReportRules(
+          { overdueWindowDays: 120 },
+          { overdueWindowDays: null, recentWindowDays: undefined },
+        ),
+      ).toEqual({ ...DEFAULT, overdueWindowDays: 120 });
+    });
+
+    it("skips a value of the wrong shape like a missing one", () => {
+      for (const bad of [
+        0,
+        -5,
+        1.5,
+        Number.NaN,
+        Infinity,
+        LAUNCH_REPORT_MAX_WINDOW_DAYS + 1,
+        "60",
+      ]) {
+        expect(
+          resolveLaunchReportRules(
+            { overdueWindowDays: 120 },
+            { overdueWindowDays: bad as unknown as number },
+          ).overdueWindowDays,
+        ).toBe(120);
+        expect(
+          resolveLaunchReportRules({ recentWindowDays: bad as unknown as number }).recentWindowDays,
+        ).toBe(30);
+      }
+      expect(
+        resolveLaunchReportRules(null, { overdueWindowDays: LAUNCH_REPORT_MAX_WINDOW_DAYS })
+          .overdueWindowDays,
+      ).toBe(LAUNCH_REPORT_MAX_WINDOW_DAYS);
+    });
+  });
+
+  describe("validateLaunchReportRules", () => {
+    it("passes the defaults, an empty override and whole-day windows", () => {
+      expect(validateLaunchReportRules(DEFAULT)).toEqual([]);
+      expect(validateLaunchReportRules({})).toEqual([]);
+      expect(validateLaunchReportRules(null)).toEqual([]);
+      expect(
+        validateLaunchReportRules({
+          overdueWindowDays: 365,
+          recentWindowDays: 1,
+          upcomingWindowDays: null,
+        }),
+      ).toEqual([]);
+    });
+
+    it("rejects windows that are not whole days from 1 to the maximum, in plain language", () => {
+      expect(validateLaunchReportRules({ overdueWindowDays: 0 })).toEqual([
+        "The overdue window must be a whole number of days from 1 to 365.",
+      ]);
+      expect(validateLaunchReportRules({ recentWindowDays: 7.5, upcomingWindowDays: 400 })).toEqual(
+        [
+          "The recently launched window must be a whole number of days from 1 to 365.",
+          "The approaching window must be a whole number of days from 1 to 365.",
+        ],
+      );
+      expect(validateLaunchReportRules({ upcomingWindowDays: "30" })).toEqual([
+        "The approaching window must be a whole number of days from 1 to 365.",
+      ]);
+    });
+
+    it("rejects unknown rules and a value that is not a set of rules", () => {
+      expect(validateLaunchReportRules({ overdueDays: 90 })).toEqual([
+        '"overdueDays" is not a Launches report rule.',
+      ]);
+      expect(validateLaunchReportRules(90)).toEqual([
+        "The Launches report rules must be a set of named windows.",
+      ]);
+      expect(validateLaunchReportRules([90])).toEqual([
+        "The Launches report rules must be a set of named windows.",
+      ]);
+    });
+
+    it("rejects an overdue window shorter than the recent window, against what it sits on", () => {
+      const tooShort = [
+        "The overdue window must be at least as long as the recently launched window, or a location still at risk would leave the report before one with nothing outstanding.",
+      ];
+      expect(validateLaunchReportRules({ overdueWindowDays: 20 })).toEqual(tooShort);
+      expect(validateLaunchReportRules({ recentWindowDays: 91 })).toEqual(tooShort);
+      expect(validateLaunchReportRules({ overdueWindowDays: 30 })).toEqual([]);
+      // An organization override over a platform that already shortened the
+      // recent window.
+      expect(
+        validateLaunchReportRules(
+          { overdueWindowDays: 20 },
+          resolveLaunchReportRules({ recentWindowDays: 14 }),
+        ),
+      ).toEqual([]);
+    });
   });
 });

@@ -26,11 +26,13 @@ import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
 import { useCases, useOrgCaseFacilityLinks } from "@/hooks/useCases";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { useProviderAssignments, useProviders } from "@/hooks/useProviders";
+import { useLaunchReportRules } from "@/hooks/useLaunches";
 import {
   buildLaunchReportRows,
   buildNoGoLiveDateRows,
   groupLaunchRows,
-  LAUNCH_AT_RISK_RULE_TEXT,
+  launchAtRiskRuleText,
+  launchEmptyStateText,
   launchRiskLabel,
   openCasesByFacility,
   providerCountsByFacility,
@@ -66,6 +68,8 @@ export function LaunchesReport() {
   const casesQ = useCases();
   const caseFacilitiesQ = useOrgCaseFacilityLinks();
   const today = localTodayIso();
+  // The windows are configuration (MINT-116); the defaults until it lands.
+  const rules = useLaunchReportRules();
 
   const { groups, noDate } = useMemo(() => {
     // The domain type keeps the FK columns nullable; a row missing either id
@@ -100,7 +104,7 @@ export function LaunchesReport() {
     const groupNameById = new Map((groupsQ.data ?? []).map((g) => [g.id, g.name]));
     return {
       groups: groupLaunchRows(
-        buildLaunchReportRows(facilities, providerCounts, openCaseCounts, today),
+        buildLaunchReportRows(facilities, providerCounts, openCaseCounts, today, rules),
         groupNameById,
       ),
       noDate: buildNoGoLiveDateRows(facilities, providerCounts, openCaseCounts, groupNameById),
@@ -113,6 +117,7 @@ export function LaunchesReport() {
     casesQ.data,
     caseFacilitiesQ.data,
     today,
+    rules,
   ]);
 
   if (!orgId) {
@@ -129,10 +134,10 @@ export function LaunchesReport() {
 
   return (
     <div className="space-y-5">
-      {/* The at-risk rule, stated inline (F6.6.2 AC). */}
-      <p className="text-[12.5px] text-muted-foreground">{LAUNCH_AT_RISK_RULE_TEXT}</p>
+      {/* The at-risk rule, stated inline (F6.6.2 AC), from the rules applied. */}
+      <p className="text-[12.5px] text-muted-foreground">{launchAtRiskRuleText(rules)}</p>
       {groups.length === 0 && noDate.length === 0 ? (
-        <EmptyState message="No locations opening soon, opened in the last 30 days, overdue within the last 90 days, or waiting for a go-live date." />
+        <EmptyState message={launchEmptyStateText(rules)} />
       ) : (
         groups.map((g) => (
           <section key={g.groupId ?? "no-group"} aria-label={g.groupName}>

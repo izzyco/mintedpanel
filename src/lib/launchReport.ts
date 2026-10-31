@@ -4,33 +4,148 @@
 // provider assignments + open cases (with their case_facilities links) and
 // NOTHING else; the designated test provider is excluded throughout. It
 // restores the old Home "Launches at risk" read: a location is flagged
-// at-risk when its go-live date approaches with open cases still pending or
-// zero providers assigned, and Overdue when the date passed within the last
-// 90 days with either still true (an opened location with nothing outstanding
-// shows for 30 days, unflagged); dateless locations list apart, never
-// flagged. All date math is date-only against a passed-in `today` (never a
+// at-risk when its go-live date approaches (within 30 days by default) with
+// open cases still pending or zero providers assigned, and Overdue when the
+// date passed within the overdue window (90 days by default) with either
+// still true (an opened location with nothing outstanding shows for the
+// recent window, 30 days by default, unflagged); dateless locations list
+// apart, never flagged. All date math is date-only against a passed-in `today` (never a
 // clock read in the lib — the enrollmentReadiness idiom). Pure, no I/O.
+//
+// The three windows are business policy, so they are configuration
+// (LaunchReportRules), never constants: they resolve from the decided
+// default, then a platform override, then an organization override, field by
+// field (resolveLaunchReportRules), and validateLaunchReportRules is the
+// check an override must pass before it goes live. Nothing stores an
+// override yet; the Mission Control setting is MINT-116. The rule text and
+// the empty state are built from the resolved rules, so the page always
+// states the rule it applies.
 import type { CaseStatus } from "./caseStatus";
 import { isOpenCaseStatus } from "./caseStatus";
 import { isTestProvider, testProviderIds, type HasTestProviderFlag } from "./testProvider";
 
-/** A location launched within this many days back still shows ("recently
- * launched" — carried from the retired launchLocations 30-day window). */
-export const LAUNCH_RECENT_WINDOW_DAYS = 30;
+// ---------------------------------------------------------------------------
+// Rules
 
-/** An at-risk location whose go-live passed within this many days still
- * shows, flagged Overdue; past it the location drops off (a mature location
- * with a routine new-payer case is not a launch at risk). */
-export const LAUNCH_OVERDUE_WINDOW_DAYS = 90;
+/** The report's windows, in whole days. Each field names its default. */
+export interface LaunchReportRules {
+  /** An at-risk location whose go-live passed within this many days still
+   * shows, flagged Overdue; past it the location drops off (a mature
+   * location with a routine new-payer case is not a launch at risk).
+   * Default 90 (Sowmya, Oct 30, D29). */
+  overdueWindowDays: number;
+  /** A location launched within this many days back still shows, unflagged,
+   * when nothing is outstanding ("recently launched", carried from the
+   * retired launchLocations window). Default 30. */
+  recentWindowDays: number;
+  /** A go-live date within this many days ahead counts as "approaching" for
+   * the at-risk flag. Default 30. */
+  upcomingWindowDays: number;
+}
 
-/** A go-live date within this many days AHEAD counts as "approaching" for
- * the at-risk flag. */
-export const LAUNCH_UPCOMING_WINDOW_DAYS = 30;
+/** The platform default: the decided windows. */
+export const DEFAULT_LAUNCH_REPORT_RULES: Readonly<LaunchReportRules> = Object.freeze({
+  overdueWindowDays: 90,
+  recentWindowDays: 30,
+  upcomingWindowDays: 30,
+});
+
+/** The longest any window can be set to: a year. */
+export const LAUNCH_REPORT_MAX_WINDOW_DAYS = 365;
+
+/** A platform or organization override. A null or missing field inherits. */
+export type LaunchReportRulesOverride = {
+  readonly [K in keyof LaunchReportRules]?: LaunchReportRules[K] | null;
+};
+
+const isWindowDays = (value: unknown): value is number =>
+  typeof value === "number" &&
+  Number.isSafeInteger(value) &&
+  value > 0 &&
+  value <= LAUNCH_REPORT_MAX_WINDOW_DAYS;
+
+const RULE_LABELS: { [K in keyof LaunchReportRules]: string } = {
+  overdueWindowDays: "The overdue window",
+  recentWindowDays: "The recently launched window",
+  upcomingWindowDays: "The approaching window",
+};
+
+const RULE_KEYS = Object.keys(RULE_LABELS) as Array<keyof LaunchReportRules>;
+
+/** Field by field: the organization's value, else the platform's, else the
+ * default. A stored value of the wrong shape (not a whole number of days
+ * from 1 to LAUNCH_REPORT_MAX_WINDOW_DAYS) is skipped like a missing one. */
+export function resolveLaunchReportRules(
+  platform?: LaunchReportRulesOverride | null,
+  organization?: LaunchReportRulesOverride | null,
+): LaunchReportRules {
+  const pick = (key: keyof LaunchReportRules): number => {
+    for (const override of [organization, platform]) {
+      const value: unknown = override?.[key];
+      if (value != null && isWindowDays(value)) return value;
+    }
+    return DEFAULT_LAUNCH_REPORT_RULES[key];
+  };
+  return {
+    overdueWindowDays: pick("overdueWindowDays"),
+    recentWindowDays: pick("recentWindowDays"),
+    upcomingWindowDays: pick("upcomingWindowDays"),
+  };
+}
+
+/** Plain-language problems with an override; empty when it can go live.
+ * `base` is what the override sits on (for an organization override, the
+ * resolved platform rules), so the windows are checked together as they
+ * would apply. */
+export function validateLaunchReportRules(
+  override: unknown,
+  base: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
+): string[] {
+  if (override == null) return [];
+  if (typeof override !== "object" || Array.isArray(override))
+    return ["The Launches report rules must be a set of named windows."];
+  const errors: string[] = [];
+  const given = override as Record<string, unknown>;
+  for (const key of Object.keys(given)) {
+    if (!(RULE_KEYS as string[]).includes(key))
+      errors.push(`"${key}" is not a Launches report rule.`);
+  }
+  for (const key of RULE_KEYS) {
+    const value = given[key];
+    if (value != null && !isWindowDays(value))
+      errors.push(
+        `${RULE_LABELS[key]} must be a whole number of days from 1 to ${LAUNCH_REPORT_MAX_WINDOW_DAYS}.`,
+      );
+  }
+  if (errors.length > 0) return errors;
+  const rules = resolveLaunchReportRules(base, given as LaunchReportRulesOverride);
+  if (rules.overdueWindowDays < rules.recentWindowDays)
+    errors.push(
+      "The overdue window must be at least as long as the recently launched window, or a location still at risk would leave the report before one with nothing outstanding.",
+    );
+  return errors;
+}
+
+const dayCount = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
 
 /** The inline at-risk explanation (F6.6.2 AC: the rule is explained on the
- * report, single-sourced here so the e2e pins the same text). */
-export const LAUNCH_AT_RISK_RULE_TEXT =
-  "At risk = go-live within 30 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 90 days and either is still true. Opened locations with neither show for 30 days.";
+ * report, built here from the rules it applies so the e2e pins the same
+ * text). */
+export function launchAtRiskRuleText(
+  rules: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
+): string {
+  return `At risk = go-live within ${dayCount(rules.upcomingWindowDays)} with open cases still pending or no providers assigned. Overdue = go-live passed within the last ${dayCount(rules.overdueWindowDays)} and either is still true. Opened locations with neither show for ${dayCount(rules.recentWindowDays)}.`;
+}
+
+/** The report's empty state, naming the same windows. */
+export function launchEmptyStateText(
+  rules: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
+): string {
+  return `No locations opening soon, opened in the last ${dayCount(rules.recentWindowDays)}, overdue within the last ${dayCount(rules.overdueWindowDays)}, or waiting for a go-live date.`;
+}
+
+// ---------------------------------------------------------------------------
+// Rows
 
 /** Which marker an at-risk row carries: go-live today or ahead ("upcoming"),
  * or already passed ("overdue"). */
@@ -186,30 +301,33 @@ export function openCasesByFacility(
  * The report rows: ACTIVE, non-reference facilities whose go-live date is in
  * the future, within the recent window, or — when still at risk — within the
  * overdue window (dateless locations are listed apart by
- * buildNoGoLiveDateRows). Sorted date ascending, name tiebreak.
+ * buildNoGoLiveDateRows). Sorted date ascending, name tiebreak. The windows
+ * come from `rules` (resolved by the caller; the defaults otherwise).
  */
 export function buildLaunchReportRows(
   facilities: readonly LaunchFacilityInput[],
   providerCountByFacility: ReadonlyMap<string, number>,
   openCaseCountByFacility: ReadonlyMap<string, number>,
   today: string,
+  rules: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
 ): LaunchReportRow[] {
   const rows: LaunchReportRow[] = [];
   for (const f of facilities) {
     if (!f.isActive || f.referenceOnly || !f.effectiveDate) continue;
     const days = daysUntil(f.effectiveDate, today);
-    if (days === null || days < -LAUNCH_OVERDUE_WINDOW_DAYS) continue;
+    if (days === null) continue;
     const providerCount = providerCountByFacility.get(f.id) ?? 0;
     const openCaseCount = openCaseCountByFacility.get(f.id) ?? 0;
     // The same test ahead of go-live (upcoming) and after it (overdue); only a
     // date beyond the upcoming window is exempt.
-    const checked = days <= LAUNCH_UPCOMING_WINDOW_DAYS;
+    const checked = days <= rules.upcomingWindowDays;
     const atRiskReasons: string[] = [];
     if (checked && openCaseCount > 0) atRiskReasons.push("open cases still pending");
     if (checked && providerCount === 0) atRiskReasons.push("no providers assigned");
     const atRisk = atRiskReasons.length > 0;
-    // Past the recent window only an at-risk (overdue) location still shows.
-    if (!atRisk && days < -LAUNCH_RECENT_WINDOW_DAYS) continue;
+    // A passed go-live shows within the overdue window while still at risk,
+    // and within the recent window otherwise.
+    if (days < -(atRisk ? rules.overdueWindowDays : rules.recentWindowDays)) continue;
     rows.push({
       facilityId: f.id,
       name: f.name,
