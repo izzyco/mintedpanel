@@ -1013,7 +1013,7 @@ describe("validateOnboardingFunnelConfig", () => {
     ).toEqual([]);
   });
 
-  it("rejects a list that leaves some providers without a stage, under the rules in force", () => {
+  it("rejects a list that leaves some providers without a stage, under any value of a gate's rule", () => {
     // Review P2: this list validated before, and put an unassigned provider
     // with no case in Credentialing.
     const list = [
@@ -1022,11 +1022,36 @@ describe("validateOnboardingFunnelConfig", () => {
       stage("ready_for_credentialing", "ready", "Ready for credentialing"),
       stage("credentialing", "has_case", "Credentialing"),
     ];
-    expect(valid(list)).toEqual([
-      'A provider who is complete, verified, not assigned, with no case, would fit no stage. Add a stage for them, or end with an "everyone else" stage ("any").',
-    ]);
-    // When Ready does not require assignment, the same list covers everyone.
+    const gap =
+      'A provider who is complete, verified, not assigned, with no case, would fit no stage when Ready requires assignment. Add a stage for them, or end with an "everyone else" stage ("any").';
+    expect(valid(list)).toEqual([gap]);
+    // Even under rules that do not require assignment: an organization's
+    // rules could require it, so the list must hold either way.
+    expect(valid(list, { ...DEFAULT, assignmentRequiredForReady: false })).toEqual([gap]);
+  });
+
+  it("accepts a list whose last stage is reachable under only one value of a gate's rule", () => {
+    // Everyone else catches the unassigned while Ready requires assignment;
+    // when it does not, Ready takes them and Everyone else is empty (hidden).
+    const list = [
+      stage("incomplete", "incomplete", "Profile incomplete"),
+      stage("submitted", "complete_unverified", "Submitted"),
+      stage("ready", "ready", "Ready"),
+      stage("cred", "has_case", "Credentialing"),
+      stage("other", "any", "Everyone else"),
+    ];
+    expect(valid(list)).toEqual([]);
     expect(valid(list, { ...DEFAULT, assignmentRequiredForReady: false })).toEqual([]);
+    const off = { stages: list, rules: { ...DEFAULT, assignmentRequiredForReady: false } };
+    expect(visibleOnboardingFunnelStages(off, false).map((s) => s.key)).toEqual([
+      "incomplete",
+      "submitted",
+      "ready",
+      "cred",
+    ]);
+    expect(
+      visibleOnboardingFunnelStages({ stages: list, rules: DEFAULT }, false).map((s) => s.key),
+    ).toContain("other");
   });
 
   it("rejects a gate that is not on the menu", () => {
@@ -1226,6 +1251,7 @@ describe("resolveOnboardingFunnelConfig", () => {
   const broken: OnboardingFunnelStageConfig[] = [
     { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
   ];
+  const MINTED = DEFAULT_ONBOARDING_FUNNEL_CONFIG;
 
   it("is the platform default when nothing overrides it", () => {
     expect(resolveOnboardingFunnelConfig()).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
@@ -1252,6 +1278,57 @@ describe("resolveOnboardingFunnelConfig", () => {
     });
   });
 
+  it("never lets an organization's rules replace Minted's stage list", () => {
+    // Review P2 (probe3 A): Minted's five stages, and an organization that
+    // turns off assignment for Ready and relabels Everyone else.
+    const minted: OnboardingFunnelStageConfig[] = [
+      { key: "incomplete", label: "Profile incomplete", description: "d", gate: "incomplete" },
+      { key: "submitted", label: "Submitted", description: "d", gate: "complete_unverified" },
+      { key: "ready", label: "Ready", description: "d", gate: "ready" },
+      { key: "cred", label: "Credentialing", description: "d", gate: "has_case" },
+      { key: "other", label: "Everyone else", description: "d", gate: "any" },
+    ];
+    const org: OnboardingFunnelOrganizationOverride = {
+      rules: { assignmentRequiredForReady: false },
+      stageText: { other: { label: "Others" } },
+    };
+    const mintedConfig = resolveOnboardingFunnelConfig({ stages: minted }, null);
+    expect(validateOnboardingFunnelOrganizationOverride(org, mintedConfig)).toEqual([]);
+    const config = resolveOnboardingFunnelConfig({ stages: minted }, org);
+    expect(config.stages.map((s) => [s.key, s.gate, s.label])).toEqual([
+      ["incomplete", "incomplete", "Profile incomplete"],
+      ["submitted", "complete_unverified", "Submitted"],
+      ["ready", "ready", "Ready"],
+      ["cred", "has_case", "Credentialing"],
+      ["other", "any", "Others"],
+    ]);
+    expect(config.rules.assignmentRequiredForReady).toBe(false);
+    // The organization's rule empties Everyone else, so it is hidden: intended.
+    expect(visibleOnboardingFunnelStages(config, false).map((s) => s.key)).toEqual([
+      "incomplete",
+      "submitted",
+      "ready",
+      "cred",
+    ]);
+  });
+
+  it("reports rules that would break Minted's list, and then applies none of the layer", () => {
+    // Only reachable when the caller passes a list that is not valid on its
+    // own; the save path must pass Minted's resolved configuration.
+    const org: OnboardingFunnelOrganizationOverride = {
+      rules: { assignmentRequiredForReady: true },
+      stageText: { ready_for_credentialing: { label: "Go" } },
+    };
+    const errors = validateOnboardingFunnelOrganizationOverride(org, {
+      stages: broken,
+      rules: DEFAULT,
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(
+      errors.every((e) => e.startsWith("With this organization's rules, Minted's stages fail: ")),
+    ).toBe(true);
+  });
+
   it("lets an organization rename and re-describe stages, but never reorder or re-gate them", () => {
     const org: OnboardingFunnelOrganizationOverride = {
       stageText: {
@@ -1275,7 +1352,7 @@ describe("resolveOnboardingFunnelConfig", () => {
     const reordered = {
       stages: [...DEFAULT_ONBOARDING_FUNNEL_STAGES].reverse(),
     } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(validateOnboardingFunnelOrganizationOverride(reordered)).toEqual([
+    expect(validateOnboardingFunnelOrganizationOverride(reordered, MINTED)).toEqual([
       "An organization cannot change the stage list: Minted sets the stages, their order and their gates. Change labels and descriptions instead.",
     ]);
     expect(resolveOnboardingFunnelConfig(null, reordered)).toEqual(
@@ -1283,14 +1360,23 @@ describe("resolveOnboardingFunnelConfig", () => {
     );
   });
 
-  it("refuses an organization's whole stage list, keeping its rules field by field", () => {
-    const org = {
+  it("applies an organization's layer whole or not at all, rules included", () => {
+    const withList = {
       stages: custom,
       rules: { assignmentRequiredForReady: false },
     } as unknown as OnboardingFunnelOrganizationOverride;
-    const config = resolveOnboardingFunnelConfig(null, org);
-    expect(config.stages).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES);
-    expect(config.rules).toEqual({ ...DEFAULT, assignmentRequiredForReady: false });
+    expect(resolveOnboardingFunnelConfig(null, withList)).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
+    // Probe3 G: good copy and a good rule beside an unknown rule key.
+    const mixed = {
+      stageText: { submitted: { label: "S2" } },
+      rules: { futureMembershipCounts: false, bogus: 1 },
+    } as unknown as OnboardingFunnelOrganizationOverride;
+    expect(validateOnboardingFunnelOrganizationOverride(mixed, MINTED)).toEqual([
+      '"bogus" is not a funnel rule.',
+    ]);
+    const config = resolveOnboardingFunnelConfig(null, mixed);
+    expect(config.stages[2].label).toBe("Submitted");
+    expect(config.rules.futureMembershipCounts).toBe(true);
   });
 
   it("refuses an organization's copy for a stage Minted does not have, whole", () => {
@@ -1300,7 +1386,7 @@ describe("resolveOnboardingFunnelConfig", () => {
         on_hold: { label: "On hold" },
       },
     };
-    expect(validateOnboardingFunnelOrganizationOverride(org)).toEqual([
+    expect(validateOnboardingFunnelOrganizationOverride(org, MINTED)).toEqual([
       '"on_hold" is not one of Minted\'s stages, so it cannot be relabelled.',
     ]);
     // Not even the valid part goes live: Minted's copy stays.
@@ -1311,9 +1397,38 @@ describe("resolveOnboardingFunnelConfig", () => {
     expect(
       validateOnboardingFunnelOrganizationOverride(
         { stageText: { not_ready: { label: "x" } } },
-        custom,
+        { stages: custom, rules: DEFAULT },
       ),
     ).toEqual([]);
+  });
+
+  it("refuses a label that is another stage's own label, so stages cannot swap names", () => {
+    const swap: OnboardingFunnelOrganizationOverride = {
+      stageText: {
+        submitted: { label: "Ready for credentialing" },
+        ready_for_credentialing: { label: "Submitted" },
+      },
+    };
+    expect(validateOnboardingFunnelOrganizationOverride(swap, MINTED)).toEqual([
+      '"submitted": "Ready for credentialing" is Minted\'s label for "ready_for_credentialing".',
+      '"ready_for_credentialing": "Submitted" is Minted\'s label for "submitted".',
+    ]);
+    expect(resolveOnboardingFunnelConfig(null, swap).stages).toEqual(
+      DEFAULT_ONBOARDING_FUNNEL_STAGES,
+    );
+    // Case and spaces do not get around it, and a hidden stage's label counts.
+    expect(
+      validateOnboardingFunnelOrganizationOverride(
+        { stageText: { submitted: { label: "  ready FOR credentialing " } } },
+        MINTED,
+      ),
+    ).toHaveLength(1);
+    expect(
+      validateOnboardingFunnelOrganizationOverride(
+        { stageText: { submitted: { label: "Invited" } } },
+        MINTED,
+      ),
+    ).toEqual(['"submitted": "Invited" is Minted\'s label for "invited".']);
   });
 
   it("checks an organization's labels, descriptions and rules", () => {
@@ -1321,27 +1436,39 @@ describe("resolveOnboardingFunnelConfig", () => {
       stageText: {
         submitted: { label: " ", gate: "ready" },
         invited: { label: "x".repeat(61), description: "" },
-        credentialing: { label: "ready for credentialing" },
+        credentialing: { label: "With payers" },
+        verified_awaiting_assignment: { label: "With Payers" },
         profile_incomplete: "Missing things",
       },
       rules: { statelessLocationHolds: "no", showDenied: true },
     } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(validateOnboardingFunnelOrganizationOverride(org)).toEqual([
+    expect(validateOnboardingFunnelOrganizationOverride(org, MINTED)).toEqual([
       '"submitted": only the label and the description can change.',
       '"submitted": the label cannot be empty.',
       '"invited": keep the label to 60 characters.',
       '"invited": the description cannot be empty.',
       '"profile_incomplete": give a label, a description, or both.',
-      'The label "ready for credentialing" would be used twice.',
+      'The label "With payers" would be used twice.',
       'The rule "statelessLocationHolds" must be on or off.',
       '"showDenied" is not a funnel rule.',
     ]);
-    expect(validateOnboardingFunnelOrganizationOverride(null)).toEqual([]);
+    expect(validateOnboardingFunnelOrganizationOverride(null, MINTED)).toEqual([]);
     expect(
       validateOnboardingFunnelOrganizationOverride(
         "abc" as unknown as OnboardingFunnelOrganizationOverride,
+        MINTED,
       ),
     ).toEqual(["An organization's funnel settings must be an object."]);
+  });
+
+  it("ignores inherited keys in an organization's copy", () => {
+    const proto = JSON.parse(
+      '{"stageText": {"__proto__": {"label": "x"}, "submitted": {"label": "S2"}}}',
+    ) as OnboardingFunnelOrganizationOverride;
+    expect(validateOnboardingFunnelOrganizationOverride(proto, MINTED)).toEqual([
+      '"__proto__" is not one of Minted\'s stages, so it cannot be relabelled.',
+    ]);
+    expect(resolveOnboardingFunnelConfig(null, proto).stages[2].label).toBe("Submitted");
   });
 
   it("never lets a platform list that fails validation go live", () => {
