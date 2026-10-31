@@ -368,7 +368,7 @@ const DEFAULT_STAGE_LIST: OnboardingFunnelStageConfig[] = [
   {
     key: "ready_for_credentialing",
     label: "Ready for credentialing",
-    description: "Meets every requirement for credentialing. No case yet.",
+    description: "Meets every requirement for credentialing.",
     gate: "ready",
   },
   {
@@ -629,7 +629,8 @@ export interface OnboardingFunnelMembershipInput {
   providerId: string | null;
   groupId: string | null;
   groupName: string | null;
-  groupActive: boolean;
+  /** null when the read cannot see the group: unknown, never "inactive". */
+  groupActive: boolean | null;
   startDate: string | null;
   endDate: string | null;
 }
@@ -707,7 +708,13 @@ function lapsedMembershipReason(
   const name = membership.groupName ?? "the provider's group";
   const start = day(membership.startDate);
   const end = day(membership.endDate);
-  if (!membership.groupActive) return `Group ${name} is inactive`;
+  // A group the read cannot see is unknown: it does not count, and the
+  // reason claims nothing about it.
+  if (membership.groupActive === null) return "Membership group not found";
+  if (!membership.groupActive)
+    return membership.groupName
+      ? `Group ${membership.groupName} is inactive`
+      : "The provider's group is inactive";
   if (end !== null && end < today) return `Membership in ${name} ended ${end}`;
   if (!rules.futureMembershipCounts && start !== null && start > today)
     return `Membership in ${name} starts ${start}`;
@@ -821,8 +828,10 @@ export function buildOnboardingFunnelRows(
       ];
 
       // verified. Judge the licenses for the valid states they work in;
-      // with none, every license on file. A stateless location is an
-      // assignment gap of its own and never hides a license problem.
+      // with no valid working state, every license on file. A stateless
+      // location is an assignment gap of its own. While another location
+      // has a valid state, no license is judged for the stateless one: the
+      // state it will have is unknown (an open question for the PM).
       const judged = workStates.length > 0 ? workStates : [...licenseStates];
       const verificationGaps: string[] = [];
       for (const state of judged) {

@@ -304,6 +304,50 @@ describe("onboarding funnel service", () => {
     ]);
   });
 
+  it("treats a membership whose group the read cannot see as unknown, never inactive", async () => {
+    holder.tables.providers = [provider("p-unseen")];
+    holder.tables.state_licenses = [
+      {
+        id: "l-unseen",
+        org_id: "org-1",
+        provider_id: "p-unseen",
+        state: "NC",
+        status: "active",
+        verified_status: "verified",
+        expiration_date: "2027-06-30",
+      },
+    ];
+    holder.tables.provider_facility_assignments = [];
+    holder.tables.provider_group_assignments = [
+      {
+        id: "m-unseen",
+        org_id: "org-1",
+        provider_id: "p-unseen",
+        group_id: "g-missing",
+        start_date: null,
+        end_date: null,
+      },
+    ];
+    holder.tables.credential_cases = [];
+    const input = await getOnboardingFunnelInput();
+    expect(input.groupMemberships).toEqual([
+      {
+        providerId: "p-unseen",
+        groupId: "g-missing",
+        groupName: null,
+        groupActive: null,
+        startDate: null,
+        endDate: null,
+      },
+    ]);
+    const [row] = buildOnboardingFunnelRows(input, "2026-10-20", input.config);
+    expect(row).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: ["Membership group not found", "Needs a location"],
+    });
+    expect(row.gaps.join(" ")).not.toMatch(/inactive/);
+  });
+
   it("says a membership's group is inactive instead of calling it someone else's", async () => {
     holder.tables.providers = [provider("p-closed")];
     holder.tables.state_licenses = [

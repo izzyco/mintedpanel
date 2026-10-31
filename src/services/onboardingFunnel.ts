@@ -139,14 +139,16 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> 
       ];
     }),
     // Every membership, current or not, so a hold can say why one does not
-    // count (inactive group, ended, or not started yet).
+    // count (inactive group, ended, or not started yet). A group this read
+    // cannot see is unknown (null), never "inactive".
     groupMemberships: memberships.map((row) => {
       const groupId = text(row.group_id);
+      const found = groupId !== null && groupNames.has(groupId);
       return {
         providerId: text(row.provider_id),
         groupId,
-        groupName: groupId === null ? null : (groupNames.get(groupId) ?? null),
-        groupActive: activeGroups.has(row.group_id),
+        groupName: found ? (groupNames.get(groupId) ?? null) : null,
+        groupActive: found ? activeGroups.has(groupId) : null,
         startDate: text(row.start_date),
         endDate: text(row.end_date),
       };

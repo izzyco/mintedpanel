@@ -502,6 +502,29 @@ describe("accurate reasons when the location's group is the provider's own", () 
     });
   });
 
+  it("never calls a group the read cannot see inactive", () => {
+    const data = input();
+    data.groupMemberships = [
+      member("ready", null, { groupId: "g-unseen", groupName: null, groupActive: null }),
+    ];
+    data.locations = [at("ready", "NC", { groupId: "g-unseen", groupName: null })];
+    expect(rowFor(data, "ready")).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: ["Membership group not found"],
+    });
+    // Beside a current group, the location under the unseen group reads the same.
+    data.groupMemberships = [...data.groupMemberships, member("ready", null, underShelby)];
+    expect(rowFor(data, "ready")).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: ["Membership group not found"],
+    });
+    expect(rowFor(data, "ready")?.gaps.join(" ")).not.toMatch(/inactive/);
+    // A known inactive group with no name on record still says only what is known.
+    data.groupMemberships = [member("ready", null, { groupName: null, groupActive: false })];
+    data.locations = [at("ready", "NC")];
+    expect(rowFor(data, "ready")?.gaps).toEqual(["The provider's group is inactive"]);
+  });
+
   it("names the lapsed membership when it is the provider's only one", () => {
     const data = input();
     data.groupMemberships = [member("ready", null, { groupActive: false })];
@@ -760,7 +783,7 @@ describe("stage configuration", () => {
       Submitted: "Information is complete but not yet verified.",
       "Verified, awaiting assignment":
         "Verified; the group, the location, or a location's record still needs attention.",
-      "Ready for credentialing": "Meets every requirement for credentialing. No case yet.",
+      "Ready for credentialing": "Meets every requirement for credentialing.",
       Credentialing: "Has at least one credentialing case.",
     });
     expect(copy.Submitted).not.toMatch(/sent|transmit|submitted to|filed|payer/i);
