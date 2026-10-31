@@ -135,6 +135,12 @@ function memoryClient(tables, options = {}) {
 function stagingGuards(table, row, tables) {
   if (table === "portals" && row.case_type != null && !row.payer_id)
     return "portal_configuration_payer_required";
+  if (
+    table === "portals" &&
+    row.payer_id &&
+    !(tables.payers ?? []).some((p) => p.id === row.payer_id)
+  )
+    return 'insert or update on table "portals" violates foreign key constraint "portals_payer_id_fkey"';
   if (table === "payers" && row.merged_into_id) {
     if (!(tables.payers ?? []).some((p) => p.id === row.merged_into_id))
       return 'insert or update on table "payers" violates foreign key constraint "payers_merged_into_id_fkey"';
@@ -812,5 +818,48 @@ test("degenerate task shapes are refused the way jsonb's ? operator reads them",
   assert.equal(
     templates.reasons.filter((r) => r.includes("would be refused: sop_task_steps_invalid")).length,
     3,
+  );
+});
+
+test("an org's own maps never become overrides of the global portal when its own portal fails", async () => {
+  const globalPortal = {
+    id: "portal-g",
+    org_id: null,
+    portal_key: "k",
+    name: "K",
+    payer_id: "payer-aetna",
+    case_type: null,
+  };
+  // org-x's own k portal names a payer staging does not have, so it is refused.
+  const orgPortal = {
+    ...globalPortal,
+    id: "portal-o",
+    org_id: "org-x",
+    name: "K (org x)",
+    payer_id: "payer-missing",
+  };
+  const production = emptyProject({
+    organizations: [{ id: "org-x" }],
+    payers: [payer("aetna")],
+    portals: [globalPortal, orgPortal],
+    portal_field_maps: [
+      { id: "m-g", org_id: null, portal_key: "k" },
+      { id: "m-o", org_id: "org-x", portal_key: "k" },
+    ],
+  });
+  const staging = emptyProject({ organizations: [{ id: "org-x" }], payers: [payer("aetna")] });
+  const report = await runCatalogSync({ ...clients(production, staging), apply: true });
+  assert.deepEqual(
+    staging.portals.map((p) => p.id),
+    ["portal-g"],
+  );
+  assert.deepEqual(
+    staging.portal_field_maps.map((m) => m.id),
+    ["m-g"],
+    "org-x's own map is not copied as an override of the global k",
+  );
+  assert.match(
+    byTable(report, "portal_field_maps").reasons[0],
+    /^m-o "k": the map belongs to org org-x's own k portal on production, which this run did not add on staging/,
   );
 });

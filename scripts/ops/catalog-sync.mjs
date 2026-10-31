@@ -141,8 +141,6 @@ export function isBindablePayer(payer) {
 
 // ---------- staging's template insert guards, restated ----------
 
-/** The migrations whose function bodies templateRefusal restates. A test
- * fails when a later migration redefines either function. */
 /** Everything on public.sop_templates that can refuse an insert, as the repo's
  * migrations leave it: its triggers and its foreign keys. stagingRefusal
  * covers each one (the seed-version trigger only adds a row; the update guard
@@ -161,6 +159,8 @@ export const SOP_TEMPLATE_INSERT_SURFACE = Object.freeze({
   }),
 });
 
+/** The migrations whose function bodies templateRefusal restates. A test
+ * fails when a later migration redefines either function. */
 export const TEMPLATE_GUARD_MIGRATIONS = Object.freeze({
   guard_typed_sop_template: "20261003120000_mint44_typed_sops.sql",
   validate_sop_template_portal_bindings: "20261006164500_mint44_org_portal_binding_precedence.sql",
@@ -442,34 +442,51 @@ export function formatReport(report, { apply }) {
 
 /**
  * The field maps to copy for the portals this run adds. A map goes with the
- * portal of its own org and key; an org's override of a NEW global portal
- * (same key, org_id set) goes too when that org is on staging and has no
- * portal of its own with that key there (which keeps its own maps). Every
- * other override of a new global portal is reported with the reason. Maps of
- * portals staging already had are not considered.
+ * portal of its own org and key. An org's override of a NEW global portal
+ * (same key, org_id set) goes too, when that org is on staging, has no portal
+ * of its own with that key there (which keeps its own maps), and has none on
+ * production either: an org map whose own portal exists on production belongs
+ * to that portal, so if this run did not add it, the map is held back rather
+ * than turned into an override of the global one. Every other override of a
+ * new global portal is reported with the reason. Maps of portals staging
+ * already had are not considered.
+ *
+ * @param addedPortals   the portals this run added (or would add) on staging
+ * @param sourcePortals  every portal on production
+ * @param targetPortals  staging's portals before this run
  */
-export function planFieldMaps(maps, { addedPortals, targetPortals, targetOrgIds }) {
+export function planFieldMaps(
+  maps,
+  { addedPortals, sourcePortals = [], targetPortals, targetOrgIds },
+) {
   const scope = (row) => `${row.org_id ?? ""}|${row.portal_key}`;
   const added = new Set(addedPortals.map(scope));
   const newGlobalKeys = new Set(
     addedPortals.filter((p) => p.org_id == null).map((p) => p.portal_key),
   );
+  const productionScopes = new Set(sourcePortals.map(scope));
   const stagingScopes = new Set(targetPortals.map(scope));
   const ok = [];
   const skipped = [];
+  const skip = (row, reason) => skipped.push({ row, reason });
   for (const m of maps) {
     if (added.has(scope(m))) ok.push(m);
     else if (m.org_id != null && newGlobalKeys.has(m.portal_key)) {
       if (!targetOrgIds.has(m.org_id))
-        skipped.push({
-          row: m,
-          reason: `org ${m.org_id} is not on staging, so its override of new global portal ${m.portal_key} is not copied`,
-        });
+        skip(
+          m,
+          `org ${m.org_id} is not on staging, so its override of new global portal ${m.portal_key} is not copied`,
+        );
       else if (stagingScopes.has(scope(m)))
-        skipped.push({
-          row: m,
-          reason: `org ${m.org_id} already has its own ${m.portal_key} portal on staging, which keeps its own maps`,
-        });
+        skip(
+          m,
+          `org ${m.org_id} already has its own ${m.portal_key} portal on staging, which keeps its own maps`,
+        );
+      else if (productionScopes.has(scope(m)))
+        skip(
+          m,
+          `the map belongs to org ${m.org_id}'s own ${m.portal_key} portal on production, which this run did not add on staging; not copied as an override of the global one`,
+        );
       else ok.push(m);
     }
   }

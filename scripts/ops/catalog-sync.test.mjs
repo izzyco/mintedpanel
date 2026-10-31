@@ -612,4 +612,20 @@ test("field maps: own org and key, plus org overrides of a new global portal", (
       [4, "org org-2 already has its own g portal on staging"],
     ],
   );
+  // An org map whose own portal is on production, but was not added here,
+  // stays with that portal: it is never read as an override of the global g.
+  const held = planFieldMaps([{ id: 8, org_id: "org-1", portal_key: "g" }], {
+    addedPortals: added,
+    sourcePortals: [
+      { org_id: null, portal_key: "g" },
+      { org_id: "org-1", portal_key: "g" },
+    ],
+    targetPortals: [],
+    targetOrgIds: new Set(["org-1"]),
+  });
+  assert.deepEqual(held.ok, []);
+  assert.match(
+    held.skipped[0].reason,
+    /^the map belongs to org org-1's own g portal on production, which this run did not add on staging/,
+  );
 });

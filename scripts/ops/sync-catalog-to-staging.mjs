@@ -133,7 +133,8 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
 
   // 2. portals
   const targetPortals = await readAll(dst, "portals");
-  const portalPlan = planAdds(await readAll(src, "portals"), targetPortals).map(stripUserColumns);
+  const sourcePortals = await readAll(src, "portals");
+  const portalPlan = planAdds(sourcePortals, targetPortals).map(stripUserColumns);
   const portalSplit = splitByOrg(portalPlan, orgs);
   const portals = await insertBatches("portals", portalSplit.ok);
   note("portals", portals.added.length, [
@@ -146,6 +147,7 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
   //    portal when that org is on staging (planFieldMaps).
   const mapPlan = planFieldMaps((await readAll(src, "portal_field_maps")).map(stripUserColumns), {
     addedPortals: portals.added,
+    sourcePortals,
     targetPortals,
     targetOrgIds: orgs,
   });

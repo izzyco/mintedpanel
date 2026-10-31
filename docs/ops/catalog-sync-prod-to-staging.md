@@ -149,7 +149,9 @@ form attached to it says `template <id> "<name>" would be refused: …`.
   goes in; any other upload error skips the row.
 - **Field maps.** A map goes with the new portal of its own org and key. An
   org's override of a **new global portal** (same key, `org_id` set) goes too,
-  when that org is on staging and has no portal of its own with that key there.
+  when that org is on staging and has no portal of its own with that key there
+  or on production (an org map whose own portal this run did not add stays out:
+  it belongs to that portal, not to the global one).
   Any other override of a new global portal is listed with the reason (`org …
 is not on staging`, or `org … already has its own … portal on staging, which
 keeps its own maps`). Maps of portals staging already had are left alone.
@@ -203,6 +205,9 @@ The dry run predicts staging's insert guards and the template's foreign keys
 in both modes. What only shows at apply time, with staging's error:
 
 - a Storage file that is missing on production (the form is skipped);
+- a production portal that staging refuses, for example because its payer is
+  not on staging. Its own field maps are then held back, never copied as
+  overrides of a global portal with the same key;
 - a refusal from a rule that is on staging but not in the repo's migrations;
 - a read whose count changes mid-run (the run stops; run it again).
 
