@@ -37,6 +37,7 @@ const loadPayerFormRoutes = () => import("./payerFormRoutes");
 const loadRosterRoutes = () => import("./rosterRoutes");
 const loadProviderIntakeRoutes = () => import("./providerIntakeRoutes");
 const loadNpiRegistryRoutes = () => import("./npiRegistryRoutes");
+const loadNpiRegistryBatchRoutes = () => import("./npiRegistryBatchRoutes");
 
 // `/api/providers/:id/profile` — must be matched before the generic :id route.
 const PROVIDER_PROFILE_ROUTE = /^\/api\/providers\/([^/]+)\/profile\/?$/;
@@ -104,6 +105,8 @@ const PROVIDER_INVITES_ROUTE = /^\/api\/provider-invites\/?$/;
 const PROVIDER_INVITE_RESEND_ROUTE = /^\/api\/provider-invites\/([^/]+)\/resend\/?$/;
 // MINT-110: staff search and verify NPIs in the NPI Registry (NPPES).
 const NPI_REGISTRY_ROUTE = /^\/api\/npi-registry\/(search|lookup)\/?$/;
+// MINT-110 PR 2: the import review checks new providers' NPIs a batch at a time.
+const NPI_REGISTRY_BATCH_ROUTE = /^\/api\/npi-registry\/verify-batch\/?$/;
 
 // Keep verified user context request-scoped. Legacy routes retain one auth
 // call while the additive context-revision header reuses that actor after
@@ -480,6 +483,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
   const isProviderInvites = PROVIDER_INVITES_ROUTE.test(pathname);
   const providerInviteResendMatch = pathname.match(PROVIDER_INVITE_RESEND_ROUTE);
   const npiRegistryMatch = pathname.match(NPI_REGISTRY_ROUTE);
+  const isNpiRegistryBatch = NPI_REGISTRY_BATCH_ROUTE.test(pathname);
   if (
     !profileMatch &&
     !ssnReleaseMatch &&
@@ -517,7 +521,8 @@ async function routeApiRequest(request: Request): Promise<Response> {
     !isRosterRoute &&
     !isProviderInvites &&
     !providerInviteResendMatch &&
-    !npiRegistryMatch
+    !npiRegistryMatch &&
+    !isNpiRegistryBatch
   ) {
     return fail(404, "Not found");
   }
@@ -840,6 +845,14 @@ async function routeApiRequest(request: Request): Promise<Response> {
       return npiRegistryMatch[1] === "search"
         ? await routes.handleNpiRegistrySearch(body, ctx)
         : await routes.handleNpiRegistryLookup(body, ctx);
+    }
+    if (isNpiRegistryBatch) {
+      if (method !== "POST") return fail(405, "Method not allowed");
+      const routes = await loadNpiRegistryBatchRoutes();
+      return await routes.handleNpiRegistryVerifyBatch(
+        await readBoundedJsonBody(request, 2048),
+        ctx,
+      );
     }
     if (isDocumentFinalize) {
       if (method !== "POST") return fail(405, "Method not allowed");

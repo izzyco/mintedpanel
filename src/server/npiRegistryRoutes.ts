@@ -132,3 +132,18 @@ export async function handleNpiRegistryLookup(
   if (limited) return limited;
   return answer(`npi:${input.value}`, () => lookupNppes(input.value, deps));
 }
+
+/** MINT-110 PR 2: one already-validated NPI through the same shared cache and
+ * key as /lookup, for the import batch route (npiRegistryBatchRoutes.ts). It
+ * spends no budget (the caller does) and lets registry errors through. */
+export async function lookupNpiRegistryCached(
+  npi: string,
+  deps: NppesDeps = {},
+): Promise<NpiRegistryLookupResult> {
+  const key = `npi:${npi}`;
+  const cached = cache.get(key) as NpiRegistryLookupResult | undefined;
+  if (cached) return cached;
+  const result = await lookupNppes(npi, deps);
+  cache.set(key, result);
+  return result;
+}

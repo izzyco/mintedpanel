@@ -280,7 +280,8 @@ export function useImportPreview(runId: string | null) {
     licensesQ.data,
   ]);
 
-  return { run: runQ.data ?? null, dispositions, isLoading, isError };
+  // The staged rows too, for checks that read a row's own cells (MINT-110).
+  return { run: runQ.data ?? null, rows: rowsQ.data ?? null, dispositions, isLoading, isError };
 }
 
 /** Commit invalidates every cache the RPC's writes feed — providers, both

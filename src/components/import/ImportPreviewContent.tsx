@@ -10,6 +10,12 @@
 // (F3.1.5) — committed providers carry Pending Verification and are verified
 // from the roster (ProviderRosterSection), fenced out of readiness/generation
 // until then (TE-2).
+// MINT-110 PR 2 / MINT-119: while the run is reviewed, the NPIs of the rows in
+// scope (by default only NEW providers) are checked against the NPI Registry
+// (ImportNpiVerificationPanel). With the default severities every outcome is a
+// note on its row; an outcome set to "block" moves that row to Blocked rows
+// with a plain reason, so it is not committed. Commit and Cancel stop the
+// checks. Scope and severities are injected (the NPI Registry policy).
 import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -27,8 +33,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { BatchAssignPanel } from "@/components/import/BatchAssignPanel";
+import {
+  ImportNpiNoteCell,
+  ImportNpiVerificationPanel,
+} from "@/components/import/ImportNpiVerificationPanel";
 import { ImportRunStatePill } from "@/components/import/ImportRunPanel";
 import { useCancelImportRun, useCommitImportRun, useImportPreview } from "@/hooks/useImportRuns";
+import { useImportNpiVerification } from "@/hooks/useImportNpiVerification";
 import { useIsAdmin } from "@/lib/permissions";
 import { downloadCsv } from "@/lib/csv";
 import { errorReportCsvRows } from "@/lib/rosterImport";
@@ -41,6 +52,17 @@ import {
   type RunResolutions,
   type UpdateDisposition,
 } from "@/lib/importDedupe";
+import {
+  DEFAULT_IMPORT_NPI_SCOPE,
+  DEFAULT_NPI_SEVERITY_FOR,
+  applyImportNpiBlocks,
+  importNpiRowResult,
+  npiPolicyCanBlock,
+  selectImportNpiChecks,
+  type ImportNpiRowResult,
+  type ImportNpiVerifyScope,
+  type NpiRegistrySeverityFor,
+} from "@/lib/importNpiVerification";
 import type { ImportRun } from "@/types";
 
 function MetricCard({
@@ -112,10 +134,13 @@ function UpdateRow({
   entry,
   resolutions,
   onResolve,
+  npiResult,
 }: {
   entry: UpdateDisposition;
   resolutions: RunResolutions;
   onResolve: (providerId: string, key: string, choice: ConflictChoice) => void;
+  /** Present only when the NPI Registry check covers existing providers. */
+  npiResult?: ImportNpiRowResult;
 }) {
   const picks = resolutions[entry.providerId] ?? {};
   const unresolved = unresolvedConflicts(entry, resolutions);
@@ -168,6 +193,11 @@ function UpdateRow({
           ))}
         </ul>
       ) : null}
+      {npiResult ? (
+        <div className="mt-2">
+          <ImportNpiNoteCell note={npiResult.note} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -201,15 +231,63 @@ function downloadErrorReport(run: ImportRun) {
   downloadCsv("roster-import-errors.csv", errorReportCsvRows(run.errorReport ?? []));
 }
 
-export function ImportPreviewContent({ runId }: { runId: string }) {
+export function ImportPreviewContent({
+  runId,
+  npiScope = DEFAULT_IMPORT_NPI_SCOPE,
+  npiSeverityFor = DEFAULT_NPI_SEVERITY_FOR,
+}: {
+  runId: string;
+  /** Which rows the NPI Registry check covers (policy; default new providers). */
+  npiScope?: ImportNpiVerifyScope;
+  /** Warn or block per registry outcome (policy; default warn for all). */
+  npiSeverityFor?: NpiRegistrySeverityFor;
+}) {
   const preview = useImportPreview(runId);
   const isAdmin = useIsAdmin();
   const commit = useCommitImportRun();
   const [resolutions, setResolutions] = useState<RunResolutions>({});
   const [confirmCommit, setConfirmCommit] = useState(false);
 
-  const dispositions = preview.dispositions;
   const run = preview.run;
+
+  // MINT-110 PR 2: the rows in scope are checked only while an admin reviews
+  // a run that is still ready for review.
+  const npiChecks = useMemo(
+    () => selectImportNpiChecks(preview.dispositions, { scope: npiScope, rows: preview.rows }),
+    [preview.dispositions, preview.rows, npiScope],
+  );
+  const npiVerification = useImportNpiVerification(
+    npiChecks,
+    isAdmin && run?.state === "ready_for_review" && npiChecks.length > 0,
+  );
+  const npiSnapshot = npiVerification.snapshot;
+  const npi = useMemo(() => {
+    const byLine = new Map<number, ImportNpiRowResult>();
+    const blockReasonByLine = new Map<number, string>();
+    const counts = { notes: 0, blocked: 0 };
+    for (const item of npiChecks) {
+      const outcome = npiSnapshot.results.get(item.npi);
+      const result = importNpiRowResult(outcome, item, npiSnapshot.phase, npiSeverityFor);
+      byLine.set(item.line, result);
+      if (result.blockReason && item.disposition !== "skip") {
+        blockReasonByLine.set(item.line, result.blockReason);
+        counts.blocked += 1;
+      } else if (outcome?.status === "checked" && result.severity !== "ok") {
+        counts.notes += 1;
+      }
+    }
+    return { byLine, blockReasonByLine, counts };
+  }, [npiChecks, npiSnapshot, npiSeverityFor]);
+
+  // A "block" outcome holds its row back; with the default policy this is the
+  // dedupe's own list, unchanged.
+  const dispositions = useMemo(
+    () =>
+      preview.dispositions
+        ? applyImportNpiBlocks(preview.dispositions, npi.blockReasonByLine)
+        : null,
+    [preview.dispositions, npi.blockReasonByLine],
+  );
 
   const summary = useMemo(
     () =>
@@ -266,6 +344,8 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
 
   const runCommit = () => {
     if (!dispositions) return;
+    // Committing before the registry checks finish is allowed; it stops them.
+    npiVerification.stop();
     const plan = buildCommitPlan(dispositions, resolutions);
     commit.mutate(
       { runId: run.id, plan },
@@ -294,6 +374,7 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
   };
 
   const canReview = run.state === "ready_for_review";
+  const showNpiChecks = canReview && isAdmin && npiChecks.length > 0;
 
   return (
     <div className="space-y-4">
@@ -319,6 +400,15 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
         )}
       </p>
 
+      {showNpiChecks ? (
+        <ImportNpiVerificationPanel
+          snapshot={npiSnapshot}
+          counts={npi.counts}
+          scope={npiScope}
+          onStop={npiVerification.stop}
+        />
+      ) : null}
+
       {creates.length > 0 ? (
         <DrilldownSection title="New providers" count={creates.length}>
           <Table>
@@ -329,20 +419,26 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
                 <TableHead>Groups</TableHead>
                 <TableHead>Facilities</TableHead>
                 <TableHead>Licenses</TableHead>
+                {showNpiChecks ? <TableHead>NPI Registry</TableHead> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {creates.map((d) =>
-                d.kind === "create" ? (
+              {creates.map((d) => {
+                if (d.kind !== "create") return null;
+                const note = npi.byLine.get(d.line)?.note;
+                return (
                   <TableRow key={`c-${d.line}`}>
                     <TableCell className="text-[13px] font-medium">{d.displayName}</TableCell>
                     <TableCell className="text-[13px] tabular-nums">{d.npi}</TableCell>
                     <TableCell className="text-[13px]">{d.groupIds.length}</TableCell>
                     <TableCell className="text-[13px]">{d.facilityIds.length}</TableCell>
                     <TableCell className="text-[13px]">{d.licenses.length}</TableCell>
+                    {showNpiChecks ? (
+                      <TableCell>{note ? <ImportNpiNoteCell note={note} /> : null}</TableCell>
+                    ) : null}
                   </TableRow>
-                ) : null,
-              )}
+                );
+              })}
             </TableBody>
           </Table>
         </DrilldownSection>
@@ -357,6 +453,7 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
                 entry={entry}
                 resolutions={resolutions}
                 onResolve={resolve}
+                npiResult={showNpiChecks ? npi.byLine.get(entry.line) : undefined}
               />
             ))}
           </div>
@@ -417,6 +514,9 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
               d.kind === "skip" ? (
                 <li key={`s-${d.line}`} className="text-muted-foreground">
                   {d.displayName} — {d.reason}
+                  {showNpiChecks && npi.byLine.get(d.line) ? (
+                    <> · NPI Registry: {npi.byLine.get(d.line)?.note.title}</>
+                  ) : null}
                 </li>
               ) : null,
             )}
@@ -432,6 +532,15 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
                 <span className="text-[13px] font-medium text-[#B91C1C]">
                   Commit is final and cannot be undone. Continue?
                 </span>
+                {npiSnapshot.phase === "running" ? (
+                  <span className="text-[12px] text-muted-foreground">
+                    NPI Registry checks are still running; committing stops them
+                    {npiPolicyCanBlock(npiSeverityFor)
+                      ? ", and rows not yet checked are committed unchecked"
+                      : ""}
+                    .
+                  </span>
+                ) : null}
                 <Button
                   className="h-9 bg-[#1B4D3E] text-white hover:bg-[#163F33]"
                   disabled={commit.isPending}
@@ -459,7 +568,7 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
                 >
                   Commit Changes
                 </Button>
-                <CancelImportButton runId={run.id} />
+                <CancelImportButton runId={run.id} onConfirm={npiVerification.stop} />
                 <span className="text-[12px] text-muted-foreground">
                   Nothing is written to live records until you commit.
                 </span>
@@ -478,7 +587,7 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
 
 // Cancel purges the staged rows (TE-8) — split out so the confirm state stays
 // local and doesn't wedge the commit affordance.
-function CancelImportButton({ runId }: { runId: string }) {
+function CancelImportButton({ runId, onConfirm }: { runId: string; onConfirm?: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const cancelMut = useCancelImportRun();
   if (confirming) {
@@ -490,13 +599,15 @@ function CancelImportButton({ runId }: { runId: string }) {
           size="sm"
           className="h-9 border-[#FCA5A5] text-[#B91C1C]"
           disabled={cancelMut.isPending}
-          onClick={() =>
+          onClick={() => {
+            // Cancelling the upload stops any NPI Registry checks first.
+            onConfirm?.();
             cancelMut.mutate(runId, {
               onSuccess: () => toast.success("Import cancelled — staged rows removed"),
               onError: (e) =>
                 toast.error(e instanceof Error ? e.message : "Couldn't cancel the run"),
-            })
-          }
+            });
+          }}
         >
           {cancelMut.isPending ? "Cancelling…" : "Yes, cancel import"}
         </Button>
