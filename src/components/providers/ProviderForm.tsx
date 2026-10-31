@@ -69,12 +69,25 @@ export function ProviderForm({
     useNpiRegistryPolicy(),
   );
   // MINT-110: kept here, not in CredentialsSection, so a pick's summary and
-  // its trace outlive a step change.
+  // its trace outlive a step change. `npiTouched` says which fields staff
+  // edited (only `update`, which every input calls, sets it); a pick goes
+  // through applyNpi and marks nothing.
   const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
-  const [taxonomyTouched, setTaxonomyTouched] = useState(false);
+  const [npiTouched, setNpiTouched] = useState({ credentials: false, taxonomyCode: false });
 
   const update: UpdateProviderField = (key, value) => {
+    if (key === "credentials" || key === "taxonomyCode") {
+      setNpiTouched((touched) => ({ ...touched, [key]: true }));
+    }
     setForm((p) => ({ ...p, [key]: value }));
+  };
+  const applyNpi = (next: ProviderFormState, pick: NpiPickState | null) => {
+    setForm(next);
+    // Credentials a pick just wrote are the pick's until staff edit them.
+    if (pick && pick !== npiPick && pick.trace.credentials) {
+      setNpiTouched((touched) => ({ ...touched, credentials: false }));
+    }
+    setNpiPick(pick);
   };
 
   const next = () => {
@@ -129,12 +142,7 @@ export function ProviderForm({
               form={form}
               errors={errors}
               update={update}
-              npi={{
-                npiPick,
-                onNpiPick: setNpiPick,
-                taxonomyTouched,
-                onTaxonomyTouched: () => setTaxonomyTouched(true),
-              }}
+              npi={{ npiPick, touched: npiTouched, applyNpi }}
             />
           ) : null}
           {step === 3 ? <LicensesSection form={form} errors={errors} update={update} /> : null}

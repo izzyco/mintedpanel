@@ -30,6 +30,7 @@ import {
   useProviderGroupAssignments,
 } from "@/hooks/useProviders";
 import { useFacilities, useOrgStateLicenses, useProviderGroups } from "@/hooks/useLookups";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import {
   dedupeFacilityRows,
   dedupeGroupRows,
@@ -217,6 +218,7 @@ export function useImportPreview(runId: string | null) {
   const groupAssignmentsQ = useProviderGroupAssignments();
   const facilityAssignmentsQ = useProviderAssignments();
   const licensesQ = useOrgStateLicenses();
+  const identityRules = useIdentityValidationRules();
 
   const queries = [
     runQ,
@@ -273,6 +275,7 @@ export function useImportPreview(runId: string | null) {
           issueDate: l.issueDate,
           expirationDate: l.expirationDate,
         })),
+      identityRules,
     });
   }, [
     rowsQ.data,
@@ -282,6 +285,7 @@ export function useImportPreview(runId: string | null) {
     groupAssignmentsQ.data,
     facilityAssignmentsQ.data,
     licensesQ.data,
+    identityRules,
   ]);
 
   // The staged rows too, for checks that read a row's own cells (MINT-110).

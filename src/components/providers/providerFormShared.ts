@@ -3,13 +3,16 @@
 import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
 import { isKnownTaxonomyCode } from "@/lib/providerTaxonomy";
 import {
+  applyNpiLicenseRows,
   isBlankField,
+  npiOfferTarget,
   planNpiRegistryFill,
   type NpiFillSummary,
   type NpiPickTrace,
+  type NpiRowOrigin,
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
-import { DEFAULT_NPI_REGISTRY_POLICY, type NpiFillOnPick } from "@/lib/npiRegistryPolicy";
+import type { NpiFillOnPick } from "@/lib/npiRegistryPolicy";
 
 // Re-export the single mastered state list (src/lib/usStates.ts) rather than
 // keep a second copy in sync — the provider forms import US_STATES from here.
@@ -29,6 +32,9 @@ export interface LicenseRow {
   type: "full" | "compact" | "";
   issueDate: string;
   expirationDate: string;
+  /** MINT-110: set when the row (or its number) came from the NPI Registry;
+   * never saved (toLicenseInputs names its fields). */
+  npiOrigin?: NpiRowOrigin | null;
 }
 
 export interface ProviderFormState {
@@ -154,9 +160,10 @@ export function isBlankLicenseRow(row: LicenseRow): boolean {
  * picks. Not in ProviderFormState: that maps one to one onto import columns
  * (importSections.ts). */
 export interface ProviderNpiPickContext {
-  /** Staff chose the taxonomy; until then the preset is a default nobody
-   * chose, and a pick may replace it. */
-  taxonomyTouched: boolean;
+  /** Staff edited the field since the last pick wrote it (or at all), from
+   * user input only. A taxonomy staff never chose is the preset, a default
+   * nobody chose. */
+  touched: { credentials: boolean; taxonomyCode: boolean };
   /** What the last pick wrote, or null before the first pick. */
   lastPick: NpiPickTrace | null;
 }
@@ -164,39 +171,49 @@ export interface ProviderNpiPickContext {
 /** MINT-110: a picked NPI Registry match applied to the Add Provider form.
  * The NPI is set; at "blank_fields" credentials, the taxonomy and the number
  * of a license row whose state matches fill when blank. Blank includes the
- * untouched preset taxonomy and whatever the last pick wrote that staff left
- * alone. No license row is added: other states come back as offers. */
+ * untouched preset taxonomy and whatever the last pick wrote or added that
+ * staff left alone; an untouched row added from the last pick's offer goes.
+ * No license row is added: licenses not on the form come back as offers. */
 export function applyNpiRegistryPick(
   form: ProviderFormState,
   record: NpiRegistryRecord,
-  fillOnPick: NpiFillOnPick = DEFAULT_NPI_REGISTRY_POLICY.fillOnPick,
-  context: ProviderNpiPickContext = { taxonomyTouched: false, lastPick: null },
+  fillOnPick: NpiFillOnPick,
+  context: ProviderNpiPickContext,
 ): { form: ProviderFormState; summary: NpiFillSummary; trace: NpiPickTrace } {
   const plan = planNpiRegistryFill(
     record,
     {
       npi: form.npi,
       credentials: form.credentials,
+      credentialsTouched: context.touched.credentials,
       taxonomyCode: form.taxonomyCode,
-      taxonomyUntouched: !context.taxonomyTouched,
-      licenses: form.licenses.map((row) => ({ state: row.state, number: row.number })),
+      taxonomyTouched: context.touched.taxonomyCode,
+      taxonomyPreset: emptyProviderFormState.taxonomyCode,
+      licenses: form.licenses.map((row) => ({
+        state: row.state,
+        number: row.number,
+        origin: row.npiOrigin ?? null,
+        // Add Provider records no license verification.
+        numberLocked: false,
+      })),
       // Add Provider saves a license row with any subset of its fields.
       licenseRowSaveable: true,
     },
     fillOnPick,
     context.lastPick,
   );
-  const licenses = form.licenses.map((row, index) => {
-    const change = plan.licenseNumbers.find((item) => item.rowIndex === index);
-    return change ? { ...row, number: change.number } : row;
-  });
   return {
     form: {
       ...form,
       npi: plan.npi,
       credentials: plan.credentials ?? form.credentials,
       taxonomyCode: plan.taxonomyCode ?? form.taxonomyCode,
-      licenses,
+      licenses: applyNpiLicenseRows(
+        form.licenses,
+        plan,
+        (row, number, origin) => ({ ...row, number, npiOrigin: origin }),
+        emptyLicenseRow,
+      ),
     },
     summary: plan.summary,
     trace: plan.trace,
@@ -204,14 +221,31 @@ export function applyNpiRegistryPick(
 }
 
 /** Staff added an offered registry license: it fills the untouched empty row
- * when there is one, or a new row. Type and dates stay blank (NPPES has no
- * expiration date). */
+ * when there is one, or a new row, marked as added from the pick (so the next
+ * pick can take it back while it is untouched). Type and dates stay blank
+ * (NPPES has no expiration date). When a row already holds that license
+ * nothing is added, and `existing` names it. */
 export function addNpiLicenseOffer(
   licenses: LicenseRow[],
   offer: { state: string; number: string },
-): LicenseRow[] {
+): { licenses: LicenseRow[]; existing: number | null } {
+  const target = npiOfferTarget(licenses, offer, (row) => row, isBlankLicenseRow);
+  if ("existing" in target) return { licenses, existing: target.existing };
   const filled = { state: offer.state, number: offer.number };
-  const emptyRow = licenses.findIndex(isBlankLicenseRow);
-  if (emptyRow < 0) return [...licenses, { ...emptyLicenseRow(), ...filled }];
-  return licenses.map((row, index) => (index === emptyRow ? { ...row, ...filled } : row));
+  if ("append" in target) {
+    const added: LicenseRow = {
+      ...emptyLicenseRow(),
+      ...filled,
+      npiOrigin: { kind: "added", touched: false },
+    };
+    return { licenses: [...licenses, added], existing: null };
+  }
+  // Filling the empty row: taking it back later leaves the empty row again.
+  const origin: NpiRowOrigin = { kind: "added", touched: false, replacedEmpty: true };
+  return {
+    licenses: licenses.map((row, index) =>
+      index === target.fill ? { ...row, ...filled, npiOrigin: origin } : row,
+    ),
+    existing: null,
+  };
 }

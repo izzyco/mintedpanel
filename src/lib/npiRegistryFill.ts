@@ -3,47 +3,75 @@
 // The pick sets the NPI. With the policy's fillOnPick at "blank_fields" (the
 // default, src/lib/npiRegistryPolicy) the registry also fills every blank
 // field it can: Credentials, the taxonomy code, and the number of a license
-// row whose state matches. Blank means empty, a default nobody chose (Add
-// Provider's preset taxonomy), or what the previous pick wrote and nobody has
-// changed since — so picking the wrong person and then the right one leaves
-// nothing of the first behind. A value staff typed, chose, or loaded from the
-// record is never replaced; when it differs from the registry the summary
-// says so ("Kept yours").
+// row whose state matches. Blank means empty, a preset nobody chose (Add
+// Provider's taxonomy), or what the previous pick wrote or added and staff
+// have not touched since — so picking the wrong person and then the right one
+// leaves nothing of the first behind. Staff touch a field by editing it (the
+// forms set the touched flags from user input only), so a value staff typed
+// or chose is theirs even when it equals what a pick wrote. A value staff
+// typed, chose, or loaded from the record is never replaced; when it differs
+// from the registry the summary says so ("Kept yours").
 //
-// A pick never adds a license row. A registry license for a state the form has
-// no row for is offered, and staff add it with one click: a row feeds the
-// provider's state footprint and readiness, NPPES has no expiration date, and
-// NPPES licenses are self-reported. Registry data with no field on the form is
-// listed read-only and never saved. At "npi_only" nothing but the NPI is set,
-// and everything else is listed.
+// A pick never adds a license row. A registry license the form has no row for
+// is offered, and staff add it with one click: a row feeds the provider's
+// state footprint and readiness, NPPES has no expiration date, and NPPES
+// licenses are self-reported. A row added from an offer, and a number a pick
+// wrote, carry an NpiRowOrigin so the next pick can take them back. A license
+// row whose verification is recorded is never given a registry number.
+// Registry data with no field on the form is listed read-only and never
+// saved. At "npi_only" nothing but the NPI is set, and everything else is
+// listed.
 //
 // The form adapters (providerFormShared.ts for Add Provider, rosterNpi.ts for
 // the roster form) describe their fields with NpiFillForm, keep the last
-// pick's NpiPickTrace, and apply the plan; this module decides.
+// pick's NpiPickTrace and the touched flags, and apply the plan; this module
+// decides.
 import { stripNpiSeparators } from "@/lib/providerIdentity";
 import { isKnownTaxonomyCode, normalizeTaxonomyCode } from "@/lib/providerTaxonomy";
 import { US_STATES } from "@/lib/usStates";
 import type { NpiRegistryAddress, NpiRegistryName, NpiRegistryRecord } from "@/lib/npiRegistry";
-import { DEFAULT_NPI_REGISTRY_POLICY, type NpiFillOnPick } from "@/lib/npiRegistryPolicy";
+import type { NpiFillOnPick } from "@/lib/npiRegistryPolicy";
+
+/** Where a license row's registry data came from. Set by a pick or by staff
+ * adding an offered license; `touched` once staff edit the row (any field of
+ * an added row; the number of a row a pick filled). */
+export interface NpiRowOrigin {
+  /** "added": staff added the row from a pick's offer. "number": a pick wrote
+   * the number into a row that had none. */
+  kind: "added" | "number";
+  touched: boolean;
+  /** An added row that filled the form's untouched empty row: taking it back
+   * leaves that empty row, as before the add. */
+  replacedEmpty?: boolean;
+}
 
 export interface NpiFillLicenseRow {
   state: string;
   number: string;
+  origin: NpiRowOrigin | null;
+  /** The row's verification is recorded (verified or failed): its number is
+   * never filled, so a registry number never rides on a verification of no
+   * number. */
+  numberLocked: boolean;
 }
 
 /** The form's fields the registry can fill, as they stand. */
 export interface NpiFillForm {
   npi: string;
   credentials: string;
+  /** Staff edited Credentials since the last pick wrote it (or at all). */
+  credentialsTouched: boolean;
   /** "" when no taxonomy is selected. */
   taxonomyCode: string;
-  /** True while nobody has chosen the taxonomy: it holds the form's own
-   * default, or what a pick wrote. Either way the registry may replace it. */
-  taxonomyUntouched: boolean;
+  /** Staff chose the taxonomy. */
+  taxonomyTouched: boolean;
+  /** The form's own preset taxonomy, or null. Until staff choose one it is a
+   * default nobody chose, and a pick may replace it. */
+  taxonomyPreset: string | null;
   licenses: NpiFillLicenseRow[];
   /** Whether the form saves a license row that holds only a state and a
    * number. NPPES has no expiration date, so when a row needs more, registry
-   * licenses for other states are listed and never offered. */
+   * licenses the form has no row for are listed and never offered. */
   licenseRowSaveable: boolean;
 }
 
@@ -53,19 +81,18 @@ export interface NpiPickWrite {
   previous: string;
 }
 
-/** What a pick wrote, so the next pick can tell its data from staff's. */
+/** What a pick wrote into the form's fields, so the next pick can take it
+ * back. License rows carry their own NpiRowOrigin. */
 export interface NpiPickTrace {
   credentials: NpiPickWrite | null;
   taxonomyCode: NpiPickWrite | null;
-  /** License numbers written into rows of that state (the row was blank). */
-  licenseNumbers: { state: string; number: string }[];
 }
 
-/** A registry license for a state the form has no row for. */
+/** A registry license the form has no row for. */
 export interface NpiLicenseOffer {
   state: string;
   number: string;
-  /** Staff added it from the summary. */
+  /** A row on the form holds it (derived from the rows: npiOffersOnForm). */
   added: boolean;
 }
 
@@ -84,12 +111,18 @@ export interface NpiFillSummary {
   /** The form labels of what the pick filled: the NPI, then credentials,
    * taxonomy and license numbers. */
   filled: string[];
-  /** What the previous pick filled that this one had nothing for; each went
-   * back to what it held before that pick. */
+  /** What the previous pick filled or added that this one had nothing for:
+   * each field went back to what it held before, and each untouched added
+   * row was removed. */
   cleared: string[];
   /** Fields that held a different value of staff's and were kept. */
   kept: NpiFillKept[];
-  /** Licenses for states the form has no row for, for staff to add. */
+  /** Licenses the previous pick put on the form that this match does not
+   * list and that stay: rows added from its offers that staff then edited,
+   * and numbers it filled into rows staff have since verified or failed.
+   * Theirs to remove if they don't apply. */
+  staleRows: string[];
+  /** Licenses the form has no row for, for staff to add. */
   licenseOffers: NpiLicenseOffer[];
   /** Registry data no field on the form holds. Shown, never saved. */
   details: NpiRegistryDetail[];
@@ -100,9 +133,15 @@ export interface NpiFillPlan {
   /** The value to set, or null to leave the field as it is. */
   credentials: string | null;
   taxonomyCode: string | null;
-  /** License numbers to set, by row; "" clears a number the previous pick
-   * wrote. Every other row is untouched. */
-  licenseNumbers: { rowIndex: number; number: string }[];
+  /** Rows whose number or origin changes; every other row is untouched. ""
+   * clears a number the previous pick wrote. */
+  licenseRows: { rowIndex: number; number: string; origin: NpiRowOrigin | null }[];
+  /** Rows to remove: untouched rows added from the previous pick's offers
+   * that this match does not list. Apply after licenseRows. */
+  removeRows: number[];
+  /** Rows to return to the form's empty row: like removeRows, for an added
+   * row that had filled the form's untouched empty row. */
+  resetRows: number[];
   /** What this pick wrote; pass it to the next pick. */
   trace: NpiPickTrace;
   summary: NpiFillSummary;
@@ -150,6 +189,34 @@ export function licenseNumberFieldLabel(state: string): string {
   return `${state} license number`;
 }
 
+/** "CO license row": a row staff added from an offer. */
+export function licenseRowFieldLabel(state: string): string {
+  return `${state} license row`;
+}
+
+/** The same state and license number, case, spaces and punctuation aside. */
+export function sameLicense(
+  row: { state: string; number: string },
+  license: { state: string; number: string },
+): boolean {
+  return (
+    stateKey(row.state) === stateKey(license.state) &&
+    !isBlankField(row.number) &&
+    looseKey(row.number) === looseKey(license.number)
+  );
+}
+
+/** A row's origin after staff edit the given fields: an added row is touched
+ * by any edit, a filled number only by editing the number. */
+export function touchNpiRowOrigin(
+  origin: NpiRowOrigin | null | undefined,
+  edited: { number: boolean },
+): NpiRowOrigin | null {
+  if (!origin || origin.touched) return origin ?? null;
+  if (origin.kind === "added" || edited.number) return { ...origin, touched: true };
+  return origin;
+}
+
 function taxonomyText(code: string, description: string | null): string {
   return description ? `${code} (${description})` : code;
 }
@@ -193,42 +260,66 @@ function registryLicenses(record: NpiRegistryRecord): { state: string; number: s
   return licenses;
 }
 
-// A field back to what it held before the last pick, when the pick's value is
-// still there; anything staff changed since is theirs and stays.
-function undoWrite(current: string, write: NpiPickWrite | null | undefined): string {
-  return write && current === write.written ? write.previous : current;
-}
-
 /** What a pick of `record` does to a form holding `form`, given what the last
- * pick wrote. Never replaces a value of staff's, never adds a license row,
+ * pick wrote (null before the first pick). Never replaces a value of staff's,
+ * never adds a license row, never fills a row whose verification is recorded,
  * and never leaves the form unsaveable: a taxonomy outside the form's list is
  * listed instead. At "npi_only" only the NPI is set. */
 export function planNpiRegistryFill(
   record: NpiRegistryRecord,
   form: NpiFillForm,
-  fillOnPick: NpiFillOnPick = DEFAULT_NPI_REGISTRY_POLICY.fillOnPick,
-  lastPick: NpiPickTrace | null = null,
+  fillOnPick: NpiFillOnPick,
+  lastPick: NpiPickTrace | null,
 ): NpiFillPlan {
   const fillBlanks = fillOnPick === "blank_fields";
   const filled: string[] = [];
   const cleared: string[] = [];
   const kept: NpiFillKept[] = [];
+  const staleRows: string[] = [];
   const offers: NpiLicenseOffer[] = [];
   const details: NpiRegistryDetail[] = [];
-  const trace: NpiPickTrace = { credentials: null, taxonomyCode: null, licenseNumbers: [] };
+  const trace: NpiPickTrace = { credentials: null, taxonomyCode: null };
 
   if (stripNpiSeparators(form.npi) !== record.npi) filled.push(NPI_FILL_FIELD.npi);
 
-  // 1. Take back what the last pick wrote, where it is still untouched.
-  const credentials0 = undoWrite(form.credentials, lastPick?.credentials);
-  const taxonomy0 = undoWrite(form.taxonomyCode, lastPick?.taxonomyCode);
-  const numbers = form.licenses.map((row) => row.number);
-  for (const write of lastPick?.licenseNumbers ?? []) {
-    const index = form.licenses.findIndex(
-      (row, i) => stateKey(row.state) === write.state && numbers[i] === write.number,
-    );
-    if (index >= 0) numbers[index] = "";
-  }
+  // 1. Take back what the last pick wrote, where staff have not touched it.
+  const credentials0 =
+    lastPick?.credentials &&
+    !form.credentialsTouched &&
+    form.credentials === lastPick.credentials.written
+      ? lastPick.credentials.previous
+      : form.credentials;
+  const taxonomy0 =
+    lastPick?.taxonomyCode &&
+    !form.taxonomyTouched &&
+    form.taxonomyCode === lastPick.taxonomyCode.written
+      ? lastPick.taxonomyCode.previous
+      : form.taxonomyCode;
+  const rows = form.licenses.map((row) => {
+    const untouched = row.origin !== null && !row.origin.touched;
+    const pickNumber = untouched && row.origin?.kind === "number";
+    // A number the last pick wrote on a row staff have since verified or
+    // failed is not taken back — the verification is about that number — but
+    // it is the last pick's: listed, and this match's license offered.
+    const lockedPickNumber = pickNumber && row.numberLocked;
+    return {
+      state: stateKey(row.state),
+      // A number the last pick wrote, untouched, is blank again.
+      number: pickNumber && !row.numberLocked ? "" : row.number,
+      // An untouched row added from the last pick's offer goes, unless this
+      // match lists the same license.
+      removable: untouched && row.origin?.kind === "added",
+      replacedEmpty: untouched && row.origin?.kind === "added" && row.origin.replacedEmpty === true,
+      // The last pick's license that stays: listed if this match drops it.
+      stale: (row.origin?.kind === "added" && row.origin.touched) || lockedPickNumber,
+      lockedPickNumber,
+      // A reverted number has no origin until this pick fills it again; an
+      // edited (or since verified) row is staff's from now on.
+      origin: untouched && row.origin?.kind === "added" ? row.origin : null,
+      numberLocked: row.numberLocked,
+      filledHere: false,
+    };
+  });
 
   // 2. Fill what is blank.
   let credentials = credentials0;
@@ -253,7 +344,11 @@ export function planNpiRegistryFill(
   const primary = record.primaryTaxonomy;
   const primaryCode = primary ? normalizeTaxonomyCode(primary.code) : null;
   if (primary && primaryCode) {
-    const replaceable = isBlankField(taxonomy0) || form.taxonomyUntouched;
+    const presetNobodyChose =
+      !form.taxonomyTouched &&
+      form.taxonomyPreset !== null &&
+      normalizeTaxonomyCode(taxonomy0) === normalizeTaxonomyCode(form.taxonomyPreset);
+    const replaceable = isBlankField(taxonomy0) || presetNobodyChose;
     if (!fillBlanks) {
       details.push({
         label: "Primary taxonomy",
@@ -264,7 +359,7 @@ export function planNpiRegistryFill(
         taxonomy = primaryCode;
         trace.taxonomyCode = { written: taxonomy, previous: taxonomy0 };
       } else {
-        // Not in the picker: keep the default (or the blank) and list it.
+        // Not in the picker: keep the preset (or the blank) and list it.
         primaryListed = true;
       }
     } else if (normalizeTaxonomyCode(taxonomy0) !== primaryCode) {
@@ -279,50 +374,71 @@ export function planNpiRegistryFill(
   if (taxonomyChanged) (trace.taxonomyCode ? filled : cleared).push(NPI_FILL_FIELD.taxonomyCode);
 
   const notAdded: string[] = [];
-  const pickRows = new Set<number>();
   for (const license of registryLicenses(record)) {
     const line = `${license.state} ${license.number}`;
-    const rowsInState = form.licenses.flatMap((row, i) =>
-      stateKey(row.state) === license.state ? [i] : [],
-    );
     if (!fillBlanks) {
       notAdded.push(line);
       continue;
     }
-    if (rowsInState.length > 0) {
-      if (rowsInState.some((i) => looseKey(numbers[i]) === looseKey(license.number))) continue;
-      const blankRow = rowsInState.find((i) => isBlankField(numbers[i]));
-      if (blankRow !== undefined) {
-        numbers[blankRow] = license.number;
-        pickRows.add(blankRow);
-        trace.licenseNumbers.push({ state: license.state, number: license.number });
-        continue;
-      }
-      // A number staff entered is kept; a row this pick just filled leaves
-      // the registry's second license in that state to an offer.
-      if (rowsInState.some((i) => !pickRows.has(i))) {
-        kept.push({ field: licenseFieldLabel(license.state), registryValue: license.number });
-        continue;
-      }
+    const inState = rows.flatMap((row, i) => (row.state === license.state ? [i] : []));
+    const holding = inState.find((i) => sameLicense(rows[i], license));
+    if (holding !== undefined) {
+      // Already on the form; an added row this match also lists stays.
+      rows[holding].removable = false;
+      rows[holding].stale = false;
+      continue;
     }
-    const offered = offers.some(
-      (offer) =>
-        offer.state === license.state && looseKey(offer.number) === looseKey(license.number),
+    const blankRow = inState.find(
+      (i) => !rows[i].removable && !rows[i].numberLocked && isBlankField(rows[i].number),
     );
-    if (offered) continue;
+    if (blankRow !== undefined) {
+      rows[blankRow].number = license.number;
+      rows[blankRow].origin = { kind: "number", touched: false };
+      rows[blankRow].filledHere = true;
+      continue;
+    }
+    // A number staff entered in that state is kept and named.
+    const staffNumber = inState.some(
+      (i) =>
+        !rows[i].removable &&
+        !rows[i].filledHere &&
+        !rows[i].lockedPickNumber &&
+        !isBlankField(rows[i].number),
+    );
+    if (staffNumber) {
+      kept.push({ field: licenseFieldLabel(license.state), registryValue: license.number });
+      continue;
+    }
+    if (offers.some((offer) => sameLicense(offer, license))) continue;
     if (STATE_SET.has(license.state) && form.licenseRowSaveable) {
       offers.push({ state: license.state, number: license.number, added: false });
     } else {
       notAdded.push(line);
     }
   }
-  const licenseNumbers = numbers.flatMap((number, rowIndex) =>
-    number !== form.licenses[rowIndex].number ? [{ rowIndex, number }] : [],
-  );
-  for (const { rowIndex } of licenseNumbers) {
-    const label = licenseNumberFieldLabel(stateKey(form.licenses[rowIndex].state));
-    (pickRows.has(rowIndex) ? filled : cleared).push(label);
-  }
+
+  const licenseRows: NpiFillPlan["licenseRows"] = [];
+  const removeRows: number[] = [];
+  const resetRows: number[] = [];
+  rows.forEach((row, rowIndex) => {
+    const before = form.licenses[rowIndex];
+    const label = before.state.trim().toUpperCase();
+    if (row.removable) {
+      (row.replacedEmpty ? resetRows : removeRows).push(rowIndex);
+      cleared.push(licenseRowFieldLabel(label));
+      return;
+    }
+    if (row.stale) staleRows.push(`${label} ${before.number}`.trim());
+    const originChanged =
+      (row.origin?.kind ?? null) !== (before.origin?.kind ?? null) ||
+      (row.origin?.touched ?? null) !== (before.origin?.touched ?? null);
+    if (row.number !== before.number || originChanged) {
+      licenseRows.push({ rowIndex, number: row.number, origin: row.origin });
+    }
+    if (row.number !== before.number) {
+      (row.filledHere ? filled : cleared).push(licenseNumberFieldLabel(label));
+    }
+  });
 
   // 3. What the registry lists that no field holds.
   if (!fillBlanks && notAdded.length > 0) details.push({ label: "Licenses", lines: notAdded });
@@ -382,27 +498,59 @@ export function planNpiRegistryFill(
     npi: record.npi,
     credentials: credentials !== form.credentials ? credentials : null,
     taxonomyCode: taxonomyChanged ? taxonomy : null,
-    licenseNumbers,
+    licenseRows,
+    removeRows,
+    resetRows,
     trace,
-    summary: { filled, cleared, kept, licenseOffers: offers, details },
+    summary: { filled, cleared, kept, staleRows, licenseOffers: offers, details },
   };
 }
 
-/** The pick state after staff add an offered license. */
-export function markNpiLicenseOfferAdded(
-  pick: NpiPickState,
-  offer: Pick<NpiLicenseOffer, "state" | "number">,
-): NpiPickState {
+/** A plan's license-row changes applied to a form's rows: numbers and origins
+ * set, removed rows dropped, reset rows returned to `empty()`. `set` writes
+ * one row of the form's shape. */
+export function applyNpiLicenseRows<Row>(
+  rows: Row[],
+  plan: Pick<NpiFillPlan, "licenseRows" | "removeRows" | "resetRows">,
+  set: (row: Row, number: string, origin: NpiRowOrigin | null) => Row,
+  empty: () => Row,
+): Row[] {
+  return rows.flatMap((row, index) => {
+    if (plan.removeRows.includes(index)) return [];
+    if (plan.resetRows.includes(index)) return [empty()];
+    const change = plan.licenseRows.find((item) => item.rowIndex === index);
+    return [change ? set(row, change.number, change.origin) : row];
+  });
+}
+
+/** Where staff adding an offered license puts it: null when a row already
+ * holds that license (nothing is added — a second row would also break the
+ * database's one-row-per-state-and-number rule), else the untouched empty row
+ * to fill, or "new". */
+export function npiOfferTarget<Row>(
+  rows: Row[],
+  offer: { state: string; number: string },
+  view: (row: Row) => { state: string; number: string },
+  isEmpty: (row: Row) => boolean,
+): { existing: number } | { fill: number } | { append: true } {
+  const existing = rows.findIndex((row) => sameLicense(view(row), offer));
+  if (existing >= 0) return { existing };
+  const empty = rows.findIndex(isEmpty);
+  return empty >= 0 ? { fill: empty } : { append: true };
+}
+
+/** The offers with `added` worked out from the rows the form holds now, so an
+ * offer staff added and then removed can be added again. */
+export function npiOffersOnForm(
+  summary: NpiFillSummary,
+  rows: { state: string; number: string }[],
+): NpiFillSummary {
   return {
-    ...pick,
-    summary: {
-      ...pick.summary,
-      licenseOffers: pick.summary.licenseOffers.map((item) =>
-        item.state === offer.state && item.number === offer.number
-          ? { ...item, added: true }
-          : item,
-      ),
-    },
+    ...summary,
+    licenseOffers: summary.licenseOffers.map((offer) => ({
+      ...offer,
+      added: rows.some((row) => sameLicense(row, offer)),
+    })),
   };
 }
 
@@ -413,10 +561,10 @@ export function npiFillFilledText(summary: NpiFillSummary): string {
     : "Nothing blank to fill from the NPI Registry.";
 }
 
-/** "Cleared what the previous pick filled: Credentials." */
+/** "Cleared from the previous pick: Credentials, CO license row." */
 export function npiFillClearedText(summary: NpiFillSummary): string | null {
   return summary.cleared.length > 0
-    ? `Cleared what the previous pick filled: ${summary.cleared.join(", ")}.`
+    ? `Cleared from the previous pick: ${summary.cleared.join(", ")}.`
     : null;
 }
 
@@ -427,13 +575,20 @@ export function npiFillKeptText(summary: NpiFillSummary): string | null {
   return `Kept yours: ${items.join("; ")}.`;
 }
 
-/** "The registry lists 2 licenses for states with no license row." */
+/** "From the previous pick — remove if it doesn't apply: CO PT-1111." */
+export function npiFillStaleText(summary: NpiFillSummary): string | null {
+  return summary.staleRows.length > 0
+    ? `From the previous pick — remove if it doesn't apply: ${summary.staleRows.join(", ")}.`
+    : null;
+}
+
+/** "The registry lists 2 licenses that are not on the form." */
 export function npiFillOffersText(summary: NpiFillSummary): string | null {
   const count = summary.licenseOffers.length;
   if (count === 0) return null;
   return count === 1
-    ? "The registry lists 1 license for a state with no license row."
-    : `The registry lists ${count} licenses for states with no license row.`;
+    ? "The registry lists 1 license that is not on the form."
+    : `The registry lists ${count} licenses that are not on the form.`;
 }
 
 /** What the polite live region says after a pick. */
@@ -448,6 +603,7 @@ export function npiFillAnnouncement(summary: NpiFillSummary): string {
     npiFillFilledText(summary),
     npiFillClearedText(summary),
     npiFillKeptText(summary),
+    npiFillStaleText(summary),
     npiFillOffersText(summary),
     more,
   ]

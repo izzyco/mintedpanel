@@ -13,6 +13,19 @@ export function FieldLabel({ htmlFor, children }: { htmlFor?: string; children: 
   );
 }
 
+/** What a field's control needs: the label's id and, while there is an
+ * error, aria-invalid plus the error's id. */
+export interface FieldControlProps {
+  id: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: true;
+}
+
+/** A labelled field. A single input child gets the control props cloned onto
+ * it (after any aria-describedby it already names, such as the NPI Registry
+ * note). Any other control — a Select, whose trigger is the control, or an
+ * input inside a wrapper — takes them through a render function:
+ * `<Field label="Gender">{(control) => <Select><SelectTrigger {...control} />…}</Field>`. */
 export function Field({
   label,
   error,
@@ -22,17 +35,19 @@ export function Field({
   label: string;
   error?: string;
   helper?: string;
-  children: ReactNode;
+  children: ReactNode | ((control: FieldControlProps) => ReactNode);
 }) {
   const generatedId = useId();
-  let controlId = generatedId;
-  let rendered: ReactNode = children;
   const errorId = `${generatedId}-error`;
+  let controlId = generatedId;
+  let rendered: ReactNode;
 
-  // A single control gets the label's id, and while there is an error,
-  // aria-invalid plus the error's id in its aria-describedby (after any
-  // description it already names, such as the NPI Registry note).
-  if (isValidElement(children)) {
+  if (typeof children === "function") {
+    rendered = children({
+      id: generatedId,
+      ...(error ? { "aria-describedby": errorId, "aria-invalid": true as const } : {}),
+    });
+  } else if (isValidElement(children)) {
     const child = children as ReactElement<{
       id?: string;
       "aria-describedby"?: string;
@@ -47,6 +62,8 @@ export function Field({
       ...(describedBy ? { "aria-describedby": describedBy } : {}),
       ...(error ? { "aria-invalid": true } : {}),
     });
+  } else {
+    rendered = children;
   }
 
   return (

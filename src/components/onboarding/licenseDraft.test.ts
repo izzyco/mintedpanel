@@ -39,14 +39,36 @@ describe("isBlankLicenseDraft", () => {
 });
 
 describe("addRegistryLicenseDraft", () => {
+  const ADDED = { kind: "added" as const, touched: false };
+
   it("fills the untouched empty row, or adds one with the editor's defaults", () => {
     const rows = [saved, { ...EMPTY_LICENSE_DRAFT }];
     const next = addRegistryLicenseDraft(rows, { state: "WY", number: "WY-0099" });
-    expect(next[0]).toBe(saved);
-    expect(next[1]).toEqual({ ...EMPTY_LICENSE_DRAFT, state: "WY", licenseNumber: "WY-0099" });
-    expect(next).toHaveLength(2);
-    const again = addRegistryLicenseDraft(next, { state: "CO", number: "PT-4471" });
-    expect(again[2]).toEqual({ ...EMPTY_LICENSE_DRAFT, state: "CO", licenseNumber: "PT-4471" });
+    expect(next.existing).toBeNull();
+    expect(next.licenses[0]).toBe(saved);
+    expect(next.licenses[1]).toEqual({
+      ...EMPTY_LICENSE_DRAFT,
+      state: "WY",
+      licenseNumber: "WY-0099",
+      // It filled the empty row: the next pick may give that row back.
+      npiOrigin: { ...ADDED, replacedEmpty: true },
+    });
+    expect(next.licenses).toHaveLength(2);
+    const again = addRegistryLicenseDraft(next.licenses, { state: "CO", number: "PT-4471" });
+    expect(again.licenses[2]).toEqual({
+      ...EMPTY_LICENSE_DRAFT,
+      state: "CO",
+      licenseNumber: "PT-4471",
+      npiOrigin: ADDED,
+    });
     expect(rows).toHaveLength(2);
+  });
+
+  it("adds nothing when a row already holds that license (the database allows one)", () => {
+    const rows = [{ ...saved, state: "CO", licenseNumber: "PT-1111" }];
+    expect(addRegistryLicenseDraft(rows, { state: "CO", number: "PT-1111" })).toEqual({
+      licenses: rows,
+      existing: 0,
+    });
   });
 });
