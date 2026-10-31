@@ -1742,6 +1742,17 @@ describe("draftsEqual", () => {
 describe("Minted's intake default: days 1, 2 and 3 (Sowmya, Oct 31)", () => {
   const offsets = stepsFromDefault(INTAKE_DEFAULT).map((s) => s.offsetDays as number);
 
+  it("is what the migration seeds", () => {
+    const migration = readFileSync(
+      "supabase/migrations/20261031051500_notification_sequences.sql",
+      "utf8",
+    );
+    expect(migration).toMatch(
+      /\('intake_reminder', 1, 1, 'email', 'intake_reminder_first'\),\s+\('intake_reminder', 2, 2, 'email', 'intake_reminder_second'\),\s+\('intake_reminder', 3, 3, 'email', 'intake_reminder_final'\);/,
+    );
+    expect(migration).not.toMatch(/\('intake_reminder', 3, 7, 'email'/);
+  });
+
   it("sends on days 1, 2 and 3 after the invite, by email, with compression off", () => {
     expect(offsets).toEqual([1, 2, 3]);
     expect(INTAKE_DEFAULT.steps.every((s) => s.channel === "email")).toBe(true);
