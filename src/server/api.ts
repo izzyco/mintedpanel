@@ -849,10 +849,9 @@ async function routeApiRequest(request: Request): Promise<Response> {
     if (isNpiRegistryBatch) {
       if (method !== "POST") return fail(405, "Method not allowed");
       const routes = await loadNpiRegistryBatchRoutes();
-      return await routes.handleNpiRegistryVerifyBatch(
-        await readBoundedJsonBody(request, 2048),
-        ctx,
-      );
+      const body = await readBoundedJsonBody(request, 2048);
+      // The caller going away stops new registry calls and cancels those in flight.
+      return await routes.handleNpiRegistryVerifyBatch(body, ctx, {}, request.signal);
     }
     if (isDocumentFinalize) {
       if (method !== "POST") return fail(405, "Method not allowed");

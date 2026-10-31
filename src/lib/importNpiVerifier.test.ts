@@ -3,7 +3,14 @@
 // Retry-After, outages, deferred NPIs, the time-left estimate, and stop/cancel
 // aborting the request in flight. No network.
 import { describe, expect, it, vi } from "vitest";
-import { ImportNpiVerifier, abortableSleep, type ImportNpiVerifierDeps } from "./importNpiVerifier";
+import {
+  ImportNpiVerificationSession,
+  ImportNpiVerifier,
+  abortableSleep,
+  type ImportNpiVerifierDeps,
+} from "./importNpiVerifier";
+import { importNpiStatusText } from "./importNpiVerification";
+import { TokenBucket } from "./npiRegistryBatch";
 import type { ImportNpiCheckItem, ImportNpiSnapshot } from "./importNpiVerification";
 import type { NpiRegistryBatchResult } from "./npiRegistryBatch";
 import type { NpiRegistryRecord } from "./npiRegistry";
@@ -218,6 +225,16 @@ describe("ImportNpiVerifier", () => {
     expect(end).toMatchObject({ phase: "done", done: 30, checked: 20 });
   });
 
+  it("finishes when the last batch was an outage", async () => {
+    const h = harness((npis, call) => {
+      if (call === 2) throw new HttpError(502);
+      return allChecked(npis);
+    });
+    const verifier = new ImportNpiVerifier(items(20), h.deps, { pacingMarginMs: 0 });
+    verifier.start();
+    expect(await settle(verifier)).toMatchObject({ phase: "done", done: 20, checked: 10 });
+  });
+
   it("gives up at once on a status that will not get better", async () => {
     const h = harness(() => {
       throw new HttpError(403);
@@ -333,6 +350,141 @@ describe("ImportNpiVerifier", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("ImportNpiVerifier edges (review findings)", () => {
+  it("while running, the status line says done, and never counts an outage row as checked", async () => {
+    const h = harness((npis, call) => {
+      if (call === 2) throw new HttpError(502);
+      return allChecked(npis);
+    }, 500);
+    const verifier = new ImportNpiVerifier(items(40), h.deps, { pacingMarginMs: 0 });
+    const lines: string[] = [];
+    verifier.subscribe(() => {
+      const snap = verifier.getSnapshot();
+      if (snap.phase === "running") lines.push(importNpiStatusText(snap, { notes: 0, blocked: 0 }));
+    });
+    verifier.start();
+    await settle(verifier);
+    expect(lines).toContain("20 of 40 done, 10 not checked");
+    expect(lines.some((line) => line.includes("checked") && !line.includes("not checked"))).toBe(
+      false,
+    );
+  });
+
+  it("a 200 without a results array ends the run as not checked — no hang, no unhandled rejection", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const verifier = new ImportNpiVerifier(items(5), {
+        now: () => 0,
+        sleep: async () => {},
+        verifyBatch: async () => ({}) as NpiRegistryBatchResult,
+      });
+      verifier.start();
+      const end = await settle(verifier);
+      expect(end).toMatchObject({ phase: "done", done: 5, checked: 0 });
+      expect([...end.results.values()].every((o) => o.status === "not_checked")).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  it("any unexpected failure inside the run also ends it as not checked", async () => {
+    const verifier = new ImportNpiVerifier(items(3), {
+      now: () => 0,
+      sleep: async () => {},
+      // A results array of junk: reading it throws inside the run.
+      verifyBatch: async () => ({ results: null as unknown as [] }),
+    });
+    verifier.start();
+    expect((await settle(verifier)).phase).toBe("done");
+  });
+
+  it("paces against a shared bucket, so a second run does not start with a full burst", async () => {
+    const h = harness((npis) => allChecked(npis), 100);
+    const shared = new TokenBucket(20, 1 / 1000, () => h.clock.now);
+    const first = new ImportNpiVerifier(items(20), h.deps, { bucket: shared, pacingMarginMs: 0 });
+    first.start();
+    await settle(first);
+    expect(h.calls.map((call) => call.at)).toEqual([0, 100]);
+    const second = new ImportNpiVerifier(items(30).slice(20), h.deps, {
+      bucket: shared,
+      pacingMarginMs: 0,
+    });
+    second.start();
+    await settle(second);
+    // The burst is spent: the third batch waits for ten tokens to refill.
+    expect(h.calls[2].at).toBeGreaterThanOrEqual(10_000);
+  });
+});
+
+describe("ImportNpiVerificationSession (what useImportNpiVerification drives)", () => {
+  function sessionHarness() {
+    const signals: AbortSignal[] = [];
+    const sent: string[][] = [];
+    const verifyBatch = vi.fn(
+      (npis: string[], signal: AbortSignal) =>
+        new Promise<NpiRegistryBatchResult>((resolve, reject) => {
+          signals.push(signal);
+          sent.push(npis);
+          // The first request answers; later ones stay in flight until aborted.
+          if (sent.length === 1) {
+            resolve(allChecked(npis));
+            return;
+          }
+          signal.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+    );
+    const session = new ImportNpiVerificationSession({ verifyBatch });
+    return { session, verifyBatch, signals, sent };
+  }
+
+  it("end() — the page unmounting — stops the run and aborts the request in flight", async () => {
+    const h = sessionHarness();
+    const run = h.session.begin(items(30));
+    await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(2));
+    h.session.end();
+    expect(h.signals[1].aborted).toBe(true);
+    expect(run.getSnapshot()).toMatchObject({ phase: "stopped", checked: 10 });
+    // Its snapshot stays readable after the end.
+    expect(h.session.current).toBe(run);
+  });
+
+  it("end() — checking turned off (enabled false) — schedules nothing more", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = sessionHarness();
+      h.session.begin(items(30));
+      await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(2));
+      h.session.end();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(h.verifyBatch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("begin() again — the rows changed — stops the old run and reuses every NPI already checked", async () => {
+    const h = sessionHarness();
+    const all = items(25);
+    const first = h.session.begin(all.slice(0, 20));
+    await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(2));
+    const second = h.session.begin(all);
+    expect(first.getSnapshot().phase).toBe("stopped");
+    expect(h.signals[1].aborted).toBe(true);
+    await vi.waitFor(() => expect(h.verifyBatch).toHaveBeenCalledTimes(3));
+    // The 10 checked in the first run are not asked again.
+    expect(h.sent[2]).toEqual(all.slice(10, 20).map((item) => item.npi));
+    expect(second.getSnapshot()).toMatchObject({ phase: "running", checked: 10, total: 25 });
+    expect(h.session.current).toBe(second);
+    h.session.end();
   });
 });
 

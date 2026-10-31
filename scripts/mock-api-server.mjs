@@ -1678,7 +1678,8 @@ export async function createMockApiServer(options = {}) {
     // --- /api/npi-registry/verify-batch (MINT-110 PR 2) ---
     // Writer-only, then validated (1 to 10 check-digit-valid NPIs), before any
     // registry call. Never calls out: each valid NPI comes back checked with no
-    // record. Leak "npibatch", part 2: a billing (read-only) member is served.
+    // record. Leak "npibatch", part 2: a billing (read-only) member is served,
+    // and the answers lose Cache-Control: no-store.
     if (/^\/api\/npi-registry\/verify-batch\/?$/.test(url.pathname)) {
       if (method !== "POST") return envelope(res, 405, null, "Method not allowed");
       if (user.role === "billing" && leak !== "npibatch") {
@@ -1690,7 +1691,7 @@ export async function createMockApiServer(options = {}) {
         );
       }
       const body = (await readBody(req)) ?? {};
-      res.setHeader("cache-control", "private, no-store, max-age=0");
+      if (leak !== "npibatch") res.setHeader("cache-control", "private, no-store, max-age=0");
       const npis = Array.isArray(body.npis) ? body.npis : [];
       const valid = npis.every(
         (npi) => typeof npi === "string" && /^\d{10}$/.test(npi.replace(/[-\s]/g, "")),

@@ -300,15 +300,50 @@ function finishedSummary(snapshot: ImportNpiSnapshot, counts: ImportNpiCounts): 
     : `${head} ${unchecked} not checked.`;
 }
 
+/** Rows done of rows total, and how many of those the registry could not
+ * answer: "20 of 40 done" or "20 of 40 done, 10 not checked". The progress
+ * bar's value text and the running status line; "done" never claims a row was
+ * checked when it was not. */
+export function importNpiProgressText(snapshot: ImportNpiSnapshot): string {
+  const missing = countNotChecked(snapshot);
+  const unchecked = missing.unavailable + missing.rate_limited;
+  const head = `${snapshot.done} of ${snapshot.total} done`;
+  return unchecked > 0 ? `${head}, ${unchecked} not checked` : head;
+}
+
 /** The visible status line under the progress bar. */
 export function importNpiStatusText(snapshot: ImportNpiSnapshot, counts: ImportNpiCounts): string {
-  const { phase, total, done } = snapshot;
+  const { phase, total } = snapshot;
   if (phase === "idle") return `${total} NPI${total === 1 ? "" : "s"} to check`;
-  if (phase === "running") return `${done} of ${total} checked`;
+  if (phase === "running") return importNpiProgressText(snapshot);
   if (phase === "stopped") {
     return `Stopped — ${finishedSummary(snapshot, counts)} Rows not checked say so.`;
   }
   return `Finished — ${finishedSummary(snapshot, counts)}`;
+}
+
+/** The line next to "Commit is final…", or null. Committing always stops the
+ * checks; when the policy can block, rows not checked (still running, Stop,
+ * an outage) go in without the check, so the warning says how many — also
+ * after a failed commit, when the checks have already stopped. */
+export function importNpiCommitWarning(input: {
+  phase: ImportNpiPhase;
+  unchecked: number;
+  canBlock: boolean;
+}): string | null {
+  const { phase, unchecked, canBlock } = input;
+  const rows = `${unchecked} row${unchecked === 1 ? "" : "s"}`;
+  if (phase === "running") {
+    return canBlock && unchecked > 0
+      ? `NPI Registry checks are still running; committing stops them, and the ${rows} not yet checked go in without the check your NPI policy blocks on.`
+      : "NPI Registry checks are still running; committing stops them.";
+  }
+  if (canBlock && unchecked > 0) {
+    return unchecked === 1
+      ? `${rows} was not checked against the NPI Registry and goes in without the check your NPI policy blocks on.`
+      : `${rows} were not checked against the NPI Registry and go in without the check your NPI policy blocks on.`;
+  }
+  return null;
 }
 
 /** What the polite live region says. It changes at the start, at each quarter

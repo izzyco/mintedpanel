@@ -56,6 +56,7 @@ import {
 } from "@/lib/importDedupe";
 import {
   applyImportNpiBlocks,
+  importNpiCommitWarning,
   importNpiRowResult,
   npiPolicyCanBlock,
   selectImportNpiChecks,
@@ -251,22 +252,30 @@ export function ImportPreviewContent({
   const run = preview.run;
 
   // MINT-110 PR 2: the rows in scope are checked only while an admin reviews
-  // a run that is still ready for review.
+  // a run that is still ready for review, and only once every read behind the
+  // dedupe has answered — while existing providers are still loading, every
+  // row would look new and existing providers' NPIs would be sent.
+  const previewReady = preview.settled === true && !preview.isLoading && !preview.isError;
   const npiChecks = useMemo(
-    () => selectImportNpiChecks(preview.dispositions, { scope: npiScope, rows: preview.rows }),
-    [preview.dispositions, preview.rows, npiScope],
+    () =>
+      previewReady
+        ? selectImportNpiChecks(preview.dispositions, { scope: npiScope, rows: preview.rows })
+        : [],
+    [previewReady, preview.dispositions, preview.rows, npiScope],
   );
   const npiVerification = useImportNpiVerification(
     npiChecks,
-    isAdmin && run?.state === "ready_for_review" && npiChecks.length > 0,
+    previewReady && isAdmin && run?.state === "ready_for_review" && npiChecks.length > 0,
   );
   const npiSnapshot = npiVerification.snapshot;
   const npi = useMemo(() => {
     const byLine = new Map<number, ImportNpiRowResult>();
     const blockReasonByLine = new Map<number, string>();
     const counts = { notes: 0, blocked: 0 };
+    let unchecked = 0;
     for (const item of npiChecks) {
       const outcome = npiSnapshot.results.get(item.npi);
+      if (outcome?.status !== "checked") unchecked += 1;
       const result = importNpiRowResult(outcome, item, npiSnapshot.phase, policy);
       byLine.set(item.line, result);
       if (result.blockReason && item.disposition !== "skip") {
@@ -276,8 +285,9 @@ export function ImportPreviewContent({
         counts.notes += 1;
       }
     }
-    return { byLine, blockReasonByLine, counts };
+    return { byLine, blockReasonByLine, counts, unchecked };
   }, [npiChecks, npiSnapshot, policy]);
+  const npiCanBlock = npiPolicyCanBlock(policy);
 
   // A "block" outcome holds its row back; with the default policy this is the
   // dedupe's own list, unchanged.
@@ -375,6 +385,13 @@ export function ImportPreviewContent({
 
   const canReview = run.state === "ready_for_review";
   const showNpiChecks = canReview && isAdmin && npiChecks.length > 0;
+  const commitWarning = showNpiChecks
+    ? importNpiCommitWarning({
+        phase: npiSnapshot.phase,
+        unchecked: npi.unchecked,
+        canBlock: npiCanBlock,
+      })
+    : null;
 
   return (
     <div className="space-y-4">
@@ -405,6 +422,7 @@ export function ImportPreviewContent({
           snapshot={npiSnapshot}
           counts={npi.counts}
           scope={npiScope}
+          canBlock={npiCanBlock}
           onStop={npiVerification.stop}
         />
       ) : null}
@@ -468,6 +486,9 @@ export function ImportPreviewContent({
               committed. For identity conflicts, correct the source or existing provider data and
               re-import. Resolve field conflicts above; scan errors are detailed in the downloadable
               report.
+              {npiCanBlock && npi.counts.blocked > 0
+                ? " Rows your NPI policy blocks (an NPI Registry answer it does not accept) are not committed either; the reason is on each row."
+                : null}
             </p>
             {blocked.length > 0 ? (
               <Table>
@@ -532,14 +553,8 @@ export function ImportPreviewContent({
                 <span className="text-[13px] font-medium text-[#B91C1C]">
                   Commit is final and cannot be undone. Continue?
                 </span>
-                {npiSnapshot.phase === "running" ? (
-                  <span className="text-[12px] text-muted-foreground">
-                    NPI Registry checks are still running; committing stops them
-                    {npiPolicyCanBlock(policy)
-                      ? ", and rows not yet checked are committed unchecked"
-                      : ""}
-                    .
-                  </span>
+                {commitWarning ? (
+                  <span className="text-[12px] text-muted-foreground">{commitWarning}</span>
                 ) : null}
                 <Button
                   className="h-9 bg-[#1B4D3E] text-white hover:bg-[#163F33]"

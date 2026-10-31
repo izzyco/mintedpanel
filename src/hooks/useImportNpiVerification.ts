@@ -1,18 +1,30 @@
 // NPI Registry checks while an import is reviewed — MINT-110 PR 2 / MINT-119.
-// Starts an ImportNpiVerifier when the rows to check are known and `enabled`
-// (an admin reviewing a run that is ready for review), and stops it when the
-// page goes away, the run stops being reviewable, or the caller says stop.
-// Outcomes live in memory only; a new set of rows (rare: the existing-provider
-// data changed under the review) starts a new run that reuses every NPI
-// already checked.
+// A thin React wrapper over ImportNpiVerificationSession (src/lib/
+// importNpiVerifier.ts, where the lifecycle is tested): the effect begins a
+// run when the rows to check are known and `enabled` (an admin reviewing a run
+// that is ready for review, with every existing-provider read loaded), and its
+// cleanup ends it — when the page goes away, checking is disabled, or the rows
+// change (rare: the existing-provider data changed under the review), in which
+// case the next run reuses every NPI already checked. Outcomes live in memory
+// only.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ImportNpiVerifier } from "@/lib/importNpiVerifier";
+import { ImportNpiVerificationSession, type ImportNpiVerifier } from "@/lib/importNpiVerifier";
 import {
   importNpiChecksKey,
   type ImportNpiCheckItem,
   type ImportNpiSnapshot,
 } from "@/lib/importNpiVerification";
+import {
+  NPI_REGISTRY_BATCH_BURST,
+  NPI_REGISTRY_BATCH_PER_MINUTE,
+  TokenBucket,
+} from "@/lib/npiRegistryBatch";
 import { verifyNpiRegistryBatch } from "@/services/npiRegistry";
+
+// One pacing bucket per tab, mirroring the server's per-user bucket: a new set
+// of rows, or opening the review again, does not start with a full burst the
+// server has already spent (which would meet a 429).
+const tabBucket = new TokenBucket(NPI_REGISTRY_BATCH_BURST, NPI_REGISTRY_BATCH_PER_MINUTE / 60_000);
 
 const noSubscription = () => () => undefined;
 
@@ -33,21 +45,20 @@ export function useImportNpiVerification(
   const key = importNpiChecksKey(items);
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const latest = useRef<ImportNpiVerifier | null>(null);
+  const [session] = useState(
+    () =>
+      new ImportNpiVerificationSession(
+        { verifyBatch: (npis, signal) => verifyNpiRegistryBatch(npis, signal) },
+        { bucket: tabBucket },
+      ),
+  );
   const [verifier, setVerifier] = useState<ImportNpiVerifier | null>(null);
 
   useEffect(() => {
     if (!enabled || !key) return;
-    const next = new ImportNpiVerifier(
-      itemsRef.current,
-      { verifyBatch: (npis, signal) => verifyNpiRegistryBatch(npis, signal) },
-      { known: latest.current?.getSnapshot().results },
-    );
-    latest.current = next;
-    setVerifier(next);
-    next.start();
-    return () => next.stop();
-  }, [enabled, key]);
+    setVerifier(session.begin(itemsRef.current));
+    return () => session.end();
+  }, [enabled, key, session]);
 
   const [fallback] = useState(() => idleSnapshot(0));
   const snapshot = useSyncExternalStore(
@@ -55,6 +66,6 @@ export function useImportNpiVerification(
     verifier ? verifier.getSnapshot : () => fallback,
     verifier ? verifier.getSnapshot : () => fallback,
   );
-  const stop = useCallback(() => latest.current?.stop(), []);
+  const stop = useCallback(() => session.end(), [session]);
   return { snapshot: verifier ? snapshot : { ...snapshot, total: items.length }, stop };
 }

@@ -53,6 +53,35 @@ export interface NpiRegistryBatchResult {
   results: NpiRegistryBatchItemResult[];
 }
 
+/** A registry record cut down to what an import row's check needs: the name
+ * parts and former names (the name match), the type and status (organization
+ * and inactive numbers), and the credential, primary taxonomy and practice
+ * city and state (the note's summary line). Addresses, phones, other
+ * taxonomies, identifiers and the enumeration date are not sent: the import
+ * review shows none of them. */
+export function trimNpiRecordForImport(record: NpiRegistryRecord): NpiRegistryRecord {
+  return {
+    npi: record.npi,
+    enumerationType: record.enumerationType,
+    firstName: record.firstName,
+    middleName: record.middleName,
+    lastName: record.lastName,
+    suffix: record.suffix ?? null,
+    organizationName: record.organizationName,
+    credential: record.credential,
+    primaryTaxonomy: record.primaryTaxonomy,
+    practiceCity: record.practiceCity,
+    practiceState: record.practiceState,
+    status: record.status,
+    enumerationDate: null,
+    otherNames: record.otherNames.map((name) => ({
+      firstName: name.firstName,
+      middleName: name.middleName ?? null,
+      lastName: name.lastName,
+    })),
+  };
+}
+
 /** `{ npis: string[] }`: 1 to NPI_REGISTRY_BATCH_MAX NPIs, each passing the
  * same check as /lookup (dashes and spaces stripped, then the CMS check digit).
  * The value is the distinct stripped NPIs in order; a repeat is checked once. */

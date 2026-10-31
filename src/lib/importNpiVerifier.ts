@@ -58,6 +58,10 @@ export interface ImportNpiVerifierOptions {
   /** Outcomes already known (a previous run over the same rows); only
    * "checked" outcomes are reused. */
   known?: ReadonlyMap<string, ImportNpiOutcome>;
+  /** The pacing bucket. Pass one shared across runs (the hook keeps one per
+   * tab) so a restart does not begin with a full burst the server has already
+   * spent; by default each run has its own. */
+  bucket?: TokenBucket;
 }
 
 const BUCKET_KEY = "self";
@@ -119,11 +123,9 @@ export class ImportNpiVerifier {
     this.maxOutages = options.maxConsecutiveOutages ?? 2;
     this.maxRateLimits = options.maxConsecutiveRateLimits ?? 5;
     this.marginMs = options.pacingMarginMs ?? 300;
-    this.bucket = new TokenBucket(
-      options.burst ?? NPI_REGISTRY_BATCH_BURST,
-      this.perMinute / 60_000,
-      this.now,
-    );
+    this.bucket =
+      options.bucket ??
+      new TokenBucket(options.burst ?? NPI_REGISTRY_BATCH_BURST, this.perMinute / 60_000, this.now);
     this.npis = [...new Set(items.map((item) => item.npi))];
     for (const npi of this.npis) {
       const known = options.known?.get(npi);
@@ -153,7 +155,11 @@ export class ImportNpiVerifier {
     }
     this.phase = "running";
     this.emit();
-    void this.run();
+    // Anything unexpected (a malformed answer, a bug) ends the run as "not
+    // checked" instead of leaving it running with nothing scheduled.
+    void this.run().catch(() => {
+      if (this.phase === "running") this.finish("unavailable", NPI_REGISTRY_UNAVAILABLE_MESSAGE);
+    });
   }
 
   /** Abort the request in flight and schedule nothing more. Rows not yet
@@ -243,6 +249,10 @@ export class ImportNpiVerifier {
       let response: NpiRegistryBatchResult;
       try {
         response = await this.deps.verifyBatch(batch, signal);
+        // A 200 that is not a batch answer is the registry route failing.
+        if (!Array.isArray((response as Partial<NpiRegistryBatchResult> | null)?.results)) {
+          throw new Error("Malformed NPI Registry batch answer");
+        }
       } catch (error) {
         if (signal.aborted) return;
         const status = readNumber(error, "status");
@@ -316,5 +326,44 @@ export class ImportNpiVerifier {
       }
       this.emit();
     }
+    // The queue ran out on an outage batch: the run is over either way.
+    if (!signal.aborted && this.phase === "running") this.finish(null);
+  }
+}
+
+/** The life of the checks on one review screen, as useImportNpiVerification
+ * drives it from an effect: begin() when the rows are known and checking is
+ * enabled, end() in the effect's cleanup (the page goes away, checking is
+ * disabled, or the rows change). A new set of rows reuses every NPI already
+ * checked, and every run paces against the same bucket. */
+export class ImportNpiVerificationSession {
+  private verifier: ImportNpiVerifier | null = null;
+
+  constructor(
+    private readonly deps: ImportNpiVerifierDeps,
+    private readonly options: Omit<ImportNpiVerifierOptions, "known"> = {},
+  ) {}
+
+  /** The run whose snapshot to show (the last one, even once it stopped). */
+  get current(): ImportNpiVerifier | null {
+    return this.verifier;
+  }
+
+  /** Stop any run, then start one over `items`, seeded with what is known. */
+  begin(items: readonly ImportNpiCheckItem[]): ImportNpiVerifier {
+    const previous = this.verifier;
+    previous?.stop();
+    const next = new ImportNpiVerifier(items, this.deps, {
+      ...this.options,
+      known: previous?.getSnapshot().results,
+    });
+    this.verifier = next;
+    next.start();
+    return next;
+  }
+
+  /** Stop the current run; its snapshot stays readable. */
+  end(): void {
+    this.verifier?.stop();
   }
 }

@@ -145,6 +145,7 @@ beforeEach(() => {
     dispositions,
     isLoading: false,
     isError: false,
+    settled: true,
   };
   state.snapshot = finished([
     [
@@ -183,6 +184,34 @@ describe("ImportPreviewContent with NPI Registry checks", () => {
       [NEW_B, "create"],
       [EXISTING, "skip"],
     ]);
+  });
+
+  it("checks nothing while the existing providers are still loading — never sends them as new", () => {
+    // What the dedupe would say before the providers list arrives: every row,
+    // the existing provider's included, looks like a create.
+    const whileLoading = dedupeImportRows({
+      rows,
+      providers: [],
+      groups: [{ id: "g1", name: "North Group", tin: "111111111" }],
+      facilities: [],
+      groupAssignments: [],
+      facilityAssignments: [],
+      licenses: [],
+    });
+    expect(whileLoading.filter((d) => d.kind === "create")).toHaveLength(3);
+    for (const loading of [
+      { isLoading: true, isError: false, settled: false },
+      { isLoading: false, isError: false, settled: false },
+      { isLoading: false, isError: true, settled: false },
+    ]) {
+      vi.mocked(useImportNpiVerification).mockClear();
+      state.preview = { ...state.preview, dispositions: whileLoading, ...loading };
+      const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" />);
+      const [items, enabled] = vi.mocked(useImportNpiVerification).mock.calls[0];
+      expect(items).toEqual([]);
+      expect(enabled).toBe(false);
+      expect(html).not.toContain("NPI Registry check");
+    }
   });
 
   it("does not check for a non-admin or a run that is no longer reviewable", () => {

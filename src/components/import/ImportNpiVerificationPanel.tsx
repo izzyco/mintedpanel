@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import {
   formatTimeRemaining,
   importNpiAnnouncement,
+  importNpiProgressText,
   importNpiStatusText,
   type ImportNpiCounts,
   type ImportNpiSnapshot,
@@ -28,12 +29,15 @@ export function ImportNpiVerificationPanel({
   snapshot,
   counts,
   scope,
+  canBlock,
   onStop,
 }: {
   snapshot: ImportNpiSnapshot;
   /** Checked rows with a warning, and rows a block holds back. */
   counts: ImportNpiCounts;
   scope: NpiImportVerifyScope;
+  /** The NPI Registry policy blocks on some answer (npiPolicyCanBlock). */
+  canBlock: boolean;
   onStop: () => void;
 }) {
   const headingId = useId();
@@ -83,7 +87,7 @@ export function ImportNpiVerificationPanel({
         aria-valuemin={0}
         aria-valuemax={total}
         aria-valuenow={done}
-        aria-valuetext={`${done} of ${total} checked`}
+        aria-valuetext={importNpiProgressText(snapshot)}
         className="h-2 w-full overflow-hidden rounded-[4px] bg-[var(--mp-neutral-tint)]"
       >
         <div
@@ -94,7 +98,7 @@ export function ImportNpiVerificationPanel({
       <p
         ref={statusRef}
         tabIndex={-1}
-        className="flex flex-wrap items-center gap-x-2 text-[12px] tabular-nums text-foreground focus:outline-none"
+        className="flex flex-wrap items-center gap-x-2 rounded-[4px] text-[12px] tabular-nums text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
       >
         {snapshot.phase === "done" ? (
           <CircleCheck aria-hidden="true" className="h-4 w-4 shrink-0 text-[var(--mp-ok-ink)]" />
@@ -106,8 +110,9 @@ export function ImportNpiVerificationPanel({
         {scope === "all_rows"
           ? "Every row with an NPI. Notes are under New providers, Updates and Skipped."
           : "New providers only. Each row's note is under New providers."}{" "}
-        A note never stops a row; a row your NPI policy blocks is listed under Blocked rows with the
-        reason.
+        {canBlock
+          ? "A note never stops a row; a row your NPI policy blocks is listed under Blocked rows with the reason."
+          : "A note never stops a row: every row can still be committed."}
       </p>
       <p role="status" aria-live="polite" className="sr-only">
         {importNpiAnnouncement(snapshot, counts)}

@@ -1907,19 +1907,26 @@ function looksLikeVercelGate(r) {
     );
   }
 
-  // 37-37c — MINT-110 PR 2: the import review's batch NPI check. The same wall
+  // 37-37d — MINT-110 PR 2: the import review's batch NPI check. The same wall
   // as 36: no org data to leak, so prove the route is live (37: an empty body
-  // 422s before any registry call) and that it never runs for an anonymous
-  // caller (37b) or a read-only member (37c). None of the three reaches the
-  // registry on a correct server: validation and role both answer first.
+  // 422s before any registry call), that it never runs for an anonymous
+  // caller (37b) or a read-only member (37c), and that its answers are
+  // no-store (37d). None of these reaches the registry on a correct server:
+  // validation and role both answer first.
   const batchProbe = await apiPost("/api/npi-registry/verify-batch", {}, { token: kansasTok });
   if (batchProbe.status === 404) {
-    console.log("SKIP  37/37b/37c. NPI Registry batch check — route not deployed");
+    console.log("SKIP  37/37b/37c/37d. NPI Registry batch check — route not deployed");
   } else {
     check(
       "37. Kansas POST /api/npi-registry/verify-batch with an empty body -> 422 (route is live)",
       batchProbe.status === 422,
       `status=${batchProbe.status} (expect 422)`,
+    );
+    // Every verify-batch answer is private: never stored by a browser or proxy.
+    check(
+      "37d. verify-batch answers are never cached (Cache-Control: no-store)",
+      /no-store/i.test(batchProbe.cacheControl ?? ""),
+      `cache-control=${batchProbe.cacheControl ?? "(none)"}`,
     );
     const anonymousBatch = await apiPost("/api/npi-registry/verify-batch", {
       npis: ["1234567893"],

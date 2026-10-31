@@ -276,7 +276,7 @@ describe("POST /api/npi-registry/verify-batch", () => {
     for (const npi of sent) expect(logged).not.toContain(npi);
   });
 
-  it("reports a mid-batch outage per NPI: what was checked stays checked", async () => {
+  it("reports a mid-batch outage per NPI: checked stays checked, never-sent NPIs are deferred and refunded", async () => {
     const sent = npis(10);
     const fetchFn = registry((npi) =>
       npi === sent[0]
@@ -286,12 +286,148 @@ describe("POST /api/npi-registry/verify-batch", () => {
     const res = await handleNpiRegistryVerifyBatch({ npis: sent }, ctx(), { fetch: fetchFn });
     expect(res.status).toBe(200);
     const body = await envelope<NpiRegistryBatchResult>(res);
-    expect(body.data?.results.map((result) => result.status)).toEqual([
-      "checked",
-      ...Array(9).fill("unavailable"),
-    ]);
-    expect(fetchFn.mock.calls.length).toBeLessThanOrEqual(3);
+    const statuses = body.data?.results.map((result) => result.status) ?? [];
+    const calls = fetchFn.mock.calls.length;
+    expect(calls).toBeLessThanOrEqual(3);
+    expect(statuses[0]).toBe("checked");
+    // Each NPI sent and failed is "unavailable"; every NPI never sent is
+    // "deferred", so the browser can ask for it again.
+    expect(statuses.filter((status) => status === "unavailable")).toHaveLength(calls - 1);
+    expect(statuses.filter((status) => status === "deferred")).toHaveLength(10 - calls);
     expect(warn.mock.calls.flat().join(" ")).toContain("http 503");
+    // Only the NPIs sent were spent: 10 + (10 - calls) more fit in the burst.
+    const healthy = registry();
+    expect(
+      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 30) }, ctx(), { fetch: healthy }))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await handleNpiRegistryVerifyBatch({ npis: npis(10 - calls, 50) }, ctx(), {
+          fetch: healthy,
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("stops new calls and cancels those in flight when the caller goes away", async () => {
+    const controller = new AbortController();
+    const seen: AbortSignal[] = [];
+    const fetchFn = vi.fn<typeof fetch>(
+      (_input, init) =>
+        new Promise<Response>((resolve, reject) => {
+          const signal = init?.signal as AbortSignal;
+          seen.push(signal);
+          signal.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+          if (seen.length === 1) {
+            resolve(json({ result_count: 1, results: [nppesRecord(npis(1)[0])] }));
+          }
+        }),
+    );
+    const pending = handleNpiRegistryVerifyBatch(
+      { npis: npis(10) },
+      ctx(),
+      { fetch: fetchFn },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const before = fetchFn.mock.calls.length;
+    controller.abort();
+    const res = await pending;
+    // The calls in flight saw the abort; no new call started after it.
+    expect(seen.slice(1).every((signal) => signal.aborted)).toBe(true);
+    expect(fetchFn.mock.calls.length).toBe(before);
+    const body = await envelope<NpiRegistryBatchResult>(res);
+    expect(body.data?.results.filter((result) => result.status === "deferred").length).toBe(
+      10 - before,
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("sends only what the import review needs: no addresses, phones, other taxonomies or identifiers", async () => {
+    const [npi] = npis(1);
+    const fetchFn = registry(() =>
+      json({
+        result_count: 1,
+        results: [
+          nppesRecord(npi, {
+            basic: {
+              first_name: "SYNTH",
+              middle_name: "Q",
+              last_name: "TESTER",
+              name_suffix: "JR",
+              credential: "PT",
+              status: "A",
+              enumeration_date: "2016-01-04",
+            },
+            addresses: [
+              {
+                address_purpose: "LOCATION",
+                address_1: "1 SYNTHETIC WAY",
+                city: "DENVER",
+                state: "CO",
+                postal_code: "802020000",
+                telephone_number: "303-555-0100",
+              },
+              { address_purpose: "MAILING", address_1: "PO BOX 1", city: "DENVER", state: "CO" },
+            ],
+            taxonomies: [
+              {
+                code: "225100000X",
+                desc: "Physical Therapist",
+                primary: true,
+                license: "PT1",
+                state: "CO",
+              },
+              { code: "2251X0800X", desc: "Orthopedic", primary: false },
+            ],
+            identifiers: [{ identifier: "SYN-123", desc: "MEDICAID", state: "CO" }],
+            other_names: [{ first_name: "SYNTHIA", last_name: "TESTER", type: "Former Name" }],
+          }),
+        ],
+      }),
+    );
+    const res = await handleNpiRegistryVerifyBatch({ npis: [npi] }, ctx(), { fetch: fetchFn });
+    const body = await envelope<NpiRegistryBatchResult>(res);
+    const record = body.data?.results[0].record as unknown as Record<string, unknown>;
+    expect(Object.keys(record).sort()).toEqual(
+      [
+        "credential",
+        "enumerationDate",
+        "enumerationType",
+        "firstName",
+        "lastName",
+        "middleName",
+        "npi",
+        "organizationName",
+        "otherNames",
+        "practiceCity",
+        "practiceState",
+        "primaryTaxonomy",
+        "status",
+        "suffix",
+      ].sort(),
+    );
+    expect(record).toMatchObject({
+      practiceCity: "DENVER",
+      practiceState: "CO",
+      primaryTaxonomy: { description: "Physical Therapist" },
+      enumerationDate: null,
+      otherNames: [{ firstName: "SYNTHIA", lastName: "TESTER", middleName: null }],
+    });
+    const raw = JSON.stringify(body);
+    for (const leaked of [
+      "1 SYNTHETIC WAY",
+      "303-555-0100",
+      "PO BOX 1",
+      "SYN-123",
+      "Orthopedic",
+      "PT1",
+    ]) {
+      expect(raw).not.toContain(leaked);
+    }
   });
 
   it("defers what it could not start in time, and refunds that budget", async () => {

@@ -1,6 +1,6 @@
 // MINT-110 PR 2 — /api/npi-registry/verify-batch dispatch: behind the full org
 // guard, POST only, the body bounded before parsing, and handed to its handler
-// with the guard's context.
+// with the guard's context and the request's abort signal.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./guard", async () => {
@@ -46,7 +46,14 @@ describe("api dispatch for /api/npi-registry/verify-batch", () => {
     vi.mocked(handleNpiRegistryVerifyBatch).mockResolvedValue(new Response("{}", { status: 200 }));
     const body = { npis: ["1234567893", "123-456-7893"] };
     await handleApiRequest(post(PATH, JSON.stringify(body)));
-    expect(handleNpiRegistryVerifyBatch).toHaveBeenCalledWith(body, CTX);
+    // The request's own abort signal goes along, so a caller who leaves stops
+    // the registry calls.
+    expect(handleNpiRegistryVerifyBatch).toHaveBeenCalledWith(
+      body,
+      CTX,
+      {},
+      expect.any(AbortSignal),
+    );
     await handleApiRequest(post(`${PATH}/`, JSON.stringify(body)));
     expect(handleNpiRegistryVerifyBatch).toHaveBeenCalledTimes(2);
   });
@@ -57,7 +64,12 @@ describe("api dispatch for /api/npi-registry/verify-batch", () => {
     vi.mocked(handleNpiRegistryVerifyBatch).mockResolvedValue(new Response("{}", { status: 422 }));
     const big = JSON.stringify({ npis: Array(300).fill("1234567893") });
     await handleApiRequest(post(PATH, big));
-    expect(handleNpiRegistryVerifyBatch).toHaveBeenCalledWith(null, CTX);
+    expect(handleNpiRegistryVerifyBatch).toHaveBeenCalledWith(
+      null,
+      CTX,
+      {},
+      expect.any(AbortSignal),
+    );
   });
 
   it("is POST only, and a near-miss path is a 404", async () => {

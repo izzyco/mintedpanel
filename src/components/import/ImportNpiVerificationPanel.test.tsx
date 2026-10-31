@@ -23,12 +23,14 @@ function render(
   snap: ImportNpiSnapshot,
   counts = { notes: 0, blocked: 0 },
   scope = "new_providers",
+  canBlock = false,
 ) {
   return renderToStaticMarkup(
     <ImportNpiVerificationPanel
       snapshot={snap}
       counts={counts}
       scope={scope as "new_providers" | "all_rows"}
+      canBlock={canBlock}
       onStop={vi.fn()}
     />,
   );
@@ -48,15 +50,15 @@ describe("ImportNpiVerificationPanel", () => {
     expect(bar).toContain('aria-valuemin="0"');
     expect(bar).toContain('aria-valuemax="100"');
     expect(bar).toContain('aria-valuenow="30"');
-    expect(bar).toContain('aria-valuetext="30 of 100 checked"');
+    expect(bar).toContain('aria-valuetext="30 of 100 done"');
     expect(html).toContain("width:30%");
-    expect(html).toContain("30 of 100 checked");
+    expect(html).toContain("30 of 100 done");
   });
 
   it("shows the time left only when it can be estimated, else just N of M", () => {
     expect(render(snapshot({ done: 10, checked: 10, etaMs: null }))).not.toContain("left");
     const html = render(snapshot({ done: 40, checked: 40, etaMs: 60_000 }));
-    expect(html).toContain("40 of 100 checked");
+    expect(html).toContain("40 of 100 done");
     expect(html).toContain("About 1 minute left");
   });
 
@@ -99,6 +101,37 @@ describe("ImportNpiVerificationPanel", () => {
       '<p role="status" aria-live="polite" class="sr-only">Checking 100 NPIs in the NPI Registry.</p>',
     );
     expect(render(snapshot({ done: 55 }))).toContain(">NPI Registry checks 50% done.</p>");
+  });
+
+  it("never calls a row the registry could not answer 'checked' — line and value text agree", () => {
+    const results = new Map<string, ImportNpiOutcome>(
+      Array.from({ length: 10 }, (_, i) => [
+        `n${i}`,
+        {
+          status: "not_checked",
+          reason: "unavailable",
+          message: "NPI Registry is unavailable",
+        } as const,
+      ]),
+    );
+    const html = render(snapshot({ total: 40, done: 20, checked: 10, results }));
+    expect(progressbar(html)).toContain('aria-valuetext="20 of 40 done, 10 not checked"');
+    expect(html).toContain("<span>20 of 40 done, 10 not checked</span>");
+  });
+
+  it("mentions blocking only when the NPI policy can block", () => {
+    expect(render(snapshot({}))).toContain(
+      "A note never stops a row: every row can still be committed.",
+    );
+    expect(render(snapshot({}))).not.toContain("NPI policy blocks");
+    expect(render(snapshot({}), { notes: 0, blocked: 0 }, "new_providers", true)).toContain(
+      "a row your NPI policy blocks is listed under Blocked rows with the reason",
+    );
+  });
+
+  it("gives the status line a visible focus style, since focus can land there", () => {
+    const html = render(snapshot({ phase: "stopped", done: 20, checked: 20 }));
+    expect(html).toMatch(/<p tabindex="-1" class="[^"]*focus:ring-2[^"]*"/);
   });
 
   it("names its scope and that a note never stops a row", () => {

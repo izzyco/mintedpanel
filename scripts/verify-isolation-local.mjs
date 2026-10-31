@@ -164,8 +164,8 @@ const EXPECTED_FAILS = {
   // reddens with it.
   npiregistry: ["36b", "36c", "37b"],
   // MINT-110 PR 2: the batch NPI check serves an anonymous caller (37b) and a
-  // read-only billing member (37c).
-  npibatch: ["37b", "37c"],
+  // read-only billing member (37c), and its answers can be cached (37d).
+  npibatch: ["37b", "37c", "37d"],
 };
 
 function failedAssertions(output) {

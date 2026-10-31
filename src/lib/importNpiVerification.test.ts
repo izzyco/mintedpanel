@@ -18,6 +18,8 @@ import {
   formatTimeRemaining,
   importNpiAnnouncement,
   importNpiChecksKey,
+  importNpiCommitWarning,
+  importNpiProgressText,
   importNpiRowResult,
   importNpiStatusText,
   npiPolicyCanBlock,
@@ -465,10 +467,50 @@ function snapshot(over: Partial<ImportNpiSnapshot>): ImportNpiSnapshot {
 
 const counts = (notes: number, blocked = 0) => ({ notes, blocked });
 
+describe("importNpiCommitWarning", () => {
+  it("says committing stops the checks while they run", () => {
+    expect(importNpiCommitWarning({ phase: "running", unchecked: 30, canBlock: false })).toBe(
+      "NPI Registry checks are still running; committing stops them.",
+    );
+    expect(importNpiCommitWarning({ phase: "running", unchecked: 30, canBlock: true })).toBe(
+      "NPI Registry checks are still running; committing stops them, and the 30 rows not yet checked go in without the check your NPI policy blocks on.",
+    );
+  });
+
+  it("under a blocking policy keeps warning once the checks stopped — after a failed commit too", () => {
+    expect(importNpiCommitWarning({ phase: "stopped", unchecked: 1, canBlock: true })).toBe(
+      "1 row was not checked against the NPI Registry and goes in without the check your NPI policy blocks on.",
+    );
+    expect(importNpiCommitWarning({ phase: "done", unchecked: 4, canBlock: true })).toBe(
+      "4 rows were not checked against the NPI Registry and go in without the check your NPI policy blocks on.",
+    );
+    // Nothing to say by default, or when every row was checked.
+    expect(importNpiCommitWarning({ phase: "stopped", unchecked: 4, canBlock: false })).toBeNull();
+    expect(importNpiCommitWarning({ phase: "done", unchecked: 0, canBlock: true })).toBeNull();
+  });
+});
+
 describe("progress words", () => {
-  it("shows rows done of rows total while running", () => {
+  it("shows rows done of rows total while running, never calling an unchecked row checked", () => {
     expect(importNpiStatusText(snapshot({ done: 40, checked: 40 }), counts(2))).toBe(
-      "40 of 100 checked",
+      "40 of 100 done",
+    );
+    // Batch 2 was an outage: 20 done, but only 10 of them checked.
+    const outage = new Map<string, ImportNpiOutcome>(
+      Array.from({ length: 10 }, (_, i) => [
+        `n${i}`,
+        { status: "not_checked", reason: "unavailable", message: "NPI Registry is unavailable" },
+      ]),
+    );
+    const afterOutage = snapshot({ total: 40, done: 20, checked: 10, results: outage });
+    expect(importNpiStatusText(afterOutage, counts(0))).toBe("20 of 40 done, 10 not checked");
+    expect(importNpiProgressText(afterOutage)).toBe("20 of 40 done, 10 not checked");
+    // Rows Stop left are neither done nor counted as not checked here.
+    const stopped = new Map<string, ImportNpiOutcome>([
+      ["s", { status: "not_checked", reason: "stopped", message: "The checks were stopped" }],
+    ]);
+    expect(importNpiProgressText(snapshot({ done: 5, checked: 5, results: stopped }))).toBe(
+      "5 of 100 done",
     );
     expect(importNpiStatusText(snapshot({ phase: "idle", total: 1 }), counts(0))).toBe(
       "1 NPI to check",

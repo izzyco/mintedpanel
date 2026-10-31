@@ -15,6 +15,8 @@
 //      further lookups are sent.
 //   3. Stop ends the checks: rows left say "not checked", focus lands on the
 //      status line (not the page body), and Commit still works.
+//   4. Leaving the review mid-check aborts the request in flight and no
+//      further lookups are sent.
 import {
   test,
   expect,
@@ -530,7 +532,8 @@ test("MINT-119: a 100-row upload checks new providers' NPIs with progress, time 
 
   // The burst of 20 goes at once, then the time left can be estimated.
   await expectChecked(page, 20);
-  await expect(page.getByText("20 of 100 checked")).toBeVisible();
+  await expect(page.getByText("20 of 100 done", { exact: true })).toBeVisible();
+  await expect(bar).toHaveAttribute("aria-valuetext", "20 of 100 done");
   await expect(page.getByText("About 1 minute left")).toBeVisible();
   await expect(
     page.getByRole("status").filter({ hasText: "Checking 100 NPIs in the NPI Registry." }),
@@ -664,4 +667,34 @@ test("MINT-119: Stop ends the checks, rows left say so, and the import can still
     timeout: 20000,
   });
   expect(wire.commitCalls).toBe(1);
+});
+
+test("MINT-119: leaving the review mid-check aborts the lookup in flight and sends no more", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = stagedFixtures();
+  await context.route(/\/(rest|auth)\/v1\//, makeHandler(fixtures, { commitCalls: 0 }));
+  const calls = await mockBatchRoute(context, { holdFrom: 3 });
+  const failed: string[] = [];
+  page.on("requestfailed", (request) => {
+    if (request.url().includes("/api/npi-registry/verify-batch")) failed.push(request.url());
+  });
+  await seedAuth(context);
+  await page.clock.install();
+
+  await openStagedReview(page);
+  await expectChecked(page, 20);
+  await page.clock.fastForward(11_000);
+  await expect.poll(() => calls.length).toBe(3);
+
+  // In-app navigation away from the review unmounts it.
+  await page.getByRole("link", { name: "Back to import" }).click();
+  await expect(page).toHaveURL(/\/providers/, { timeout: 15000 });
+  await expect.poll(() => failed.length).toBe(1);
+  for (let i = 0; i < 6; i += 1) await page.clock.fastForward(11_000);
+  expect(calls).toHaveLength(3);
+  // Nothing about the run changed: leaving is not cancelling.
+  expect(fixtures.import_runs[0].state).toBe("ready_for_review");
 });

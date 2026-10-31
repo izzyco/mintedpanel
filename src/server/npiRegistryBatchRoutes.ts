@@ -19,11 +19,15 @@
 //
 // Errors are per NPI. A registry failure marks that NPI "unavailable" and stops
 // new calls in this request (an outage costs at most two timeouts, not ten);
-// only when nothing in the request could be checked is it a 502. No new call
-// starts after NPI_REGISTRY_BATCH_START_DEADLINE_MS, so a slow registry cannot
-// hold a request open past a function's time limit; NPIs not started come back
-// "deferred" and their budget is refunded. Logs the failure kind only, never
-// an NPI.
+// only when nothing in the request could be checked is it a 502. NPIs never
+// sent come back "deferred" with their budget refunded, so the browser can ask
+// again: after an outage, past NPI_REGISTRY_BATCH_START_DEADLINE_MS (a slow
+// registry cannot hold a request open past a function's time limit), or once
+// the caller has gone (the request's abort signal also cancels calls in
+// flight). An unexpected error stops every worker before it is rethrown, and
+// the budget is refunded either way. The answer carries a trimmed record
+// (trimNpiRecordForImport): no addresses, phones or identifiers. Logs the
+// failure kind only, never an NPI.
 import { fail, ok } from "./envelope";
 import { isWriter, type AuthContext } from "./guard";
 import {
@@ -39,6 +43,7 @@ import {
   NPI_REGISTRY_BATCH_PER_MINUTE,
   NPI_REGISTRY_BATCH_RATE_LIMIT_MESSAGE,
   TokenBucket,
+  trimNpiRecordForImport,
   validateNpiRegistryBatch,
   type NpiRegistryBatchItemResult,
   type NpiRegistryBatchResult,
@@ -68,34 +73,60 @@ function privateResponse(response: Response): Response {
 
 interface BatchOutcome {
   results: NpiRegistryBatchItemResult[];
-  /** NPIs never sent upstream (deferred, or skipped after a failure). */
+  /** NPIs never sent upstream (all "deferred"). */
   notStarted: number;
   failureKind: NpiRegistryFailureKind | "rejected" | null;
   failureStatus: number | undefined;
 }
 
-async function checkAll(npis: string[], deps: NppesDeps): Promise<BatchOutcome> {
+// The injected fetch, also cancelled when the caller goes away.
+function withCallerSignal(deps: NppesDeps, signal: AbortSignal | undefined): NppesDeps {
+  if (!signal) return deps;
+  const upstream = deps.fetch ?? fetch;
+  return {
+    ...deps,
+    fetch: (input, init) =>
+      upstream(input, {
+        ...init,
+        signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal,
+      }),
+  };
+}
+
+async function checkAll(
+  npis: string[],
+  deps: NppesDeps,
+  signal: AbortSignal | undefined,
+  onSettled: (notStarted: number) => void,
+): Promise<BatchOutcome> {
   const results: NpiRegistryBatchItemResult[] = npis.map((npi) => ({
     npi,
     status: "deferred",
     record: null,
   }));
   const started = clock();
+  const upstreamDeps = withCallerSignal(deps, signal);
   let next = 0;
   let notStarted = npis.length;
   let outage: NpiRegistryUnavailableError | null = null;
   let rejected = false;
+  // Set by the first unexpected error, so no worker starts another call.
+  let unexpected: { error: unknown } | null = null;
 
   const worker = async () => {
     for (;;) {
-      if (outage || next >= npis.length) return;
+      if (outage || unexpected || signal?.aborted || next >= npis.length) return;
       if (clock() - started >= NPI_REGISTRY_BATCH_START_DEADLINE_MS) return;
       const index = next;
       next += 1;
       notStarted -= 1;
       try {
-        const answer = await lookupNpiRegistryCached(npis[index], deps);
-        results[index] = { npi: npis[index], status: "checked", record: answer.record };
+        const answer = await lookupNpiRegistryCached(npis[index], upstreamDeps);
+        results[index] = {
+          npi: npis[index],
+          status: "checked",
+          record: answer.record ? trimNpiRecordForImport(answer.record) : null,
+        };
       } catch (error) {
         if (error instanceof NpiRegistryUnavailableError) {
           outage ??= error;
@@ -103,21 +134,22 @@ async function checkAll(npis: string[], deps: NppesDeps): Promise<BatchOutcome> 
           // Not expected for a check-digit-valid number; this NPI only.
           rejected = true;
         } else {
-          throw error;
+          unexpected ??= { error };
+          return;
         }
         results[index] = { npi: npis[index], status: "unavailable", record: null };
       }
     }
   };
-  await Promise.all(
-    Array.from({ length: Math.min(NPI_REGISTRY_BATCH_CONCURRENCY, npis.length) }, worker),
-  );
-
-  // After an outage the NPIs never asked are not checked, not deferred: asking
-  // again straight away would meet the same outage.
-  if (outage) {
-    for (const result of results) if (result.status === "deferred") result.status = "unavailable";
+  try {
+    await Promise.allSettled(
+      Array.from({ length: Math.min(NPI_REGISTRY_BATCH_CONCURRENCY, npis.length) }, worker),
+    );
+  } finally {
+    onSettled(notStarted);
   }
+  const failed = unexpected as { error: unknown } | null;
+  if (failed) throw failed.error;
   const failure = outage as NpiRegistryUnavailableError | null;
   return {
     results,
@@ -131,6 +163,7 @@ export async function handleNpiRegistryVerifyBatch(
   body: unknown,
   ctx: AuthContext,
   deps: NppesDeps = {},
+  signal?: AbortSignal,
 ): Promise<Response> {
   if (!isWriter(ctx)) {
     return privateResponse(
@@ -146,9 +179,11 @@ export async function handleNpiRegistryVerifyBatch(
     return response;
   }
 
-  const outcome = await checkAll(input.value, deps);
-  budget.refund(ctx.userId, outcome.notStarted);
-  if (outcome.failureKind) {
+  // NPIs never sent cost nothing, whether the request finished or failed.
+  const outcome = await checkAll(input.value, deps, signal, (notStarted) =>
+    budget.refund(ctx.userId, notStarted),
+  );
+  if (outcome.failureKind && !signal?.aborted) {
     const unchecked = outcome.results.filter((result) => result.status === "unavailable").length;
     // The failure kind, upstream status and a count — never an NPI.
     console.warn(
