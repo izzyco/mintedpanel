@@ -37,6 +37,7 @@ import {
 } from "@/components/onboarding/licenseDraft";
 import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
 import { useStateLicensesByProvider } from "@/hooks/useLookups";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import { useCreateProviderWithDetails, useUpdateProviderWithLicenses } from "@/hooks/useProviders";
 import { useCreateEnrollmentFact } from "@/hooks/useEnrollmentFacts";
 import { usePayers } from "@/hooks/useAdmin";
@@ -45,7 +46,11 @@ import { ENROLLMENT_GUARD_TEXT } from "@/components/providers/EnrollmentsPanel";
 import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
 import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiRegistry";
 import { applyRosterNpiPick, rosterNpiError } from "@/components/onboarding/rosterNpi";
-import { identityFieldChanged, stripNpiSeparators } from "@/lib/providerIdentity";
+import {
+  identityFieldChanged,
+  identityFieldNeedsCheck,
+  stripNpiSeparators,
+} from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { npiOffersOnForm, type NpiPickState } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
@@ -202,6 +207,7 @@ function FormBody({
   >([]);
   const payersQ = usePayers();
   const createFact = useCreateEnrollmentFact();
+  const identityRules = useIdentityValidationRules();
 
   const createMut = useCreateProviderWithDetails();
   const updateMut = useUpdateProviderWithLicenses(provider?.id ?? "");
@@ -270,7 +276,18 @@ function FormBody({
     const next: RosterFormErrors = {};
     if (!form.firstName.trim()) next.firstName = "First name is required";
     if (!form.lastName.trim()) next.lastName = "Last name is required";
-    const npiError = rosterNpiError(form.npi, npiChanged, registryBlock);
+    // MINT-7 / MINT-129: an entered or changed NPI is checked; by default an
+    // unchanged stored NPI is not re-checked, so legacy data never blocks an
+    // unrelated edit (recheckStoredOnEdit). MINT-110: only separators are
+    // stripped, so other junk still fails; then the NPI Registry policy's
+    // refusal, which looks only at an entered or changed NPI (npiChanged).
+    const npiNeedsCheck = identityFieldNeedsCheck(
+      form.npi,
+      provider ? initialForm.npi : undefined,
+      identityRules,
+      stripNpiSeparators,
+    );
+    const npiError = rosterNpiError(form.npi, npiNeedsCheck, registryBlock);
     if (npiError) next.npi = npiError;
     if (form.ssnLast4.trim() && !/^\d{4}$/.test(form.ssnLast4.trim()))
       next.ssnLast4 = "Enter the LAST 4 digits only";
