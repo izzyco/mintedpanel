@@ -7,6 +7,7 @@ import { format } from "date-fns";
 import {
   DEFAULT_ACTIVITY_DATE_RULES,
   activityDateRules,
+  canonicalTimeZone,
   isIanaTimeZone,
   resolveActivityDateRules,
   todayForActivity,
@@ -33,6 +34,26 @@ afterAll(() => {
 });
 
 const zone = (name: string): ActivityDateRules => ({ zone: name });
+
+// Zones that ignore daylight saving or are not in tzdata: never accepted.
+const REJECTED_ZONES = [
+  "+05:00",
+  "-0700",
+  "Etc/GMT+7",
+  "Etc/GMT-14",
+  "GMT",
+  "Zulu",
+  "EST",
+  "MST",
+  "HST",
+  "EST5EDT",
+  "CET",
+  "PST8PDT",
+  "US/Mountain",
+  "Universal",
+  "AET",
+  "SystemV/AST4",
+];
 
 describe("DEFAULT_ACTIVITY_DATE_RULES", () => {
   it("is the viewer's own day, the decision of Oct 30", () => {
@@ -70,9 +91,36 @@ describe("todayForActivity in a Denver browser", () => {
     expect(todayForActivity(TICKET_MOMENT, zone("America/Denver"))).toBe("2026-10-19");
   });
 
-  it("falls back to the viewer's day for a zone the runtime does not know", () => {
-    expect(todayForActivity(TICKET_MOMENT, zone("Mars/Olympus"))).toBe("2026-10-19");
-    expect(todayForActivity(TICKET_MOMENT, zone("+05:00"))).toBe("2026-10-19");
+  it("files it under a named zone's day whatever its spelling", () => {
+    expect(todayForActivity(TICKET_MOMENT, zone("pacific/auckland"))).toBe("2026-10-20");
+    expect(todayForActivity(TICKET_MOMENT, zone("Etc/UTC"))).toBe("2026-10-20");
+  });
+
+  it("falls back to the viewer's day for a zone it does not accept", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const name of ["Mars/Olympus", ...REJECTED_ZONES]) {
+        expect(todayForActivity(TICKET_MOMENT, zone(name))).toBe("2026-10-19");
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("says so once per page load, naming no value", async () => {
+    vi.resetModules();
+    const fresh = await import("./activityDate");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      fresh.todayForActivity(TICKET_MOMENT, zone("EST"));
+      fresh.todayForActivity(TICKET_MOMENT, zone("Mars/Olympus"));
+      fresh.todayForActivity(TICKET_MOMENT, zone("viewer"));
+      fresh.todayForActivity(TICKET_MOMENT, zone("America/Denver"));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.join(" ")).not.toMatch(/EST|Mars/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -100,7 +148,14 @@ describe("todayForActivity in a UTC browser", () => {
 
   it("every real zone's day is within one day of the UTC day, so the database's guard never trips", () => {
     const utcMs = (day: string) => Date.parse(`${day}T00:00:00Z`);
-    const extremes = ["Pacific/Kiritimati", "Pacific/Pago_Pago", "Etc/GMT+12", "Etc/GMT-14"];
+    // The farthest-ahead and farthest-behind places: UTC+14 and UTC-11.
+    const extremes = [
+      "Pacific/Kiritimati",
+      "Pacific/Pago_Pago",
+      "Pacific/Niue",
+      "Pacific/Tongatapu",
+    ];
+    for (const name of extremes) expect(isIanaTimeZone(name)).toBe(true);
     for (let hour = 0; hour < 48; hour += 1) {
       const at = new Date(Date.UTC(2026, 9, 19, hour, 30));
       const utcDay = at.toISOString().slice(0, 10);
@@ -112,14 +167,31 @@ describe("todayForActivity in a UTC browser", () => {
   });
 });
 
-describe("isIanaTimeZone", () => {
-  it("accepts zone names and rejects offsets, sentinels and junk", () => {
-    for (const name of ["America/Denver", "Pacific/Auckland", "UTC", "Etc/GMT+7"]) {
+describe("isIanaTimeZone and canonicalTimeZone", () => {
+  it("accepts a place's zone and UTC", () => {
+    for (const name of [
+      "America/Denver",
+      "Pacific/Auckland",
+      "America/Argentina/Buenos_Aires",
+      "America/Port-au-Prince",
+      "UTC",
+      "Etc/UTC",
+    ]) {
       expect(isIanaTimeZone(name)).toBe(true);
     }
-    for (const value of ["viewer", "+05:00", "-0700", "Mars/Olympus", "", " UTC", null, 5]) {
+  });
+
+  it("rejects offsets, abbreviations, links outside the place areas, ICU-only names and junk", () => {
+    for (const value of [...REJECTED_ZONES, "viewer", "Mars/Olympus", "", " UTC", null, 5]) {
       expect(isIanaTimeZone(value)).toBe(false);
+      expect(canonicalTimeZone(value)).toBeNull();
     }
+  });
+
+  it("returns the runtime's canonical spelling", () => {
+    expect(canonicalTimeZone("america/denver")).toBe("America/Denver");
+    expect(canonicalTimeZone("America/Denver")).toBe("America/Denver");
+    expect(canonicalTimeZone("utc")).toBe("UTC");
   });
 });
 
@@ -148,9 +220,16 @@ describe("resolveActivityDateRules", () => {
     expect(resolveActivityDateRules({ zone: "UTC" }, { zone: undefined })).toEqual(zone("UTC"));
   });
 
+  it("stores a zone in its canonical spelling", () => {
+    expect(resolveActivityDateRules({ zone: "america/denver" })).toEqual(zone("America/Denver"));
+    expect(resolveActivityDateRules(null, { zone: "utc" })).toEqual(zone("UTC"));
+  });
+
   it("skips a value of the wrong shape like a missing one", () => {
-    const bad = { zone: "+05:00" };
-    expect(resolveActivityDateRules({ zone: "UTC" }, bad)).toEqual(zone("UTC"));
+    for (const bad of REJECTED_ZONES) {
+      expect(resolveActivityDateRules({ zone: "UTC" }, { zone: bad })).toEqual(zone("UTC"));
+      expect(resolveActivityDateRules({ zone: bad })).toEqual(DEFAULT_ACTIVITY_DATE_RULES);
+    }
     expect(resolveActivityDateRules({ zone: "Mars/Olympus" })).toEqual(DEFAULT_ACTIVITY_DATE_RULES);
     expect(
       resolveActivityDateRules({ zone: 7 } as unknown as ActivityDateRules, { zone: "" }),
@@ -165,6 +244,7 @@ describe("validateActivityDateRules", () => {
     expect(validateActivityDateRules({})).toEqual([]);
     expect(validateActivityDateRules(DEFAULT_ACTIVITY_DATE_RULES)).toEqual([]);
     expect(validateActivityDateRules({ zone: "America/Denver" })).toEqual([]);
+    expect(validateActivityDateRules({ zone: "UTC" })).toEqual([]);
     expect(validateActivityDateRules({ zone: null })).toEqual([]);
   });
 
@@ -176,10 +256,10 @@ describe("validateActivityDateRules", () => {
     }
   });
 
-  it("rejects a zone that is not a time zone, in plain language", () => {
-    for (const value of ["Mars/Olympus", "+05:00", "", 5]) {
+  it("rejects a zone it does not take, in plain language", () => {
+    for (const value of ["Mars/Olympus", "", 5, ...REJECTED_ZONES]) {
       expect(validateActivityDateRules({ zone: value })).toEqual([
-        `"${String(value)}" is not a time zone. Use "viewer" (each person's own time zone) or a time zone name such as "America/Denver".`,
+        `"${String(value)}" is not a time zone this setting takes. Use "viewer" (each person's own time zone), "UTC", or a place's time zone such as "America/Denver"; offsets and abbreviations such as "EST" ignore daylight saving.`,
       ]);
     }
   });

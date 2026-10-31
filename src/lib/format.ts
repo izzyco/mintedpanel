@@ -24,12 +24,15 @@ export function fmtDateTime(value: string | null | undefined): string {
   }
 }
 
-/** Today as the browser's local calendar date (`yyyy-MM-dd`). Not
- * `toISOString().slice(0, 10)`, which is UTC's day and is already tomorrow in
- * Denver from 6 pm (5 pm in winter), while the audit row and the touch form's
- * default both still say today. Activity writes (a task's completed_date, a
- * note's touch_date) call todayForActivity with the rules in force; under the
- * default rules that is this same day. */
+/** Today as the browser's local calendar date (`yyyy-MM-dd`), whatever the
+ * activity rules say. Not `toISOString().slice(0, 10)`, which is UTC's day and
+ * is already tomorrow in Denver from 6 pm (5 pm in winter).
+ *
+ * Viewer-only: never use it for an activity write or an activity's "today"
+ * (completed_date, touch_date, a touch form default, follow-up status). Those
+ * go through todayForActivity(new Date(), activityDateRules()), which equals
+ * this only under the default rules. It is kept for viewer-local "today"
+ * reads such as the readiness and expiry helpers' localTodayIso copies. */
 export function todayLocal(now: Date = new Date()): string {
   return todayForActivity(now, { zone: VIEWER_ZONE });
 }
