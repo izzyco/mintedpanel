@@ -646,6 +646,43 @@ describe("BillingReadinessRules", () => {
     ]);
   });
 
+  it("says 'cannot be relaxed' only for a hold, and names a non-text value by its kind", () => {
+    expect(
+      validateBillingReadinessRules({ providerStatusSeverity: { terminated: "bogus" } }),
+    ).toEqual(['A terminated clinician is always Do Not Bill ("stop"), not "bogus".']);
+    expect(validateBillingReadinessRules({ providerStatusSeverity: { terminated: 1 } })).toEqual([
+      'A terminated clinician is always Do Not Bill ("stop"), not 1.',
+    ]);
+    expect(validateBillingReadinessRules({ membershipWithoutStartDate: { a: 1 } })).toEqual([
+      'A group membership with no start date either counts as current ("current") or holds ("not_current"), not a set of values.',
+    ]);
+    expect(
+      validateBillingReadinessRules({ providerStatusSeverity: { onboarding: ["stop"] } }),
+    ).toEqual([
+      'For an Onboarding clinician, choose a hold ("hold") or Do Not Bill ("stop"), not a list.',
+    ]);
+    expect(validateBillingReadinessRules({ providerStatusSeverity: { other: true } })).toEqual([
+      'For a clinician status this rule does not recognize, choose a hold ("hold") or Do Not Bill ("stop"), not true.',
+    ]);
+  });
+
+  it("accepts only plain objects as a set of settings, never a Date or a list", () => {
+    expect(validateBillingReadinessRules(new Date())).toEqual([
+      "Billing Readiness settings must be a set of named settings.",
+    ]);
+    expect(validateBillingReadinessRules(Object.create(null))).toEqual([]);
+    expect(validateBillingReadinessRules({ providerStatusSeverity: new Date() })).toEqual([
+      "Clinician status settings must name a status and its effect.",
+    ]);
+    expect(validateBillingReadinessRules({ providerStatusSeverity: [] })).toEqual([
+      "Clinician status settings must name a status and its effect.",
+    ]);
+    const dated = Object.assign(new Date(), { membershipWithoutStartDate: "not_current" });
+    expect(resolveBillingReadinessRules(dated as unknown as BillingReadinessRulesOverride)).toEqual(
+      DEFAULT_BILLING_READINESS_RULES,
+    );
+  });
+
   describe("providerStatusSeverity", () => {
     it("onboarding: holds by default; 'stop' makes it Do Not Bill with the same reason", () => {
       const snapshot = readySnapshot();

@@ -259,10 +259,23 @@ const STATUS_LABELS: Record<keyof BillingProviderStatusSeverity, string> = {
   other: "a clinician status this rule does not recognize",
 };
 
+/** A plain object (a parsed JSON object), else null. A list, a Date or any
+ * other object with its own prototype is not a set of settings. */
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
+  if (typeof value !== "object" || value === null) return null;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null
     ? (value as Record<string, unknown>)
     : null;
+}
+
+/** A rejected value as an error message shows it: text in quotes, anything
+ * that is not text or a number named by its kind. */
+function shownValue(value: unknown): string {
+  if (typeof value === "string") return `"${value}"`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return "a list";
+  return typeof value === "object" ? "a set of values" : `a ${typeof value} value`;
 }
 
 /** Field by field: the organization's value, else the platform's, else the
@@ -316,7 +329,7 @@ export function validateBillingReadinessRules(override: unknown): string[] {
     if (key === "membershipWithoutStartDate") {
       if (value != null && !MEMBERSHIP_CHOICES.includes(value))
         errors.push(
-          `A group membership with no start date either counts as current ("current") or holds ("not_current"), not "${String(value)}".`,
+          `A group membership with no start date either counts as current ("current") or holds ("not_current"), not ${shownValue(value)}.`,
         );
     } else if (key === "providerStatusSeverity") {
       if (value == null) continue;
@@ -335,9 +348,11 @@ export function validateBillingReadinessRules(override: unknown): string[] {
         const statusKey = status as keyof BillingProviderStatusSeverity;
         if (severity == null || STATUS_SEVERITY_CHECKS[statusKey](severity)) continue;
         errors.push(
-          statusKey === "terminated"
-            ? "A terminated clinician is always Do Not Bill; it cannot be relaxed to a hold."
-            : `For ${STATUS_LABELS[statusKey]}, choose a hold ("hold") or Do Not Bill ("stop"), not "${String(severity)}".`,
+          statusKey !== "terminated"
+            ? `For ${STATUS_LABELS[statusKey]}, choose a hold ("hold") or Do Not Bill ("stop"), not ${shownValue(severity)}.`
+            : severity === "hold"
+              ? "A terminated clinician is always Do Not Bill; it cannot be relaxed to a hold."
+              : `A terminated clinician is always Do Not Bill ("stop"), not ${shownValue(severity)}.`,
         );
       }
     } else {
