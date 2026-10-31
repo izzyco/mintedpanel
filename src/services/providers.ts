@@ -19,6 +19,7 @@ import {
 } from "@/lib/groupAssignments";
 import { resolvePsvColumns, type PsvStatus, type PsvStored } from "@/lib/licensePsv";
 import { insertAssignmentRows } from "@/services/providerAssignments";
+import type { AssignmentStartDateDefault } from "@/lib/providerIntakeRules";
 import { normalizeStateCode, normalizeOptionalStateCode } from "@/lib/stateCode";
 import { translateDbError, toError } from "@/lib/dbErrors";
 import { licenseSnapshotFields, type LicenseCommand } from "@/lib/licenseCommands";
@@ -339,6 +340,9 @@ export interface CreateProviderWithDetailsInput {
   facilityIds: string[];
   /** E1.3 M:N group assignments (wizard path requires ≥1 + one primary). */
   groupAssignments?: GroupAssignmentInput[];
+  /** What a facility assignment starts on when the provider has no start
+   * date (ProviderIntakeRules; omitted ⇒ "today"). */
+  assignmentStartDateDefault?: AssignmentStartDateDefault;
 }
 
 export interface CreateProviderWithDetailsResult {
@@ -414,7 +418,8 @@ export async function createProviderWithDetails(
 
   // E1.4 TE-3: assignment writes route through the shared service.
   // Prefer the provider's employment start date when present; insertAssignmentRows
-  // defaults a missing date to today so the start_date NOT NULL CHECK never trips.
+  // defaults a missing date to today so the start_date NOT NULL CHECK never trips
+  // (or, under the "none" rule, refuses the rows rather than guess).
   // F1.4.3: first selected facility is primary until the coordinator changes
   // it on the record — Add Provider has no primary picker.
   const facilityRows = markFirstFacilityPrimary(input.facilityIds);
@@ -429,6 +434,7 @@ export async function createProviderWithDetails(
           startDate: assignmentStart,
           isPrimary,
         })),
+        input.assignmentStartDateDefault,
       );
       insertedFacilityIds = facilityRows.map((r) => r.facilityId);
     } catch (facErr) {

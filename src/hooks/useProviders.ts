@@ -1,4 +1,5 @@
 // Providers query hooks: filter by active org; invalidate on mutations.
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { queryKeys } from "@/hooks/queryKeys";
@@ -28,6 +29,7 @@ import {
 } from "@/services/providerAssignments";
 import type { AssignmentDraft } from "@/lib/assignmentScope";
 import { invalidateProviderRosterCaches } from "@/lib/providerRosterCaches";
+import { resolveProviderIntakeRules, type ProviderIntakeRules } from "@/lib/providerIntakeRules";
 
 const THIRTY_SECONDS = 30_000;
 
@@ -225,4 +227,12 @@ export function useVerifyProviders() {
       qc.invalidateQueries({ queryKey: queryKeys.providerReadinessFacts(orgId) });
     },
   });
+}
+
+/** The Add Provider start-date rules for the active organization. Nothing
+ * stores a platform or organization override yet (the Mission Control
+ * setting is MINT-116), so this resolves to the decided defaults; when the
+ * setting lands, its read replaces the two nulls. */
+export function useProviderIntakeRules(): ProviderIntakeRules {
+  return useMemo(() => resolveProviderIntakeRules(null, null), []);
 }

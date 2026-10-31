@@ -17,6 +17,10 @@ import {
   type AssignmentDraft,
   type StoredFacilityAssignment,
 } from "@/lib/assignmentScope";
+import {
+  DEFAULT_PROVIDER_INTAKE_RULES,
+  type AssignmentStartDateDefault,
+} from "@/lib/providerIntakeRules";
 import type { FacilityAssignment } from "@/types";
 
 // Scoped projection (TE-5): ids + flags + dates only — nothing PHI lives on
@@ -46,7 +50,8 @@ export interface AssignmentRowInput {
 
 /** Local calendar today (YYYY-MM-DD). The PFA start_date CHECK rejects null
  *  on new inserts; callers that omit a date (Add Provider) default here —
- *  same posture as the CSV relationship pass in importRuns. */
+ *  same posture as the CSV relationship pass in importRuns — unless the
+ *  Add Provider rule says "none" (ProviderIntakeRules, MINT-116). */
 function localTodayIso(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -55,9 +60,16 @@ function localTodayIso(): string {
 
 /** Shared bulk insert used by the legacy callers (provider create, launch
  * assign). Duplicate (provider, facility) pairs are ignored, matching the
- * old launch upsert semantics. */
-export async function insertAssignmentRows(rows: AssignmentRowInput[]): Promise<void> {
+ * old launch upsert semantics. A row with no start date starts today under
+ * `startDateDefault` "today" (the default for every caller); under "none"
+ * nothing is written and the insert fails with a plain error instead. */
+export async function insertAssignmentRows(
+  rows: AssignmentRowInput[],
+  startDateDefault: AssignmentStartDateDefault = DEFAULT_PROVIDER_INTAKE_RULES.assignmentStartDateDefault,
+): Promise<void> {
   if (rows.length === 0) return;
+  if (startDateDefault === "none" && rows.some((r) => !r.startDate?.trim()))
+    throw new Error("Each facility assignment needs a start date.");
   const orgId = requireActiveOrg();
   const today = localTodayIso();
   const { error } = await supabase.from("provider_facility_assignments").upsert(

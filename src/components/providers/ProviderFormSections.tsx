@@ -22,10 +22,14 @@ import {
   type ProviderFormState,
   type UpdateProviderField,
 } from "@/components/providers/providerFormShared";
-import { fmtDate } from "@/lib/format";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { PROVIDER_GENDER_OPTIONS, PROVIDER_GENDER_UNSET_VALUE } from "@/lib/providerGender";
 import { localCalendarDate } from "@/lib/systemTokens";
+import {
+  DEFAULT_PROVIDER_INTAKE_RULES,
+  intakeStartDateHint,
+  type ProviderIntakeRules,
+} from "@/lib/providerIntakeRules";
 
 interface SectionProps {
   form: ProviderFormState;
@@ -264,7 +268,12 @@ export function LicensesSection({ form, errors, update }: SectionProps) {
   );
 }
 
-export function EmploymentSection({ form, errors, update }: SectionProps) {
+export function EmploymentSection({
+  form,
+  errors,
+  update,
+  intakeRules = DEFAULT_PROVIDER_INTAKE_RULES,
+}: SectionProps & { intakeRules?: ProviderIntakeRules }) {
   const groups = useProviderGroups();
   const facilities = useFacilities(form.groupId || null);
 
@@ -276,13 +285,15 @@ export function EmploymentSection({ form, errors, update }: SectionProps) {
   };
 
   const facilityList = facilities.data ?? [];
-  // MINT-96: a blank Start date stays null on the provider, but
-  // insertAssignmentRows saves the facility assignments as local today. Say so
-  // before save instead of letting the date appear on the record after.
-  const startDateHint =
-    !form.startDate && form.facilityIds.length > 0
-      ? `If left blank, facility assignments start today (${fmtDate(localCalendarDate(new Date()))}).`
-      : undefined;
+  // MINT-96: say what a blank Start date saves before save, from the rules
+  // the save reads (ProviderIntakeRules, MINT-116), instead of letting a date
+  // appear on the record after. By default the provider's stays null and the
+  // facility assignments start local today.
+  const startDateHint = intakeStartDateHint(intakeRules, {
+    startDate: form.startDate,
+    facilityCount: form.facilityIds.length,
+    today: localCalendarDate(new Date()),
+  });
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

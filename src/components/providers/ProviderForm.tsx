@@ -8,6 +8,11 @@ import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { maskSsn } from "@/lib/ssnMask";
 import { localCalendarDate } from "@/lib/systemTokens";
+import {
+  DEFAULT_PROVIDER_INTAKE_RULES,
+  intakeStartDates,
+  type ProviderIntakeRules,
+} from "@/lib/providerIntakeRules";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import {
   CredentialsSection,
@@ -19,6 +24,7 @@ import {
   isBlankLicenseRow,
   validateAll,
   validateCredentials,
+  validateEmployment,
   validatePersonal,
   type ProviderFormErrors,
   type ProviderFormState,
@@ -39,9 +45,14 @@ const STEPS = [
   { id: 5, label: "Review" },
 ] as const;
 
-function validateStep(step: number, f: ProviderFormState): ProviderFormErrors {
+function validateStep(
+  step: number,
+  f: ProviderFormState,
+  rules: ProviderIntakeRules,
+): ProviderFormErrors {
   if (step === 1) return validatePersonal(f);
   if (step === 2) return validateCredentials(f);
+  if (step === 4) return validateEmployment(f, rules);
   return {};
 }
 
@@ -52,6 +63,8 @@ export interface ProviderFormProps {
   isPending: boolean;
   onSubmit: (form: ProviderFormState) => Promise<void>;
   onCancel?: () => void;
+  /** What a blank Start date saves (MINT-116); the defaults when omitted. */
+  intakeRules?: ProviderIntakeRules;
 }
 
 export function ProviderForm({
@@ -61,6 +74,7 @@ export function ProviderForm({
   isPending,
   onSubmit,
   onCancel,
+  intakeRules = DEFAULT_PROVIDER_INTAKE_RULES,
 }: ProviderFormProps) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -73,7 +87,7 @@ export function ProviderForm({
   };
 
   const next = () => {
-    const e = validateStep(step, form);
+    const e = validateStep(step, form, intakeRules);
     setErrors(e);
     if (Object.keys(e).length === 0) setStep((s) => Math.min(5, s + 1));
   };
@@ -88,7 +102,7 @@ export function ProviderForm({
 
   const submit = async () => {
     setSubmitError(null);
-    const allErrors = validateAll(form);
+    const allErrors = validateAll(form, intakeRules);
     if (Object.keys(allErrors).length > 0) {
       setErrors(allErrors);
       // Jump back to the first step with an error so the user sees it.
@@ -96,6 +110,8 @@ export function ProviderForm({
         setStep(1);
       } else if (allErrors.npi || allErrors.caqhId) {
         setStep(2);
+      } else if (allErrors.startDate) {
+        setStep(4);
       }
       return;
     }
@@ -121,8 +137,15 @@ export function ProviderForm({
           {step === 1 ? <PersonalSection form={form} errors={errors} update={update} /> : null}
           {step === 2 ? <CredentialsSection form={form} errors={errors} update={update} /> : null}
           {step === 3 ? <LicensesSection form={form} errors={errors} update={update} /> : null}
-          {step === 4 ? <EmploymentSection form={form} errors={errors} update={update} /> : null}
-          {step === 5 ? <ReviewStep form={form} jumpTo={jumpTo} /> : null}
+          {step === 4 ? (
+            <EmploymentSection
+              form={form}
+              errors={errors}
+              update={update}
+              intakeRules={intakeRules}
+            />
+          ) : null}
+          {step === 5 ? <ReviewStep form={form} jumpTo={jumpTo} intakeRules={intakeRules} /> : null}
 
           {submitError ? <p className="mt-4 text-sm text-destructive">{submitError}</p> : null}
         </div>
@@ -182,17 +205,30 @@ function Stepper({ current }: { current: number }) {
   );
 }
 
-function ReviewStep({ form, jumpTo }: { form: ProviderFormState; jumpTo: (s: number) => void }) {
+function ReviewStep({
+  form,
+  jumpTo,
+  intakeRules,
+}: {
+  form: ProviderFormState;
+  jumpTo: (s: number) => void;
+  intakeRules: ProviderIntakeRules;
+}) {
   const groups = useProviderGroups();
   const facilities = useFacilities(form.groupId || null);
   const groupName = useMemo(
     () => groups.data?.find((g) => g.id === form.groupId)?.name ?? "—",
     [groups.data, form.groupId],
   );
-  // MINT-96: name the date the facility assignments will carry. A blank
-  // Start date stays null on the provider, but insertAssignmentRows saves the
-  // assignments as local today, read on every render so it never goes stale.
-  const assignmentStart = form.startDate || localCalendarDate(new Date());
+  // MINT-96: name the dates a save writes, from the same rules the save reads
+  // (ProviderIntakeRules). By default a blank Start date stays null on the
+  // provider and the assignments start local today, read on every render so
+  // it never goes stale.
+  const { providerStartDate, assignmentStartDate } = intakeStartDates(
+    intakeRules,
+    form.startDate,
+    localCalendarDate(new Date()),
+  );
   const facilityNames = useMemo(() => {
     const selected = (facilities.data ?? []).filter((f) => form.facilityIds.includes(f.id));
     if (selected.length === 0) return "—";
@@ -200,8 +236,10 @@ function ReviewStep({ form, jumpTo }: { form: ProviderFormState; jumpTo: (s: num
     const names = selected
       .map((f) => (f.id === primaryId ? `${f.name} (primary)` : f.name))
       .join(", ");
-    return `${names} · assignments start ${fmtDate(assignmentStart)}`;
-  }, [facilities.data, form.facilityIds, assignmentStart]);
+    return assignmentStartDate
+      ? `${names} · assignments start ${fmtDate(assignmentStartDate)}`
+      : names;
+  }, [facilities.data, form.facilityIds, assignmentStartDate]);
   const licenses = form.licenses.filter((l) => !isBlankLicenseRow(l));
 
   const Section = ({
@@ -280,7 +318,7 @@ function ReviewStep({ form, jumpTo }: { form: ProviderFormState; jumpTo: (s: num
         <Row label="Group" value={groupName} />
         <Row label="Facilities" value={facilityNames} />
         <Row label="Specialty" value={form.specialty} />
-        <Row label="Start date" value={form.startDate ? fmtDate(form.startDate) : ""} />
+        <Row label="Start date" value={providerStartDate ? fmtDate(providerStartDate) : ""} />
         <Row label="Degree" value={form.degree} />
         <Row label="School" value={form.schoolName} />
         <Row label="Graduation" value={form.graduationDate} />
