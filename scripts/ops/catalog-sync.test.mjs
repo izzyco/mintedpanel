@@ -1,25 +1,32 @@
 import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import { SYNC_CREATED_PORTALS } from "./catalog-sync-created-portals.mjs";
 import {
   CASE_TYPE_PRECONDITION,
   PROD_REF,
   STAGING_REF,
+  TEMPLATE_GUARD_MIGRATIONS,
+  assertClientDirection,
   assertDirection,
   chunk,
+  clientUrl,
   describeCreatedPortal,
-  formatReport,
+  isStorageConflict,
   normalizePortalKey,
+  orderForms,
+  parentsFirst,
   planAdds,
   planCreatedPortals,
   projectRef,
   splitByOrg,
   splitForms,
   splitTemplatesByCaseType,
+  splitTemplatesByGuard,
   stripUserColumns,
   templatePortalKeys,
+  templateRefusal,
 } from "./catalog-sync.mjs";
-import { runCatalogSync } from "./sync-catalog-to-staging.mjs";
 
 const url = (ref) => `https://${ref}.supabase.co`;
 
@@ -261,256 +268,205 @@ test("a template naming any other missing portal gets no portal: the list is not
   assert.match(plan.skipped[0].reason, /^not needed/);
 });
 
-// ---------- the whole run, against in-memory stand-ins ----------
-
-/** A stand-in for a supabase-js client with ONLY the calls the sync may make:
- * select().range(), insert(), and Storage download()/upload(). Anything else
- * (update, upsert, delete, rpc, remove) is not a function, so it throws. */
-function memoryClient(tables, { refuse = () => null, files = {} } = {}) {
-  const calls = [];
-  const project = (row, select) =>
-    select === "*"
-      ? { ...row }
-      : Object.fromEntries(select.split(",").map((column) => [column.trim(), row[column.trim()]]));
-  return {
-    calls,
-    tables,
-    files,
-    from(table) {
-      return {
-        select(select = "*") {
-          return {
-            range(from, to) {
-              calls.push(["select", table]);
-              const rows = (tables[table] ?? []).slice(from, to + 1).map((r) => project(r, select));
-              return Promise.resolve({ data: rows, error: null });
-            },
-          };
-        },
-        insert(input) {
-          const rows = Array.isArray(input) ? input : [input];
-          calls.push(["insert", table, rows.map((r) => r.id ?? r.portal_key)]);
-          const message = rows.map((row) => refuse(table, row, tables)).find(Boolean);
-          if (message) return Promise.resolve({ error: { message } });
-          tables[table] = [...(tables[table] ?? []), ...rows.map((r) => ({ ...r }))];
-          return Promise.resolve({ error: null });
-        },
-      };
-    },
-    storage: {
-      from(bucket) {
-        return {
-          download(path) {
-            calls.push(["download", bucket, path]);
-            return Promise.resolve(
-              path in files
-                ? { data: files[path], error: null }
-                : { data: null, error: { message: "Object not found" } },
-            );
-          },
-          upload(path, data, options) {
-            calls.push(["upload", bucket, path, options]);
-            files[path] = data;
-            return Promise.resolve({ error: null });
-          },
-        };
-      },
-    },
-  };
-}
-
-/** Staging's two insert guards that matter here: sop_case_type_required and
- * the portal binding (validate_sop_template_portal_bindings), simplified. */
-function stagingGuards(table, row, tables) {
-  if (table === "portals" && row.case_type != null && !row.payer_id)
-    return "portal_configuration_payer_required";
-  if (table !== "sop_templates") return null;
-  if (row.case_type == null) return "sop_case_type_required";
-  for (const key of templatePortalKeys(row)) {
-    const bound = (tables.portals ?? []).some(
-      (p) =>
-        normalizePortalKey(p.portal_key) === key &&
-        (p.org_id ?? null) === (row.org_id ?? null) &&
-        p.case_type === row.case_type &&
-        p.payer_id === row.payer_id,
-    );
-    if (!bound)
-      return `sop_portal_binding_ineligible: portal key "${key}" has no compatible case type, payer, or owner scope`;
-  }
-  return null;
-}
-
-function catalogFixture() {
-  const payers = ["aetna", "anthem", "medcost", "trinity", "other"].map((key) => ({
-    id: `payer-${key}`,
-    name: key,
-    status: "active",
-    archived_at: null,
-    merged_into_id: null,
-  }));
-  const legacy = LEGACY_NULL_CASE_TYPE.map((name, i) => ({
-    id: `tpl-legacy-${i}`,
-    org_id: null,
-    name,
-    payer_id: payers[i + 1].id,
-    case_type: null,
-    current_version: 1,
-    created_by: "prod-user",
-    task_definitions: [],
-  }));
-  const aetna = { ...aetnaTemplate(), current_version: 1, created_by: "prod-user" };
-  const other = {
-    id: "tpl-other",
-    org_id: null,
-    name: "Other Payer contract",
-    payer_id: "payer-other",
-    case_type: "contract",
-    current_version: 1,
-    task_definitions: [{ steps: [{ portalKey: "other-portal-missing-everywhere" }] }],
-  };
-  const templates = [...legacy, aetna, other];
-  const forms = templates.map((t, i) => ({
-    id: `form-${i}`,
-    template_id: t.id,
-    payer_id: t.payer_id,
-    label: `${t.name} supplement`,
-    storage_path: `forms/${t.id}.pdf`,
-    mime_type: "application/pdf",
-    created_by: "prod-user",
-  }));
-  const production = {
-    organizations: [],
-    payers,
-    portals: [],
-    portal_field_maps: [],
-    sop_templates: templates,
-    sop_template_versions: templates.map((t) => ({ template_id: t.id, version: 1, name: t.name })),
-    payer_forms: forms,
-  };
-  const staging = {
-    organizations: [],
-    payers: payers.map((p) => ({ ...p })),
-    portals: [],
-    portal_field_maps: [],
-    sop_templates: [],
-    sop_template_versions: [],
-    payer_forms: [],
-  };
-  const files = Object.fromEntries(forms.map((f) => [f.storage_path, `%PDF ${f.id}`]));
-  return { production, staging, files };
-}
-
-const byTable = (report, table) => report.find((r) => r.table === table);
-const CREATED = "portals created by the sync (not on production)";
-const ALLOWED_CALLS = new Set(["select", "insert", "download", "upload"]);
-
-test("the dry run writes nothing and says it would create the Aetna portal", async () => {
-  const { production, staging, files } = catalogFixture();
-  const before = JSON.stringify(staging);
-  const src = memoryClient(production, { files });
-  const dst = memoryClient(staging, { refuse: stagingGuards });
-  const report = await runCatalogSync({ src, dst, apply: false });
-
-  assert.equal(JSON.stringify(staging), before, "staging is unchanged");
-  assert.deepEqual(
-    [...new Set([...src.calls, ...dst.calls].map(([kind]) => kind))],
-    ["select"],
-    "a dry run only reads",
+test("a created portal is dropped when another key on its template would still be refused", () => {
+  const twoKeys = aetnaTemplate({
+    task_definitions: [
+      { steps: [{ portalKey: AETNA_KEY }, { stepType: "online_form", portalKey: "aetna-other" }] },
+    ],
+  });
+  const plan = planFor([twoKeys]);
+  assert.equal(plan.create.length, 0);
+  assert.equal(
+    plan.skipped[0].reason,
+    'template tpl-aetna would still be refused: key "aetna-other" (sop_portal_binding_ineligible); nothing created',
   );
-  const created = byTable(report, CREATED);
-  assert.equal(created.added, 1);
-  assert.match(created.lines[0], new RegExp(`^would create portal ${AETNA_KEY} `));
-
-  const templates = byTable(report, "sop_templates");
-  assert.equal(templates.added, 2, "Aetna - Direct and the other typed template");
-  assert.equal(templates.skipped, 3);
-  for (const name of LEGACY_NULL_CASE_TYPE) {
-    assert.ok(
-      templates.reasons.some((r) => r.includes(`"${name}": ${CASE_TYPE_PRECONDITION}`)),
-      `${name} is skipped with the precondition`,
-    );
-  }
-  const forms = byTable(report, "payer_forms");
-  assert.equal(forms.added, 2);
-  assert.equal(forms.skipped, 3);
-  for (const reason of forms.reasons) assert.match(reason, /is skipped: case_type is NULL/);
-
-  const text = formatReport(report, { apply: false });
-  assert.match(text, /^DRY RUN \(pass --apply to write\)/);
-  assert.match(text, new RegExp(`\\+ would create portal ${AETNA_KEY}`));
-  assert.match(text, /sop_templates: 2 would add, 3 skipped/);
-  // Production is read, never changed: the legacy rows keep their NULL case type.
-  for (const t of production.sop_templates.slice(0, 3)) assert.equal(t.case_type, null);
+  // With the other key bound on staging, the portal is created.
+  const bound = planFor([twoKeys], {
+    targetPortals: [
+      {
+        id: "p2",
+        org_id: null,
+        portal_key: "aetna-other",
+        name: "Other",
+        payer_id: "payer-aetna",
+        case_type: "contract",
+      },
+    ],
+  });
+  assert.equal(bound.create.length, 1);
 });
 
-test("the apply creates the portal before its template, and only ever inserts", async () => {
-  const { production, staging, files } = catalogFixture();
-  const src = memoryClient(production, { files });
-  const dst = memoryClient(staging, { refuse: stagingGuards });
-  const report = await runCatalogSync({ src, dst, apply: true });
+// ---------- staging's template insert guards, restated ----------
 
-  assert.ok(
-    [...src.calls, ...dst.calls].every(([kind]) => ALLOWED_CALLS.has(kind)),
-    "no update, upsert, delete or rpc",
+const portal = (overrides = {}) => ({
+  id: "portal-1",
+  org_id: null,
+  portal_key: "k",
+  name: "Portal",
+  payer_id: "payer-aetna",
+  case_type: "contract",
+  ...overrides,
+});
+const typed = (overrides = {}) =>
+  aetnaTemplate({ task_definitions: [{ steps: [{ portalKey: "k" }] }], ...overrides });
+const refusalOf = (template, portals, payers = [activePayer]) =>
+  templateRefusal(template, {
+    portals,
+    payersById: new Map(payers.map((p) => [p.id, p])),
+  })?.code ?? null;
+
+test("the binding check accepts exactly one visible row with the template's type and payer", () => {
+  assert.equal(refusalOf(typed(), [portal()]), null);
+  assert.equal(refusalOf(typed(), [portal({ portal_key: "  K " })]), null, "lower(btrim()) match");
+  assert.equal(refusalOf(typed(), []), "sop_portal_binding_ineligible");
+  assert.equal(
+    refusalOf(typed(), [portal({ case_type: "enrollment" })]),
+    "sop_portal_binding_ineligible",
   );
-  assert.deepEqual(staging.portals, [
-    {
-      org_id: null,
-      portal_key: AETNA_KEY,
-      name: SYNC_CREATED_PORTALS[0].name,
-      payer_id: "payer-aetna",
-      case_type: "contract",
-      form_url: null,
-    },
-  ]);
-  assert.deepEqual(staging.portal_field_maps, [], "no field maps for the created portal");
-  const inserts = dst.calls.filter(([kind]) => kind === "insert");
-  const portalAt = inserts.findIndex(
-    ([, table, ids]) => table === "portals" && ids[0] === AETNA_KEY,
+  assert.equal(
+    refusalOf(typed(), [portal({ payer_id: "payer-x" })]),
+    "sop_portal_binding_ineligible",
   );
-  const templateAt = inserts.findIndex(
-    ([, table, ids]) => table === "sop_templates" && ids[0] === "tpl-aetna",
+  assert.equal(
+    refusalOf(typed(), [portal({ name: "[hidden] Portal" })]),
+    "sop_portal_binding_ineligible",
+    "a hidden row never binds",
   );
-  assert.ok(portalAt >= 0 && portalAt < templateAt, "portal first, then its template");
-  assert.ok(
-    !inserts.some(([, table, ids]) => table === "sop_templates" && ids[0].startsWith("tpl-legacy")),
-    "a NULL case type is never sent to staging",
+  assert.equal(
+    refusalOf(typed(), [portal(), portal({ id: "portal-2" })]),
+    "sop_portal_binding_ambiguous",
   );
+});
+
+test("a global row needs an active payer; an org row does not", () => {
+  const archived = { ...activePayer, archived_at: "2026-10-01T00:00:00Z" };
+  const merged = { ...activePayer, merged_into_id: "payer-other" };
+  const retired = { ...activePayer, status: "retired" };
+  for (const payer of [archived, merged, retired])
+    assert.equal(refusalOf(typed(), [portal()], [payer]), "sop_portal_binding_ineligible");
+  assert.equal(refusalOf(typed(), [portal()], []), "sop_portal_binding_ineligible");
+  const orgTemplate = typed({ org_id: "org-1" });
+  assert.equal(refusalOf(orgTemplate, [portal({ org_id: "org-1" })], [archived]), null);
+});
+
+test("an org row shadows the global row with the same key, even an unusable one", () => {
+  const orgTemplate = typed({ org_id: "org-1" });
+  assert.equal(refusalOf(orgTemplate, [portal()]), null, "no org row: the global row serves");
+  assert.equal(
+    refusalOf(orgTemplate, [
+      portal(),
+      portal({ id: "portal-org", org_id: "org-1", case_type: "enrollment" }),
+    ]),
+    "sop_portal_binding_ineligible",
+  );
+  assert.equal(
+    refusalOf(orgTemplate, [
+      portal(),
+      portal({ id: "portal-org", org_id: "org-1", name: "[hidden] x" }),
+    ]),
+    null,
+    "a hidden org row does not shadow",
+  );
+  assert.equal(
+    refusalOf(typed(), [portal({ org_id: "org-1" })]),
+    "sop_portal_binding_ineligible",
+    "a global template never sees org rows",
+  );
+});
+
+test("step rules: an online form needs a portal, a step type must be known, steps must be a list", () => {
+  const withSteps = (steps) => typed({ task_definitions: [{ steps }] });
+  assert.equal(
+    refusalOf(withSteps([{ stepType: "online_form" }]), []),
+    "sop_portal_binding_required",
+  );
+  assert.equal(
+    refusalOf(withSteps([{}]), []),
+    "sop_portal_binding_required",
+    "no type = online form",
+  );
+  assert.equal(refusalOf(withSteps([{ stepType: "phone" }]), []), null);
+  assert.equal(refusalOf(withSteps([{ stepType: "carrier_pigeon" }]), []), "sop_step_type_invalid");
+  assert.equal(
+    refusalOf(typed({ task_definitions: [{ steps: {} }] }), []),
+    "sop_task_steps_invalid",
+  );
+  assert.equal(refusalOf(typed({ task_definitions: {} }), []), "task_definitions_invalid");
+  assert.equal(refusalOf(typed({ case_type: null }), []), "sop_case_type_required");
+  assert.equal(
+    refusalOf(typed({ id: "00000000-0000-4000-a000-00000000e17b", task_definitions: [] }), []),
+    "fallback_sop_case_type_invalid",
+  );
+  const split = splitTemplatesByGuard([typed(), typed({ id: "t-org", org_id: "org-gone" })], {
+    portals: [portal()],
+    payersById: new Map([[activePayer.id, activePayer]]),
+    targetOrgIds: new Set(),
+  });
   assert.deepEqual(
-    staging.sop_templates.map((t) => t.id),
+    split.ok.map((t) => t.id),
     ["tpl-aetna"],
   );
-  assert.equal(staging.sop_templates[0].created_by, undefined, "user columns are dropped");
+  assert.equal(split.refused[0].refusal.code, "org_not_on_target");
+});
 
-  // The unlisted dangling portal was not created; its template is refused and reported.
-  const templates = byTable(report, "sop_templates");
-  assert.ok(
-    templates.reasons.some((r) =>
-      r.startsWith('tpl-other "Other Payer contract": sop_portal_binding_ineligible'),
-    ),
-  );
-  const forms = byTable(report, "payer_forms");
-  assert.deepEqual(
-    staging.payer_forms.map((f) => f.id),
-    ["form-3"],
-  );
-  assert.ok(
-    forms.reasons.some((r) =>
-      r.includes('template tpl-other "Other Payer contract" was refused by staging'),
-    ),
-  );
-  assert.deepEqual(
-    dst.calls
-      .filter(([kind]) => kind === "upload")
-      .map(([, , path, options]) => [path, options.upsert]),
-    [["forms/tpl-aetna.pdf", false]],
-  );
-  assert.match(byTable(report, CREATED).lines[0], new RegExp(`^created portal ${AETNA_KEY} `));
+test("the restated guards are the latest definitions in supabase/migrations", async () => {
+  const dir = new URL("../../supabase/migrations/", import.meta.url);
+  const files = (await readdir(dir)).filter((name) => name.endsWith(".sql")).sort();
+  for (const [fn, expected] of Object.entries(TEMPLATE_GUARD_MIGRATIONS)) {
+    const defining = [];
+    const definition = new RegExp(`CREATE (OR REPLACE )?FUNCTION public\\.${fn}\\(`);
+    for (const name of files) {
+      if (definition.test(await readFile(new URL(name, dir), "utf8"))) defining.push(name);
+    }
+    assert.ok(defining.length > 0, `${fn} is defined somewhere`);
+    assert.equal(
+      defining.at(-1),
+      expected,
+      `${fn} was redefined after ${expected}: update templateRefusal, then this pin`,
+    );
+  }
+});
 
-  // A second apply adds nothing new: the portal is not needed once its template is there.
-  const second = await runCatalogSync({ src, dst, apply: true });
-  assert.equal(staging.portals.length, 1);
-  assert.equal(byTable(second, CREATED).added, 0);
-  assert.match(byTable(second, CREATED).reasons[0], /not needed/);
-  assert.equal(byTable(second, "payer_forms").added, 0);
+// ---------- order, conflicts, direction ----------
+
+test("parents go before children; the rest keep their order", () => {
+  const rows = [
+    { id: "c", parent: "b" },
+    { id: "x", parent: null },
+    { id: "b", parent: "a" },
+    { id: "a", parent: "outside" },
+  ];
+  assert.deepEqual(
+    parentsFirst(rows, (r) => r.parent).map((r) => r.id),
+    ["a", "b", "c", "x"],
+  );
+  const cycle = [
+    { id: "p", parent: "q" },
+    { id: "q", parent: "p" },
+  ];
+  assert.equal(parentsFirst(cycle, (r) => r.parent).length, 2);
+  const forms = orderForms([
+    { id: "3", family_id: "f", version: 2, supersedes_id: "9" },
+    { id: "9", family_id: "f", version: 1, supersedes_id: null },
+    { id: "1", family_id: "e", version: 1, supersedes_id: null },
+  ]);
+  assert.deepEqual(
+    forms.map((f) => f.id),
+    ["1", "9", "3"],
+  );
+});
+
+test("an upload conflict is status 409, never a message match", () => {
+  assert.equal(isStorageConflict({ status: 409, message: "Duplicate" }), true);
+  assert.equal(isStorageConflict({ status: 400, statusCode: "409", message: "x" }), true);
+  assert.equal(isStorageConflict({ status: 400, message: "The resource already exists" }), false);
+  assert.equal(isStorageConflict(null), false);
+});
+
+test("the client direction check reads each client's own project URL", () => {
+  const client = (supabaseUrl) => ({ supabaseUrl });
+  assert.doesNotThrow(() => assertClientDirection(client(url(PROD_REF)), client(url(STAGING_REF))));
+  assert.throws(() => assertClientDirection(client(url(STAGING_REF)), client(url(PROD_REF))));
+  assert.throws(() => clientUrl({}), /cannot tell which project/);
+  assert.throws(() => clientUrl(null), /cannot tell which project/);
 });

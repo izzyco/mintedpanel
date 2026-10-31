@@ -9,44 +9,75 @@
 // Order matters: payers -> portals -> portal_field_maps -> the portals the sync
 // creates (catalog-sync-created-portals.mjs) -> sop_templates (+versions) ->
 // payer_forms (+ Storage files). Portal field maps are copied only for portals
-// this run adds, so a portal staging already has keeps its own maps. A
-// template whose case_type is NULL on production is skipped, never defaulted
-// (runbook precondition 1).
+// this run adds (same org and key), so a portal staging already has keeps its
+// own maps. A template whose case_type is NULL on production is skipped, never
+// defaulted (runbook precondition 1). A template staging's insert guards would
+// refuse is not sent, in either mode, so the dry run and the apply agree.
 //
-// runCatalogSync takes the two clients, so the tests drive it with in-memory
-// stand-ins; the only client calls it makes are select().range(), insert(),
-// and Storage download() / upload(upsert: false).
+// runCatalogSync takes the two clients and refuses any pair but production ->
+// staging, so the tests drive it with in-memory stand-ins. The only client
+// calls it makes are select(count: exact).order().range(), insert(), and
+// Storage download() / upload(upsert: false).
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { SYNC_CREATED_PORTALS } from "./catalog-sync-created-portals.mjs";
 import {
+  assertClientDirection,
   assertDirection,
   chunk,
   describeCreatedPortal,
   formatReport,
   formatSkip,
+  isStorageConflict,
+  orderForms,
+  parentsFirst,
   planAdds,
   planCreatedPortals,
   splitByOrg,
   splitForms,
   splitTemplatesByCaseType,
+  splitTemplatesByGuard,
   stripUserColumns,
 } from "./catalog-sync.mjs";
 
-async function all(client, table, select = "*") {
+const PAGE_ROWS = 1000;
+
+/**
+ * Every row of a table, in a stable order, or an error. Each page asks for the
+ * exact count; the read ends when it has that many rows, and fails loudly if
+ * the count moves or a page comes back empty first, so a capped or racing read
+ * is never silently incomplete.
+ */
+export async function readAll(client, table, select = "*", order = ["id"]) {
   const rows = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await client
-      .from(table)
-      .select(select)
-      .range(from, from + 999);
+  let expected;
+  for (;;) {
+    let query = client.from(table).select(select, { count: "exact" });
+    for (const column of order) query = query.order(column, { ascending: true });
+    const { data, error, count } = await query.range(rows.length, rows.length + PAGE_ROWS - 1);
     if (error) throw new Error(`${table}: ${error.message}`);
+    if (!Array.isArray(data)) throw new Error(`${table}: the read returned no rows payload`);
+    if (!Number.isSafeInteger(count) || count < 0)
+      throw new Error(`${table}: the read returned no exact count, so it cannot be checked`);
+    if (expected === undefined) expected = count;
+    else if (count !== expected)
+      throw new Error(`${table}: changed during the read (${expected} rows, then ${count})`);
     rows.push(...data);
-    if (data.length < 1000) return rows;
+    if (rows.length > expected)
+      throw new Error(`${table}: read ${rows.length} rows, more than its count of ${expected}`);
+    if (rows.length === expected) return rows;
+    if (data.length === 0)
+      throw new Error(
+        `${table}: read ${rows.length} of ${expected} rows; the rest never came back`,
+      );
   }
 }
 
+const VERSION_ORDER = ["template_id", "version"];
+
 export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CREATED_PORTALS }) {
+  // The direction is checked here too, on the clients, not only in main().
+  assertClientDirection(src, dst);
   const report = [];
   const note = (table, added, skipped = [], lines = []) => {
     report.push({ table, added, skipped: skipped.length, reasons: skipped.map(formatSkip), lines });
@@ -84,17 +115,21 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
     return { added, skipped };
   }
 
-  const orgs = new Set((await all(dst, "organizations", "id")).map((o) => o.id));
+  const orgs = new Set((await readAll(dst, "organizations", "id")).map((o) => o.id));
 
   // 1. payers (global catalog)
-  const targetPayers = await all(dst, "payers");
-  const payers = planAdds(await all(src, "payers"), targetPayers).map(stripUserColumns);
+  const targetPayers = await readAll(dst, "payers");
+  // A payer goes in before the payers merged into it (merged_into_id).
+  const payers = parentsFirst(
+    planAdds(await readAll(src, "payers"), targetPayers).map(stripUserColumns),
+    (row) => row.merged_into_id,
+  );
   const p = await insertBatches("payers", payers);
   note("payers", p.added.length, p.skipped);
 
   // 2. portals
-  const targetPortals = await all(dst, "portals");
-  const portalPlan = planAdds(await all(src, "portals"), targetPortals).map(stripUserColumns);
+  const targetPortals = await readAll(dst, "portals");
+  const portalPlan = planAdds(await readAll(src, "portals"), targetPortals).map(stripUserColumns);
   const portalSplit = splitByOrg(portalPlan, orgs);
   const portals = await insertBatches("portals", portalSplit.ok);
   note("portals", portals.added.length, [
@@ -102,27 +137,33 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
     ...portals.skipped,
   ]);
 
-  // 3. portal_field_maps, only for portals added now
-  const newKeys = new Set(portals.added.map((r) => r.portal_key));
-  const maps = (await all(src, "portal_field_maps"))
-    .filter((m) => newKeys.has(m.portal_key))
+  // 3. portal_field_maps, only for portals added now: same org (NULL for a
+  //    global portal) and same key.
+  const scopeKey = (row) => `${row.org_id ?? ""}|${row.portal_key}`;
+  const newPortals = new Set(portals.added.map(scopeKey));
+  const maps = (await readAll(src, "portal_field_maps"))
+    .filter((row) => newPortals.has(scopeKey(row)))
     .map(stripUserColumns);
   const m = await insertBatches("portal_field_maps", maps);
   note("portal_field_maps", m.added.length, m.skipped);
 
   // 4. sop_templates. Precondition 1 first: a NULL case type is skipped, never
   //    defaulted. Then the named portals the remaining templates need, so they
-  //    exist before staging's binding guard checks the template insert.
+  //    exist before staging's binding guard checks the template insert. Then
+  //    the guard itself, restated (templateRefusal): a template it would
+  //    refuse is not sent, and the dry run says so.
   const tplSplit = splitTemplatesByCaseType(
-    planAdds(await all(src, "sop_templates"), await all(dst, "sop_templates")).map(
+    planAdds(await readAll(src, "sop_templates"), await readAll(dst, "sop_templates")).map(
       stripUserColumns,
     ),
   );
+  const payersById = new Map([...targetPayers, ...p.added].map((row) => [row.id, row]));
+  const bindablePortals = [...targetPortals, ...portals.added];
   const createdPlan = planCreatedPortals(createdPortals, {
     templates: tplSplit.ok,
-    targetPortals: [...targetPortals, ...portals.added],
+    targetPortals: bindablePortals,
     targetOrgIds: orgs,
-    payersById: new Map([...targetPayers, ...p.added].map((row) => [row.id, row])),
+    payersById,
   });
   const created = [];
   const createdSkipped = [...createdPlan.skipped];
@@ -138,19 +179,41 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
         continue;
       }
     }
+    bindablePortals.push(plan.row);
     created.push(describeCreatedPortal(plan, { apply }));
   }
   note("portals created by the sync (not on production)", created.length, createdSkipped, created);
 
-  const tpl = await insertEach("sop_templates", tplSplit.ok, (row) => row.name);
+  const guarded = splitTemplatesByGuard(tplSplit.ok, {
+    portals: bindablePortals,
+    payersById,
+    targetOrgIds: orgs,
+  });
+  const refusedReason = (message) =>
+    apply ? `not sent: staging would refuse it: ${message}` : `would be refused: ${message}`;
+  const tpl = await insertEach("sop_templates", guarded.ok, (row) => row.name);
   note("sop_templates", tpl.added.length, [
     ...tplSplit.skipped.map((s) => ({ id: s.row.id, label: s.row.name, reason: s.reason })),
+    ...guarded.refused.map((s) => ({
+      id: s.row.id,
+      label: s.row.name,
+      reason: refusedReason(s.refusal.message),
+    })),
     ...tpl.skipped,
   ]);
+  // Staging's sop_template_seed_version trigger writes each new template's
+  // current version from the head row as it is inserted; that copy stays, and
+  // production's row for that version is not sent. A dry run leaves it out too.
   const tplIds = new Set(tpl.added.map((t) => t.id));
-  const haveVersions = apply ? await all(dst, "sop_template_versions", "template_id,version") : [];
+  const haveVersions = apply
+    ? await readAll(dst, "sop_template_versions", "template_id,version", VERSION_ORDER)
+    : tpl.added
+        .filter((t) => t.current_version != null)
+        .map((t) => ({ template_id: t.id, version: t.current_version }));
   const versions = planAdds(
-    (await all(src, "sop_template_versions")).filter((v) => tplIds.has(v.template_id)),
+    (await readAll(src, "sop_template_versions", "*", VERSION_ORDER)).filter((row) =>
+      tplIds.has(row.template_id),
+    ),
     haveVersions,
     (r) => `${r.template_id}:${r.version}`,
   ).map(stripUserColumns);
@@ -164,20 +227,28 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
       s.row.id,
       `template ${s.row.id} "${s.row.name}" is skipped: case_type is NULL on production (precondition 1)`,
     ]),
+    ...guarded.refused.map((s) => [
+      s.row.id,
+      `template ${s.row.id} "${s.row.name}" would be refused: ${s.refusal.message}`,
+    ]),
     ...tpl.skipped.map((s) => [
       s.id,
       `template ${s.id} "${s.label ?? "?"}" was refused by staging: ${s.reason}`,
     ]),
   ]);
-  const targetPayerIds = new Set((await all(dst, "payers", "id")).map((r) => r.id));
-  const targetTemplates = new Set((await all(dst, "sop_templates", "id")).map((r) => r.id));
+  const targetPayerIds = new Set((await readAll(dst, "payers", "id")).map((r) => r.id));
+  const targetTemplates = new Set((await readAll(dst, "sop_templates", "id")).map((r) => r.id));
   if (!apply) {
     for (const r of payers) targetPayerIds.add(r.id);
-    for (const r of tplSplit.ok) targetTemplates.add(r.id);
+    for (const r of guarded.ok) targetTemplates.add(r.id);
   }
-  const formPlan = planAdds(await all(src, "payer_forms"), await all(dst, "payer_forms")).map(
+  const targetForms = await readAll(dst, "payer_forms");
+  // By family and version, each superseded form before the form that
+  // supersedes it (supersedes_id references payer_forms).
+  const formPlan = orderForms(planAdds(await readAll(src, "payer_forms"), targetForms)).map(
     stripUserColumns,
   );
+  const haveForms = new Set(targetForms.map((row) => row.id));
   const formLabel = (f) => f.label ?? f.file_name ?? undefined;
   const formSplit = splitForms(
     formPlan,
@@ -191,8 +262,18 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
     reason: s.reason,
   }));
   for (const f of formSplit.ok) {
+    // Checked before any upload, so a form that cannot go in leaves no file.
+    if (f.supersedes_id && !haveForms.has(f.supersedes_id)) {
+      formsSkipped.push({
+        id: f.id,
+        label: formLabel(f),
+        reason: `supersedes form ${f.supersedes_id}, which is not on staging and is not added in this run`,
+      });
+      continue;
+    }
     if (!apply) {
       formsAdded.push(f);
+      haveForms.add(f.id);
       continue;
     }
     const file = await src.storage.from("payer-forms").download(f.storage_path);
@@ -207,13 +288,17 @@ export async function runCatalogSync({ src, dst, apply, createdPortals = SYNC_CR
     const up = await dst.storage
       .from("payer-forms")
       .upload(f.storage_path, file.data, { contentType: f.mime_type ?? undefined, upsert: false });
-    if (up.error && !/exists/i.test(up.error.message)) {
+    // Already there (409) is fine: the row still needs inserting.
+    if (up.error && !isStorageConflict(up.error)) {
       formsSkipped.push({ id: f.id, label: formLabel(f), reason: `upload: ${up.error.message}` });
       continue;
     }
     const ins = await insertEach("payer_forms", [f], formLabel);
     if (ins.skipped.length) formsSkipped.push(...ins.skipped);
-    else formsAdded.push(f);
+    else {
+      formsAdded.push(f);
+      haveForms.add(f.id);
+    }
   }
   note("payer_forms", formsAdded.length, formsSkipped);
 

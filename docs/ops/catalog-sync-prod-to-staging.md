@@ -51,8 +51,8 @@ so staging's binding guard refused the template on Oct 27. The sync now creates
 that portal on staging just before it inserts the template.
 
 It is one named entry in `scripts/ops/catalog-sync-created-portals.mjs`, not a
-rule. A template that names any other missing portal is inserted as it is,
-staging refuses it, and the run lists it as skipped.
+rule. A template that names any other missing portal is not sent, and the run
+lists it as one staging would refuse (next section).
 
 The row it writes, and why:
 
@@ -73,41 +73,95 @@ portals created by the sync (not on production): 1 would add, 0 skipped
   + would create portal aetna-direct-contract-contract-1f94bf43c4c0 "Aetna - Direct contract (created by catalog sync; not on production)" for template <id> "Aetna - Direct" (global | org <id>, payer <id>, case type contract, no form URL, no field maps)
 ```
 
-It creates nothing, and says why, when the template is already on staging, a row
-with the key is already visible to it, the template has no payer, its org is not
-on staging, or, for a global template, its payer is not active on staging (the
-template would be refused anyway). If production later gets a real portal with
-this key, staging keeps the sync's row: the copy is refused as a duplicate key
-and reported. Replace it deliberately.
+It creates nothing, and says why, when:
+
+- the template is already on staging, or a row with the key is already visible
+  to it;
+- the template has no payer, or its org is not on staging;
+- for a global template, its payer is not active on staging;
+- **the template would still be refused** for another reason, typically
+  another portal key on it that does not bind:
+  `template <id> would still be refused: key "<key>" (sop_portal_binding_ineligible); nothing created`.
+  An insert-only sync could never take back a portal nothing uses, so it is
+  never created on the chance.
+
+If production later gets a real portal with this key, staging keeps the sync's
+row: the copy is refused as a duplicate key and reported. Replace it
+deliberately.
+
+## Templates staging would refuse
+
+Before it inserts a template, the sync checks it the way staging's insert
+guards do (`guard_typed_sop_template` and
+`validate_sop_template_portal_bindings`, restated in `templateRefusal` in
+`scripts/ops/catalog-sync.mjs`; a test fails when a migration redefines
+either). For each portal key on the template, an org row shadows the global row
+with that key, a `[hidden] ` row never binds, the row picked needs the
+template's case type and payer, and a global row also needs an active payer.
+An online-form step with no portal, an unknown step type, or an org that is not
+on staging also refuses it.
+
+A template that fails is **not sent, in either mode**, so the dry run and the
+apply agree. The dry run lists it as `would be refused: <guard message>` (the
+apply as `not sent: staging would refuse it: <guard message>`), and each payer
+form attached to it says `template <id> "<name>" would be refused: …`.
 
 ## What it copies
 
-| Table                                     | Rule                                                                                         |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `payers`                                  | missing ids                                                                                  |
-| `portals`                                 | missing ids; org-owned rows only if the org exists on staging                                |
-| `portal_field_maps`                       | only for portals added in the same run                                                       |
-| `portals` (created)                       | the named entries above, only                                                                |
-| `sop_templates` + `sop_template_versions` | missing ids with a case type (step 1); staging's guard triggers decide, rejects are reported |
-| `payer_forms` + Storage `payer-forms`     | missing ids with their payer and template on staging; file is copied                         |
+| Table                                     | Rule                                                                             |
+| ----------------------------------------- | -------------------------------------------------------------------------------- |
+| `payers`                                  | missing ids                                                                      |
+| `portals`                                 | missing ids; org-owned rows only if the org exists on staging                    |
+| `portal_field_maps`                       | only for portals added in the same run, matched on org and key                   |
+| `portals` (created)                       | the named entries above, only                                                    |
+| `sop_templates` + `sop_template_versions` | missing ids with a case type (step 1) that staging's guards would accept (above) |
+| `payer_forms` + Storage `payer-forms`     | missing ids with their payer and template on staging; file is copied             |
 
-`created_by` / `published_by` / `retired_by` are dropped (those users do not
-exist on staging).
+- `created_by` / `published_by` / `retired_by` are dropped (those users do not
+  exist on staging).
+- **Versions.** Staging's `sop_template_seed_version` trigger writes each new
+  template's current version from the head row as it is inserted. Staging keeps
+  that copy, and production's row for that version is not sent; the earlier
+  versions are copied. The dry run counts the same way.
+- **Order.** A payer goes in before the payers merged into it; payer forms go in
+  by family and version, each superseded form before the form that supersedes
+  it. A form whose predecessor is neither on staging nor added in the run is
+  skipped before its file is uploaded.
+- **Complete reads.** Every read is ordered and asks for an exact count; a read
+  that comes back short of its count, or whose count moves, stops the run with
+  an error instead of copying part of a table.
+- **Storage.** A file already on staging (HTTP 409) is kept and its row still
+  goes in; any other upload error skips the row.
+- **Field maps are a shared-state exception.** CLAUDE.md's shared-state rule 1
+  says `portal_field_maps` rows change through Supabase MCP only, never from
+  code. This operator-run sync inserts field maps on staging for the portals it
+  copies, so each run is an exception to that rule. **Sowmya confirms it before
+  an apply that would add field maps**: the dry run's `portal_field_maps` line
+  shows how many.
 
 ## Run
 
-```sh
-export SYNC_SOURCE_URL=https://fkvuhfsqcmujywzgczmc.supabase.co   # production
-export SYNC_SOURCE_SERVICE_KEY=...                                  # production service role
-export SYNC_TARGET_URL=https://vmznysvietfaddakkegt.supabase.co    # staging
-export SYNC_TARGET_SERVICE_KEY=...                                  # staging service role
+Paste the two service-role keys at prompts, inside a one-off subshell, so they
+exist only for that one command. **Never `export` them in your own shell, and
+never put them in `~/.zshrc` or any profile**: a key in a profile reaches every
+shell started afterwards, agent shells included. Never commit them.
 
-npm run sync:catalog-to-staging              # dry run: reads both, writes nothing
-npm run sync:catalog-to-staging -- --apply   # writes
+```sh
+# Dry run: reads both projects, writes nothing. (zsh; in bash use read -rsp "prompt" VAR)
+(
+  read -rs "SRC_KEY?Production service-role key: " && echo
+  read -rs "DST_KEY?Staging service-role key: " && echo
+  SYNC_SOURCE_URL=https://fkvuhfsqcmujywzgczmc.supabase.co SYNC_SOURCE_SERVICE_KEY="$SRC_KEY" \
+  SYNC_TARGET_URL=https://vmznysvietfaddakkegt.supabase.co SYNC_TARGET_SERVICE_KEY="$DST_KEY" \
+    npm run sync:catalog-to-staging
+)
+
+# Apply: the same, with -- --apply on the last line:
+#     npm run sync:catalog-to-staging -- --apply
 ```
 
-The script refuses any other source/target pair. Keys come from the operator's
-shell; never commit them.
+The keys end with the subshell. The script refuses any source/target pair but
+production to staging, checked on the URLs and again on the two clients.
 
 Both modes print one block per table: how many rows it would add (or added),
 and every row it would skip (or skipped), with its id, its name and the reason.
@@ -121,9 +175,16 @@ template. Most of the 14 are expected to clear once the three templates have a
 case type on production and the Aetna portal exists, because a form is copied
 only when its template is on staging.
 
-The dry run cannot foresee a template that staging refuses at apply time for
-another reason. The apply lists that template, and each of its forms, with
-staging's error.
+The dry run predicts staging's binding guard (above), so a form whose template
+would be refused is listed with that reason in both modes. Three refusals only
+show at apply time, with staging's error, on the template or form itself and
+on each form waiting on that template:
+
+- the overlap trigger (`sop_template_assert_no_state_overlap`: an active
+  template with the same owner, payer and group already covers one of its
+  states);
+- the group foreign key (a template naming a group that is not on staging);
+- a Storage file that is missing on production.
 
 ## Not copied
 
