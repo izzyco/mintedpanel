@@ -1168,7 +1168,7 @@ test("TS-63: one-step batch assignment fills gaps and is idempotent on re-run", 
   await page.getByRole("option", { name: "Shelby Group 2" }).click();
   await page.getByLabel(/Clinic North/).check();
   await page.getByRole("button", { name: "Assign batch" }).click();
-  await expect(page.getByText(/group \+ .*facility link/)).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText(/groups? \+ .*facility links?/)).toBeVisible({ timeout: 15000 });
 
   // P1 kept its own G1 (explicit wins) — only P2 got the batch G2; both got
   // the batch facility.
@@ -1193,7 +1193,7 @@ test("TS-63: one-step batch assignment fills gaps and is idempotent on re-run", 
   // first-run toast also carries that phrase and can still be on screen,
   // tripping strict mode. The 0 + 0 counts prove nothing new was assigned.
   await page.getByRole("button", { name: "Assign batch" }).click();
-  await expect(page.getByText(/Assigned 0 group \+ 0 facility link\(s\)/)).toBeVisible({
+  await expect(page.getByText(/Assigned 0 groups \+ 0 facility links/)).toBeVisible({
     timeout: 15000,
   });
   expect(fixtures.provider_group_assignments.length).toBe(groupCountAfterFirst);
