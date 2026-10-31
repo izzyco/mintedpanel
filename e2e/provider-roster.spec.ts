@@ -1168,9 +1168,10 @@ test("MINT-129: under recheckStoredOnEdit, the roster form passes a valid stored
   await dialog.locator("#prov-phone").fill("252-555-0142");
   await dialog.getByRole("button", { name: "Save changes" }).click();
   await expect(dialog).toHaveCount(0);
-  // The roster form has always saved the NPI's digits; the re-check adds
-  // nothing to the patch.
+  // An unchanged stored NPI goes back exactly as stored (MINT-110: an
+  // unrelated edit never rewrites it), so the re-check adds nothing to the
+  // patch.
   expect(providerPatches).toEqual([
-    expect.objectContaining({ phone: "252-555-0142", npi: "1093817462" }),
+    expect.objectContaining({ phone: "252-555-0142", npi: "109-381-7462" }),
   ]);
 });
