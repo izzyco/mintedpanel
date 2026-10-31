@@ -5,6 +5,7 @@ import {
   caseAgeStopTimes,
   caseDaysOpenFor,
   caseDaysOpenStop,
+  caseDaysOpenWhenKnown,
   DEFAULT_CASE_AGE_RULES,
   resolveCaseAgeRules,
   validateCaseAgeRules,
@@ -113,6 +114,20 @@ describe("CaseAgeRules", () => {
       "Days open settings must be a set of named settings.",
     ]);
   });
+
+  it("names a rejected value that is not text by its kind, never [object Object]", () => {
+    const freezeAt = (shown: string) => [
+      `Days open stops either when the case is approved or denied ("approved_or_denied") or never ("never"), not ${shown}.`,
+    ];
+    expect(validateCaseAgeRules({ freezeAt: { a: 1 } })).toEqual(freezeAt("a set of values"));
+    expect(validateCaseAgeRules({ freezeAt: new Date(0) })).toEqual(freezeAt("a set of values"));
+    expect(validateCaseAgeRules({ freezeAt: ["never"] })).toEqual(freezeAt("a list"));
+    expect(validateCaseAgeRules({ freezeAt: 3 })).toEqual(freezeAt("3"));
+    expect(validateCaseAgeRules({ freezeAt: true })).toEqual(freezeAt("true"));
+    expect(validateCaseAgeRules({ start: 10n })).toEqual([
+      'Days open can only count from when the case was created ("created"), not a bigint value.',
+    ]);
+  });
 });
 
 describe("caseAgeStopTimes", () => {
@@ -216,5 +231,27 @@ describe("caseDaysOpenFor", () => {
   it("matches caseDaysOpen exactly while nothing stops it", () => {
     const open = { id: "c9", createdAt: "2026-09-27T12:00:00", caseStatus: "submitted" as const };
     expect(caseDaysOpenFor(open, now, new Map())).toBe(caseDaysOpen(open.createdAt, now));
+  });
+});
+
+describe("caseDaysOpenWhenKnown", () => {
+  const stops = new Map([["c1", "2026-09-15T10:00:00"]]);
+
+  it("is caseDaysOpenFor whenever the stops were read", () => {
+    expect(caseDaysOpenWhenKnown(approvedCase, now, stops)).toBe(14);
+    expect(caseDaysOpenWhenKnown(approvedCase, now, new Map())).toBe(48);
+  });
+
+  it("is unknown for an approved or denied case when the stops could not be read", () => {
+    expect(caseDaysOpenWhenKnown(approvedCase, now, null)).toBeNull();
+    expect(caseDaysOpenWhenKnown({ ...approvedCase, caseStatus: "denied" }, now, null)).toBeNull();
+  });
+
+  it("still counts an open or Not Pursuing case, and anything under 'never', without the stops", () => {
+    expect(caseDaysOpenWhenKnown({ ...approvedCase, caseStatus: "in_review" }, now, null)).toBe(48);
+    expect(caseDaysOpenWhenKnown({ ...approvedCase, caseStatus: "not_pursuing" }, now, null)).toBe(
+      48,
+    );
+    expect(caseDaysOpenWhenKnown(approvedCase, now, null, NEVER)).toBe(48);
   });
 });

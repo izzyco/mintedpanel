@@ -37,6 +37,7 @@ function input(overrides: Partial<CasesMatrixInput> = {}): CasesMatrixInput {
     tasks: [],
     followUps: new Map(),
     exclusions: [],
+    caseAgeStops: new Map(),
     ...overrides,
   };
 }
@@ -500,5 +501,13 @@ describe("buildCasesMatrix Days open (MINT-73, D22)", () => {
   it("keeps counting a closed case with no recorded close", () => {
     const result = buildCasesMatrix({ ...twoCases("approved"), caseAgeStops: new Map() });
     expect(caseCell(result, "payer-2").daysOpen).toBe(24);
+  });
+
+  it("leaves a closed case's Days open unknown when the stops could not be read", () => {
+    for (const status of ["approved", "denied"] as const) {
+      const result = buildCasesMatrix({ ...twoCases(status), caseAgeStops: null });
+      expect(caseCell(result, "payer-1").daysOpen).toBe(24);
+      expect(caseCell(result, "payer-2").daysOpen).toBeNull();
+    }
   });
 });

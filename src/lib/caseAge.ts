@@ -78,6 +78,15 @@ const RULE_CHECKS: { [K in keyof CaseAgeRules]: (value: unknown) => boolean } = 
 
 const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof CaseAgeRules>;
 
+/** A rejected value as an error message shows it: text in quotes, anything
+ * that is not text or a number named by its kind. */
+function shownValue(value: unknown): string {
+  if (typeof value === "string") return `"${value}"`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return "a list";
+  return typeof value === "object" ? "a set of values" : `a ${typeof value} value`;
+}
+
 /** Field by field: the organization's value, else the platform's, else the
  * default. A stored value of the wrong shape is skipped like a missing one. */
 export function resolveCaseAgeRules(
@@ -112,8 +121,8 @@ export function validateCaseAgeRules(override: unknown): string[] {
     if (value == null || RULE_CHECKS[key as keyof CaseAgeRules](value)) continue;
     errors.push(
       key === "start"
-        ? `Days open can only count from when the case was created ("created"), not "${String(value)}".`
-        : `Days open stops either when the case is approved or denied ("approved_or_denied") or never ("never"), not "${String(value)}".`,
+        ? `Days open can only count from when the case was created ("created"), not ${shownValue(value)}.`
+        : `Days open stops either when the case is approved or denied ("approved_or_denied") or never ("never"), not ${shownValue(value)}.`,
     );
   }
   return errors;
@@ -199,4 +208,22 @@ export function caseDaysOpenFor(
   if (stop === null) return caseDaysOpen(start, now);
   const stoppedAt = parseISO(stop);
   return caseDaysOpen(start, stoppedAt < now ? stoppedAt : now);
+}
+
+const NO_STOPS: ReadonlyMap<string, string> = new Map();
+
+/** caseDaysOpenFor when the stops could not be read (`stopTimes` null):
+ * an open case still counts, because no stop applies to it; a case in a
+ * stopping status is null (unknown), never a still-counting number. */
+export function caseDaysOpenWhenKnown(
+  c: CaseAgeCase,
+  now: Date,
+  stopTimes: ReadonlyMap<string, string> | null,
+  rules: CaseAgeRules = DEFAULT_CASE_AGE_RULES,
+): number | null {
+  if (stopTimes === null) {
+    if (caseAgeStopStatuses(rules).includes(c.caseStatus)) return null;
+    return caseDaysOpenFor(c, now, NO_STOPS, rules);
+  }
+  return caseDaysOpenFor(c, now, stopTimes, rules);
 }

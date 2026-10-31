@@ -868,3 +868,47 @@ test("MINT-73: Days open stops at approval or denial, and the list and the Matri
     popper.getByText("Days open", { exact: true }).locator("xpath=following-sibling::span[1]"),
   ).toHaveText("24d");
 });
+
+test("MINT-73: when the status-history read fails, closed cases show — for Days open and the list and Matrix still load", async ({
+  context,
+  page,
+}) => {
+  const fixtures = makeFixtures();
+  seedCases(fixtures);
+  seedMatrixTargets(fixtures);
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, (route) =>
+    new URL(route.request().url()).pathname.endsWith("/case_status_history")
+      ? route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ message: "synthetic failure" }),
+        })
+      : handler(route),
+  );
+  await seedAuth(context);
+
+  await page.goto("/cases?pivot=flat");
+  await expect(page.getByRole("heading", { name: "Cases" })).toBeVisible({ timeout: 30000 });
+  const daysOpenCell = (caseNumber: string) =>
+    page
+      .locator("tbody tr")
+      .filter({ has: page.getByRole("link", { name: caseNumber, exact: true }) })
+      .locator("td")
+      .last();
+  // The stops read is retried before it fails, so allow for the backoff.
+  await expect(daysOpenCell("C-1004")).toHaveText("—", { timeout: 30000 });
+  await expect(daysOpenCell("C-1005")).toHaveText("—");
+  await expect(daysOpenCell("C-1001")).toHaveText(/^\d+d$/);
+  await expect(page.getByText("Couldn't load cases. Refresh to retry.")).toHaveCount(0);
+
+  await page.goto("/cases?pivot=matrix");
+  const deniedCell = page.getByRole("link", { name: /Marco Reyes, Aetna, NC, open case/ });
+  await expect(deniedCell).toBeVisible({ timeout: 30000 });
+  await deniedCell.hover();
+  const popper = page.locator("[data-radix-popper-content-wrapper]");
+  await expect(popper.getByText("C-1005")).toBeVisible({ timeout: 15000 });
+  await expect(
+    popper.getByText("Days open", { exact: true }).locator("xpath=following-sibling::span[1]"),
+  ).toHaveText("—");
+});

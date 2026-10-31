@@ -49,7 +49,7 @@ import { useNextBestActions, useGenerationRun } from "@/hooks/useNextBestActions
 import { useCasesMatrix } from "@/hooks/useCasesMatrix";
 import { fmtDate } from "@/lib/format";
 import { useCanWrite } from "@/lib/permissions";
-import { caseDaysOpenFor } from "@/lib/caseAge";
+import { caseDaysOpenWhenKnown } from "@/lib/caseAge";
 import { CASE_STATUSES, caseStatusLabel, type CaseStatus } from "@/lib/caseStatus";
 import { PRE_CRED_PAYER_NAME } from "@/lib/statusLabels";
 import {
@@ -129,7 +129,10 @@ function CasesPage() {
   const lastTouchQ = useLastTouchDates();
   const caseAgeRules = useCaseAgeRules();
   const caseAgeStopsQ = useCaseAgeStopTimes();
-  const caseAgeStops = caseAgeStopsQ.data ?? NO_CASE_AGE_STOPS;
+  // A failed read of the stops shows "—" for a closed case's Days open
+  // (caseDaysOpenWhenKnown) rather than fail the list or show a still-counting
+  // number; open cases are unaffected.
+  const caseAgeStops = caseAgeStopsQ.isError ? null : (caseAgeStopsQ.data ?? NO_CASE_AGE_STOPS);
   const assignmentsQ = useProviderAssignments();
   const facilitiesQ = useFacilities();
   const queue = useNextBestActions();
@@ -156,11 +159,10 @@ function CasesPage() {
   const [newCaseOpen, setNewCaseOpen] = useState(false);
 
   // "Days open" waits for its stops (caseAgeStopTimes) rather than flash a
-  // closed case's still-counting number, and a failed read fails the list
-  // rather than show it.
+  // closed case's still-counting number.
   const loading =
     providersQ.isLoading || casesQ.isLoading || payersQ.isLoading || caseAgeStopsQ.isLoading;
-  const failed = providersQ.isError || casesQ.isError || payersQ.isError || caseAgeStopsQ.isError;
+  const failed = providersQ.isError || casesQ.isError || payersQ.isError;
 
   const idSet = useMemo(
     () => (idsParam ? new Set(idsParam.split(",").filter(Boolean)) : null),
@@ -217,7 +219,7 @@ function CasesPage() {
           lastTouchLabel:
             lastTouchDays === null ? "—" : lastTouchDays === 0 ? "today" : `${lastTouchDays}d ago`,
           lastTouchDays,
-          daysOpen: caseDaysOpenFor(c, now, caseAgeStops, caseAgeRules),
+          daysOpen: caseDaysOpenWhenKnown(c, now, caseAgeStops, caseAgeRules),
           createdAt: c.createdAt,
         };
       });
@@ -861,7 +863,7 @@ function FlatCaseTable({
               </td>
               <td className="px-3 py-2.5 text-muted-foreground">{r.lastTouchLabel}</td>
               <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                {r.daysOpen}d
+                {r.daysOpen === null ? "—" : `${r.daysOpen}d`}
               </td>
             </tr>
           ))}

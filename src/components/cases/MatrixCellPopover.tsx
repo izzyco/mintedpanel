@@ -314,7 +314,7 @@ function CaseCellPopover({
               </>
             ) : null}
             <span className="text-muted-foreground">Days open</span>
-            <span>{details.daysOpen}d</span>
+            <span>{details.daysOpen === null ? "—" : `${details.daysOpen}d`}</span>
             <span className="text-muted-foreground">Last touch</span>
             <span>{details.lastTouch}</span>
             <span className="text-muted-foreground">Follow-up</span>

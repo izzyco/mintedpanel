@@ -42,18 +42,12 @@ export function useCasesMatrix(filters?: CasesMatrixFilters): CasesMatrixData {
   const exclusionsQ = useCaseGenerationExclusions();
   const caseAgeRules = useCaseAgeRules();
   const caseAgeStopsQ = useCaseAgeStopTimes();
-  const sources = [
-    casesQ,
-    payersQ,
-    providersQ,
-    groupsQ,
-    targetsQ,
-    tasksQ,
-    followUpsQ,
-    exclusionsQ,
-    caseAgeStopsQ,
-  ];
-  const resolved = sources.every((query) => query.data !== undefined);
+  const sources = [casesQ, payersQ, providersQ, groupsQ, targetsQ, tasksQ, followUpsQ, exclusionsQ];
+  // The board waits for the "Days open" stops, but a failed read of them does
+  // not fail the board: a closed case's Days open shows "—" instead.
+  const caseAgeStopsSettled = caseAgeStopsQ.data !== undefined || caseAgeStopsQ.isError;
+  const caseAgeStops = caseAgeStopsQ.isError ? null : (caseAgeStopsQ.data ?? null);
+  const resolved = sources.every((query) => query.data !== undefined) && caseAgeStopsSettled;
   const today = localTodayIso();
   const kpi = filters?.kpi ?? "total";
   const state = filters?.state ?? "all";
@@ -80,7 +74,7 @@ export function useCasesMatrix(filters?: CasesMatrixFilters): CasesMatrixData {
       exclusions: exclusionsQ.data ?? [],
       filters: { kpi, state, status, search },
       caseAgeRules,
-      caseAgeStops: caseAgeStopsQ.data,
+      caseAgeStops,
     };
     return buildCasesMatrix(input);
   }, [
@@ -95,7 +89,7 @@ export function useCasesMatrix(filters?: CasesMatrixFilters): CasesMatrixData {
     followUpsQ.data,
     exclusionsQ.data,
     caseAgeRules,
-    caseAgeStopsQ.data,
+    caseAgeStops,
     kpi,
     state,
     status,
@@ -108,10 +102,10 @@ export function useCasesMatrix(filters?: CasesMatrixFilters): CasesMatrixData {
     matrix,
     followUps: followUpsQ.data,
     today,
-    isLoading: sources.some((query) => query.isLoading),
+    isLoading: sources.some((query) => query.isLoading) || caseAgeStopsQ.isLoading,
     isError: sources.some((query) => query.isError),
     refetch: () => {
-      for (const query of sources) {
+      for (const query of [...sources, caseAgeStopsQ]) {
         if (query.isError) void query.refetch();
       }
     },
