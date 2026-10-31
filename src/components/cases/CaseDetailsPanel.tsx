@@ -17,7 +17,8 @@ import { StatusPill } from "@/components/StatusPill";
 import { CaseDateField } from "@/components/cases/CaseDateField";
 import { CaseLocationsSection } from "@/components/cases/CaseLocationsSection";
 import { CaseProvenancePanel } from "@/components/generation/CaseProvenancePanel";
-import { caseDaysOpen } from "@/lib/caseAge";
+import { useCaseAgeRules } from "@/hooks/useCases";
+import { caseAgeStopTimes, caseDaysOpenFor } from "@/lib/caseAge";
 import { enrollmentIdBadge } from "@/lib/payerIssuedIds";
 import { resolveGroupIdentifierConfig } from "@/lib/payerResolutionIdentifier";
 import type { CaseDetail, CaseFacilityWithDetail, Facility, Task } from "@/types";
@@ -62,8 +63,15 @@ export function CaseDetailsPanel({
   savingDates?: boolean;
   onSaveDates?: (input: SetCaseDatesInput) => Promise<void>;
 }) {
-  // Same definition as the Cases list and Matrix: calendar days since creation.
-  const daysOpen = caseDaysOpen(c.createdAt, new Date());
+  // Same definition as the Cases list and Matrix (caseDaysOpenFor), with the
+  // stop read from this case's own status history.
+  const caseAgeRules = useCaseAgeRules();
+  const daysOpen = caseDaysOpenFor(
+    c,
+    new Date(),
+    caseAgeStopTimes(c.caseStatusHistory ?? [], caseAgeRules),
+    caseAgeRules,
+  );
   const approved = c.caseStatus === "approved";
   // The provider-side badge is Slice D's shared derivation; the group side
   // mirrors it against the payer's own group-ID expectation.

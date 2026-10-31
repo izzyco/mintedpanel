@@ -31,6 +31,10 @@ export const queryKeys = {
   // the board's denial history.
   enrollmentFacts: (orgId: string) => ["enrollment-facts", orgId] as const,
   caseDenialEntries: (orgId: string) => ["cases", orgId, "denial-entries"] as const,
+  // MINT-73 — when each closed case's "Days open" stopped. Same "cases" prefix
+  // ride, so a status change re-derives it with the list.
+  caseAgeStops: (orgId: string, statuses: readonly string[]) =>
+    ["cases", orgId, "age-stops", [...statuses]] as const,
   // Org-wide case_facilities links (Launches). Same "cases" prefix ride.
   orgCaseFacilityLinks: (orgId: string) => ["cases", orgId, "facility-links"] as const,
   providerReadinessFacts: (orgId: string) => ["provider-readiness-facts", orgId] as const,

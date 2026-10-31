@@ -809,3 +809,62 @@ test("selecting Cases tab from left menu lands on Matrix view by default", async
   await expect(page.getByRole("tab", { name: "Matrix" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("table", { name: /North Carolina/ })).toBeVisible({ timeout: 30000 });
 });
+
+test("MINT-73: Days open stops at approval or denial, and the list and the Matrix popover agree (D22)", async ({
+  context,
+  page,
+}) => {
+  const fixtures = makeFixtures();
+  seedCases(fixtures);
+  seedMatrixTargets(fixtures);
+  // Mid-day times, so the calendar days are the same in any CI timezone.
+  for (const row of fixtures.credential_cases) row.created_at = "2026-06-01T12:00:00Z";
+  fixtures.case_status_history = [
+    // C-1004 approved Jun 15 (14 days), C-1005 denied Jun 25 (24 days).
+    {
+      id: "csh-approved",
+      org_id: ORG_ID,
+      case_id: "case-approved",
+      from_status: "in_review",
+      to_status: "approved",
+      actor_kind: "user",
+      changed_at: "2026-06-15T12:00:00Z",
+    },
+    {
+      id: "csh-denied",
+      org_id: ORG_ID,
+      case_id: "case-denied",
+      from_status: "submitted",
+      to_status: "denied",
+      actor_kind: "user",
+      changed_at: "2026-06-25T12:00:00Z",
+    },
+  ];
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+
+  await page.goto("/cases?pivot=flat");
+  await expect(page.getByRole("heading", { name: "Cases" })).toBeVisible({ timeout: 30000 });
+  const daysOpenCell = (caseNumber: string) =>
+    page
+      .locator("tbody tr")
+      .filter({ has: page.getByRole("link", { name: caseNumber, exact: true }) })
+      .locator("td")
+      .last();
+  await expect(daysOpenCell("C-1004")).toHaveText("14d", { timeout: 30000 });
+  await expect(daysOpenCell("C-1005")).toHaveText("24d");
+  // An open case keeps counting: created Jun 1, so well past either stop.
+  const openDays = Number((await daysOpenCell("C-1001").textContent())?.replace("d", ""));
+  expect(openDays).toBeGreaterThan(24);
+
+  await page.goto("/cases?pivot=matrix");
+  const deniedCell = page.getByRole("link", { name: /Marco Reyes, Aetna, NC, open case/ });
+  await expect(deniedCell).toBeVisible({ timeout: 30000 });
+  await deniedCell.hover();
+  const popper = page.locator("[data-radix-popper-content-wrapper]");
+  await expect(popper.getByText("C-1005")).toBeVisible({ timeout: 15000 });
+  await expect(
+    popper.getByText("Days open", { exact: true }).locator("xpath=following-sibling::span[1]"),
+  ).toHaveText("24d");
+});

@@ -7,7 +7,7 @@ import { usePayers } from "@/hooks/useAdmin";
 import { useCaseGenerationExclusions } from "@/hooks/useGenerationPreview";
 import { useProviderGroups } from "@/hooks/useLookups";
 import { usePayerNetworkTargets } from "@/hooks/usePayerNetworkTargets";
-import { useCases } from "@/hooks/useCases";
+import { useCaseAgeRules, useCaseAgeStopTimes, useCases } from "@/hooks/useCases";
 import { useQueueTaskRows } from "@/hooks/useNextBestActions";
 import { useFollowUpsDue } from "@/hooks/useTouches";
 import { useProviders } from "@/hooks/useProviders";
@@ -40,7 +40,19 @@ export function useCasesMatrix(filters?: CasesMatrixFilters): CasesMatrixData {
   const tasksQ = useQueueTaskRows();
   const followUpsQ = useFollowUpsDue();
   const exclusionsQ = useCaseGenerationExclusions();
-  const sources = [casesQ, payersQ, providersQ, groupsQ, targetsQ, tasksQ, followUpsQ, exclusionsQ];
+  const caseAgeRules = useCaseAgeRules();
+  const caseAgeStopsQ = useCaseAgeStopTimes();
+  const sources = [
+    casesQ,
+    payersQ,
+    providersQ,
+    groupsQ,
+    targetsQ,
+    tasksQ,
+    followUpsQ,
+    exclusionsQ,
+    caseAgeStopsQ,
+  ];
   const resolved = sources.every((query) => query.data !== undefined);
   const today = localTodayIso();
   const kpi = filters?.kpi ?? "total";
@@ -67,6 +79,8 @@ export function useCasesMatrix(filters?: CasesMatrixFilters): CasesMatrixData {
       followUps: followUpsQ.data,
       exclusions: exclusionsQ.data ?? [],
       filters: { kpi, state, status, search },
+      caseAgeRules,
+      caseAgeStops: caseAgeStopsQ.data,
     };
     return buildCasesMatrix(input);
   }, [
@@ -80,6 +94,8 @@ export function useCasesMatrix(filters?: CasesMatrixFilters): CasesMatrixData {
     tasksQ.data,
     followUpsQ.data,
     exclusionsQ.data,
+    caseAgeRules,
+    caseAgeStopsQ.data,
     kpi,
     state,
     status,

@@ -37,7 +37,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CaseStatusPill } from "@/components/cases/CaseStatusPill";
 import { StatusPill } from "@/components/StatusPill";
-import { caseDaysOpen } from "@/lib/caseAge";
 import { EXCLUSION_REASON_LABELS } from "@/lib/generationPreview";
 import { fmtDate } from "@/lib/format";
 import type {
@@ -233,7 +232,9 @@ function caseDetails(
   today: string,
   followUp: MatrixFollowUp | undefined,
 ) {
-  const daysOpen = caseDaysOpen(cell.case.createdAt, parseISO(today));
+  // The board derived it (caseDaysOpenFor), so the cell, the Cases list and
+  // the case Details card show one number.
+  const daysOpen = cell.daysOpen;
   const followUpDue = followUp?.nextFollowUpDate ?? null;
   const followUpOverdue = followUpDue !== null && followUpDue < today;
 

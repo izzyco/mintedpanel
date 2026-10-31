@@ -4,6 +4,7 @@
 // case remains, evaluated against their UNFILTERED case set.
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { STALLED_AFTER_DAYS } from "./actionState";
+import { caseDaysOpenFor, DEFAULT_CASE_AGE_RULES, type CaseAgeRules } from "./caseAge";
 import { CASE_STATUS_BUCKETS } from "./caseStatus";
 import {
   EMPTY_FILTERS,
@@ -79,6 +80,11 @@ export interface CasesMatrixInput {
   followUps?: ReadonlyMap<string, CasesMatrixFollowUp>;
   exclusions: readonly CasesMatrixExclusion[];
   filters?: CasesFilters;
+  /** "Days open" policy (caseAge.ts); the default rules when omitted. */
+  caseAgeRules?: CaseAgeRules;
+  /** Per case, when its "Days open" stopped (caseAgeStopTimes). A closed case
+   * missing here keeps counting, so omitting the map stops nothing. */
+  caseAgeStops?: ReadonlyMap<string, string>;
 }
 
 export interface CasesMatrixCaseCell {
@@ -87,6 +93,8 @@ export interface CasesMatrixCaseCell {
   dimmed: boolean;
   hasOverdueTask: boolean;
   stale: "never" | "quiet" | null;
+  /** "Days open" as of `today`, by the one definition (caseDaysOpenFor). */
+  daysOpen: number;
 }
 
 export interface CasesMatrixGapCell {
@@ -234,8 +242,13 @@ function sectionKey(groupId: string, state: string): string {
   return `${groupId}|${state}`;
 }
 
+const NO_CASE_AGE_STOPS: ReadonlyMap<string, string> = new Map();
+
 export function buildCasesMatrix(input: CasesMatrixInput): CasesMatrix {
   const filters = matrixFilters(input.filters);
+  const todayDate = parseISO(input.today);
+  const caseAgeRules = input.caseAgeRules ?? DEFAULT_CASE_AGE_RULES;
+  const caseAgeStops = input.caseAgeStops ?? NO_CASE_AGE_STOPS;
   const providersById = new Map(input.providers.map((provider) => [provider.id, provider]));
   const payersById = new Map(input.payers.map((payer) => [payer.id, payer]));
   const groupsById = new Map(input.groups.map((group) => [group.id, group]));
@@ -382,6 +395,7 @@ export function buildCasesMatrix(input: CasesMatrixInput): CasesMatrix {
             case: matrixCase,
             dimmed,
             ...urgency,
+            daysOpen: caseDaysOpenFor(matrixCase, todayDate, caseAgeStops, caseAgeRules),
           };
           continue;
         }

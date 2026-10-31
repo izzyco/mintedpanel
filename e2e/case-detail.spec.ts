@@ -1094,3 +1094,23 @@ test("E1.3: Locations section — add a second location, make it primary, remove
   await expect(detailsAfterReload.getByText("Boulder Main St Clinic")).toHaveCount(0);
   await expect(detailsAfterReload.getByText("Primary", { exact: true })).toBeVisible();
 });
+
+test("MINT-73: an approved case's Days open stopped at the recorded approval (D22)", async ({
+  context,
+  page,
+}) => {
+  const fixtures = makeFixtures({ caseStatus: "approved", approved: true });
+  // Mid-day times, so the calendar days are the same in any CI timezone.
+  // Created Jul 20, approved Jul 24 (the history row): 4 days, however long
+  // ago that was, and not the approved_date column (Jul 28).
+  fixtures.credential_cases[0].created_at = "2026-07-20T12:00:00Z";
+  fixtures.case_status_history[0].changed_at = "2026-07-24T12:00:00Z";
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+
+  await page.goto(`/cases/${CASE_ID}`);
+  const details = page.getByRole("region", { name: "Details" });
+  const daysOpen = details.locator("dt", { hasText: "Days open" }).locator("xpath=../dd");
+  await expect(daysOpen).toHaveText("4d", { timeout: 30000 });
+});
