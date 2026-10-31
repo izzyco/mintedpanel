@@ -24,7 +24,8 @@
 //     (bounce_escalation_step): step 1 (Oct 30), or 0 for none. Org-owned, like
 //     the cc lists themselves: an org row overrides Minted's default.
 //   * Whether the digest's step may carry a cc list (digest_cc_allowed): no,
-//     coordinators only (D59). Minted's alone, on the digest default.
+//     coordinators only (D59, S7). Minted's default, which an org row may
+//     override; platform-managed, so only Minted writes either.
 //
 // Nothing here sends anything. The consumers (the daily follow-up digest, and
 // intake reminders once the intake back end lands) resolve the effective
@@ -215,11 +216,13 @@ export const PLATFORM_DEFAULT_LABEL = "Minted's default";
 
 /**
  * Two decided policies kept as settings, not code. Minted's default rows
- * carry them (migration 20261031051500 seeds these same values) and Mission
- * Control will edit them there (MINT-113). An org's own row may override the
- * bounce escalation step, never digest_cc_allowed. The values below are the
- * decided defaults, and what a reader falls back to when a stored value is
- * missing or of the wrong shape.
+ * carry them (migration 20261031051500 seeds these same values) and an org's
+ * own row may override either; Mission Control edits them (MINT-113). The
+ * bounce step is org-owned (an org admin may set it); digest_cc_allowed is
+ * platform-managed (only Minted writes it, on the default or as an org
+ * override, like the send hour). The values below are the decided defaults,
+ * and what a reader falls back to when a stored value is missing or of the
+ * wrong shape.
  */
 export interface NotificationPolicyRules {
   /**
@@ -231,12 +234,12 @@ export interface NotificationPolicyRules {
    */
   bounceEscalationStep: number;
   /**
-   * Digest: whether its step may carry a cc list. Default false (D59: the
-   * digest goes to coordinators only; nobody cc'd receives anything).
-   * Minted's alone: an org-level value is ignored. Turning it on lets an org
-   * keep a cc list on its digest step; nothing renders or sends a cc copy of
-   * the digest yet (its template has no cc copy, and the MINT-108 sender
-   * writes to coordinators only).
+   * Digest: whether its step may carry a cc list. Default false (D59, S7:
+   * the digest goes to coordinators only; nobody cc'd receives anything).
+   * Platform-managed: an org override exists, but only Minted sets it.
+   * Turning it on lets an org keep a cc list on its digest step; nothing
+   * renders or sends a cc copy of the digest yet (its template has no cc
+   * copy, and the MINT-108 sender writes to coordinators only).
    */
   digestCcAllowed: boolean;
 }
@@ -270,24 +273,19 @@ const POLICY_CHECKS: { [K in keyof NotificationPolicyRules]: (value: unknown) =>
   digestCcAllowed: (value) => typeof value === "boolean",
 };
 
-/** The rules an org's own row may set. digest_cc_allowed is Minted's alone. */
-const ORG_POLICY_KEYS: ReadonlySet<keyof NotificationPolicyRules> = new Set([
-  "bounceEscalationStep",
-]);
-
 /**
- * Field by field: the organization's value (the bounce step only), else the
- * platform's (Minted's default row), else DEFAULT_NOTIFICATION_POLICY_RULES.
- * null or undefined inherits; a value of the wrong shape is skipped like a
- * missing one.
+ * Field by field: the organization's value, else the platform's (Minted's
+ * default row), else DEFAULT_NOTIFICATION_POLICY_RULES. null or undefined
+ * inherits; a value of the wrong shape is skipped like a missing one. Who may
+ * write each layer is the database's rule (and validateNotificationPolicyRules'),
+ * not this reader's.
  */
 export function resolveNotificationPolicyRules(
   platform?: NotificationPolicyRulesOverride | null,
   organization?: NotificationPolicyRulesOverride | null,
 ): NotificationPolicyRules {
   const pick = <K extends keyof NotificationPolicyRules>(key: K): NotificationPolicyRules[K] => {
-    const layers = ORG_POLICY_KEYS.has(key) ? [organization, platform] : [platform];
-    for (const layer of layers) {
+    for (const layer of [organization, platform]) {
       const value: unknown = layer?.[key];
       if (value != null && POLICY_CHECKS[key](value)) return value as NotificationPolicyRules[K];
     }
@@ -301,12 +299,13 @@ export function resolveNotificationPolicyRules(
 
 /**
  * Plain-language problems with one layer's policy settings; empty when it can
- * go live. null leaves a rule to the layer below. An organization layer may
- * not set digestCcAllowed.
+ * go live. null leaves a rule to the layer below. `writer` is who is saving:
+ * an org admin may set the bounce step only; Minted (a platform admin) may
+ * set both, on the default or as an org override.
  */
 export function validateNotificationPolicyRules(
   rules: unknown,
-  layer: "platform" | "organization" = "platform",
+  writer: "platform_admin" | "org_admin" = "platform_admin",
 ): string[] {
   if (rules == null || typeof rules !== "object" || Array.isArray(rules)) {
     return ["The notification policy settings must be a set of named values."];
@@ -326,7 +325,8 @@ export function validateNotificationPolicyRules(
   if (cc != null) {
     if (typeof cc !== "boolean") {
       errors.push("Whether the daily digest may cc anyone must be on or off.");
-    } else if (layer === "organization") {
+    } else if (writer === "org_admin") {
+      // Platform-managed: Minted sets it, on the default or as an org override.
       errors.push("Only Minted decides whether the daily digest may cc anyone.");
     }
   }
@@ -359,6 +359,22 @@ export function defaultStepsCcNote(bounceEscalationStep: number): string {
 
 /** The card's note on a purpose whose steps may not carry a cc list. */
 export const COORDINATORS_ONLY_NOTE = "Goes to each coordinator only. No one is cc'd.";
+
+/**
+ * A non-blocking note when the bounce escalation step reaches no one by
+ * construction: escalation is off, or the step is past the sequence's last
+ * step. Null when the step exists (its cc list may still be empty; the cc
+ * editor says so).
+ */
+export function bounceStepNote(bounceEscalationStep: number, stepCount: number): string | null {
+  if (bounceEscalationStep === BOUNCE_ESCALATION_OFF) {
+    return "Bounce escalation is off, so a bounce reaches no one.";
+  }
+  if (bounceEscalationStep > stepCount) {
+    return `Step ${bounceEscalationStep} doesn't exist, so a bounce reaches no one.`;
+  }
+  return null;
+}
 
 /* ---------------------------------- Drafts --------------------------------- */
 
@@ -417,7 +433,26 @@ export function starterDraft(): SequenceDraft {
   };
 }
 
-export function draftFromSequence(config: NotificationSequenceConfig): SequenceDraft {
+export interface DraftOptions {
+  /**
+   * The org's effective digest_cc_allowed. Default: the row's own override,
+   * else the decided false. A digest cc list it does not allow (one stored
+   * while the setting was on) is left out of the draft, so the card is never
+   * stuck on it and the next save clears it.
+   */
+  digestCcAllowed?: boolean;
+}
+
+export function draftFromSequence(
+  config: NotificationSequenceConfig,
+  options: DraftOptions = {},
+): SequenceDraft {
+  const ccAllowed = purposeAllowsCc(config.purpose, {
+    digestCcAllowed:
+      options.digestCcAllowed ??
+      config.digestCcAllowed ??
+      DEFAULT_NOTIFICATION_POLICY_RULES.digestCcAllowed,
+  });
   return {
     enabled: config.enabled,
     stopConditions: config.stopConditions ? [...config.stopConditions] : null,
@@ -432,7 +467,7 @@ export function draftFromSequence(config: NotificationSequenceConfig): SequenceD
               offsetDays: step.offsetDays,
               channel: step.channel,
               templateKey: step.templateKey,
-              ccRecipients: step.ccRecipients.map((r) => ({ ...r })),
+              ccRecipients: ccAllowed ? step.ccRecipients.map((r) => ({ ...r })) : [],
             })),
   };
 }
@@ -621,8 +656,9 @@ export interface ValidateOptions {
   /** The org's member user ids; when given, a cc'd user outside it is an issue. */
   memberUserIds?: ReadonlySet<string>;
   /**
-   * Minted's digest_cc_allowed (NotificationPolicyRules), when the caller has
-   * it. Default: the decided value, false (coordinators only).
+   * The org's effective digest_cc_allowed (NotificationPolicyRules: its
+   * override, else Minted's default), when the caller has it. Default: the
+   * decided value, false (coordinators only).
    */
   digestCcAllowed?: boolean;
 }
@@ -921,6 +957,8 @@ export interface ReconcileInput {
   draft: SequenceDraft | null;
   /** The revision this editor's own last save produced, if any. */
   ownSavedRevision: number | null;
+  /** As for draftFromSequence. */
+  digestCcAllowed?: boolean;
 }
 
 /**
@@ -938,10 +976,11 @@ export function reconcileWithServer(
   input: ReconcileInput,
 ): "in_sync" | "adopt_server" | "keep_draft" {
   const { base, saved, draft, ownSavedRevision } = input;
+  const options = { digestCcAllowed: input.digestCcAllowed };
   if (base?.revision === saved?.revision) return "in_sync";
   if (draft == null) return "adopt_server";
-  if (base && draftsEqual(draft, draftFromSequence(base))) return "adopt_server";
-  if (saved && draftsEqual(draft, draftFromSequence(saved))) return "adopt_server";
+  if (base && draftsEqual(draft, draftFromSequence(base, options))) return "adopt_server";
+  if (saved && draftsEqual(draft, draftFromSequence(saved, options))) return "adopt_server";
   if (saved && ownSavedRevision != null && saved.revision === ownSavedRevision) {
     return "adopt_server";
   }
@@ -980,6 +1019,7 @@ export type InheritableSetting =
   | "stopConditions"
   | "targetDaysToReady"
   | "bounceEscalationStep"
+  | "digestCcAllowed"
   | "compressTowardStartDate"
   | "sendHour"
   | "sendTimeZone";
@@ -1006,8 +1046,8 @@ export interface EffectiveNotificationSequence {
   bounceEscalationStep: number | null;
   /**
    * Whether the steps may carry a cc list: always for intake; for the digest,
-   * Minted's digest_cc_allowed (off: coordinators only), which no org row
-   * can change.
+   * digest_cc_allowed, the org's override (Minted sets it) else Minted's
+   * default (off: coordinators only).
    */
   ccAllowed: boolean;
   /** Intake; false for the digest. */
@@ -1071,7 +1111,7 @@ export function resolveNotificationSequence(
       bounceEscalationStep: platformDefault.bounceEscalationStep,
       digestCcAllowed: platformDefault.digestCcAllowed,
     },
-    { bounceEscalationStep: org?.bounceEscalationStep },
+    { bounceEscalationStep: org?.bounceEscalationStep, digestCcAllowed: org?.digestCcAllowed },
   );
   const ccAllowed = purposeAllowsCc(purpose, policy);
   const ownSteps = org != null && org.steps.length > 0;
@@ -1110,6 +1150,8 @@ export function resolveNotificationSequence(
   const [bounceEscalationStep, bounceInherited]: [number | null, boolean] = intake
     ? [policy.bounceEscalationStep, !isBounceEscalationStep(org?.bounceEscalationStep)]
     : none;
+  const digestCcInherited =
+    purpose === "followup_digest" && typeof org?.digestCcAllowed !== "boolean";
   const timed = rules.hasSendTime;
   const [sendHour, hourInherited] = timed ? inherit(org?.sendHour, platformDefault.sendHour) : none;
   const [sendTimeZone, zoneInherited] = timed
@@ -1132,6 +1174,7 @@ export function resolveNotificationSequence(
       stopConditions: stopsInherited,
       targetDaysToReady: targetInherited,
       bounceEscalationStep: bounceInherited,
+      digestCcAllowed: digestCcInherited,
       compressTowardStartDate: compressInherited,
       sendHour: hourInherited,
       sendTimeZone: zoneInherited,
@@ -1400,7 +1443,7 @@ export function scheduleSequenceSends(input: ScheduleInput): ScheduleResult {
   return { compressed: true, readyBy: fromUtcDay(invite + readyAfterDays), sends, skipped };
 }
 
-/** "day 2, day 4 and day 7" for the card's one-line schedule summary. */
+/** "day 1, day 2 and day 3" for the card's one-line schedule summary. */
 export function describeOffsets(offsets: readonly number[]): string {
   const parts = offsets.map((offset) => `day ${offset}`);
   if (parts.length <= 1) return parts.join("");

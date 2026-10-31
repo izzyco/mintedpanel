@@ -27,8 +27,8 @@
 // digest goes to coordinators only; nobody cc'd gets anything from it. Its
 // templates therefore render no cc copy (`ccFields` empty), and
 // `catalogViolations` checks that. Whether a digest step may even store a cc
-// list is Minted's setting `digest_cc_allowed` (off), which the database and
-// resolveNotificationSequence apply (src/lib/notificationSequences.ts,
+// list is Minted's setting `digest_cc_allowed` (off; Minted may override it
+// per org), which the database and resolveNotificationSequence apply (src/lib/notificationSequences.ts,
 // NotificationPolicyRules; Mission Control MINT-113). Turning it on is not
 // enough for anyone cc'd to receive a digest: that needs a digest cc copy
 // here and a sender that sends it, neither of which exists.

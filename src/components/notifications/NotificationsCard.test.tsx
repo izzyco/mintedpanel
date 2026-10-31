@@ -30,7 +30,7 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   sendTimeZone: null,
   createdAt: "",
   updatedAt: "",
-  steps: [2, 4, 7].map((offsetDays, i) => ({
+  steps: [1, 2, 3].map((offsetDays, i) => ({
     id: `d${i + 1}`,
     purpose: "intake_reminder" as const,
     position: i + 1,
@@ -109,6 +109,8 @@ import { NotificationsCard } from "./NotificationsCard";
 const ORG = "66666666-6666-4666-8666-666666666666";
 const JANE = "11111111-1111-4111-8111-111111111111";
 
+/** An org's saved intake row with steps of its own on days 2, 4 and 7: the
+ *  org's schedule, not Minted's default (days 1, 2 and 3). */
 function intakeConfig(over: Partial<NotificationSequenceConfig> = {}): NotificationSequenceConfig {
   return {
     id: "seq-intake",
@@ -121,6 +123,7 @@ function intakeConfig(over: Partial<NotificationSequenceConfig> = {}): Notificat
     compressTowardStartDate: null,
     sendHour: null,
     sendTimeZone: null,
+    digestCcAllowed: null,
     revision: 2,
     createdAt: "2026-10-30T00:00:00Z",
     updatedAt: "2026-10-30T00:00:00Z",
@@ -238,7 +241,7 @@ describe("NotificationsCard: admin", () => {
     expect(html).toContain("Daily follow-up digest");
     expect(html.match(/>Set up</g)).toHaveLength(2);
     expect(html).toContain(
-      "Set up starts you with Minted&#x27;s default: 3 emails, on day 2, day 4 and day 7 after the invite, cc&#x27;ing no one, switched off until you turn it on. You can change any of it before you save.",
+      "Set up starts you with Minted&#x27;s default: 3 emails, on day 1, day 2 and day 3 after the invite, cc&#x27;ing no one, switched off until you turn it on. You can change any of it before you save.",
     );
     expect(html).toContain(
       "Set up starts you with Minted&#x27;s default: one email a day to each coordinator, switched off until you turn it on.",
@@ -352,7 +355,7 @@ describe("NotificationsCard: other members", () => {
     };
     const html = renderToStaticMarkup(<NotificationsCard />);
     expect(html).toContain("Minted&#x27;s default steps");
-    expect(html).toContain("Step 3 · day 7 after the invite · Email · Final reminder");
+    expect(html).toContain("Step 3 · day 3 after the invite · Email · Final reminder");
     expect(html).toContain("14 days from invite to ready (Minted&#x27;s default)");
     expect(html).toContain(
       "the provider submits the intake form; onboarding is paused; the provider withdraws; the provider replies (Minted&#x27;s default)",
@@ -400,12 +403,12 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
   it("routes an offset edit through onChange, then saves the edited draft", () => {
     const props = editorProps();
     const tree = NotificationSequenceEditor(props);
-    const offset = byLabel(tree, "Step 2 days after invite");
+    const offset = byLabel(tree, "Step 3 days after invite");
     (offset.props.onChange as (e: { target: { value: string } }) => void)({
       target: { value: "5" },
     });
     const edited = props.onChange.mock.calls[0][0] as SequenceDraft;
-    expect(edited.steps?.map((s) => s.offsetDays)).toEqual([2, 5, 7]);
+    expect(edited.steps?.map((s) => s.offsetDays)).toEqual([1, 2, 5]);
 
     // Re-render with the edit, as the section does: Save is now enabled.
     const saveProps = editorProps({ draft: edited, dirty: true });
@@ -421,7 +424,7 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     draft.steps = draft.steps.map((s, i) => (i === 1 ? { ...s, offsetDays: 1 } : s));
     const props = editorProps({ draft, dirty: true });
     const html = renderToStaticMarkup(<NotificationSequenceEditor {...props} />);
-    expect(html).toContain("Step 2 must go out after step 1 (later than day 2).");
+    expect(html).toContain("Step 2 must go out after step 1 (later than day 1).");
     expect(html).toContain("Fix the messages above to save.");
     expect(byText(NotificationSequenceEditor(props), "Save").props.disabled).toBe(true);
   });
@@ -432,7 +435,7 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     expect(byLabel(tree, "Move step 1 up").props.disabled).toBe(true);
     (byLabel(tree, "Move step 3 up").props.onClick as () => void)();
     const moved = props.onChange.mock.calls[0][0] as SequenceDraft;
-    expect(moved.steps?.map((s) => s.offsetDays)).toEqual([2, 4, 7]);
+    expect(moved.steps?.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
     expect(moved.steps?.[1].templateKey).toBe("intake_reminder_final");
   });
 
@@ -497,7 +500,7 @@ describe("NotificationSequenceEditor: Minted's default and going back to it (ans
       <NotificationSequenceEditor {...editorProps({ draft: starterDraft(), isNew: true })} />,
     );
     expect(html).toContain("Minted&#x27;s default steps");
-    expect(html).toContain("Step 2 · day 4 after the invite · Email · Second reminder");
+    expect(html).toContain("Step 2 · day 2 after the invite · Email · Second reminder");
     expect(html).toContain(
       "Minted&#x27;s default steps cc no one, so a bounce on step 1 reaches no one.",
     );
@@ -516,9 +519,9 @@ describe("NotificationSequenceEditor: Minted's default and going back to it (ans
     (byText(NotificationSequenceEditor(props), "Customize steps").props.onClick as () => void)();
     const customized = props.onChange.mock.calls[0][0] as SequenceDraft;
     expect(customized.steps?.map((s) => [s.offsetDays, s.ccRecipients])).toEqual([
+      [1, []],
       [2, []],
-      [4, []],
-      [7, []],
+      [3, []],
     ]);
 
     const ownProps = editorProps({ draft: customized, dirty: true });
@@ -717,14 +720,15 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     expect(html.match(/Add a member or a role to copy them on this step\./g)).toHaveLength(2);
   });
 
-  it("shows no bounce note anywhere when escalation is off", () => {
+  it("says escalation is off, without a cc bounce note, when the step is 0", () => {
     const own = renderToStaticMarkup(
       <NotificationSequenceEditor
         {...editorProps({ draft: { ...ownIntake(), bounceEscalationStep: 0 } })}
       />,
     );
-    expect(own).not.toContain("bounces");
+    expect(own).not.toContain("bounces, the people");
     expect(own.match(/Add a member or a role to copy them on this step\./g)).toHaveLength(3);
+    expect(own.match(/Bounce escalation is off, so a bounce reaches no one\./g)).toHaveLength(1);
     const inherited = renderToStaticMarkup(
       <NotificationSequenceEditor
         {...editorProps({
@@ -737,7 +741,32 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     expect(inherited).toContain(
       "Minted&#x27;s default steps cc no one. Customize the steps to cc a member or a role.",
     );
-    expect(inherited).not.toContain("bounce");
+    expect(inherited).toContain("Bounce escalation is off, so a bounce reaches no one.");
+  });
+
+  it("says a step past the last one reaches no one, without blocking Save", () => {
+    const draft = { ...ownIntake(), bounceEscalationStep: 5 };
+    const props = editorProps({ draft, dirty: true });
+    const html = renderToStaticMarkup(<NotificationSequenceEditor {...props} />);
+    expect(html).toContain("Step 5 doesn&#x27;t exist, so a bounce reaches no one.");
+    expect(html).not.toContain("bounces, the people");
+    expect(props.issues).toEqual([]);
+    expect(byText(NotificationSequenceEditor(props), "Save").props.disabled).toBe(false);
+    // The default steps (three) say so too.
+    const inherited = renderToStaticMarkup(
+      <NotificationSequenceEditor
+        {...editorProps({
+          draft: { ...starterDraft(), bounceEscalationStep: 4 },
+          isNew: true,
+        })}
+      />,
+    );
+    expect(inherited).toContain("Step 4 doesn&#x27;t exist, so a bounce reaches no one.");
+    // At the default (step 1 of 3) there is no such note.
+    const normal = renderToStaticMarkup(<NotificationSequenceEditor {...editorProps()} />);
+    expect(normal).not.toContain("reaches no one.</p><p");
+    expect(normal).not.toContain("doesn&#x27;t exist");
+    expect(normal).not.toContain("Bounce escalation is off");
   });
 
   it("names Minted's step on the default steps when the org has none of its own", () => {
@@ -780,5 +809,51 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     const allowed = renderToStaticMarkup(<NotificationsCard />);
     expect(allowed).not.toContain("Goes to each coordinator only");
     expect(allowed.match(/Cc: /g)).toHaveLength(1);
+  });
+
+  it("is not stuck on a digest cc list stored while the setting was on", () => {
+    state.isAdmin = true;
+    const stale = {
+      ...intakeConfig({ stopConditions: null, targetDaysToReady: null }),
+      id: "seq-digest",
+      purpose: "followup_digest" as const,
+      digestCcAllowed: null,
+      steps: [
+        {
+          ...intakeConfig().steps[0],
+          sequenceId: "seq-digest",
+          offsetDays: 0,
+          templateKey: "followup_digest_daily",
+          ccRecipients: [{ kind: "role" as const, role: "admin" as const }],
+        },
+      ],
+    };
+    state.sequences = { followup_digest: stale };
+    const html = renderToStaticMarkup(<NotificationsCard />);
+    expect(html).not.toContain("so it has no cc list");
+    expect(html).not.toContain("Fix the messages above to save.");
+    expect(html).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
+  });
+
+  it("follows the org's own digest cc override, which Minted sets, over the default", () => {
+    state.isAdmin = false;
+    const digestRow = (digestCcAllowed: boolean | null) => ({
+      ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+      id: "seq-digest",
+      purpose: "followup_digest" as const,
+      digestCcAllowed,
+    });
+    state.sequences = { followup_digest: digestRow(true) };
+    const on = renderToStaticMarkup(<NotificationsCard />);
+    expect(on).not.toContain("Goes to each coordinator only");
+    expect(on.match(/Cc: /g)).toHaveLength(1);
+    state.defaults = {
+      intake_reminder: INTAKE_DEFAULT,
+      followup_digest: { ...DIGEST_DEFAULT, digestCcAllowed: true },
+    };
+    state.sequences = { followup_digest: digestRow(false) };
+    const off = renderToStaticMarkup(<NotificationsCard />);
+    expect(off).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
+    expect(off).not.toContain("Cc: ");
   });
 });

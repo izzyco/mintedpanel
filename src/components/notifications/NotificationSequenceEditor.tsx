@@ -38,6 +38,7 @@ import {
   STOP_CONDITIONS,
   STOP_CONDITION_LABELS,
   addStep,
+  bounceStepNote,
   defaultStepsCcNote,
   describeSendTime,
   describeStep,
@@ -182,16 +183,24 @@ export function NotificationSequenceEditor({
   const stops = draft.stopConditions ?? platformDefault.stopConditions ?? [];
   // The step whose bounce escalates to its cc list (the org's, else Minted's).
   const bounceStep = draftBounceEscalationStep(draft, platformDefault);
-  // Whether this purpose's steps may cc anyone (the digest: Minted's setting).
+  // Whether this purpose's steps may cc anyone (the digest: digest_cc_allowed,
+  // the org's override Minted set, else Minted's default).
   const ccAllowed = purposeAllowsCc(
     purpose,
-    resolveNotificationPolicyRules({ digestCcAllowed: platformDefault.digestCcAllowed }),
+    resolveNotificationPolicyRules(
+      { digestCcAllowed: platformDefault.digestCcAllowed },
+      { digestCcAllowed: saved?.digestCcAllowed },
+    ),
   );
   const stepsNote = rules.hasCcList
     ? defaultStepsCcNote(bounceStep)
     : ccAllowed
       ? null
       : COORDINATORS_ONLY_NOTE;
+  // Non-blocking: escalation off, or a step the sequence does not have.
+  const bounceNote = rules.hasIntakeSettings
+    ? bounceStepNote(bounceStep, (ownSteps ?? defaultSteps).length)
+    : null;
 
   return (
     <div className="space-y-4">
@@ -374,6 +383,7 @@ export function NotificationSequenceEditor({
               );
             })}
           </ol>
+          {bounceNote ? <p className="text-[12px] text-muted-foreground">{bounceNote}</p> : null}
           <IssueText issues={sequenceIssues("steps")} />
           <div className="flex flex-wrap items-center gap-2">
             {ownSteps.length < rules.maxSteps ? (
@@ -433,6 +443,7 @@ export function NotificationSequenceEditor({
             ))}
           </ol>
           {stepsNote ? <p className="text-[12px] text-muted-foreground">{stepsNote}</p> : null}
+          {bounceNote ? <p className="text-[12px] text-muted-foreground">{bounceNote}</p> : null}
         </section>
       )}
 

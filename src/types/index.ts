@@ -2374,6 +2374,11 @@ export interface NotificationSequence {
   sendHour: number | null;
   /** Digest only, platform-managed: the IANA zone of sendHour; null uses Minted's default. */
   sendTimeZone: string | null;
+  /**
+   * Digest only, platform-managed: Minted's per-org override of whether the
+   * digest step may carry a cc list; null uses Minted's default (false).
+   */
+  digestCcAllowed: boolean | null;
   /** Optimistic-concurrency counter, bumped on every save. */
   revision: number;
   createdAt: string;

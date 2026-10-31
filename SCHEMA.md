@@ -712,9 +712,11 @@ effective sequence is `resolveNotificationSequence()` in
   America/Chicago (the old 13:00 UTC cron in CDT), `digest_cc_allowed` false
   (D59: coordinators only). The two policy settings are configuration
   (`resolveNotificationPolicyRules`; Mission Control edits them, MINT-113):
-  `bounce_escalation_step` an org row overrides, `digest_cc_allowed` is
-  Minted's alone (the save RPC and the deferred step check read it; turning it
-  on only lets an org store a digest cc list, nothing sends a cc copy yet). Never deleted, by anyone (BEFORE DELETE trigger
+  an org row overrides either. `bounce_escalation_step` is org-owned;
+  `digest_cc_allowed` is platform-managed like `send_hour` (only Minted writes
+  the default or an org's override). The save RPC and the deferred step check
+  read the org's effective value; turning it on only lets an org store a
+  digest cc list, nothing sends a cc copy yet. Never deleted, by anyone (BEFORE DELETE trigger
   `notification_sequence_defaults_no_delete`): Minted changes it instead.
   Any member of any org reads it; only service_role writes it
   (Mission Control M6 adds the platform-admin write policy).
@@ -724,7 +726,7 @@ effective sequence is `resolveNotificationSequence()` in
   steps, `template_key` prefixed by `purpose` (row CHECK). No `cc_recipients`:
   a default names no one. Deferred constraint triggers on both default
   tables keep each default complete: at least one step, exactly one for the
-  digest, offsets strictly increasing. Seeded: intake 2/4/7
+  digest, offsets strictly increasing. Seeded: intake 1/2/3
   (`intake_reminder_first|second|final`), digest one step at 0
   (`followup_digest_daily`), all email.
 - **`notification_sequences`**: one org row per `(org_id, purpose)`. No row
@@ -733,8 +735,8 @@ effective sequence is `resolveNotificationSequence()` in
   `stop_conditions text[]` (intake; validated subset; `{}` is a real choice,
   never stop early), `target_days_to_ready` (intake, 1 to 90),
   `bounce_escalation_step` (intake, org-owned, 0 to 10, 0 = none), and the
-  **platform-managed** `compress_toward_start_date` (intake), `send_hour` and
-  `send_time_zone` (digest). Each purpose's row carries only its own columns
+  **platform-managed** `compress_toward_start_date` (intake), `send_hour`,
+  `send_time_zone` and `digest_cc_allowed` (digest). Each purpose's row carries only its own columns
   (CHECK). authenticated has column grants only: INSERT `(org_id, purpose,
 enabled, stop_conditions, target_days_to_ready, bounce_escalation_step)`,
   UPDATE `(enabled, stop_conditions, target_days_to_ready,
@@ -759,11 +761,13 @@ bounce_escalation_step, updated_at)`; the platform-managed
   at most 20, distinct; CHECK `private.notification_cc_recipients_valid`). The
   composite FK `(org_id, sequence_id) → notification_sequences(org_id, id)`
   ties a step to its sequence's org. A BEFORE trigger refuses a cc'd user who
-  is not a member of the org. A deferred constraint trigger enforces offsets
-  strictly increasing by position, at most one digest step, **no cc on a
-  digest step** while Minted's `digest_cc_allowed` is false
-  (`notification_digest_has_no_cc`: the digest goes to coordinators only),
-  and a `template_key` prefixed by the sequence's purpose.
+  is not a member of the org. A deferred constraint trigger (SECURITY
+  DEFINER, so it sees every row whoever commits) enforces offsets strictly
+  increasing by position, at most one digest step, **no cc written onto a
+  digest step** while the org's effective `digest_cc_allowed` is false
+  (`notification_digest_has_no_cc`: the digest goes to coordinators only; a
+  list stored while it was on is inert, and the next save clears it), and a
+  `template_key` prefixed by the sequence's purpose.
 - **`sms_consents`**: `(org_id, provider_id) → providers(org_id, id)` ON
   DELETE SET NULL (`provider_id`): deleting a provider (the staging UAT reseed
   hard-deletes its synthetic ones; no app path does) keeps the consent and
@@ -783,9 +787,10 @@ bounce_escalation_step, updated_at)`; the platform-managed
   path: SECURITY INVOKER, admin-checked, replaces the sequence and its own
   steps in one transaction (`steps: null` = use Minted's default steps; a
   null or absent setting = use Minted's default), refuses
-  `compress_toward_start_date`, `send_hour` and `send_time_zone` (42501
-  `notification_platform_setting`), any unknown key (22023), and a digest cc
-  list while `digest_cc_allowed` is false, raises SQLSTATE PT409 (HTTP 409)
+  `compress_toward_start_date`, `send_hour`, `send_time_zone` and
+  `digest_cc_allowed` (42501 `notification_platform_setting`), any unknown key
+  (22023), and a digest cc list while the org's effective
+  `digest_cc_allowed` is false, raises SQLSTATE PT409 (HTTP 409)
   `notification_sequence_conflict` on a stale `expected_revision`, and
   writes one `audit_log` row (`entity_type = notification_sequence`). Never
   call it with the service key. Direct admin writes to the tables pass the

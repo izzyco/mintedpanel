@@ -307,6 +307,30 @@ SELECT pg_temp.m107_mark('rls_enabled_on_all_five',
                   'public.notification_sequence_default_steps'::regclass,
                   'public.sms_consents'::regclass)));
 
+-- The deferred step rules run as the owner, so a committing role that cannot
+-- see the sequence row never skips them (review, Oct 31).
+SELECT pg_temp.m107_mark('step_set_check_runs_as_definer_with_empty_search_path',
+  (SELECT p.prosecdef
+          AND EXISTS (SELECT 1 FROM unnest(p.proconfig) AS c
+                       WHERE c IN ('search_path=""', 'search_path='))
+     FROM pg_proc AS p
+    WHERE p.oid = 'private.notification_sequence_steps_check_set()'::regprocedure));
+-- Every notification_sequences column is classified for the stamp trigger:
+-- the platform-managed ones are on its allow-list and in v_not_org_owned,
+-- and "org settings unchanged" is the row minus those and the stamp columns.
+-- A new column fails this until someone decides which it is.
+SELECT pg_temp.m107_mark('notification_sequences_columns_are_all_classified',
+  (SELECT array_agg(column_name::text ORDER BY column_name)
+          = '{bounce_escalation_step,compress_toward_start_date,created_at,digest_cc_allowed,enabled,id,org_id,purpose,revision,send_hour,send_time_zone,stop_conditions,target_days_to_ready,updated_at,updated_by}'
+     FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'notification_sequences')
+  AND (SELECT bool_and(position(format('NEW.%1$s IS DISTINCT FROM OLD.%1$s', c) IN p.prosrc) > 0
+                       AND position(quote_literal(c) IN p.prosrc) > 0)
+         FROM pg_proc AS p,
+              unnest(ARRAY['compress_toward_start_date', 'send_hour', 'send_time_zone',
+                           'digest_cc_allowed']) AS c
+        WHERE p.oid = 'private.notification_sequences_stamp()'::regprocedure));
+
 -- anon writes nothing, anywhere.
 SET LOCAL ROLE anon;
 SELECT pg_temp.m107_mark('anon_cannot_write_any_of_the_five_tables',
@@ -387,7 +411,8 @@ SELECT pg_temp.m107_mark('defaults_seeded_with_compression_off_and_8am_central',
               AND stop_conditions IS NULL AND target_days_to_ready IS NULL
               AND compress_toward_start_date IS NULL
          FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest')
-  AND (SELECT array_agg(offset_days ORDER BY position) = '{2,4,7}'
+  -- Days 1, 2 and 3 after the invite (Sowmya, Oct 31; was 2, 4 and 7).
+  AND (SELECT array_agg(offset_days ORDER BY position) = '{1,2,3}'
               AND array_agg(template_key ORDER BY position)
                   = '{intake_reminder_first,intake_reminder_second,intake_reminder_final}'
               AND bool_and(channel = 'email')
@@ -424,6 +449,19 @@ SELECT pg_temp.m107_mark('bounce_step_is_org_owned_and_digest_cc_is_minted_only'
   AND NOT has_column_privilege('authenticated', 'public.notification_sequence_defaults',
     'bounce_escalation_step', 'UPDATE')
   AND has_column_privilege('service_role', 'public.notification_sequence_defaults',
+    'digest_cc_allowed', 'UPDATE'));
+-- S7: the digest cc setting has an org override too, platform-managed like
+-- send_hour: nullable (NULL inherits), no default, no authenticated grant.
+SELECT pg_temp.m107_mark('org_digest_cc_override_is_platform_managed',
+  (SELECT is_nullable = 'YES' AND column_default IS NULL
+     FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'notification_sequences'
+      AND column_name = 'digest_cc_allowed')
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
+    'digest_cc_allowed', 'INSERT')
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
+    'digest_cc_allowed', 'UPDATE')
+  AND has_column_privilege('service_role', 'public.notification_sequences',
     'digest_cc_allowed', 'UPDATE'));
 
 -- ---------------------------------------------------------------------------
@@ -580,6 +618,13 @@ SELECT pg_temp.m107_mark('rpc_refuses_platform_managed_settings',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
         'followup_digest',
         pg_temp.m107_digest(1) || '{"send_time_zone":"America/New_York"}'::jsonb)$$));
+SELECT pg_temp.m107_mark('rpc_refuses_the_digest_cc_setting',
+  pg_temp.m107_expect_message('notification_platform_setting',
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(1) || '{"digest_cc_allowed":true}'::jsonb)$$)
+  AND pg_temp.m107_expect_state('42501',
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(1) || '{"digest_cc_allowed":false}'::jsonb)$$));
 SELECT pg_temp.m107_mark('rpc_refuses_unknown_settings', pg_temp.m107_expect_message(
   'notification_sequence_invalid: unknown setting',
   $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
@@ -677,9 +722,20 @@ SELECT pg_temp.m107_mark('rpc_saves_a_null_bounce_step_as_inherit',
     $$SELECT bounce_escalation_step IS NULL AND revision = 7
         FROM public.notification_sequences
        WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$));
+SELECT pg_temp.m107_mark('rpc_saves_the_highest_bounce_step',
+  pg_temp.m107_probe(
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'intake_reminder', pg_temp.m107_intake('{3,9}', 5) || '{"bounce_escalation_step":10}'::jsonb)$$,
+    $$SELECT bounce_escalation_step = 10
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$));
 SELECT pg_temp.m107_mark('rpc_refuses_a_bad_bounce_step',
   (SELECT bool_and(pg_temp.m107_expect_message(
             'notification_sequence_invalid: bounce_escalation_step',
+            format($$SELECT public.save_notification_sequence(
+                       '10700000-0000-4000-a000-00000000000a', 'intake_reminder',
+                       pg_temp.m107_intake('{3,9}', 5) || %L::jsonb)$$, bad))
+                   AND pg_temp.m107_expect_state('22023',
             format($$SELECT public.save_notification_sequence(
                        '10700000-0000-4000-a000-00000000000a', 'intake_reminder',
                        pg_temp.m107_intake('{3,9}', 5) || %L::jsonb)$$, bad)))
@@ -737,13 +793,21 @@ SELECT pg_temp.m107_mark('direct_platform_column_writes_are_refused',
   AND pg_temp.m107_expect_state('42501',
     $$INSERT INTO public.notification_sequences (org_id, purpose, compress_toward_start_date)
       VALUES ('10700000-0000-4000-a000-00000000000a', 'intake_reminder', true)$$));
+SELECT pg_temp.m107_mark('org_admin_cannot_set_the_digest_cc_override',
+  pg_temp.m107_expect_state('42501',
+    $$UPDATE public.notification_sequences SET digest_cc_allowed = true
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_state('42501',
+    $$INSERT INTO public.notification_sequences (org_id, purpose, digest_cc_allowed)
+      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', true)$$));
 
 -- The stamp trigger is a second wall: even with a widened column grant, a
 -- write to a platform-managed column by anyone but Minted's own roles is
 -- refused, on INSERT and UPDATE. It is an allow-list, so anon is refused by
 -- the trigger itself, before RLS gets to it.
 RESET ROLE;
-GRANT INSERT (compress_toward_start_date, send_hour), UPDATE (compress_toward_start_date, send_hour)
+GRANT INSERT (compress_toward_start_date, send_hour, digest_cc_allowed),
+      UPDATE (compress_toward_start_date, send_hour, digest_cc_allowed)
   ON TABLE public.notification_sequences TO authenticated;
 GRANT INSERT (org_id, purpose, compress_toward_start_date)
   ON TABLE public.notification_sequences TO anon;
@@ -756,7 +820,15 @@ SELECT pg_temp.m107_mark('stamp_trigger_backs_up_the_column_grant',
   AND pg_temp.m107_expect_message('notification_platform_setting',
     $$UPDATE public.notification_sequences SET send_hour = 6
        WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
+SELECT pg_temp.m107_mark('stamp_trigger_backs_up_the_digest_cc_grant',
+  pg_temp.m107_expect_message('notification_platform_setting',
+    $$UPDATE public.notification_sequences SET digest_cc_allowed = true
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
 SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000004');
+SELECT pg_temp.m107_mark('stamp_trigger_backs_up_the_digest_cc_grant_on_insert',
+  pg_temp.m107_expect_message('notification_platform_setting',
+    $$INSERT INTO public.notification_sequences (org_id, purpose, digest_cc_allowed)
+      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', true)$$));
 SELECT pg_temp.m107_mark('stamp_trigger_backs_up_the_column_grant_on_insert',
   pg_temp.m107_expect_message('notification_platform_setting',
     $$INSERT INTO public.notification_sequences (org_id, purpose, compress_toward_start_date)
@@ -770,7 +842,8 @@ SELECT pg_temp.m107_mark('stamp_trigger_allows_only_minted_roles',
     $$INSERT INTO public.notification_sequences (org_id, purpose, compress_toward_start_date)
       VALUES ('10700000-0000-4000-a000-00000000000b', 'intake_reminder', true)$$));
 RESET ROLE;
-REVOKE INSERT (compress_toward_start_date, send_hour), UPDATE (compress_toward_start_date, send_hour)
+REVOKE INSERT (compress_toward_start_date, send_hour, digest_cc_allowed),
+       UPDATE (compress_toward_start_date, send_hour, digest_cc_allowed)
   ON TABLE public.notification_sequences FROM authenticated;
 REVOKE INSERT (org_id, purpose, compress_toward_start_date)
   ON TABLE public.notification_sequences FROM anon;
@@ -1044,6 +1117,9 @@ SELECT pg_temp.m107_mark('check_intake_has_no_send_time',
   AND pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET send_time_zone = 'America/Chicago'
      WHERE id = (SELECT intake_id FROM m107_ids)$$));
+SELECT pg_temp.m107_mark('check_intake_has_no_digest_cc_setting', pg_temp.m107_expect_state('23514', $$
+  UPDATE public.notification_sequences SET digest_cc_allowed = true
+   WHERE id = (SELECT intake_id FROM m107_ids)$$));
 SELECT pg_temp.m107_mark('check_send_hour_bounds',
   pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET send_hour = 24
@@ -1124,10 +1200,11 @@ SELECT pg_temp.m107_mark('default_steps_keep_the_step_rules',
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)
     VALUES ('followup_digest', 2, 1, 'email', 'followup_digest_daily')$$)
+  -- Day 3 again after the default's last step on day 3: not increasing.
   AND pg_temp.m107_expect_message('notification_step_offsets_not_increasing', $$
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)
-    VALUES ('intake_reminder', 4, 7, 'email', 'intake_reminder_final')$$)
+    VALUES ('intake_reminder', 4, 3, 'email', 'intake_reminder_final')$$)
   AND pg_temp.m107_expect_state('23514', $$
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)
@@ -1322,10 +1399,147 @@ SELECT pg_temp.m107_mark('digest_audience_back_to_coordinators_only',
          JOIN public.notification_sequence_steps AS st ON st.sequence_id = s.id
         WHERE s.org_id = '10700000-0000-4000-a000-00000000000a' AND s.purpose = 'followup_digest'
         GROUP BY s.revision));
+
+-- The same setting per org (S7): Minted sets an override on org A's row.
+-- It is a platform-only change, so the org's revision and author stay.
+SET LOCAL ROLE service_role;
+UPDATE public.notification_sequences SET digest_cc_allowed = true
+ WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
+SELECT pg_temp.m107_mark('org_digest_cc_override_keeps_the_revision_and_author',
+  (SELECT digest_cc_allowed AND revision = 4
+          AND updated_by = '10700000-0000-4000-a000-000000000001'
+     FROM public.notification_sequences
+    WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
+  AND (SELECT digest_cc_allowed = false FROM public.notification_sequence_defaults
+        WHERE purpose = 'followup_digest'));
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
+SELECT pg_temp.m107_mark('digest_cc_saved_under_the_orgs_override',
+  pg_temp.m107_probe(
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$,
+    $$SELECT st.cc_recipients = '[{"kind":"role","role":"specialist"}]'::jsonb
+             AND s.digest_cc_allowed
+        FROM public.notification_sequence_steps AS st
+        JOIN public.notification_sequences AS s ON s.id = st.sequence_id
+       WHERE s.org_id = '10700000-0000-4000-a000-00000000000a'
+         AND s.purpose = 'followup_digest'$$)
+  AND pg_temp.m107_probe(
+    $$UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"admin"}]'
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$,
+    $$SELECT cc_recipients = '[{"kind":"role","role":"admin"}]'::jsonb
+        FROM public.notification_sequence_steps
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$));
+-- Org B inherits Minted's default (off): its digest still refuses a cc.
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000004');
+SELECT pg_temp.m107_mark('another_orgs_digest_still_refuses_cc',
+  pg_temp.m107_expect_message('notification_digest_has_no_cc',
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000b',
+        'followup_digest', pg_temp.m107_digest(NULL, '[{"kind":"role","role":"admin"}]'))$$));
+-- An org override off wins over a default that allows a cc.
+SET LOCAL ROLE service_role;
+UPDATE public.notification_sequence_defaults SET digest_cc_allowed = true
+ WHERE purpose = 'followup_digest';
+UPDATE public.notification_sequences SET digest_cc_allowed = false
+ WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
+SELECT pg_temp.m107_mark('org_override_off_beats_a_default_that_allows_cc',
+  pg_temp.m107_expect_message('notification_digest_has_no_cc',
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$)
+  AND pg_temp.m107_expect_message('notification_digest_has_no_cc',
+    $$UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"admin"}]'
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$));
+-- Back to inheriting Minted's default (off).
+SET LOCAL ROLE service_role;
+UPDATE public.notification_sequences SET digest_cc_allowed = NULL
+ WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
+UPDATE public.notification_sequence_defaults SET digest_cc_allowed = false
+ WHERE purpose = 'followup_digest';
+SELECT pg_temp.m107_mark('org_digest_cc_back_to_inherit',
+  (SELECT digest_cc_allowed IS NULL AND revision = 4
+     FROM public.notification_sequences
+    WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
+  AND (SELECT digest_cc_allowed = false FROM public.notification_sequence_defaults
+        WHERE purpose = 'followup_digest'));
+
+-- A digest cc list stored while the setting was on is inert once it goes off
+-- (review, Oct 31): writes that leave it alone pass, a write that sets one is
+-- refused, and the next save clears it. Set up as Minted: on, store, off.
+UPDATE public.notification_sequences SET digest_cc_allowed = true
+ WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
+UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"specialist"}]'
+ WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND template_key = 'followup_digest_daily';
+UPDATE public.notification_sequences SET digest_cc_allowed = NULL
+ WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
+SELECT pg_temp.m107_mark('stored_digest_cc_is_inert_after_the_setting_goes_off',
+  pg_temp.m107_probe(
+    $$UPDATE public.notification_sequence_steps SET offset_days = 0
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$,
+    $$SELECT cc_recipients = '[{"kind":"role","role":"specialist"}]'::jsonb
+        FROM public.notification_sequence_steps
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$)
+  AND pg_temp.m107_expect_message('notification_digest_has_no_cc',
+    $$UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"admin"}]'
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$));
+SELECT pg_temp.m107_mark('a_save_clears_a_stale_digest_cc',
+  pg_temp.m107_probe(
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(4))$$,
+    $$SELECT cc_recipients = '[]'::jsonb
+        FROM public.notification_sequence_steps
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$));
+SET LOCAL ROLE service_role;
+UPDATE public.notification_sequence_steps SET cc_recipients = '[]'
+ WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND template_key = 'followup_digest_daily';
+SELECT pg_temp.m107_mark('stale_digest_cc_cleaned_up_without_a_revision',
+  (SELECT st.cc_recipients = '[]'::jsonb AND s.revision = 4 AND s.digest_cc_allowed IS NULL
+     FROM public.notification_sequence_steps AS st
+     JOIN public.notification_sequences AS s ON s.id = st.sequence_id
+    WHERE s.org_id = '10700000-0000-4000-a000-00000000000a' AND s.purpose = 'followup_digest'));
 RESET ROLE;
+
+-- No digest default at all (a broken database) reads as "no cc", for the RPC
+-- and for a direct write. Getting there takes deleting the default with its
+-- delete guard off, as the owner; both probes roll back. The caller is still
+-- org A's admin (request.jwt.claim.sub), which the RPC checks.
+SELECT pg_temp.m107_mark('a_missing_digest_default_refuses_digest_cc',
+  pg_temp.m107_expect_message('notification_digest_has_no_cc', $$DO $d$ BEGIN
+      ALTER TABLE public.notification_sequence_defaults
+        DISABLE TRIGGER notification_sequence_defaults_no_delete;
+      DELETE FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest';
+      PERFORM public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'));
+    END $d$ $$)
+  AND pg_temp.m107_expect_message('notification_digest_has_no_cc', $$DO $d$ BEGIN
+      ALTER TABLE public.notification_sequence_defaults
+        DISABLE TRIGGER notification_sequence_defaults_no_delete;
+      DELETE FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest';
+      UPDATE public.notification_sequence_steps
+         SET cc_recipients = '[{"kind":"role","role":"admin"}]'
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily';
+    END $d$ $$));
+SELECT pg_temp.m107_mark('defaults_intact_after_the_missing_default_probes',
+  (SELECT count(*) = 2 FROM public.notification_sequence_defaults)
+  AND (SELECT count(*) = 1 FROM public.notification_sequence_default_steps
+        WHERE purpose = 'followup_digest')
+  AND (SELECT tgenabled = 'O' FROM pg_trigger
+        WHERE tgname = 'notification_sequence_defaults_no_delete'));
 
 -- ---------------------------------------------------------------------------
 -- sms_consents.
+
 -- ---------------------------------------------------------------------------
 SET LOCAL ROLE service_role;
 INSERT INTO public.sms_consents
@@ -1526,6 +1740,30 @@ SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000004');
 SELECT pg_temp.m107_mark('other_org_reads_no_detached_consents',
   (SELECT count(*) = 0 FROM public.sms_consents));
 RESET ROLE;
+
+-- The FK action runs as the table owner, not as the deleting role: even with
+-- UPDATE on sms_consents revoked, service_role's provider delete detaches the
+-- consent (probe, rolled back; the grant is restored after).
+INSERT INTO public.providers(id, org_id, first_name, last_name, status) VALUES
+  ('10700000-0000-4000-a000-0000000a0003', '10700000-0000-4000-a000-00000000000a',
+   'Synthetic', 'Provider D', 'onboarding');
+SET LOCAL ROLE service_role;
+INSERT INTO public.sms_consents
+  (id, org_id, provider_id, phone_e164, source, consent_text_version)
+VALUES ('10700000-0000-4000-a000-0000000c0004', '10700000-0000-4000-a000-00000000000a',
+        '10700000-0000-4000-a000-0000000a0003', '+15555550133', 'intake_form', 'sms-consent.v1');
+RESET ROLE;
+REVOKE UPDATE ON TABLE public.sms_consents FROM service_role;
+SET LOCAL ROLE service_role;
+SELECT pg_temp.m107_mark('service_role_provider_delete_detaches_through_the_owner',
+  NOT has_table_privilege('service_role', 'public.sms_consents', 'UPDATE')
+  AND pg_temp.m107_probe(
+    $$DELETE FROM public.providers WHERE id = '10700000-0000-4000-a000-0000000a0003'$$,
+    $$SELECT provider_id IS NULL AND phone_e164 = '+15555550133' AND revoked_at IS NULL
+        FROM public.sms_consents WHERE id = '10700000-0000-4000-a000-0000000c0004'$$));
+RESET ROLE;
+GRANT UPDATE ON TABLE public.sms_consents TO service_role;
+
 
 -- ---------------------------------------------------------------------------
 -- Audit rows: one per successful save (8: two creates, six updates),
