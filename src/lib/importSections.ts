@@ -413,8 +413,10 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
     }
     // A provider's NPI, as Add Provider checks it: ten digits (no first-digit
     // rule; the CMS check digit is the NPI rule). The check digit itself binds
-    // at dedupe, on new identities only (MINT-7), so a re-import of a
-    // provider whose stored NPI predates the check never newly fails here.
+    // at dedupe: always on a new identity (MINT-7), and on a row matching a
+    // stored NPI only when the identity rules re-check stored NPIs (MINT-129,
+    // off by default), so by default a re-import of a provider whose stored
+    // NPI predates the check never newly fails.
     if (spec.addProviderNpiColumns?.includes(h) && v && !isNpi(v)) {
       fail(h, NPI_FORMAT_MESSAGE);
     }

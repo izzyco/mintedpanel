@@ -19,9 +19,6 @@ import type { NpiFillOnPick } from "@/lib/npiRegistryPolicy";
 export { US_STATES } from "@/lib/usStates";
 
 export const SSN_LAST4_RE = /^\d{4}$/;
-/** The provider CSV import's NPI shape (importSections.ts). Add Provider
- * itself now takes any ten digits with the check digit (NPI_DIGITS_RE). */
-export const NPI_RE = /^1\d{9}$/;
 export const NPI_DIGITS_RE = /^\d{10}$/;
 export const CAQH_RE = /^\d{8}$/;
 export const EMAIL_RE = /^\S+@\S+\.\S+$/;
