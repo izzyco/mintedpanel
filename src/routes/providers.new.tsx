@@ -21,7 +21,7 @@ import {
   type ProviderFormState,
 } from "@/components/providers/ProviderForm";
 import { isBlankLicenseRow } from "@/components/providers/providerFormShared";
-import { addProviderStartDates } from "@/lib/addProviderRules";
+import { addProviderStartDatePrefill, addProviderStartDates } from "@/lib/addProviderRules";
 import { localCalendarDate } from "@/lib/systemTokens";
 import type {
   CreateProviderWithDetailsResult,
@@ -62,7 +62,8 @@ function toProviderInput(form: ProviderFormState): ProviderInput {
     // overwrites group_id from the primary assignment when one is passed.
     groupId: form.groupId || null,
     specialty: form.specialty.trim() || null,
-    // Never guessed: it fills the provider.startDate payer-form token.
+    // Exactly what the field shows; a blank is never filled in (it fills the
+    // provider.startDate payer-form token).
     startDate: form.startDate || null,
     degree: form.degree.trim() || null,
     schoolName: form.schoolName.trim() || null,
@@ -99,21 +100,18 @@ function Page() {
   const locationQ = useLaunchLocation(locationId);
   const launchLocation = locationId ? (locationQ.data ?? null) : null;
   const create = useCreateProviderWithDetails();
-  // What a blank Start date gives the facility assignments is configuration
-  // (MINT-116).
+  // The Start date prefill and what a blank Start date gives the facility
+  // assignments are configuration (MINT-116).
   const addProviderRules = useAddProviderRules();
 
-  const initial = useMemo(
-    () =>
-      launchLocation
-        ? {
-            ...emptyProviderFormState,
-            groupId: launchLocation.groupId ?? "",
-            facilityIds: [launchLocation.id],
-          }
-        : emptyProviderFormState,
-    [launchLocation],
-  );
+  const initial = useMemo(() => {
+    // The field opens blank by default; a prefill is shown and editable.
+    const startDate = addProviderStartDatePrefill(addProviderRules, localCalendarDate(new Date()));
+    const base = startDate ? { ...emptyProviderFormState, startDate } : emptyProviderFormState;
+    return launchLocation
+      ? { ...base, groupId: launchLocation.groupId ?? "", facilityIds: [launchLocation.id] }
+      : base;
+  }, [launchLocation, addProviderRules]);
 
   const onSubmit = async (form: ProviderFormState) => {
     try {

@@ -10,7 +10,7 @@ const form = (over: Partial<typeof emptyProviderFormState>) => ({
   lastName: "Provider",
   ...over,
 });
-const NONE = { assignmentStartDateDefault: "none" } as const;
+const NONE = { ...DEFAULT_ADD_PROVIDER_RULES, assignmentStartDateDefault: "none" } as const;
 
 describe("validateEmployment", () => {
   it("never blocks a blank Start date under the default rules", () => {

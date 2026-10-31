@@ -1,12 +1,13 @@
-// MINT-116 — the Add Provider start-date rule: the assignment rule with its
-// default and its alternative, the resolver's precedence, the validator, and
-// the hint and error the wizard shows from it. The provider's own start date
-// is never guessed under any rule. The default keeps MINT-96's behaviour.
+// MINT-116 — the Add Provider start-date rules: each rule with its default and
+// its alternative, the resolver's precedence, the validator, and the prefill,
+// hint and error the forms show from them. A blank field is never filled in at
+// save under any rule. The defaults keep MINT-96's behaviour.
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_ADD_PROVIDER_RULES,
   addProviderStartDateError,
   addProviderStartDateHint,
+  addProviderStartDatePrefill,
   addProviderStartDates,
   resolveAddProviderRules,
   validateAddProviderRules,
@@ -15,39 +16,61 @@ import {
 
 const TODAY = "2026-10-30";
 const DEFAULT = DEFAULT_ADD_PROVIDER_RULES;
-const NONE: AddProviderRules = { assignmentStartDateDefault: "none" };
+const rules = (over: Partial<AddProviderRules>): AddProviderRules => ({ ...DEFAULT, ...over });
+const PREFILL_TODAY = rules({ providerStartDatePrefill: "today" });
+const ASSIGNMENT_NONE = rules({ assignmentStartDateDefault: "none" });
+const ALL = [
+  DEFAULT,
+  PREFILL_TODAY,
+  ASSIGNMENT_NONE,
+  rules({ providerStartDatePrefill: "today", assignmentStartDateDefault: "none" }),
+];
 
 describe("DEFAULT_ADD_PROVIDER_RULES", () => {
-  it("is the decided rule: facility assignments start today", () => {
-    expect(DEFAULT).toEqual({ assignmentStartDateDefault: "today" });
+  it("is the decided rules: the field opens blank, assignments start today", () => {
+    expect(DEFAULT).toEqual({
+      providerStartDatePrefill: "none",
+      assignmentStartDateDefault: "today",
+    });
     expect(Object.isFrozen(DEFAULT)).toBe(true);
   });
+});
 
-  it("has no provider start-date option: that date is never guessed", () => {
-    expect(Object.keys(DEFAULT)).toEqual(["assignmentStartDateDefault"]);
+describe("addProviderStartDatePrefill", () => {
+  it("opens the field blank by default, and with today under the prefill", () => {
+    expect(addProviderStartDatePrefill(DEFAULT, TODAY)).toBe("");
+    expect(addProviderStartDatePrefill(ASSIGNMENT_NONE, TODAY)).toBe("");
+    expect(addProviderStartDatePrefill(PREFILL_TODAY, TODAY)).toBe(TODAY);
   });
 });
 
 describe("addProviderStartDates", () => {
-  it("an entered date is both dates, under either rule", () => {
-    for (const rules of [DEFAULT, NONE]) {
-      expect(addProviderStartDates(rules, "2026-11-15", TODAY)).toEqual({
+  it("saves exactly what the field shows, under every rule", () => {
+    for (const r of ALL) {
+      expect(addProviderStartDates(r, "2026-11-15", TODAY)).toEqual({
         providerStartDate: "2026-11-15",
         assignmentStartDate: "2026-11-15",
       });
+      // A prefilled today that is still in the field is what gets saved.
+      expect(addProviderStartDates(r, TODAY, TODAY).providerStartDate).toBe(TODAY);
     }
   });
 
-  it("by default a blank stays null on the provider and the assignments start today", () => {
-    expect(addProviderStartDates(DEFAULT, "", TODAY)).toEqual({
-      providerStartDate: null,
-      assignmentStartDate: TODAY,
-    });
-    expect(addProviderStartDates(DEFAULT, "   ", TODAY).providerStartDate).toBeNull();
+  it("never fills a blank provider start date in at save, whatever the prefill", () => {
+    for (const r of ALL) {
+      expect(addProviderStartDates(r, "", TODAY).providerStartDate).toBeNull();
+      expect(addProviderStartDates(r, "   ", TODAY).providerStartDate).toBeNull();
+    }
   });
 
-  it('under "none" a blank fills nothing, and the provider date stays null either way', () => {
-    expect(addProviderStartDates(NONE, "", TODAY)).toEqual({
+  it("by default a blank field starts the assignments today", () => {
+    expect(addProviderStartDates(DEFAULT, "", TODAY).assignmentStartDate).toBe(TODAY);
+    // A cleared prefill behaves like any blank field.
+    expect(addProviderStartDates(PREFILL_TODAY, "", TODAY).assignmentStartDate).toBe(TODAY);
+  });
+
+  it('under assignmentStartDateDefault "none" a blank field fills nothing', () => {
+    expect(addProviderStartDates(ASSIGNMENT_NONE, "", TODAY)).toEqual({
       providerStartDate: null,
       assignmentStartDate: null,
     });
@@ -68,85 +91,128 @@ describe("addProviderStartDateHint", () => {
     );
     expect(addProviderStartDateHint(DEFAULT, field("", 0))).toBeUndefined();
     expect(addProviderStartDateHint(DEFAULT, field("2026-11-15", 1))).toBeUndefined();
+    // Typing today by hand is not a prefill.
+    expect(addProviderStartDateHint(DEFAULT, field(TODAY, 1))).toBeUndefined();
   });
 
-  it('under "none" it says the assignments need a date, until the error replaces it', () => {
-    expect(addProviderStartDateHint(NONE, field("", 1))).toBe(
+  it("under the prefill says so while today is still in the field", () => {
+    expect(addProviderStartDateHint(PREFILL_TODAY, field(TODAY, 0))).toBe(
+      "Prefilled with today; change or clear it.",
+    );
+    expect(addProviderStartDateHint(PREFILL_TODAY, field(TODAY, 2))).toBe(
+      "Prefilled with today; change or clear it.",
+    );
+    expect(addProviderStartDateHint(PREFILL_TODAY, field("2026-11-15", 2))).toBeUndefined();
+    // Cleared: the blank-field hint takes over.
+    expect(addProviderStartDateHint(PREFILL_TODAY, field("", 1))).toBe(
+      "If left blank, facility assignments start today (Oct 30, 2026).",
+    );
+  });
+
+  it('under assignmentStartDateDefault "none" it says the assignments need a date, until the error replaces it', () => {
+    expect(addProviderStartDateHint(ASSIGNMENT_NONE, field("", 1))).toBe(
       "Facility assignments need a start date.",
     );
-    expect(addProviderStartDateHint(NONE, field("", 0))).toBeUndefined();
-    const error = addProviderStartDateError(NONE, { startDate: "", facilityCount: 1 });
+    expect(addProviderStartDateHint(ASSIGNMENT_NONE, field("", 0))).toBeUndefined();
+    const error = addProviderStartDateError(ASSIGNMENT_NONE, { startDate: "", facilityCount: 1 });
     expect(error).toBeDefined();
-    expect(addProviderStartDateHint(NONE, field("", 1, error))).toBeUndefined();
+    expect(addProviderStartDateHint(ASSIGNMENT_NONE, field("", 1, error))).toBeUndefined();
   });
 });
 
 describe("addProviderStartDateError", () => {
-  it("never blocks under the default", () => {
+  it("never blocks while a blank field gives the assignments today", () => {
     expect(addProviderStartDateError(DEFAULT, { startDate: "", facilityCount: 3 })).toBeUndefined();
+    expect(
+      addProviderStartDateError(PREFILL_TODAY, { startDate: "", facilityCount: 3 }),
+    ).toBeUndefined();
   });
 
-  it('requires a date under "none", only while a facility is selected', () => {
-    expect(addProviderStartDateError(NONE, { startDate: "", facilityCount: 1 })).toBe(
+  it('requires a date under assignmentStartDateDefault "none", only while a facility is selected', () => {
+    expect(addProviderStartDateError(ASSIGNMENT_NONE, { startDate: "", facilityCount: 1 })).toBe(
       "Required while a facility is selected: facility assignments need a start date.",
     );
-    expect(addProviderStartDateError(NONE, { startDate: "", facilityCount: 0 })).toBeUndefined();
     expect(
-      addProviderStartDateError(NONE, { startDate: "2026-11-15", facilityCount: 1 }),
+      addProviderStartDateError(ASSIGNMENT_NONE, { startDate: "", facilityCount: 0 }),
+    ).toBeUndefined();
+    expect(
+      addProviderStartDateError(ASSIGNMENT_NONE, { startDate: "2026-11-15", facilityCount: 1 }),
     ).toBeUndefined();
   });
 });
 
 describe("resolveAddProviderRules", () => {
-  it("is the default with nothing stored", () => {
+  it("is the defaults with nothing stored", () => {
     expect(resolveAddProviderRules()).toEqual(DEFAULT);
     expect(resolveAddProviderRules(null, null)).toEqual(DEFAULT);
   });
 
-  it("takes the organization's value, else the platform's, else the default", () => {
-    expect(resolveAddProviderRules(NONE)).toEqual(NONE);
-    expect(resolveAddProviderRules(NONE, { assignmentStartDateDefault: "today" })).toEqual(DEFAULT);
-    expect(resolveAddProviderRules(null, NONE)).toEqual(NONE);
+  it("takes the organization's value, else the platform's, else the default, field by field", () => {
+    const platform: AddProviderRules = {
+      providerStartDatePrefill: "today",
+      assignmentStartDateDefault: "none",
+    };
+    expect(resolveAddProviderRules(platform)).toEqual(platform);
+    expect(resolveAddProviderRules(platform, { providerStartDatePrefill: "none" })).toEqual({
+      providerStartDatePrefill: "none",
+      assignmentStartDateDefault: "none",
+    });
+    expect(
+      resolveAddProviderRules(
+        { providerStartDatePrefill: "today" },
+        { assignmentStartDateDefault: "none" },
+      ),
+    ).toEqual({ providerStartDatePrefill: "today", assignmentStartDateDefault: "none" });
   });
 
   it("inherits on null or undefined", () => {
-    expect(resolveAddProviderRules(NONE, { assignmentStartDateDefault: null })).toEqual(NONE);
-    expect(resolveAddProviderRules(NONE, { assignmentStartDateDefault: undefined })).toEqual(NONE);
+    expect(
+      resolveAddProviderRules(PREFILL_TODAY, {
+        providerStartDatePrefill: null,
+        assignmentStartDateDefault: undefined,
+      }),
+    ).toEqual(PREFILL_TODAY);
   });
 
   it("skips a value of the wrong shape like a missing one", () => {
     for (const bad of ["tomorrow", "Today", "", true, 0]) {
-      const override = { assignmentStartDateDefault: bad } as unknown as AddProviderRules;
+      const override = {
+        providerStartDatePrefill: bad,
+        assignmentStartDateDefault: bad,
+      } as unknown as AddProviderRules;
       expect(resolveAddProviderRules(override)).toEqual(DEFAULT);
-      expect(resolveAddProviderRules(NONE, override)).toEqual(NONE);
+      expect(resolveAddProviderRules(PREFILL_TODAY, override)).toEqual(PREFILL_TODAY);
     }
   });
 
-  it("ignores a provider start-date default: there is nothing to set", () => {
+  it("ignores a save-time provider start-date default: there is no such rule", () => {
     const stored = { providerStartDateDefault: "today" } as unknown as AddProviderRules;
     expect(resolveAddProviderRules(stored, stored)).toEqual(DEFAULT);
   });
 });
 
 describe("validateAddProviderRules", () => {
-  it("passes the default, the alternative, an empty override and nothing", () => {
-    expect(validateAddProviderRules(DEFAULT)).toEqual([]);
-    expect(validateAddProviderRules(NONE)).toEqual([]);
+  it("passes the defaults, each alternative, an empty override and nothing", () => {
+    for (const r of ALL) expect(validateAddProviderRules(r)).toEqual([]);
     expect(validateAddProviderRules({})).toEqual([]);
-    expect(validateAddProviderRules({ assignmentStartDateDefault: null })).toEqual([]);
+    expect(validateAddProviderRules({ providerStartDatePrefill: null })).toEqual([]);
     expect(validateAddProviderRules(null)).toEqual([]);
   });
 
-  it("refuses a provider start-date default, saying why", () => {
-    for (const value of ["today", "none"]) {
-      expect(validateAddProviderRules({ providerStartDateDefault: value })).toEqual([
-        "A blank provider start date can't be given a default: it fills payer forms, so it is never guessed.",
-      ]);
-    }
+  it("refuses a save-time provider start-date default, pointing to the prefill", () => {
+    expect(validateAddProviderRules({ providerStartDateDefault: "today" })).toEqual([
+      "A blank provider start date is never filled in at save: it fills payer forms. To open the field with today's date, set the Start date prefill instead.",
+    ]);
   });
 
   it("rejects unknown values and rules, in plain language", () => {
-    expect(validateAddProviderRules({ assignmentStartDateDefault: "blank" })).toEqual([
+    expect(
+      validateAddProviderRules({
+        providerStartDatePrefill: "tomorrow",
+        assignmentStartDateDefault: "blank",
+      }),
+    ).toEqual([
+      'The Start date field must open blank ("none") or filled with today ("today").',
       'A blank facility assignment start date must be today ("today") or be left for the coordinator to enter ("none").',
     ]);
     expect(validateAddProviderRules({ startDateDefault: "today" })).toEqual([
