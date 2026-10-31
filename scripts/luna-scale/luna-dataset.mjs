@@ -140,9 +140,13 @@ const CITIES = Object.freeze(["Testville", "Sampleton", "Mockford", "Demoburg", 
 
 // The Provider Onboarding funnel (MINT-81, src/lib/onboardingFunnel.ts on the
 // RC-06 branch, as reworked in #560) has five stages without intake data; the
-// scenarios below put members in each and in the gaps the funnel names.
-// Weights are fractions of --providers; every scenario is guaranteed at least
-// one provider when there are enough of them.
+// scenarios below put members in each and in the gaps the funnel names. Every
+// stage and gap here is UNDER THE PLATFORM-DEFAULT FUNNEL CONFIGURATION (the
+// default stage list and DEFAULT_ONBOARDING_FUNNEL_RULES). The funnel's stages
+// and rules are configuration, so an organization or platform override can
+// place these providers differently. Weights are fractions of --providers;
+// every scenario is guaranteed at least one provider when there are enough of
+// them.
 //
 // Group and location (#560). A location counts toward Ready only when it is
 // under a group the provider is a current member of (facilities.group_id), so

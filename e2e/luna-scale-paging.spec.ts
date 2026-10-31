@@ -252,12 +252,17 @@ function explorerModel(tables: Tables, variant: ExplorerVariant) {
     states: [...new Set(tables.facilities.map((f) => f.state as string | null))]
       .filter((state): state is string => state !== null)
       .sort(),
-    facilities: tables.facilities.map((f) => ({
-      id: f.id,
-      label: f.name,
-      groupId: f.group_id,
-      state: f.state,
-    })),
+    // The RPC joins facility choices to the caller's groups
+    // (e614_enrollment_explorer_report), so the seed's two "Unassigned
+    // Clinic" locations, which have no group, are never offered.
+    facilities: tables.facilities
+      .filter((f) => f.group_id !== null)
+      .map((f) => ({
+        id: f.id,
+        label: f.name,
+        groupId: f.group_id,
+        state: f.state,
+      })),
     products: variant === "as-seeded" ? [] : products,
     disciplines: ["PT", "PTA", "OT", "SLP"],
     statuses: [

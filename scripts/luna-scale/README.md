@@ -42,9 +42,12 @@ three `roster_templates` rows. That table is append-only by trigger.
 
 The mix:
 
-- **Provider Onboarding funnel** (MINT-81, with #560's stages and group rule).
-  Every stage it shows without intake data has members, and each provider in a
-  held stage shows exactly one kind of gap:
+- **Provider Onboarding funnel** (MINT-81, with #560's stages and group rule),
+  **under the platform-default funnel configuration**: the default stage list
+  and rules. The funnel's stages and rules are configuration, so an
+  organization or platform override can place these providers differently.
+  Under the default, every stage it shows without intake data has members, and
+  each provider in a held stage shows exactly one kind of gap:
   - Profile incomplete, 420: 70 each with no NPI, no CAQH ID, no date of birth,
     no SSN last 4, no license, and no license for the state they work in.
   - Submitted, 348: 87 each with an unverified license, an expired
@@ -187,31 +190,44 @@ range just has a gap.
 - The staging database URL: the direct host
   `db.vmznysvietfaddakkegt.supabase.co:5432`, user `postgres`, or the session
   pooler `aws-0-ca-central-1.pooler.supabase.com:5432`, user
-  `postgres.vmznysvietfaddakkegt`. Keep it out of shell history.
+  `postgres.vmznysvietfaddakkegt`, for example
+  `postgresql://postgres.vmznysvietfaddakkegt:<password>@aws-0-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require`.
 - For `--member-email`: the login must already exist on staging, with a
   `profiles` row. Create it through the app first.
 
+The URL carries the database password. Paste it at a prompt inside a one-off
+subshell, so it exists only for that one command and never reaches shell
+history. **Never `export` it in your own shell, and never put it in `~/.zshrc`
+or any profile**: a secret in a profile reaches every shell started afterwards,
+agent shells included. This helper holds no secret; every step below runs
+through it and asks for the URL:
+
 ```sh
-export SUPABASE_URL=https://vmznysvietfaddakkegt.supabase.co
-export LUNA_DATABASE_URL='postgresql://postgres.vmznysvietfaddakkegt:<password>@aws-0-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require'
-export LUNA_SCALE_ALLOWED_PROJECT_REFS=vmznysvietfaddakkegt
+# zsh; in bash use: read -rsp "Staging database URL: " DB_URL
+luna() (
+  read -rs "DB_URL?Staging database URL: " && echo
+  SUPABASE_URL=https://vmznysvietfaddakkegt.supabase.co \
+  LUNA_DATABASE_URL="$DB_URL" \
+  LUNA_SCALE_ALLOWED_PROJECT_REFS=vmznysvietfaddakkegt \
+    npm run "$@"
+)
 ```
 
 ## Apply
 
 ```sh
 # 1. Plan: no connection, nothing written. Check the target line says "staging vmznysvietfaddakkegt".
-npm run seed:luna-scale -- --dry-run --member-email you@yourdomain.com
+luna seed:luna-scale -- --dry-run --member-email you@yourdomain.com
 
 # 2. Apply, and give your own staging login access (admin by default; --member-role specialist|billing).
 #    Add --allow-multi-org-member if that login already belongs to another org.
-npm run seed:luna-scale -- --apply \
+luna seed:luna-scale -- --apply \
   --confirm "SEED LUNA SCALE ON vmznysvietfaddakkegt" \
   --member-email you@yourdomain.com
 
 # 3. Verify, strictly: read-only; every table against the regenerated plan, and no
 #    row in the org the seed did not create.
-npm run verify:luna-scale -- --strict
+luna verify:luna-scale -- --strict
 ```
 
 Sign in as that user and switch to **Luna Demo (synthetic)**.
@@ -233,9 +249,9 @@ Sign in as that user and switch to **Luna Demo (synthetic)**.
 ## Teardown
 
 ```sh
-npm run seed:luna-scale -- --dry-run --teardown        # what it would remove
-npm run seed:luna-scale -- --teardown --confirm "TEAR DOWN LUNA SCALE ON vmznysvietfaddakkegt"
-npm run verify:luna-scale -- --strict                  # only the inactive shell may remain
+luna seed:luna-scale -- --dry-run --teardown        # what it would remove
+luna seed:luna-scale -- --teardown --confirm "TEAR DOWN LUNA SCALE ON vmznysvietfaddakkegt"
+luna verify:luna-scale -- --strict                  # only the inactive shell may remain
 ```
 
 The teardown deletes only seed-owned rows (`pg_temp.luna_owned(id)`) in the Luna
