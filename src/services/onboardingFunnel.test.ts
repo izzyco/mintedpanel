@@ -269,14 +269,86 @@ describe("onboarding funnel service", () => {
     ]);
   });
 
-  it("reads group memberships in active groups only and leaves both dates to the funnel", async () => {
+  it("reads every membership, with its group's name and whether the group is active", async () => {
     const input = await getOnboardingFunnelInput();
-    // The start date is read for the future-membership rule; by default a
-    // membership that starts in the future already counts.
+    // Both dates are left to the funnel: the start date for the
+    // future-membership rule, and either one to say why a membership does
+    // not count. An inactive group's membership comes through so the hold
+    // can name it.
     expect(holder.calls.provider_group_assignments.select[0][0]).toContain("start_date");
     expect(input.groupMemberships).toEqual([
-      { providerId: "p-active", groupId: "g-on", startDate: "2026-01-05", endDate: null },
-      { providerId: "p-onboarding", groupId: "g-on", startDate: null, endDate: "2026-01-31" },
+      {
+        providerId: "p-active",
+        groupId: "g-on",
+        groupName: "Rose City Rehab",
+        groupActive: true,
+        startDate: "2026-01-05",
+        endDate: null,
+      },
+      {
+        providerId: "p-onboarding",
+        groupId: "g-on",
+        groupName: "Rose City Rehab",
+        groupActive: true,
+        startDate: null,
+        endDate: "2026-01-31",
+      },
+      {
+        providerId: "p-onboarding",
+        groupId: "g-off",
+        groupName: "Closed Rehab",
+        groupActive: false,
+        startDate: null,
+        endDate: null,
+      },
+    ]);
+  });
+
+  it("says a membership's group is inactive instead of calling it someone else's", async () => {
+    holder.tables.providers = [provider("p-closed")];
+    holder.tables.state_licenses = [
+      {
+        id: "l-closed",
+        org_id: "org-1",
+        provider_id: "p-closed",
+        state: "NC",
+        status: "active",
+        verified_status: "verified",
+        expiration_date: "2027-06-30",
+      },
+    ];
+    holder.tables.facilities = [
+      {
+        id: "f-closed",
+        org_id: "org-1",
+        name: "Old Clinic",
+        group_id: "g-off",
+        state: "NC",
+        is_active: true,
+        reference_only: false,
+      },
+    ];
+    holder.tables.provider_facility_assignments = [
+      { id: "a-closed", org_id: "org-1", provider_id: "p-closed", facility_id: "f-closed" },
+    ];
+    holder.tables.provider_group_assignments = [
+      {
+        id: "m-closed",
+        org_id: "org-1",
+        provider_id: "p-closed",
+        group_id: "g-off",
+        start_date: null,
+        end_date: null,
+      },
+    ];
+    holder.tables.credential_cases = [];
+    const input = await getOnboardingFunnelInput();
+    expect(buildOnboardingFunnelRows(input, "2026-10-20", input.config)).toMatchObject([
+      {
+        providerId: "p-closed",
+        stage: "verified_awaiting_assignment",
+        gaps: ["Group Closed Rehab is inactive"],
+      },
     ]);
   });
 

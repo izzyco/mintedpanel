@@ -4,54 +4,57 @@
 //
 // Two layers, kept apart:
 //
-// 1. Dimensions: facts about each provider, each computed on its own.
-//    complete   every required field is present: NPI, CAQH ID, date of birth,
-//               SSN last 4, and a license (any license with a valid state
-//               code, and one for each state they are assigned to work in).
-//    verified   the record is not pending verification, CAQH is attested
-//               within the last 120 days (a future date never counts), and
-//               every license judged is board-verified with an expiration
-//               date not yet passed. Licenses are judged for the states of
-//               the provider's active locations; with no location, every
-//               license on file is. While a stateless location holds the
-//               provider (below), it gets no fallback.
-//    assigned   a current group membership, an active non-reference location,
-//               by default a location under one of their current groups
-//               (facilities.group_id), and by default a valid state on every
-//               active location. A location under another group is still a
-//               place they are assigned to work: its state still counts for
-//               the license checks above.
-//    hasCase    at least one case that counts as Credentialing, with the
-//               status of every case on file.
-//    intake     invited, and whether the intake form came back: a fact, read
-//               only once the intake tables can be read (MINT-89). Until then
-//               it is null and is never inferred.
+// 1. Dimensions: each computed on its own for every provider.
+//    complete        every required field is present: NPI, CAQH ID, date of
+//                    birth, SSN last 4, and a license (any license with a
+//                    valid state code, and one for each state they are
+//                    assigned to work in).
+//    verified        the record is not pending verification, CAQH is attested
+//                    within the last 120 days (a future date never counts),
+//                    and every license judged is board-verified with an
+//                    expiration date not yet passed. Licenses are judged for
+//                    the valid states of the provider's active locations;
+//                    with none, every license on file is.
+//    assigned        a current group membership, an active non-reference
+//                    location, by default a location under one of their
+//                    current groups (facilities.group_id), and by default a
+//                    valid state on every active location. A location under
+//                    another group is still a place they are assigned to
+//                    work, so its state still counts for the license checks.
+//    cases           facts: how many cases are on file and their statuses.
+//    hasCountedCase  policy: at least one case in a status that counts as
+//                    Credentialing. Only this one is read by the stages.
+//    intake          invited, and whether the intake form came back: a fact,
+//                    read only once the intake tables can be read (MINT-89).
+//                    Until then it is null and is never inferred.
 //
 // 2. Stages: configuration. An ordered list; each stage has a stable key, a
 //    label, a description and a gate picked from a fixed menu of predicates
 //    over the dimensions (ONBOARDING_FUNNEL_GATES). The first stage whose
-//    gate matches wins, and the last stage is a catch-all, so every counted
-//    provider sits in exactly one. The default list is the PM's:
-//
-//    Invited (hidden until intake data can be read), Profile incomplete,
-//    Submitted (the information is complete and not yet verified; it says
-//    nothing about anything being sent anywhere), Verified awaiting
-//    assignment, Ready for credentialing, Credentialing (any case, in any
-//    status by default; never split by status, which belongs on the case
-//    board).
+//    gate matches wins. A list must place every combination of dimensions
+//    in a stage under the rules in force (validateOnboardingFunnelConfig),
+//    so every counted provider sits in exactly one. A stage whose gate
+//    cannot match under the rules in force is hidden, like Invited while
+//    intake data cannot be read. The default list is the PM's: Invited,
+//    Profile incomplete, Submitted (the information is complete and not yet
+//    verified; it says nothing about anything being sent anywhere),
+//    Verified awaiting assignment, Ready for credentialing, Credentialing
+//    (never split by status, which belongs on the case board).
 //
 // Business policy is configuration, never a constant: the stage list and the
 // rules (OnboardingFunnelRules) resolve from the platform default, then a
-// platform override, then an organization override, field by field
-// (resolveOnboardingFunnelConfig). validateOnboardingFunnelConfig is the
-// check an override must pass before it goes live. Nothing stores an
-// override yet; the Mission Control setting is MINT-125.
+// platform override, then an organization override
+// (resolveOnboardingFunnelConfig). Nothing stores an override yet; the
+// Mission Control setting is MINT-125. A list that fails validation never
+// goes live: the next level down is used instead, and the default list is
+// valid under every rule.
 //
-// A group membership counts until its end date passes; by default its start
-// date is ignored, because credentialing happens before a provider starts.
-// Billing Readiness (src/lib/billingReadiness.ts) and the contract SOP
-// assignments (src/services/contractSopAssignments.ts) do require a start
-// date on or before today, because they ask who is working now.
+// A group membership counts while its group is active and until its end
+// date passes; by default its start date is ignored, because credentialing
+// happens before a provider starts. Billing Readiness
+// (src/lib/billingReadiness.ts) and the contract SOP assignments
+// (src/services/contractSopAssignments.ts) do require a start date on or
+// before today, because they ask who is working now.
 //
 // Not the provider onboarding (intake) flow in src/lib/providerOnboarding.ts:
 // this is the Reporting Center funnel over the provider records themselves.
@@ -65,14 +68,11 @@ import { isCaqhCurrent, CAQH_CURRENT_DAYS } from "@/lib/enrollmentReadiness";
 /** The funnel's policy rules. Each field names its default, so the
  * alternative is the obvious other value. */
 export interface OnboardingFunnelRules {
-  /** Case statuses that do NOT count as Credentialing. A case in one of them
-   * is ignored, as if it did not exist. Default empty: every case counts,
-   * whatever its status. */
+  /** Case statuses that do NOT count as Credentialing. Default empty: every
+   * case counts, whatever its status. The cases stay on record as facts. */
   caseStatusesNotCountedAsCredentialing: readonly CaseStatus[];
   /** True (default): an active location with no valid state keeps the
-   * provider from being assigned. False: it counts like any other location;
-   * its license cannot be judged, so with no valid working state at all every
-   * license on file is judged instead. */
+   * provider from being assigned. False: it counts like any other location. */
   statelessLocationHolds: boolean;
   /** True (default): a group membership that starts after today already
    * counts as current. False: it counts from its start date. A membership
@@ -116,6 +116,9 @@ const RULE_CHECKS: { [K in keyof OnboardingFunnelRules]: (value: unknown) => boo
 
 const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof OnboardingFunnelRules>;
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 /** Field by field: the organization's value, else the platform's, else the
  * default. A stored value of the wrong shape is skipped like a missing one. */
 export function resolveOnboardingFunnelRules(
@@ -124,7 +127,7 @@ export function resolveOnboardingFunnelRules(
 ): OnboardingFunnelRules {
   const pick = <K extends keyof OnboardingFunnelRules>(key: K): OnboardingFunnelRules[K] => {
     for (const override of [organization, platform]) {
-      const value: unknown = override?.[key];
+      const value: unknown = isRecord(override) ? override[key] : undefined;
       if (value != null && RULE_CHECKS[key](value)) return value as OnboardingFunnelRules[K];
     }
     return DEFAULT_ONBOARDING_FUNNEL_RULES[key];
@@ -155,11 +158,14 @@ export interface OnboardingFunnelDimensions {
   verificationGaps: string[];
   assigned: boolean;
   assignmentGaps: string[];
-  /** At least one case that counts as Credentialing under the rules. */
+  /** Fact: at least one case on file, in any status. */
   hasCase: boolean;
-  /** The status of every case on file, counted or not; null for a stored
-   * value that is not a known status. */
+  /** Fact: how many cases are on file. */
+  caseCount: number;
+  /** Fact: every case's status; null for a stored value that is not known. */
   caseStatuses: Array<CaseStatus | null>;
+  /** Policy: at least one case in a status that counts as Credentialing. */
+  hasCountedCase: boolean;
   /** null while the intake tables cannot be read (MINT-89). Never inferred. */
   intake: OnboardingFunnelIntakeFacts | null;
 }
@@ -200,43 +206,44 @@ const none = () => [];
 const GATE_LIST: readonly GateDefinition[] = [
   {
     key: "invited_not_submitted",
-    description: "Invited to the intake form, has not sent it back, and has no case.",
+    description: "Invited to the intake form, has not sent it back, and has no counted case.",
     needsIntakeData: true,
     listsGaps: false,
     matches: (d) =>
-      !d.hasCase && d.intake !== null && d.intake.invited && !d.intake.intakeSubmitted,
+      !d.hasCountedCase && d.intake !== null && d.intake.invited && !d.intake.intakeSubmitted,
     gaps: none,
   },
   {
     key: "incomplete",
-    description: "A required field is missing, and no case.",
+    description: "A required field is missing, and no counted case.",
     needsIntakeData: false,
     listsGaps: true,
-    matches: (d) => !d.hasCase && !d.complete,
+    matches: (d) => !d.hasCountedCase && !d.complete,
     gaps: (d) => d.completenessGaps,
   },
   {
     key: "complete_unverified",
-    description: "Complete but not verified, and no case. Lists assignment gaps too.",
+    description: "Complete but not verified, and no counted case. Lists assignment gaps too.",
     needsIntakeData: false,
     listsGaps: true,
-    matches: (d) => !d.hasCase && d.complete && !d.verified,
+    matches: (d) => !d.hasCountedCase && d.complete && !d.verified,
     gaps: (d, rules) => [...d.verificationGaps, ...assignmentHolds(d, rules)],
   },
   {
     key: "verified_unassigned",
-    description: "Complete and verified, but not assigned where Ready needs it, and no case.",
+    description:
+      "Complete and verified, but not assigned while Ready requires it, and no counted case.",
     needsIntakeData: false,
     listsGaps: true,
-    matches: (d, rules) => !d.hasCase && d.complete && d.verified && !assignmentOk(d, rules),
+    matches: (d, rules) => !d.hasCountedCase && d.complete && d.verified && !assignmentOk(d, rules),
     gaps: (d) => d.assignmentGaps,
   },
   {
     key: "not_ready",
-    description: "Anything short of Ready, and no case. Lists every gap.",
+    description: "Anything short of Ready, and no counted case. Lists every gap.",
     needsIntakeData: false,
     listsGaps: true,
-    matches: (d, rules) => !d.hasCase && !readyNow(d, rules),
+    matches: (d, rules) => !d.hasCountedCase && !readyNow(d, rules),
     gaps: (d, rules) => [
       ...d.completenessGaps,
       ...d.verificationGaps,
@@ -245,24 +252,23 @@ const GATE_LIST: readonly GateDefinition[] = [
   },
   {
     key: "ready",
-    description: "Complete, verified, assigned where required, and no case.",
+    description: "Meets every requirement in force, and no counted case.",
     needsIntakeData: false,
     listsGaps: false,
-    matches: (d, rules) => !d.hasCase && readyNow(d, rules),
+    matches: (d, rules) => !d.hasCountedCase && readyNow(d, rules),
     gaps: none,
   },
   {
     key: "has_case",
-    description: "Has a case that counts as Credentialing.",
+    description: "Has a case in a status that counts as Credentialing.",
     needsIntakeData: false,
     listsGaps: false,
-    matches: (d) => d.hasCase,
+    matches: (d) => d.hasCountedCase,
     gaps: none,
   },
   {
     key: "any",
-    description:
-      "Everyone not placed by an earlier stage. The last stage uses it, and only the last.",
+    description: 'Everyone not placed by an earlier stage ("everyone else"). Only the last stage.',
     needsIntakeData: false,
     listsGaps: false,
     matches: () => true,
@@ -281,6 +287,45 @@ export const ONBOARDING_FUNNEL_GATES: ReadonlyArray<
   needsIntakeData,
   listsGaps,
 }));
+
+/** Every combination of dimension values the gates read. Intake varies
+ * fastest, unread first. */
+function sampleDimensions(): OnboardingFunnelDimensions[] {
+  const flags = [true, false];
+  const intakes: Array<OnboardingFunnelIntakeFacts | null> = [
+    null,
+    { invited: false, intakeSubmitted: false },
+    { invited: true, intakeSubmitted: false },
+    { invited: true, intakeSubmitted: true },
+  ];
+  const samples: OnboardingFunnelDimensions[] = [];
+  for (const hasCountedCase of flags)
+    for (const complete of flags)
+      for (const verified of flags)
+        for (const assigned of flags)
+          for (const intake of intakes)
+            samples.push({
+              complete,
+              completenessGaps: [],
+              verified,
+              verificationGaps: [],
+              assigned,
+              assignmentGaps: [],
+              hasCase: hasCountedCase,
+              caseCount: hasCountedCase ? 1 : 0,
+              caseStatuses: [],
+              hasCountedCase,
+              intake,
+            });
+  return samples;
+}
+
+const SAMPLES = sampleDimensions();
+
+function gateCanMatch(gate: OnboardingFunnelGate, rules: OnboardingFunnelRules): boolean {
+  const definition = GATES.get(gate);
+  return definition !== undefined && SAMPLES.some((d) => definition.matches(d, rules));
+}
 
 // ---------------------------------------------------------------------------
 // Stages
@@ -317,20 +362,20 @@ const DEFAULT_STAGE_LIST: OnboardingFunnelStageConfig[] = [
   {
     key: "verified_awaiting_assignment",
     label: "Verified, awaiting assignment",
-    description: "Verified, but the group or location assignment is incomplete.",
+    description: "Verified; the group, the location, or a location's record still needs attention.",
     gate: "verified_unassigned",
   },
   {
     key: "ready_for_credentialing",
     label: "Ready for credentialing",
-    description: "Verified and assigned to a group and one of its locations. No case yet.",
+    description: "Meets every requirement for credentialing. No case yet.",
     gate: "ready",
   },
   {
     key: "credentialing",
     label: "Credentialing",
-    description: "Has at least one credentialing case, in any status.",
-    gate: "any",
+    description: "Has at least one credentialing case.",
+    gate: "has_case",
   },
 ];
 
@@ -364,78 +409,45 @@ export interface OnboardingFunnelStageInfo extends OnboardingFunnelStageConfig {
   listsGaps: boolean;
 }
 
-/** The stages the report shows, in order. Intake-gated stages need the
- * intake tables. */
-export function visibleOnboardingFunnelStages(
-  stages: ReadonlyArray<OnboardingFunnelStageConfig>,
-  intakeReadable: boolean,
-): OnboardingFunnelStageInfo[] {
-  return stages
-    .map((stage) => {
-      const gate = GATES.get(stage.gate);
-      return {
-        ...stage,
-        needsIntakeData: gate?.needsIntakeData ?? false,
-        listsGaps: gate?.listsGaps ?? false,
-      };
-    })
-    .filter((stage) => intakeReadable || !stage.needsIntakeData);
-}
-
 // ---------------------------------------------------------------------------
-// Validation: what an override must pass before it goes live (MINT-125)
+// Validation: what a configuration must pass before it goes live (MINT-125)
 
+export const MAX_ONBOARDING_FUNNEL_STAGES = 6;
 const STAGE_KEY = /^[a-z][a-z0-9_]{0,63}$/;
 const MAX_LABEL = 60;
 const MAX_DESCRIPTION = 200;
 
-/** Every combination of dimension values and of the rule the gates read. */
-function sampleDimensions(): Array<[OnboardingFunnelDimensions, boolean]> {
-  const flags = [true, false];
-  const intakes: Array<OnboardingFunnelIntakeFacts | null> = [
-    null,
-    { invited: false, intakeSubmitted: false },
-    { invited: true, intakeSubmitted: false },
-    { invited: true, intakeSubmitted: true },
-  ];
-  const samples: Array<[OnboardingFunnelDimensions, boolean]> = [];
-  for (const complete of flags)
-    for (const verified of flags)
-      for (const assigned of flags)
-        for (const hasCase of flags)
-          for (const intake of intakes)
-            for (const assignmentRequired of flags)
-              samples.push([
-                {
-                  complete,
-                  completenessGaps: [],
-                  verified,
-                  verificationGaps: [],
-                  assigned,
-                  assignmentGaps: [],
-                  hasCase,
-                  caseStatuses: [],
-                  intake,
-                },
-                assignmentRequired,
-              ]);
-  return samples;
+function describeSample(d: OnboardingFunnelDimensions): string {
+  const state = [
+    d.complete ? "complete" : "incomplete",
+    d.verified ? "verified" : "not verified",
+    d.assigned ? "assigned" : "not assigned",
+  ].join(", ");
+  return `A provider who is ${state}, ${d.hasCountedCase ? "with a case" : "with no case"},`;
 }
 
-/** Plain-language problems with a configuration; empty when it can go live. */
+/** Plain-language problems with a configuration; empty when it can go live.
+ * Coverage is checked under the configuration's own rules. */
 export function validateOnboardingFunnelConfig(config: OnboardingFunnelConfig): string[] {
   const errors: string[] = [];
-  const stages: ReadonlyArray<Partial<Record<keyof OnboardingFunnelStageConfig, unknown>>> =
-    Array.isArray(config.stages) ? config.stages : [];
-  if (stages.length === 0) errors.push("Add at least one stage.");
+  const raw: unknown = isRecord(config) ? config.stages : undefined;
+  if (!Array.isArray(raw)) errors.push("The stages must be a list.");
+  const list: unknown[] = Array.isArray(raw) ? raw : [];
+  if (Array.isArray(raw) && list.length === 0) errors.push("Add at least one stage.");
+  if (list.length > MAX_ONBOARDING_FUNNEL_STAGES)
+    errors.push(`Use at most ${MAX_ONBOARDING_FUNNEL_STAGES} stages.`);
 
   const keys = new Set<string>();
   const labels = new Set<string>();
-  stages.forEach((stage, i) => {
+  list.forEach((entry, i) => {
     const where = `Stage ${i + 1}`;
-    const key = typeof stage.key === "string" ? stage.key : "";
-    const label = typeof stage.label === "string" ? stage.label.trim() : "";
-    const description = typeof stage.description === "string" ? stage.description.trim() : "";
+    if (!isRecord(entry)) {
+      errors.push(`${where} is not a stage.`);
+      return;
+    }
+    const key = typeof entry.key === "string" ? entry.key : "";
+    const label = typeof entry.label === "string" ? entry.label.trim() : "";
+    const description = typeof entry.description === "string" ? entry.description.trim() : "";
     if (!STAGE_KEY.test(key))
       errors.push(
         `${where}: the key must start with a lowercase letter and use only lowercase letters, digits and underscores.`,
@@ -451,15 +463,14 @@ export function validateOnboardingFunnelConfig(config: OnboardingFunnelConfig): 
     if (!description) errors.push(`${where}: add a description.`);
     else if (description.length > MAX_DESCRIPTION)
       errors.push(`${where}: keep the description to ${MAX_DESCRIPTION} characters.`);
-    if (!GATES.has(stage.gate as OnboardingFunnelGate))
-      errors.push(`${where}: "${String(stage.gate)}" is not a gate on the menu.`);
-    else if (stage.gate === "any" && i !== stages.length - 1)
-      errors.push(`${where}: only the last stage can take everyone ("any").`);
+    if (typeof entry.gate !== "string" || !GATES.has(entry.gate as OnboardingFunnelGate))
+      errors.push(`${where}: "${String(entry.gate)}" is not a gate on the menu.`);
+    else if (entry.gate === "any" && i !== list.length - 1)
+      errors.push(`${where}: only the last stage can take everyone else ("any").`);
   });
-  if (stages.length > 0 && stages[stages.length - 1].gate !== "any")
-    errors.push('The last stage must take everyone not placed earlier (gate "any").');
 
-  const rules: Record<string, unknown> = (config.rules ?? {}) as unknown as Record<string, unknown>;
+  const rules: Record<string, unknown> =
+    isRecord(config) && isRecord(config.rules) ? config.rules : {};
   for (const key of RULE_KEYS) {
     if (!RULE_CHECKS[key](rules[key]))
       errors.push(
@@ -470,22 +481,53 @@ export function validateOnboardingFunnelConfig(config: OnboardingFunnelConfig): 
   }
   if (errors.length > 0) return errors;
 
-  // Reachability: a stage the stages before it always pre-empt, whatever the
-  // provider and the assignment rule, would always be empty. The catch-all
-  // is exempt.
-  const typed = stages as ReadonlyArray<OnboardingFunnelStageConfig>;
-  const reached = new Set<number>();
-  for (const [d, assignmentRequiredForReady] of sampleDimensions()) {
-    const sampleRules = { ...config.rules, assignmentRequiredForReady };
-    reached.add(typed.findIndex((stage) => GATES.get(stage.gate)?.matches(d, sampleRules)));
+  // Coverage under the rules in force: every combination of dimensions must
+  // land in a stage, and a stage whose gate can match must be the first
+  // match for someone. A stage whose gate cannot match under these rules is
+  // hidden, not an error.
+  const stages = list as OnboardingFunnelStageConfig[];
+  const effective = rules as unknown as OnboardingFunnelRules;
+  const first = new Set<number>();
+  let uncovered: OnboardingFunnelDimensions | null = null;
+  for (const d of SAMPLES) {
+    const index = stages.findIndex((stage) => GATES.get(stage.gate)?.matches(d, effective));
+    if (index < 0) uncovered ??= d;
+    else first.add(index);
   }
-  typed.slice(0, -1).forEach((stage, i) => {
-    if (!reached.has(i))
+  if (uncovered)
+    errors.push(
+      `${describeSample(uncovered)} would fit no stage. Add a stage for them, or end with an "everyone else" stage ("any").`,
+    );
+  stages.forEach((stage, i) => {
+    if (!first.has(i) && gateCanMatch(stage.gate, effective))
       errors.push(
         `"${stage.label.trim()}" can never be reached: the stages before it take everyone its gate would.`,
       );
   });
   return errors;
+}
+
+const copyStage = (stage: OnboardingFunnelStageConfig): OnboardingFunnelStageConfig => ({
+  key: stage.key,
+  label: stage.label,
+  description: stage.description,
+  gate: stage.gate,
+});
+
+/** The configuration the funnel actually runs: rules field by field (a bad
+ * value falls back to the default), and the stage list only if it validates
+ * under those rules, else the default list, which is valid under every
+ * rule. A broken configuration therefore never drops a provider. */
+export function effectiveOnboardingFunnelConfig(
+  config: OnboardingFunnelConfig | null | undefined,
+): OnboardingFunnelConfig {
+  const rules = resolveOnboardingFunnelRules(null, isRecord(config) ? config.rules : null);
+  const stages =
+    isRecord(config) &&
+    validateOnboardingFunnelConfig({ stages: config.stages, rules }).length === 0
+      ? config.stages
+      : DEFAULT_ONBOARDING_FUNNEL_STAGES;
+  return { stages: stages.map(copyStage), rules };
 }
 
 /** Rules field by field; a stage list is used only if it validates with
@@ -494,13 +536,60 @@ export function resolveOnboardingFunnelConfig(
   platform?: OnboardingFunnelConfigOverride | null,
   organization?: OnboardingFunnelConfigOverride | null,
 ): OnboardingFunnelConfig {
+  // Stored values may be any shape; the rules resolver and the validator
+  // both check, so a bad one is skipped rather than run.
   const rules = resolveOnboardingFunnelRules(platform?.rules, organization?.rules);
   const stages =
     [organization?.stages, platform?.stages].find(
       (list): list is ReadonlyArray<OnboardingFunnelStageConfig> =>
         list != null && validateOnboardingFunnelConfig({ stages: list, rules }).length === 0,
     ) ?? DEFAULT_ONBOARDING_FUNNEL_STAGES;
-  return { stages: stages.map((stage) => ({ ...stage })), rules };
+  return { stages: stages.map(copyStage), rules };
+}
+
+/** The stages the report shows, in order: intake-gated stages need the
+ * intake tables, and a stage whose gate cannot match under the rules in
+ * force is hidden. */
+export function visibleOnboardingFunnelStages(
+  config: OnboardingFunnelConfig,
+  intakeReadable: boolean,
+): OnboardingFunnelStageInfo[] {
+  const { stages, rules } = effectiveOnboardingFunnelConfig(config);
+  return stages
+    .filter((stage) => gateCanMatch(stage.gate, rules))
+    .map((stage) => {
+      const gate = GATES.get(stage.gate);
+      return {
+        ...stage,
+        needsIntakeData: gate?.needsIntakeData ?? false,
+        listsGaps: gate?.listsGaps ?? false,
+      };
+    })
+    .filter((stage) => intakeReadable || !stage.needsIntakeData);
+}
+
+function placeIn(
+  d: OnboardingFunnelDimensions,
+  stages: ReadonlyArray<OnboardingFunnelStageConfig>,
+  rules: OnboardingFunnelRules,
+): { stage: OnboardingFunnelStageKey; gaps: string[] } {
+  for (const stage of stages) {
+    const gate = GATES.get(stage.gate);
+    if (gate?.matches(d, rules)) return { stage: stage.key, gaps: gate.gaps(d, rules) };
+  }
+  // Unreachable: the stages in use always passed validation, which proves
+  // every combination lands somewhere.
+  return { stage: stages[stages.length - 1].key, gaps: [] };
+}
+
+/** Where a provider with these dimensions sits under a configuration (the
+ * configuration the funnel would actually run). */
+export function placeOnboardingFunnelStage(
+  d: OnboardingFunnelDimensions,
+  config: OnboardingFunnelConfig,
+): { stage: OnboardingFunnelStageKey; gaps: string[] } {
+  const effective = effectiveOnboardingFunnelConfig(config);
+  return placeIn(d, effective.stages, effective.rules);
 }
 
 // ---------------------------------------------------------------------------
@@ -535,10 +624,12 @@ export interface OnboardingFunnelLocationInput {
   groupName: string | null;
 }
 
-/** A membership in an active group. */
+/** A group membership, current or not. */
 export interface OnboardingFunnelMembershipInput {
   providerId: string | null;
   groupId: string | null;
+  groupName: string | null;
+  groupActive: boolean;
   startDate: string | null;
   endDate: string | null;
 }
@@ -582,6 +673,7 @@ export interface OnboardingFunnelRow {
   stage: OnboardingFunnelStageKey;
   /** What keeps the provider in their stage, for stages whose gate lists gaps. */
   gaps: string[];
+  /** Every state the provider touches: work, license, or any case on file. */
   states: string[];
   dimensions: OnboardingFunnelDimensions;
 }
@@ -606,19 +698,27 @@ function groupByProvider<T extends { providerId: string | null }>(rows: readonly
   return map;
 }
 
-function isCurrentMembership(
+/** Why a membership is not current, or null when it is. */
+function lapsedMembershipReason(
   membership: OnboardingFunnelMembershipInput,
   today: string,
   rules: OnboardingFunnelRules,
-): boolean {
+): string | null {
+  const name = membership.groupName ?? "the provider's group";
   const start = day(membership.startDate);
   const end = day(membership.endDate);
-  if (end !== null && end < today) return false;
-  return rules.futureMembershipCounts || start === null || start <= today;
+  if (!membership.groupActive) return `Group ${name} is inactive`;
+  if (end !== null && end < today) return `Membership in ${name} ended ${end}`;
+  if (!rules.futureMembershipCounts && start !== null && start > today)
+    return `Membership in ${name} starts ${start}`;
+  return null;
 }
 
-/** One reason per location, naming why it is not in the provider's group. */
-function locationGroupGaps(locations: readonly OnboardingFunnelLocationInput[]): string[] {
+/** One reason per location, naming why it is not in a current group. */
+function locationGroupGaps(
+  locations: readonly OnboardingFunnelLocationInput[],
+  lapsed: ReadonlyMap<string, string>,
+): string[] {
   const sorted = [...locations].sort(
     (a, b) =>
       a.locationName.localeCompare(b.locationName) || a.locationId.localeCompare(b.locationId),
@@ -628,24 +728,40 @@ function locationGroupGaps(locations: readonly OnboardingFunnelLocationInput[]):
       sorted.map((l) =>
         l.groupId === null
           ? `Location ${l.locationName} has no group`
-          : `Location ${l.locationName} is under ${l.groupName ?? "another group"}, not the provider's group`,
+          : (lapsed.get(l.groupId) ??
+            `Location ${l.locationName} is under ${l.groupName ?? "another group"}, not the provider's group`),
       ),
     ),
   ];
 }
 
 function assignmentGaps(
-  groups: ReadonlySet<string>,
+  memberships: readonly OnboardingFunnelMembershipInput[],
   locations: readonly OnboardingFunnelLocationInput[],
+  today: string,
   rules: OnboardingFunnelRules,
 ): string[] {
-  const inGroup = (l: OnboardingFunnelLocationInput) =>
-    !rules.locationMustBeInProviderGroup || (l.groupId !== null && groups.has(l.groupId));
+  const current = new Set<string>();
+  const lapsed = new Map<string, string>();
+  for (const m of memberships) {
+    if (!m.groupId) continue;
+    const reason = lapsedMembershipReason(m, today, rules);
+    if (reason === null) current.add(m.groupId);
+    else lapsed.set(m.groupId, reason);
+  }
   const gaps: string[] = [];
-  if (groups.size === 0 && locations.length === 0) gaps.push("Needs a group and a location");
-  else if (groups.size === 0) gaps.push("Needs a group");
-  else if (locations.length === 0) gaps.push("Needs a location");
-  else if (!locations.some(inGroup)) gaps.push(...locationGroupGaps(locations));
+  if (current.size === 0) {
+    // Name the membership that does not count, when there is one.
+    if (lapsed.size > 0) {
+      gaps.push(...[...new Set(lapsed.values())].sort());
+      if (locations.length === 0) gaps.push("Needs a location");
+    } else gaps.push(locations.length === 0 ? "Needs a group and a location" : "Needs a group");
+  } else if (locations.length === 0) gaps.push("Needs a location");
+  else if (
+    rules.locationMustBeInProviderGroup &&
+    !locations.some((l) => l.groupId !== null && current.has(l.groupId))
+  )
+    gaps.push(...locationGroupGaps(locations, lapsed));
   if (rules.statelessLocationHolds && locations.some((l) => code(l.state) === null))
     gaps.push(STATELESS_LOCATION_GAP);
   return gaps;
@@ -656,32 +772,26 @@ export function buildOnboardingFunnelRows(
   today: string,
   config: OnboardingFunnelConfig,
 ): OnboardingFunnelRow[] {
-  const { rules, stages } = config;
+  // A configuration that fails validation (an empty or malformed list, a
+  // gap in coverage) is never run: the default list is.
+  const { rules, stages } = effectiveOnboardingFunnelConfig(config);
   const notCounted = new Set<string>(rules.caseStatusesNotCountedAsCredentialing);
   const licensesBy = groupByProvider(input.licenses);
   const locationsBy = groupByProvider(input.locations);
   const casesBy = groupByProvider(input.cases);
-  const groupsBy = new Map<string, Set<string>>();
-  for (const m of input.groupMemberships) {
-    if (!m.providerId || !m.groupId || !isCurrentMembership(m, today, rules)) continue;
-    groupsBy.set(m.providerId, (groupsBy.get(m.providerId) ?? new Set<string>()).add(m.groupId));
-  }
+  const membershipsBy = groupByProvider(input.groupMemberships);
   // Intake is a fact or nothing: unread tables give null, never a guess.
   const intakeBy = input.intakeReadable ? groupByProvider(input.intake ?? []) : null;
-  // A stateless location gets no all-licenses fallback only while its hold
-  // keeps the provider from Ready.
-  const statelessHoldInForce = rules.statelessLocationHolds && rules.assignmentRequiredForReady;
 
   return input.providers
     .map((p): OnboardingFunnelRow => {
       const licenses = licensesBy.get(p.providerId) ?? [];
       const locations = locationsBy.get(p.providerId) ?? [];
-      const allCases = casesBy.get(p.providerId) ?? [];
-      // A case in a status that does not count is ignored entirely.
-      const cases = allCases.filter((c) => c.status === null || !notCounted.has(c.status));
+      const cases = casesBy.get(p.providerId) ?? [];
       const workStates = [...new Set(locations.map((row) => code(row.state)))].filter(
         (s): s is string => s !== null,
       );
+      // Facts: every case counts toward the states the provider touches.
       const states = [
         ...new Set(
           [
@@ -710,14 +820,10 @@ export function buildOnboardingFunnelRows(
           : workStates.filter((s) => !licenseStates.has(s)).map((s) => `No ${s} license`)),
       ];
 
-      // verified. Judge the licenses for the states they work in; with no
-      // location, every license on file.
-      const judged =
-        workStates.length > 0
-          ? workStates
-          : locations.length > 0 && statelessHoldInForce
-            ? []
-            : [...licenseStates];
+      // verified. Judge the licenses for the valid states they work in;
+      // with none, every license on file. A stateless location is an
+      // assignment gap of its own and never hides a license problem.
+      const judged = workStates.length > 0 ? workStates : [...licenseStates];
       const verificationGaps: string[] = [];
       for (const state of judged) {
         const best = stateLicenses
@@ -749,7 +855,7 @@ export function buildOnboardingFunnelRows(
       if (p.pendingVerification) verificationGaps.push("Record pending verification");
 
       // assigned.
-      const holds = assignmentGaps(groupsBy.get(p.providerId) ?? new Set(), locations, rules);
+      const holds = assignmentGaps(membershipsBy.get(p.providerId) ?? [], locations, today, rules);
 
       // intake.
       const invites = intakeBy?.get(p.providerId) ?? [];
@@ -762,7 +868,9 @@ export function buildOnboardingFunnelRows(
         assigned: holds.length === 0,
         assignmentGaps: holds,
         hasCase: cases.length > 0,
-        caseStatuses: allCases.map((c) => c.status),
+        caseCount: cases.length,
+        caseStatuses: cases.map((c) => c.status),
+        hasCountedCase: cases.some((c) => c.status === null || !notCounted.has(c.status)),
         intake:
           intakeBy === null
             ? null
@@ -771,20 +879,11 @@ export function buildOnboardingFunnelRows(
                 intakeSubmitted: invites.some((row) => row.intakeSubmitted),
               },
       };
-
-      // First matching stage wins. A valid configuration ends in a
-      // catch-all; should one ever not, the last stage still takes the
-      // provider, so nobody is dropped.
-      const stage =
-        stages.find((s) => GATES.get(s.gate)?.matches(dimensions, rules)) ??
-        stages[stages.length - 1];
-      const gate = stage ? GATES.get(stage.gate) : undefined;
       return {
         providerId: p.providerId,
         name: p.name,
         npi: p.npi,
-        stage: stage?.key ?? "",
-        gaps: gate?.matches(dimensions, rules) ? gate.gaps(dimensions, rules) : [],
+        ...placeIn(dimensions, stages, rules),
         states,
         dimensions,
       };
@@ -804,7 +903,7 @@ export function onboardingFunnelStageCounts(
   return counts;
 }
 
-/** Every state any provider touches (work, license, or counted case), A→Z. */
+/** Every state any provider touches (work, license, or case), A→Z. */
 export function onboardingFunnelStates(rows: readonly OnboardingFunnelRow[]): string[] {
   return [...new Set(rows.flatMap((row) => row.states))].sort();
 }

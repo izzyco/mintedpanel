@@ -138,14 +138,19 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> 
         },
       ];
     }),
-    groupMemberships: memberships
-      .filter((row) => activeGroups.has(row.group_id))
-      .map((row) => ({
+    // Every membership, current or not, so a hold can say why one does not
+    // count (inactive group, ended, or not started yet).
+    groupMemberships: memberships.map((row) => {
+      const groupId = text(row.group_id);
+      return {
         providerId: text(row.provider_id),
-        groupId: text(row.group_id),
+        groupId,
+        groupName: groupId === null ? null : (groupNames.get(groupId) ?? null),
+        groupActive: activeGroups.has(row.group_id),
         startDate: text(row.start_date),
         endDate: text(row.end_date),
-      })),
+      };
+    }),
     cases: cases.map((row) => ({
       providerId: text(row.provider_id),
       state: text(row.state),

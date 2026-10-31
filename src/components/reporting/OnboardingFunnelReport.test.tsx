@@ -35,7 +35,7 @@ vi.mock("@/hooks/useOnboardingFunnel", () => ({
       state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG,
     ),
     stages: visibleOnboardingFunnelStages(
-      (state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG).stages,
+      state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG,
       state.intakeReadable,
     ),
     isLoading: false,
@@ -82,7 +82,16 @@ function funnelInput(): OnboardingFunnelInput {
         groupName: "Rose City Rehab",
       },
     ],
-    groupMemberships: [{ providerId: "p-ready", groupId: "g-1", startDate: null, endDate: null }],
+    groupMemberships: [
+      {
+        providerId: "p-ready",
+        groupId: "g-1",
+        groupName: "Rose City Rehab",
+        groupActive: true,
+        startDate: null,
+        endDate: null,
+      },
+    ],
     // Dee's only case was denied; by default every case counts.
     cases: [{ providerId: "p-denied", state: "TX", status: "denied" }],
     intakeReadable: false,
@@ -117,7 +126,8 @@ describe("Provider Onboarding report", () => {
     ]);
     expect(html).not.toContain("Awaiting verification");
     expect(html).not.toContain("Ready to credential<");
-    expect(html).toContain("lg:grid-cols-5");
+    // Five cards: three across on a laptop, five from 1280px.
+    expect(html).toContain("lg:grid-cols-3 xl:grid-cols-5");
   });
 
   it("lists a verified provider with no group or location under Verified, awaiting assignment", () => {
@@ -175,7 +185,12 @@ describe("Provider Onboarding report", () => {
           description: "Ready for payer work.",
           gate: "ready",
         },
-        { key: "credentialing", label: "Credentialing", description: "Has a case.", gate: "any" },
+        {
+          key: "credentialing",
+          label: "Credentialing",
+          description: "Has a case.",
+          gate: "has_case",
+        },
       ],
       rules: DEFAULT_ONBOARDING_FUNNEL_CONFIG.rules,
     };

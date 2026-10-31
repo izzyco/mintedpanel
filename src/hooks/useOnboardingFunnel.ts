@@ -5,7 +5,8 @@
 // make every provider write wait on this seven-table read. Invited shows only
 // once the read can see the intake tables (intakeReadable; MINT-89). The
 // funnel configuration (stages and rules) comes with the read, resolved for
-// the org; while it loads, the platform default stages show.
+// the org; while it loads, the platform default stages show. A stage whose
+// gate cannot match under the org's rules is hidden.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
@@ -35,10 +36,10 @@ export function useOnboardingFunnel() {
     [query.data],
   );
   const intakeReadable = query.data?.intakeReadable ?? false;
-  const configStages = query.data?.config.stages ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG.stages;
+  const config = query.data?.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG;
   const stages = useMemo(
-    () => visibleOnboardingFunnelStages(configStages, intakeReadable),
-    [configStages, intakeReadable],
+    () => visibleOnboardingFunnelStages(config, intakeReadable),
+    [config, intakeReadable],
   );
   return {
     orgId,
