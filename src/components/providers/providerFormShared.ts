@@ -2,6 +2,9 @@
 // Record edit uses a separate inline Identity path (EditProviderForm retired).
 import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
 import { isKnownTaxonomyCode } from "@/lib/providerTaxonomy";
+import { isBlankField, planNpiRegistryFill, type NpiFillSummary } from "@/lib/npiRegistryFill";
+import type { NpiRegistryRecord } from "@/lib/npiRegistry";
+import { DEFAULT_NPI_REGISTRY_POLICY, type NpiFillOnPick } from "@/lib/npiRegistryPolicy";
 
 // Re-export the single mastered state list (src/lib/usStates.ts) rather than
 // keep a second copy in sync — the provider forms import US_STATES from here.
@@ -93,12 +96,18 @@ export function validatePersonal(f: ProviderFormState): ProviderFormErrors {
   return e;
 }
 
-export function validateCredentials(f: ProviderFormState): ProviderFormErrors {
+/** `registryBlock` is why the NPI Registry policy refuses this NPI
+ * (useNpiRegistrySaveBlock), or null; the check digit is checked first. */
+export function validateCredentials(
+  f: ProviderFormState,
+  registryBlock: string | null = null,
+): ProviderFormErrors {
   const e: ProviderFormErrors = {};
   // Blank stays allowed (incomplete onboarding); an entered NPI must pass the
   // shape AND the CMS check digit (MINT-7).
   if (f.npi && !NPI_RE.test(f.npi)) e.npi = "NPI must be 10 digits and start with 1";
   else if (f.npi && !isValidNpi(f.npi)) e.npi = NPI_CHECK_DIGIT_MESSAGE;
+  else if (f.npi && registryBlock) e.npi = registryBlock;
   if (!f.isNewGrad && f.caqhId && !CAQH_RE.test(f.caqhId)) e.caqhId = "CAQH must be 8 digits";
   // Soft gate: value must be one of the picker options (PT/PTA + dietitian).
   // Blank stays allowed; the Credentials step defaults to Physical Therapist.
@@ -107,6 +116,57 @@ export function validateCredentials(f: ProviderFormState): ProviderFormErrors {
   return e;
 }
 
-export function validateAll(f: ProviderFormState): ProviderFormErrors {
-  return { ...validatePersonal(f), ...validateCredentials(f) };
+export function validateAll(
+  f: ProviderFormState,
+  registryBlock: string | null = null,
+): ProviderFormErrors {
+  return { ...validatePersonal(f), ...validateCredentials(f, registryBlock) };
+}
+
+/** A license row nobody has touched: every field still empty. */
+export function isBlankLicenseRow(row: LicenseRow): boolean {
+  return [row.state, row.number, row.type, row.issueDate, row.expirationDate].every(isBlankField);
+}
+
+/** MINT-110: a picked NPI Registry match applied to the Add Provider form.
+ * The NPI is set; at "blank_fields" credentials, taxonomy and licenses fill
+ * only when blank, and the default Physical Therapist taxonomy counts as a
+ * value. */
+export function applyNpiRegistryPick(
+  form: ProviderFormState,
+  record: NpiRegistryRecord,
+  fillOnPick: NpiFillOnPick = DEFAULT_NPI_REGISTRY_POLICY.fillOnPick,
+): { form: ProviderFormState; summary: NpiFillSummary } {
+  const plan = planNpiRegistryFill(
+    record,
+    {
+      npi: form.npi,
+      credentials: form.credentials,
+      taxonomyCode: form.taxonomyCode,
+      licenses: form.licenses.map((row) => ({
+        state: row.state,
+        number: row.number,
+        blank: isBlankLicenseRow(row),
+      })),
+      // Add Provider saves a license row with any subset of its fields.
+      licenseRowSaveable: true,
+    },
+    fillOnPick,
+  );
+  const licenses = [...form.licenses];
+  for (const license of plan.licenses) {
+    const filled = { state: license.state, number: license.number };
+    if (license.rowIndex === null) licenses.push({ ...emptyLicenseRow(), ...filled });
+    else licenses[license.rowIndex] = { ...licenses[license.rowIndex], ...filled };
+  }
+  return {
+    form: {
+      ...form,
+      npi: plan.npi,
+      credentials: plan.credentials ?? form.credentials,
+      taxonomyCode: plan.taxonomyCode ?? form.taxonomyCode,
+      licenses,
+    },
+    summary: plan.summary,
+  };
 }

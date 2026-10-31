@@ -14,10 +14,13 @@ import {
   NPI_REGISTRY_RESULT_CAP,
   NPI_REGISTRY_UNAVAILABLE_MESSAGE,
   foldNameForRegistry,
+  type NpiRegistryAddress,
+  type NpiRegistryIdentifier,
   type NpiRegistryLookupResult,
   type NpiRegistryName,
   type NpiRegistryRecord,
   type NpiRegistrySearchResult,
+  type NpiRegistryTaxonomy,
   type ValidNpiRegistrySearch,
 } from "@/lib/npiRegistry";
 
@@ -27,6 +30,12 @@ export const NPPES_TIMEOUT_MS = 5_000;
 export const NPPES_MAX_RESPONSE_BYTES = 512 * 1024;
 /** Former and other names kept per record. */
 export const NPPES_OTHER_NAMES_MAX = 5;
+/** Taxonomies kept per record (NPPES itself allows 15). */
+export const NPPES_TAXONOMIES_MAX = 15;
+/** Other identifiers (Medicaid numbers and the like) kept per record. */
+export const NPPES_IDENTIFIERS_MAX = 10;
+/** Secondary practice locations kept per record. */
+export const NPPES_PRACTICE_LOCATIONS_MAX = 5;
 const MAX_TEXT = 120;
 // The query parameters we send. An `Errors` body that names only these is the
 // registry refusing the query, not the registry being down.
@@ -158,17 +167,80 @@ function primaryTaxonomy(value: unknown): NpiRegistryRecord["primaryTaxonomy"] {
   return primary && code ? { code, description: text(primary.desc) } : null;
 }
 
-function practiceLocation(value: unknown): { city: string | null; state: string | null } {
-  const rows = Array.isArray(value) ? value.filter(isObject) : [];
-  const location = rows.find((row) => row.address_purpose === "LOCATION");
-  return { city: text(location?.city), state: text(location?.state) };
+// Every taxonomy with a code, the primary first, then in registry order. A
+// taxonomy repeats once per licensing state, so codes are not deduplicated.
+function taxonomies(value: unknown): NpiRegistryTaxonomy[] {
+  if (!Array.isArray(value)) return [];
+  const rows = value.filter(isObject).flatMap((row): NpiRegistryTaxonomy[] => {
+    const code = text(row.code);
+    if (!code) return [];
+    return [
+      {
+        code,
+        description: text(row.desc),
+        primary: row.primary === true,
+        license: text(row.license),
+        licenseState: text(row.state),
+      },
+    ];
+  });
+  return [...rows.filter((row) => row.primary), ...rows.filter((row) => !row.primary)].slice(
+    0,
+    NPPES_TAXONOMIES_MAX,
+  );
+}
+
+function address(row: Record<string, unknown> | undefined): NpiRegistryAddress | null {
+  if (!row) return null;
+  const value: NpiRegistryAddress = {
+    line1: text(row.address_1),
+    line2: text(row.address_2),
+    city: text(row.city),
+    state: text(row.state),
+    postalCode: text(row.postal_code),
+    countryCode: text(row.country_code),
+    phone: text(row.telephone_number),
+  };
+  return Object.values(value).some((part) => part !== null) ? value : null;
+}
+
+function addressRows(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isObject) : [];
+}
+
+function otherPracticeAddresses(value: unknown): NpiRegistryAddress[] {
+  return addressRows(value)
+    .flatMap((row) => {
+      const location = address(row);
+      return location ? [location] : [];
+    })
+    .slice(0, NPPES_PRACTICE_LOCATIONS_MAX);
+}
+
+function identifiers(value: unknown): NpiRegistryIdentifier[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isObject)
+    .flatMap((row): NpiRegistryIdentifier[] => {
+      const identifier = text(row.identifier);
+      if (!identifier) return [];
+      return [
+        { identifier, type: text(row.desc), state: text(row.state), issuer: text(row.issuer) },
+      ];
+    })
+    .slice(0, NPPES_IDENTIFIERS_MAX);
 }
 
 function otherNames(value: unknown): NpiRegistryName[] {
   if (!Array.isArray(value)) return [];
   return value
     .filter(isObject)
-    .map((row) => ({ firstName: text(row.first_name), lastName: text(row.last_name) }))
+    .map((row) => ({
+      firstName: text(row.first_name),
+      lastName: text(row.last_name),
+      middleName: text(row.middle_name),
+      type: text(row.type),
+    }))
     .filter((name) => name.firstName !== null && name.lastName !== null)
     .slice(0, NPPES_OTHER_NAMES_MAX);
 }
@@ -183,7 +255,8 @@ export function toNpiRegistryRecord(raw: unknown): NpiRegistryRecord | null {
   const type = raw.enumeration_type;
   if (type !== "NPI-1" && type !== "NPI-2") return null;
   const basic = isObject(raw.basic) ? raw.basic : {};
-  const location = practiceLocation(raw.addresses);
+  const addresses = addressRows(raw.addresses);
+  const practice = address(addresses.find((row) => row.address_purpose === "LOCATION"));
   const enumerationDate = text(basic.enumeration_date);
   return {
     npi,
@@ -194,11 +267,17 @@ export function toNpiRegistryRecord(raw: unknown): NpiRegistryRecord | null {
     organizationName: type === "NPI-2" ? text(basic.organization_name) : null,
     credential: type === "NPI-1" ? text(basic.credential) : null,
     primaryTaxonomy: primaryTaxonomy(raw.taxonomies),
-    practiceCity: location.city,
-    practiceState: location.state,
+    practiceCity: practice?.city ?? null,
+    practiceState: practice?.state ?? null,
     status: basic.status === "A" ? "active" : "inactive",
     enumerationDate: enumerationDate && isIsoDate(enumerationDate) ? enumerationDate : null,
     otherNames: type === "NPI-1" ? otherNames(raw.other_names) : [],
+    suffix: type === "NPI-1" ? text(basic.name_suffix) : null,
+    taxonomies: taxonomies(raw.taxonomies),
+    practiceAddress: practice,
+    mailingAddress: address(addresses.find((row) => row.address_purpose === "MAILING")),
+    otherPracticeAddresses: otherPracticeAddresses(raw.practiceLocations),
+    identifiers: identifiers(raw.identifiers),
   };
 }
 

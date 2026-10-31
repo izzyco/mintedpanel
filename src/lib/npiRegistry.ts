@@ -2,11 +2,20 @@
 // route and the browser: the wire shapes, input validation, the name match,
 // and the verification message staff see under an NPI field. No I/O.
 //
-// The registry is a check, never a gate: a missing record, a name that
-// differs, or the registry being down only ever produces a warning. The CMS
-// check digit (src/lib/providerIdentity) is the only NPI rule that blocks.
+// By default the registry is a check, never a gate: a missing record, a name
+// that differs, or an organization or inactive number only produces a
+// warning. An organization may turn any of those four into a block
+// (src/lib/npiRegistryPolicy). The registry being down, rate limited or
+// refusing the query is never a block. The CMS check digit
+// (src/lib/providerIdentity) always blocks.
 import { isValidNpi, stripNpiSeparators } from "@/lib/providerIdentity";
 import { US_STATES } from "@/lib/usStates";
+import {
+  DEFAULT_NPI_REGISTRY_POLICY,
+  type NpiFillOnPick,
+  type NpiRegistryOutcome,
+  type NpiRegistryPolicy,
+} from "@/lib/npiRegistryPolicy";
 
 /** The most matches a name search returns; the route asks the registry for one
  * more so it can say the list was cut short. */
@@ -24,6 +33,39 @@ export type NpiEnumerationType = "NPI-1" | "NPI-2";
 export interface NpiRegistryName {
   firstName: string | null;
   lastName: string | null;
+  middleName?: string | null;
+  /** The registry's label for the name, such as "Former Name". */
+  type?: string | null;
+}
+
+/** One taxonomy the registry lists, with the state license it names. */
+export interface NpiRegistryTaxonomy {
+  code: string;
+  description: string | null;
+  primary: boolean;
+  license: string | null;
+  /** The state that issued `license`. */
+  licenseState: string | null;
+}
+
+export interface NpiRegistryAddress {
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  state: string | null;
+  /** As the registry stores it: five or nine digits for a US address. */
+  postalCode: string | null;
+  countryCode: string | null;
+  phone: string | null;
+}
+
+/** An "other identifier" the registry lists, such as a Medicaid number. */
+export interface NpiRegistryIdentifier {
+  identifier: string;
+  /** The registry's description of it ("MEDICAID", "OTHER"). */
+  type: string | null;
+  state: string | null;
+  issuer: string | null;
 }
 
 /** Public registry fields only, exactly as the registry spells them. */
@@ -45,6 +87,18 @@ export interface NpiRegistryRecord {
   enumerationDate: string | null;
   /** Former and other names the registry lists for an individual. */
   otherNames: NpiRegistryName[];
+  // What picking a match can fill or show (src/lib/npiRegistryFill.ts). The
+  // server always sends them; they are optional so a record built without
+  // them reads as "the registry listed none".
+  /** NPI-1 only ("JR", "III"). */
+  suffix?: string | null;
+  /** Every taxonomy, the primary first. */
+  taxonomies?: NpiRegistryTaxonomy[];
+  practiceAddress?: NpiRegistryAddress | null;
+  mailingAddress?: NpiRegistryAddress | null;
+  /** Secondary practice locations. */
+  otherPracticeAddresses?: NpiRegistryAddress[];
+  identifiers?: NpiRegistryIdentifier[];
 }
 
 export interface NpiRegistrySearchInput {
@@ -293,19 +347,103 @@ export type NpiLookupState =
   | { status: "error"; message: string }
   | { status: "done"; record: NpiRegistryRecord | null };
 
+type TypedName = { firstName: string; lastName: string };
+
+/** The NPI to check, or null: only a check-digit-valid NPI, and only when the
+ * form asks (an unchanged stored NPI is not re-checked). */
+export function npiToCheck(npi: string, verify: boolean): string | null {
+  return verify && isValidNpi(npi) ? npi : null;
+}
+
+// The failures staff can act on — the rate limit, and the registry refusing
+// the query (a 422) — keep their own message; anything else (an outage, an
+// expired session, a dropped connection) reads as the registry being
+// unavailable.
+const ACTIONABLE_MESSAGES: ReadonlySet<string> = new Set([
+  NPI_REGISTRY_RATE_LIMIT_MESSAGE,
+  NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
+]);
+
+/** The message staff see for a failed registry call. */
+export function npiRegistryErrorMessage(error: unknown): string {
+  return error instanceof Error && ACTIONABLE_MESSAGES.has(error.message)
+    ? error.message
+    : NPI_REGISTRY_UNAVAILABLE_MESSAGE;
+}
+
+/** A lookup query (from useNpiRegistryLookup) as a lookup state. */
+export function npiLookupStateOf(
+  checkable: string | null,
+  query: { isError: boolean; error: unknown; data?: NpiRegistryLookupResult },
+): NpiLookupState {
+  if (checkable === null) return { status: "idle" };
+  if (query.isError) return { status: "error", message: npiRegistryErrorMessage(query.error) };
+  return query.data ? { status: "done", record: query.data.record } : { status: "loading" };
+}
+
+/** The registry answer a policy can act on, or null when there is none: no
+ * checkable NPI, the check is running or failed, or the record matches. */
+export function npiLookupOutcome(
+  state: NpiLookupState,
+  typed: TypedName,
+): NpiRegistryOutcome | null {
+  if (state.status !== "done") return null;
+  const record = state.record;
+  if (!record) return "notFound";
+  if (record.enumerationType === "NPI-2") return "organizationNumber";
+  if (record.status !== "active") return "inactive";
+  if (compareNpiRegistryName(typed, record) === "mismatch") return "nameMismatch";
+  return null;
+}
+
+/** Why saving is refused, by outcome, when the policy says "block". */
+export const NPI_REGISTRY_BLOCK_REASONS: Readonly<Record<NpiRegistryOutcome, string>> = {
+  organizationNumber:
+    "Your organization doesn't save an organization (Type 2) NPI as a provider's NPI.",
+  notFound: "Your organization saves only NPIs the NPI Registry lists.",
+  nameMismatch: "Your organization saves an NPI only when the name matches the NPI Registry.",
+  inactive: "Your organization saves only NPIs the NPI Registry lists as active.",
+};
+export const NPI_REGISTRY_CHECK_PENDING_MESSAGE =
+  "Wait for the NPI Registry check to finish before saving.";
+
+function blocksSomething(policy: NpiRegistryPolicy): boolean {
+  return Object.values(policy.severity).includes("block");
+}
+
+/** Why the form must refuse to save, or null. Only a registry answer whose
+ * severity is "block" refuses; while a check is running it refuses only when
+ * some answer would block. A failed, skipped or matching check never does. */
+export function npiRegistrySaveBlock(
+  state: NpiLookupState,
+  typed: TypedName,
+  policy: NpiRegistryPolicy = DEFAULT_NPI_REGISTRY_POLICY,
+): string | null {
+  if (state.status === "loading") {
+    return blocksSomething(policy) ? NPI_REGISTRY_CHECK_PENDING_MESSAGE : null;
+  }
+  const outcome = npiLookupOutcome(state, typed);
+  return outcome && policy.severity[outcome] === "block"
+    ? NPI_REGISTRY_BLOCK_REASONS[outcome]
+    : null;
+}
+
 export interface NpiVerificationView {
-  tone: "neutral" | "ok" | "warn";
+  /** "block": the policy refuses the save until this is fixed. */
+  tone: "neutral" | "ok" | "warn" | "block";
   title: string;
   detail: string | null;
 }
 
 const STILL_SAVEABLE = "You can still save this provider.";
 
-/** The line shown under an NPI field. Every outcome leaves the form saveable;
- * null means there is nothing to say (no checkable NPI yet). */
+/** The line shown under an NPI field; null means there is nothing to say (no
+ * checkable NPI yet). Under the default policy every outcome leaves the form
+ * saveable; an outcome the policy blocks says why saving is refused. */
 export function npiVerificationView(
   state: NpiLookupState,
-  typed: { firstName: string; lastName: string },
+  typed: TypedName,
+  policy: NpiRegistryPolicy = DEFAULT_NPI_REGISTRY_POLICY,
 ): NpiVerificationView | null {
   if (state.status === "idle") return null;
   if (state.status === "loading") {
@@ -315,32 +453,42 @@ export function npiVerificationView(
     return { tone: "warn", title: state.message, detail: STILL_SAVEABLE };
   }
   const record = state.record;
+  const outcome = npiLookupOutcome(state, typed);
+  const blocked = outcome !== null && policy.severity[outcome] === "block";
+  const tone = blocked ? "block" : "warn";
+  // The registry's own words, then the policy's reason when it blocks.
+  const withReason = (detail: string) =>
+    blocked && outcome ? `${detail} ${NPI_REGISTRY_BLOCK_REASONS[outcome]}` : detail;
   if (!record) {
     return {
-      tone: "warn",
+      tone,
       title: "Not found in the NPI Registry",
-      detail: `Re-check the number; deactivated NPIs are not listed. ${STILL_SAVEABLE}`,
+      detail: blocked
+        ? withReason("Re-check the number; deactivated NPIs are not listed.")
+        : `Re-check the number; deactivated NPIs are not listed. ${STILL_SAVEABLE}`,
     };
   }
-  if (record.enumerationType === "NPI-2") {
+  if (outcome === "organizationNumber") {
     return {
-      tone: "warn",
+      tone,
       title: "This NPI belongs to an organization",
-      detail: `The registry lists ${registryDisplayName(record)}. A provider's Type 1 NPI is an individual's.`,
+      detail: withReason(
+        `The registry lists ${registryDisplayName(record)}. A provider's Type 1 NPI is an individual's.`,
+      ),
     };
   }
-  if (record.status !== "active") {
+  if (outcome === "inactive") {
     return {
-      tone: "warn",
+      tone,
       title: "The NPI Registry lists this NPI as inactive",
-      detail: registrySummary(record),
+      detail: blocked ? withReason(`${registrySummary(record)}.`) : registrySummary(record),
     };
   }
-  if (compareNpiRegistryName(typed, record) === "mismatch") {
+  if (outcome === "nameMismatch") {
     return {
-      tone: "warn",
+      tone,
       title: "Found in the NPI Registry, but the name differs",
-      detail: `The registry lists ${registrySummary(record)}.`,
+      detail: withReason(`The registry lists ${registrySummary(record)}.`),
     };
   }
   return { tone: "ok", title: "Found in the NPI Registry", detail: registrySummary(record) };
@@ -354,7 +502,10 @@ export type NpiSearchState =
   | { status: "done"; result: NpiRegistrySearchResult };
 
 /** What the search status line announces. */
-export function npiSearchStatusText(state: NpiSearchState): string {
+export function npiSearchStatusText(
+  state: NpiSearchState,
+  fillOnPick: NpiFillOnPick = DEFAULT_NPI_REGISTRY_POLICY.fillOnPick,
+): string {
   if (state.status === "idle") return "";
   if (state.status === "loading") return "Searching the NPI Registry…";
   if (state.status === "error") return `${state.message}. You can still type the NPI.`;
@@ -363,5 +514,7 @@ export function npiSearchStatusText(state: NpiSearchState): string {
   const matches = `${count} ${count === 1 ? "match" : "matches"} in the NPI Registry`;
   return state.result.truncated
     ? `${matches} — showing the first ${NPI_REGISTRY_RESULT_CAP}. Add a state to narrow it.`
-    : `${matches}. Pick one to fill the NPI.`;
+    : fillOnPick === "npi_only"
+      ? `${matches}. Pick one to fill the NPI.`
+      : `${matches}. Pick one to fill the NPI and any blank fields.`;
 }

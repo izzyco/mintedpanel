@@ -3,13 +3,17 @@
 // reaches our server's registry route, and nothing reaches NPPES.
 //   1. Add Provider (/providers/new): a typed dashed NPI is stripped and
 //      verified; a name search (plus state) lists matches; the keyboard picks
-//      one, which fills the NPI only; the save carries the picked NPI.
+//      one, which sets the NPI and fills the blank license row and adds a
+//      second, while the typed credentials and the default taxonomy are kept;
+//      the pick is announced once and the registry-only data is shown; the
+//      save carries all of it.
 //   2. Roster form (/onboarding/wizard → Add provider): a name that differs
 //      and a registry outage are both warnings — the provider still saves;
 //      the note describes the NPI input and is announced only when the
 //      result changes, not on a name keystroke;
-//      a failed name search can be retried; junk that is not a dash or space
-//      still fails.
+//      a failed name search can be retried; a pick fills the blank
+//      credentials and taxonomy and adds a license, and keeps the license
+//      staff typed; a pasted label, dots or letters still fail.
 import { test, expect, type BrowserContext, type Route } from "./fixtures/legacy-access-context";
 import type { NpiRegistryRecord } from "../src/lib/npiRegistry";
 
@@ -249,7 +253,37 @@ const BOULDER_JANE = registryRecord({
   npi: "1902833742",
   middleName: "M",
   credential: "DPT",
+  primaryTaxonomy: { code: "2251X0800X", description: "Physical Therapist, Orthopedic" },
   practiceCity: "BOULDER",
+  taxonomies: [
+    {
+      code: "2251X0800X",
+      description: "Physical Therapist, Orthopedic",
+      primary: true,
+      license: "PT-4471",
+      licenseState: "CO",
+    },
+    {
+      code: "225100000X",
+      description: "Physical Therapist",
+      primary: false,
+      license: "WY-0099",
+      licenseState: "WY",
+    },
+  ],
+  practiceAddress: {
+    line1: "200 CLINIC WAY",
+    line2: null,
+    city: "BOULDER",
+    state: "CO",
+    postalCode: "803021234",
+    countryCode: "US",
+    phone: "303-555-0199",
+  },
+  mailingAddress: null,
+  otherPracticeAddresses: [],
+  identifiers: [{ identifier: "CO-MCD-77", type: "MEDICAID", state: "CO", issuer: null }],
+  otherNames: [{ firstName: "JANE", lastName: "SMITH", middleName: null, type: "Former Name" }],
 });
 
 interface RegistryCall {
@@ -287,7 +321,7 @@ async function mockRegistry(context: BrowserContext) {
   return { calls, state };
 }
 
-test("MINT-110: Add Provider strips and verifies a typed NPI, then picks a registry match by keyboard", async ({
+test("MINT-110: Add Provider strips and verifies a typed NPI, then a keyboard pick fills only blank fields", async ({
   context,
   page,
 }) => {
@@ -304,6 +338,8 @@ test("MINT-110: Add Provider strips and verifies a typed NPI, then picks a regis
   });
   await page.getByLabel("First name", { exact: true }).fill("Jane");
   await page.getByLabel("Last name", { exact: true }).fill("Doe");
+  // Typed by staff: a pick must keep it.
+  await page.getByLabel("Credentials", { exact: true }).fill("PT");
   await page.getByRole("button", { name: "Next" }).click();
 
   // A pasted dashed NPI keeps all ten digits and is verified once.
@@ -331,7 +367,7 @@ test("MINT-110: Add Provider strips and verifies a typed NPI, then picks a regis
   await page.getByRole("option", { name: "CO", exact: true }).click();
   await page.getByRole("button", { name: "Search NPI Registry" }).click();
   await expect(
-    page.getByText("2 matches in the NPI Registry. Pick one to fill the NPI."),
+    page.getByText("2 matches in the NPI Registry. Pick one to fill the NPI and any blank fields."),
   ).toBeVisible();
   expect(registry.calls.at(-1)).toMatchObject({
     path: "search",
@@ -350,16 +386,42 @@ test("MINT-110: Add Provider strips and verifies a typed NPI, then picks a regis
   await expect(npi).toHaveValue("1902833742");
   await expect(attested).toHaveValue("2026-07-01");
   await expect(matches).toHaveCount(0);
+  // Focus stays on the search, not on the summary.
   await expect(page.getByRole("button", { name: "Search NPI Registry" })).toBeFocused();
   await expect(npi).toHaveAccessibleDescription(
-    /Found in the NPI Registry.*JANE M DOE, DPT · Physical Therapist · BOULDER, CO/,
+    /Found in the NPI Registry.*JANE M DOE, DPT · Physical Therapist, Orthopedic · BOULDER, CO/,
   );
   // The picked record seeds the check: no second lookup call.
   expect(registry.calls.filter((call) => call.path === "lookup")).toHaveLength(1);
 
+  // Filled: the blank license row and a second state. Kept: the typed
+  // credentials and the default taxonomy. Announced once, politely, with the
+  // check the pick caused.
+  const filledText = "Filled from the NPI Registry: NPI, CO license, WY license.";
+  const keptText =
+    "Kept yours: Credentials — registry has DPT; " +
+    "Taxonomy code — registry has 2251X0800X (Physical Therapist, Orthopedic).";
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: `${filledText} ${keptText} More registry details are listed below.` })
+      .filter({ hasText: "Found in the NPI Registry. JANE M DOE, DPT" }),
+  ).toHaveCount(1);
+  const summary = page.getByRole("region", { name: "From the NPI Registry" });
+  await expect(summary.getByText(filledText, { exact: true })).toBeVisible();
+  await expect(summary.getByText(keptText, { exact: true })).toBeVisible();
+  await expect(summary).toContainText(
+    "Practice address200 CLINIC WAY, BOULDER, CO 80302-1234 · 303-555-0199",
+  );
+  await expect(summary).toContainText("Other identifiersMEDICAID CO-MCD-77 (CO)");
+  await expect(summary).toContainText("Other namesJANE SMITH (Former Name)");
+  await expect(page.getByRole("combobox", { name: "Taxonomy code" })).toContainText("225100000X");
+
   for (let step = 0; step < 3; step += 1) {
     await page.getByRole("button", { name: "Next" }).click();
   }
+  await expect(page.getByText("CO · PT-4471", { exact: false })).toBeVisible();
+  await expect(page.getByText("WY · WY-0099", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Create provider" }).click();
   await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
     timeout: 30000,
@@ -369,12 +431,20 @@ test("MINT-110: Add Provider strips and verifies a typed NPI, then picks a regis
   expect(creates[0].body).toMatchObject({
     first_name: "Jane",
     last_name: "Doe",
+    credentials: "PT",
     npi: "1902833742",
+    taxonomy_code: "225100000X",
     caqh_last_attested_date: "2026-07-01",
   });
+  const licenses = requests.filter((r) => r.method === "POST" && r.table === "state_licenses");
+  expect(licenses).toHaveLength(1);
+  expect(licenses[0].body).toMatchObject([
+    { state: "CO", license_number: "PT-4471", expiration_date: null },
+    { state: "WY", license_number: "WY-0099", expiration_date: null },
+  ]);
 });
 
-test("MINT-110: roster form saves through a name mismatch and a registry outage; other junk still fails", async ({
+test("MINT-110: roster form saves through a name mismatch and an outage; a pick fills blanks and keeps a typed license", async ({
   context,
   page,
 }) => {
@@ -394,10 +464,13 @@ test("MINT-110: roster form saves through a name mismatch and a registry outage;
   await dialog.locator("#prov-first").fill("Jane");
   await dialog.locator("#prov-last").fill("Roe");
 
-  // Junk other than dashes and spaces still fails, and is never looked up.
-  await dialog.locator("#prov-npi").fill("12a4567893");
-  await dialog.getByRole("button", { name: "Save provider" }).click();
-  await expect(dialog).toContainText("NPI must be 10 digits");
+  // Only the ten digits: a pasted label, dots or letters fail (Sowmya, Oct
+  // 31), and are never looked up.
+  for (const junk of ["NPI: 1234567893", "123.456.7893", "12a4567893"]) {
+    await dialog.locator("#prov-npi").fill(junk);
+    await dialog.getByRole("button", { name: "Save provider" }).click();
+    await expect(dialog).toContainText("NPI must be 10 digits");
+  }
   expect(fixtures.providers).toHaveLength(0);
 
   // A spaced NPI is checked; the registry's name differs — a warning only.
@@ -440,8 +513,35 @@ test("MINT-110: roster form saves through a name mismatch and a registry outage;
   ).toBeVisible();
   registry.state.searchDown = false;
   await search.click();
-  await expect(dialog.getByRole("list", { name: "NPI Registry matches" })).toBeVisible();
+  const matches = dialog.getByRole("list", { name: "NPI Registry matches" });
+  await expect(matches).toBeVisible();
   expect(registry.calls.filter((call) => call.path === "search")).toHaveLength(2);
+
+  // Staff typed a CO license; the pick must leave that row alone.
+  await dialog.locator("#lic-0-state").click();
+  await page.getByRole("option", { name: "CO", exact: true }).click();
+  await dialog.locator("#lic-0-number").fill("CO-1");
+
+  await matches.getByRole("button", { name: /^JANE M DOE, DPT NPI 1902833742/ }).click();
+  const filledText = "Filled from the NPI Registry: Credentials, Taxonomy code, WY license.";
+  const keptText = "Kept yours: CO license — registry has PT-4471.";
+  await expect(
+    dialog
+      .getByRole("status")
+      .filter({ hasText: `${filledText} ${keptText}` })
+      .filter({ hasText: "Found in the NPI Registry. JANE M DOE, DPT" }),
+  ).toHaveCount(1);
+  const summary = dialog.getByRole("region", { name: "From the NPI Registry" });
+  await expect(summary.getByText(filledText, { exact: true })).toBeVisible();
+  await expect(summary.getByText(keptText, { exact: true })).toBeVisible();
+  await expect(dialog.locator("#prov-credentials")).toHaveValue("DPT");
+  await expect(dialog.locator("#prov-taxonomy")).toContainText("2251X0800X");
+  await expect(dialog.locator("#lic-0-state")).toContainText("CO");
+  await expect(dialog.locator("#lic-0-number")).toHaveValue("CO-1");
+  await expect(dialog.locator("#lic-1-state")).toContainText("WY");
+  await expect(dialog.locator("#lic-1-number")).toHaveValue("WY-0099");
+  // The pick seeded the check for the outage NPI; no lookup call was made.
+  expect(registry.calls.filter((call) => call.path === "lookup")).toHaveLength(2);
 
   await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(card).toContainText("Jane Doe", { timeout: 15000 });
@@ -449,6 +549,12 @@ test("MINT-110: roster form saves through a name mismatch and a registry outage;
   expect(fixtures.providers[0]).toMatchObject({
     first_name: "Jane",
     last_name: "Doe",
+    credentials: "DPT",
     npi: "1902833742",
+    taxonomy_code: "2251X0800X",
   });
+  expect(fixtures.state_licenses).toMatchObject([
+    { state: "CO", license_number: "CO-1", expiration_date: null },
+    { state: "WY", license_number: "WY-0099", expiration_date: null },
+  ]);
 });

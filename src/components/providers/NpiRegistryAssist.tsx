@@ -1,14 +1,21 @@
 // NPI Registry (NPPES) help under a provider's NPI field — MINT-110. Two jobs:
 //   1. Verify: once the NPI passes the check digit, say whether the registry
-//      has it and whether the name staff typed matches. Every outcome is a
-//      note, never an error — a missing record, a different name or the
-//      registry being down never stops a save.
+//      has it and whether the name staff typed matches. Under the default
+//      policy every outcome is a note, never an error. An organization's
+//      policy (src/lib/npiRegistryPolicy) may make an outcome block; the note
+//      then reads as an error and the form refuses the save. The registry
+//      being down never stops a save.
 //   2. Search: look up individuals by the form's first and last name (plus an
-//      optional state) and let staff pick one. Picking fills the NPI only.
+//      optional state) and let staff pick one. Picking sets the NPI and, under
+//      the default policy, fills the form's blank fields the registry can
+//      supply (the form decides, via src/lib/npiRegistryFill.ts); a field with
+//      a value is never replaced.
+//      What was filled, what was kept, and the registry data no field holds
+//      are shown under the search and announced once.
 // Used by Add Provider (ProviderFormSections) and the roster form. Composition
 // of stock primitives, logged in DESIGN-DEBT.md.
-import { useId, useRef, useState, type KeyboardEvent } from "react";
-import { CircleCheck, Search, TriangleAlert } from "lucide-react";
+import { Fragment, useId, useRef, useState, type KeyboardEvent } from "react";
+import { CircleAlert, CircleCheck, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StateSelect } from "@/components/StateSelect";
 import {
@@ -16,37 +23,27 @@ import {
   useNpiRegistrySearch,
   usePrimeNpiRegistryLookup,
 } from "@/hooks/useNpiRegistry";
-import { isValidNpi } from "@/lib/providerIdentity";
 import {
-  NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
-  NPI_REGISTRY_RATE_LIMIT_MESSAGE,
-  NPI_REGISTRY_UNAVAILABLE_MESSAGE,
+  npiFillAnnouncement,
+  npiFillFilledText,
+  npiFillKeptText,
+  type NpiFillSummary,
+} from "@/lib/npiRegistryFill";
+import {
+  npiLookupStateOf,
+  npiRegistryErrorMessage,
   npiSearchStatusText,
+  npiToCheck,
   npiVerificationView,
   registryDisplayName,
   validateNpiRegistrySearch,
-  type NpiLookupState,
   type NpiRegistryRecord,
   type NpiRegistrySearchInput,
   type NpiSearchState,
   type NpiVerificationView,
 } from "@/lib/npiRegistry";
+import type { NpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
 import { cn } from "@/lib/utils";
-
-// The failures staff can act on — the rate limit, and the registry refusing
-// the query (a 422) — keep their own message; anything else (an outage, an
-// expired session, a dropped connection) reads as the registry being
-// unavailable.
-const ACTIONABLE_MESSAGES: ReadonlySet<string> = new Set([
-  NPI_REGISTRY_RATE_LIMIT_MESSAGE,
-  NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
-]);
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error && ACTIONABLE_MESSAGES.has(error.message)
-    ? error.message
-    : NPI_REGISTRY_UNAVAILABLE_MESSAGE;
-}
 
 /** The verification line. Not a live region: the NPI input points at it with
  * aria-describedby, and NpiRegistryAssist announces result changes itself. */
@@ -71,12 +68,18 @@ export function NpiVerificationNotice({
               aria-hidden="true"
               className="mt-px h-4 w-4 shrink-0 text-[var(--mp-warn-ink)]"
             />
+          ) : view.tone === "block" ? (
+            <CircleAlert aria-hidden="true" className="mt-px h-4 w-4 shrink-0 text-destructive" />
           ) : null}
           <p>
             <span
               className={cn(
                 "font-medium",
-                view.tone === "warn" ? "text-[var(--mp-warn-ink)]" : "text-foreground",
+                view.tone === "warn"
+                  ? "text-[var(--mp-warn-ink)]"
+                  : view.tone === "block"
+                    ? "text-destructive"
+                    : "text-foreground",
               )}
             >
               {view.title}
@@ -155,6 +158,44 @@ export function NpiRegistryResultList({
   );
 }
 
+/** What the last pick did, and the registry data no field on the form holds.
+ * Not a live region: NpiRegistryAssist announces a pick once, politely. */
+export function NpiRegistryPickSummary({ summary }: { summary: NpiFillSummary }) {
+  const titleId = useId();
+  const kept = npiFillKeptText(summary);
+  return (
+    <section
+      aria-labelledby={titleId}
+      className="space-y-1.5 rounded-md border border-border p-3 text-[12px] text-foreground"
+    >
+      <p id={titleId} className="font-medium">
+        From the NPI Registry
+      </p>
+      <p>{npiFillFilledText(summary)}</p>
+      {kept ? <p>{kept}</p> : null}
+      {summary.details.length > 0 ? (
+        <>
+          <p className="text-muted-foreground">Shown for reference; not saved:</p>
+          <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
+            {summary.details.map((detail) => (
+              <Fragment key={detail.label}>
+                <dt className="text-muted-foreground">{detail.label}</dt>
+                <dd>
+                  {detail.lines.map((line, index) => (
+                    <span key={index} className="block">
+                      {line}
+                    </span>
+                  ))}
+                </dd>
+              </Fragment>
+            ))}
+          </dl>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 export interface NpiRegistryAssistProps {
   /** The NPI field's value with dashes and spaces already stripped. */
   npi: string;
@@ -163,10 +204,14 @@ export interface NpiRegistryAssistProps {
   /** False while an edit form still holds the stored NPI: an unchanged NPI is
    * not re-checked (the same rule as the MINT-7 check digit). */
   verify: boolean;
-  /** Fill the form's NPI. Nothing else on the form changes. */
-  onPick: (npi: string) => void;
+  /** Apply a picked match: set the NPI, fill what the policy's fillOnPick
+   * allows (never a field with a value), and say what was filled and kept. */
+  onPick: (record: NpiRegistryRecord) => NpiFillSummary;
   /** The verification note's id; the NPI input names it in aria-describedby. */
   noticeId: string;
+  /** The resolved NPI Registry policy (useNpiRegistryPolicy): which answers
+   * block, and what a pick fills. */
+  policy: NpiRegistryPolicy;
 }
 
 export function NpiRegistryAssist({
@@ -176,34 +221,40 @@ export function NpiRegistryAssist({
   verify,
   onPick,
   noticeId,
+  policy,
 }: NpiRegistryAssistProps) {
   const stateId = useId();
   const searchButton = useRef<HTMLButtonElement>(null);
   const [state, setState] = useState("");
   const [submitted, setSubmitted] = useState<NpiRegistrySearchInput | null>(null);
+  // The last pick. `seq` tells a new pick from a re-render.
+  const [picked, setPicked] = useState<{
+    seq: number;
+    npi: string;
+    summary: NpiFillSummary;
+  } | null>(null);
 
-  const checkable = verify && isValidNpi(npi) ? npi : null;
+  const checkable = npiToCheck(npi, verify);
   const lookup = useNpiRegistryLookup(checkable);
-  const lookupState: NpiLookupState =
-    checkable === null
-      ? { status: "idle" }
-      : lookup.isError
-        ? { status: "error", message: errorMessage(lookup.error) }
-        : lookup.data
-          ? { status: "done", record: lookup.data.record }
-          : { status: "loading" };
-  const view = npiVerificationView(lookupState, { firstName, lastName });
+  const lookupState = npiLookupStateOf(checkable, lookup);
+  const view = npiVerificationView(lookupState, { firstName, lastName }, policy);
 
   // Announce the check only when its result changes (a new NPI, or loading →
   // found / not found / unavailable) — never on a name keystroke, even though
-  // the note itself follows the typed name. Updated during render from the
-  // previous key, so no effect is needed.
+  // the note itself follows the typed name. A pick is announced once, in the
+  // same message as the check it causes, so neither is lost to the other.
+  // Updated during render from the previous key, so no effect is needed.
   const announceKey = checkable === null ? "idle" : `${checkable}:${lookupState.status}`;
-  const [announced, setAnnounced] = useState({ key: announceKey, text: "" });
-  if (announced.key !== announceKey) {
+  const pickSeq = picked?.seq ?? 0;
+  const [announced, setAnnounced] = useState({ key: announceKey, pickSeq, text: "" });
+  if (announced.key !== announceKey || announced.pickSeq !== pickSeq) {
+    const pickText =
+      picked && announced.pickSeq !== pickSeq ? npiFillAnnouncement(picked.summary) : null;
+    const viewText = view ? [view.title, view.detail].filter(Boolean).join(". ") : null;
     setAnnounced({
       key: announceKey,
-      text: view ? [view.title, view.detail].filter(Boolean).join(". ") : "",
+      pickSeq,
+      text: [pickText, viewText].filter(Boolean).join(" "),
     });
   }
 
@@ -213,7 +264,7 @@ export function NpiRegistryAssist({
     submitted === null
       ? { status: "idle" }
       : search.isError
-        ? { status: "error", message: errorMessage(search.error) }
+        ? { status: "error", message: npiRegistryErrorMessage(search.error) }
         : search.data
           ? { status: "done", result: search.data }
           : { status: "loading" };
@@ -241,7 +292,8 @@ export function NpiRegistryAssist({
 
   const pick = (record: NpiRegistryRecord) => {
     primeLookup(record);
-    onPick(record.npi);
+    const summary = onPick(record);
+    setPicked((previous) => ({ seq: (previous?.seq ?? 0) + 1, npi: record.npi, summary }));
     setSubmitted(null);
     searchButton.current?.focus();
   };
@@ -279,11 +331,13 @@ export function NpiRegistryAssist({
         ) : null}
       </div>
       <p role="status" aria-live="polite" className="text-[12px] text-muted-foreground">
-        {npiSearchStatusText(searchState)}
+        {npiSearchStatusText(searchState, policy.fillOnPick)}
       </p>
       {searchState.status === "done" ? (
         <NpiRegistryResultList results={searchState.result.results} onPick={pick} />
       ) : null}
+      {/* Shown while the form still holds the picked NPI. */}
+      {picked && picked.npi === npi ? <NpiRegistryPickSummary summary={picked.summary} /> : null}
     </div>
   );
 }

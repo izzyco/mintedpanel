@@ -14,10 +14,12 @@ import {
 } from "@/components/ui/select";
 import { Field, FieldLabel } from "@/components/providers/FormField";
 import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
+import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
 
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import {
   US_STATES,
+  applyNpiRegistryPick,
   emptyLicenseRow,
   type LicenseRow,
   type ProviderFormErrors,
@@ -105,6 +107,7 @@ export function PersonalSection({ form, errors, update }: SectionProps) {
 
 export function CredentialsSection({ form, errors, update }: SectionProps) {
   const npiNoticeId = useId();
+  const npiPolicy = useNpiRegistryPolicy();
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <Field label="NPI" error={errors.npi}>
@@ -122,8 +125,18 @@ export function CredentialsSection({ form, errors, update }: SectionProps) {
           firstName={form.firstName}
           lastName={form.lastName}
           verify
-          onPick={(npi) => update("npi", npi)}
+          onPick={(record) => {
+            // Credentials (Personal) and licenses (Licenses) live on other
+            // steps; the summary under the search names what changed.
+            const next = applyNpiRegistryPick(form, record, npiPolicy.fillOnPick);
+            update("npi", next.form.npi);
+            update("credentials", next.form.credentials);
+            update("taxonomyCode", next.form.taxonomyCode);
+            update("licenses", next.form.licenses);
+            return next.summary;
+          }}
           noticeId={npiNoticeId}
+          policy={npiPolicy}
         />
       </div>
       <Field label="CAQH ID" error={errors.caqhId}>

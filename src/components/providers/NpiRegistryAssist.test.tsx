@@ -1,6 +1,7 @@
 // MINT-110 — the registry help under an NPI field: what it checks, what it
-// says, and that the result list is announced and keyboard-reachable. The
-// hooks are mocked; the route and the registry are not reached.
+// says under each policy severity, that the result list is announced and
+// keyboard-reachable, and the summary a pick leaves. The hooks are mocked; the
+// route and the registry are not reached.
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NpiRegistryRecord, NpiRegistrySearchResult } from "@/lib/npiRegistry";
@@ -13,11 +14,15 @@ const lookupResult = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@/hooks/useNpiRegistry", () => ({
-  useNpiRegistryLookup: vi.fn(() => lookupResult.current),
-  useNpiRegistrySearch: vi.fn(() => ({})),
-  usePrimeNpiRegistryLookup: vi.fn(() => () => undefined),
-}));
+vi.mock("@/hooks/useNpiRegistry", async () => {
+  const policy = await import("@/lib/npiRegistryPolicy");
+  return {
+    useNpiRegistryLookup: vi.fn(() => lookupResult.current),
+    useNpiRegistrySearch: vi.fn(() => ({})),
+    usePrimeNpiRegistryLookup: vi.fn(() => () => undefined),
+    useNpiRegistryPolicy: () => policy.DEFAULT_NPI_REGISTRY_POLICY,
+  };
+});
 vi.mock("@/hooks/useLookups", () => ({
   useFacilities: () => ({ data: [] }),
   useProviderGroups: () => ({ data: [] }),
@@ -28,10 +33,20 @@ import { CredentialsSection } from "./ProviderFormSections";
 import { emptyProviderFormState } from "./providerFormShared";
 import {
   NpiRegistryAssist,
+  NpiRegistryPickSummary,
   NpiRegistryResultList,
   NpiVerificationNotice,
 } from "./NpiRegistryAssist";
-import { npiSearchStatusText } from "@/lib/npiRegistry";
+import { NPI_REGISTRY_BLOCK_REASONS, npiSearchStatusText } from "@/lib/npiRegistry";
+import type { NpiFillSummary } from "@/lib/npiRegistryFill";
+import {
+  DEFAULT_NPI_REGISTRY_POLICY,
+  NPI_REGISTRY_OUTCOMES,
+  resolveNpiRegistryPolicy,
+  type NpiRegistryOutcome,
+} from "@/lib/npiRegistryPolicy";
+
+const NO_FILL: NpiFillSummary = { filled: [], kept: [], details: [] };
 
 const jane: NpiRegistryRecord = {
   npi: "1234567893",
@@ -58,8 +73,9 @@ function renderAssist(props: Partial<Parameters<typeof NpiRegistryAssist>[0]> = 
       firstName="Jane"
       lastName="Doe"
       verify
-      onPick={() => undefined}
+      onPick={() => NO_FILL}
       noticeId="npi-note"
+      policy={DEFAULT_NPI_REGISTRY_POLICY}
       {...props}
     />,
   );
@@ -135,6 +151,70 @@ describe("NpiRegistryAssist verification", () => {
   });
 });
 
+describe("NpiRegistryAssist under the NPI Registry policy", () => {
+  const unescape = (html: string) => html.replace(/&#x27;/g, "'");
+  const blocking = (outcome: NpiRegistryOutcome) =>
+    resolveNpiRegistryPolicy(null, { severity: { [outcome]: "block" } });
+  const answers: Record<
+    NpiRegistryOutcome,
+    { record: NpiRegistryRecord | null; names?: { firstName: string; lastName: string } }
+  > = {
+    notFound: { record: null },
+    organizationNumber: {
+      record: { ...jane, enumerationType: "NPI-2", organizationName: "DENVER REHAB LLC" },
+    },
+    inactive: { record: { ...jane, status: "inactive" } },
+    nameMismatch: { record: jane, names: { firstName: "Mary", lastName: "Roe" } },
+  };
+
+  it.each(NPI_REGISTRY_OUTCOMES)("%s warns by default and blocks when set to", (outcome) => {
+    const { record, names } = answers[outcome];
+    lookupResult.current = { data: { record } };
+    const warned = unescape(renderAssist(names));
+    expect(warned).toContain("text-[var(--mp-warn-ink)]");
+    expect(warned).not.toContain("text-destructive");
+    expect(warned).not.toContain(NPI_REGISTRY_BLOCK_REASONS[outcome]);
+
+    const blocked = unescape(renderAssist({ ...names, policy: blocking(outcome) }));
+    expect(blocked).toContain("text-destructive");
+    expect(blocked).not.toContain("text-[var(--mp-warn-ink)]");
+    expect(blocked).toContain(NPI_REGISTRY_BLOCK_REASONS[outcome]);
+    expect(blocked).not.toContain("You can still save");
+  });
+
+  it("only the outcome set to block blocks", () => {
+    lookupResult.current = { data: { record: null } };
+    const html = unescape(renderAssist({ policy: blocking("nameMismatch") }));
+    expect(html).not.toContain("text-destructive");
+    expect(html).toContain("You can still save this provider.");
+  });
+
+  it("never blocks on an outage, however strict the policy", () => {
+    const strict = resolveNpiRegistryPolicy(null, {
+      severity: {
+        organizationNumber: "block",
+        notFound: "block",
+        nameMismatch: "block",
+        inactive: "block",
+      },
+    });
+    lookupResult.current = { isError: true, error: new Error("NPI Registry is unavailable") };
+    const html = renderAssist({ policy: strict });
+    expect(html).not.toContain("text-destructive");
+    expect(html).toContain("You can still save this provider.");
+  });
+
+  it("says what a pick fills under each fill mode", () => {
+    const done = { status: "done" as const, result: { results: [jane], truncated: false } };
+    expect(npiSearchStatusText(done, "blank_fields")).toBe(
+      "1 match in the NPI Registry. Pick one to fill the NPI and any blank fields.",
+    );
+    expect(npiSearchStatusText(done, "npi_only")).toBe(
+      "1 match in the NPI Registry. Pick one to fill the NPI.",
+    );
+  });
+});
+
 describe("NpiRegistryAssist search", () => {
   it("disables Search until both names are typed", () => {
     const blank = renderAssist({ firstName: "", lastName: "Doe" });
@@ -170,7 +250,7 @@ describe("NpiRegistryAssist search", () => {
       "No individuals in the NPI Registry match that name.",
     );
     expect(npiSearchStatusText({ status: "done", result: result(1) })).toBe(
-      "1 match in the NPI Registry. Pick one to fill the NPI.",
+      "1 match in the NPI Registry. Pick one to fill the NPI and any blank fields.",
     );
     expect(npiSearchStatusText({ status: "done", result: result(10, true) })).toBe(
       "10 matches in the NPI Registry — showing the first 10. Add a state to narrow it.",
@@ -191,6 +271,51 @@ describe("NpiRegistryAssist search", () => {
     expect(text).toBe("JANE DOE, PT NPI 1234567893 Physical Therapist · DENVER, CO, use this NPI");
     expect(html).toContain('type="button"');
     expect(renderToStaticMarkup(<NpiRegistryResultList results={[]} onPick={() => 0} />)).toBe("");
+  });
+});
+
+describe("NpiRegistryPickSummary", () => {
+  const summary: NpiFillSummary = {
+    filled: ["NPI", "CO license"],
+    kept: [
+      { field: "Credentials", registryValue: "DPT" },
+      { field: "Taxonomy code", registryValue: "2251X0800X (Physical Therapist, Orthopedic)" },
+    ],
+    details: [
+      { label: "Middle name", lines: ["M"] },
+      { label: "Other identifiers", lines: ["MEDICAID CO-MCD-77 (CO)", "OTHER 55 (WY)"] },
+    ],
+  };
+
+  it("says what was filled and kept, then lists the registry data no field holds", () => {
+    const html = renderToStaticMarkup(<NpiRegistryPickSummary summary={summary} />);
+    const text = html.replace(/<[^>]+>/g, "|").replace(/\|+/g, "|");
+    expect(text).toBe(
+      "|From the NPI Registry" +
+        "|Filled from the NPI Registry: NPI, CO license." +
+        "|Kept yours: Credentials — registry has DPT; Taxonomy code — registry has 2251X0800X (Physical Therapist, Orthopedic)." +
+        "|Shown for reference; not saved:" +
+        "|Middle name|M|Other identifiers|MEDICAID CO-MCD-77 (CO)|OTHER 55 (WY)|",
+    );
+    // A labelled region with a description list; never a live region, so the
+    // pick is announced once (by the assist), and focus is not moved to it.
+    expect(html).toMatch(/^<section aria-labelledby="([^"]+)"[^>]*><p id="\1"/);
+    expect(html).toContain("<dl");
+    expect(html).not.toContain("aria-live");
+    expect(html).not.toContain('role="status"');
+    expect(html).not.toContain("tabindex");
+  });
+
+  it("leaves out the kept line and the list when there is nothing for them", () => {
+    const html = renderToStaticMarkup(<NpiRegistryPickSummary summary={NO_FILL} />);
+    expect(html).toContain("Nothing blank to fill from the NPI Registry.");
+    expect(html).not.toContain("Kept yours");
+    expect(html).not.toContain("<dl");
+  });
+
+  it("is not shown before a pick", () => {
+    lookupResult.current = { data: { record: jane } };
+    expect(renderAssist()).not.toContain("From the NPI Registry");
   });
 });
 
