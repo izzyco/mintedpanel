@@ -70,7 +70,10 @@
 //                          South Park's fixture case under a leak: 15b requires
 //                          meta.total === 0, because the search returns only
 //                          its first meta.limit rows (default 5) and a leaked
-//                          row past them would escape the id check.
+//                          row past them would escape the id check. 15c
+//                          repeats it at &limit=50 (the cap, the extension's
+//                          "Show more"); 15d asks for &limit=51 and needs a
+//                          422 (a panel with MINT-14 S3's &limit=).
 //   (no new env needed for 25/25b/26 — the document upload-intent + finalize
 //   write-path pair, ASD BITE-ASD-04, closing the TD-53 gap; they reuse
 //   KANSAS_PROVIDER_ID/SOUTHPARK_PROVIDER_ID as the owner ids.)
@@ -1261,6 +1264,38 @@ function looksLikeVercelGate(r) {
     searchLeak.status === 200 && !searchLeakedCase && searchLeakTotal === 0,
     `status=${searchLeak.status} rows=${searchRows.length} total=${searchLeakTotal} leaked=${searchLeakedCase}`,
     { leak: true },
+  );
+  // 15c. The same search at the largest page a client can ask for (&limit=50,
+  //      MINT-14 S3 "Show more"): still nothing matches and no South Park id
+  //      in any of up to 50 rows. A wider page must not widen the org scope.
+  const searchLeakMax = await apiGet(
+    `/api/cases?q=${encodeURIComponent(env.SEARCH_LEAK_QUERY ?? "South Park")}&limit=50`,
+    { token: kansasTok },
+  );
+  const searchMaxRows = searchLeakMax.body?.data ?? [];
+  const searchMaxLeaked = searchMaxRows.some(
+    (r) => r?.id === env.SOUTHPARK_CASE_ID || r?.providerId === env.SOUTHPARK_PROVIDER_ID,
+  );
+  const searchMaxTotal = searchLeakMax.body?.meta?.total;
+  check(
+    "15c. Kansas case search at &limit=50 never returns a South Park case or provider id, and matches nothing",
+    searchLeakMax.status === 200 &&
+      searchMaxRows.length <= 50 &&
+      !searchMaxLeaked &&
+      searchMaxTotal === 0,
+    `status=${searchLeakMax.status} rows=${searchMaxRows.length} total=${searchMaxTotal} leaked=${searchMaxLeaked}`,
+    { leak: true },
+  );
+  // 15d. ...and the cap holds: &limit=51 is refused (422), never clamped or
+  //      honoured, so no request reads a page past the cap.
+  const searchOverCap = await apiGet(
+    `/api/cases?q=${encodeURIComponent(env.SEARCH_LEAK_QUERY ?? "South Park")}&limit=51`,
+    { token: kansasTok },
+  );
+  check(
+    "15d. Kansas case search refuses &limit=51 with a 422 (the cap is 50)",
+    searchOverCap.status === 422 && searchOverCap.body?.data == null,
+    `status=${searchOverCap.status} dataPresent=${searchOverCap.body?.data != null}`,
   );
 
   // 16. Fill-only SSN release (E4.4 F4.4.2): a Kansas writer requesting the
