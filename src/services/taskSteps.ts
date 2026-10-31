@@ -4,8 +4,8 @@
 // committed together. The server supplies its service-role client only after
 // JWT verification, and the RPC independently rechecks actor membership.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { format } from "date-fns";
 import type { Database } from "@/integrations/supabase/types";
+import { activityDateRules, todayForActivity } from "@/lib/activityDate";
 import { camelizeRow } from "@/lib/case";
 import type { Task } from "@/types";
 
@@ -58,9 +58,14 @@ export async function completeTaskStep(
     p_actor_id: ctx.userId,
     p_source: ctx.source,
   };
-  // MINT-75: the browser's local day; the server route omits it (UTC fallback).
+  // MINT-75: the Panel sends the day an activity is filed under, by default the
+  // browser's local day (ActivityDateRules, MINT-129). The server route sends
+  // none, so the RPC keeps the UTC day; the RPC's one-day guard applies to any
+  // date sent, whatever the zone.
   const datedArgs =
-    ctx.source === "panel" ? { ...args, p_completed_date: format(new Date(), "yyyy-MM-dd") } : args;
+    ctx.source === "panel"
+      ? { ...args, p_completed_date: todayForActivity(new Date(), activityDateRules()) }
+      : args;
   let { data, error } = await ctx.db.rpc("complete_sop_task_step", datedArgs);
   if (error && datedArgs !== args && isMissingCompletedDateArgError(error)) {
     ({ data, error } = await ctx.db.rpc("complete_sop_task_step", args));
