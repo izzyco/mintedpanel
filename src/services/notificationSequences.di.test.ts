@@ -423,4 +423,61 @@ describe("notification sequences service", () => {
     });
     expect(saved).toMatchObject({ stopConditions: null, targetDaysToReady: null, steps: [] });
   });
+
+  it("reads the policy settings, and a row without them as unset (inherit)", async () => {
+    const { from, calls } = fakeReads({
+      notification_sequence_defaults: [
+        { ...DEFAULT_ROWS[0], bounce_escalation_step: 1, digest_cc_allowed: null },
+        { ...DEFAULT_ROWS[1], bounce_escalation_step: null, digest_cc_allowed: false },
+      ],
+      notification_sequence_default_steps: DEFAULT_STEP_ROWS,
+      notification_sequences: [{ ...SEQUENCE_ROW, bounce_escalation_step: 0 }],
+      notification_sequence_steps: [],
+    });
+    const listed = await listNotificationSequences(ctxFor({ from }));
+    if (listed.status !== "available") throw new Error("expected available");
+    expect(calls.map((c) => c.table)).toContain("notification_sequence_defaults");
+    expect(listed.defaults.intake_reminder).toMatchObject({
+      bounceEscalationStep: 1,
+      digestCcAllowed: null,
+    });
+    expect(listed.defaults.followup_digest).toMatchObject({
+      bounceEscalationStep: null,
+      digestCcAllowed: false,
+    });
+    expect(listed.sequences.intake_reminder?.bounceEscalationStep).toBe(0);
+
+    // Rows from a reader that does not select the columns: unset, not undefined.
+    const bareReads = fakeReads({
+      ...WITH_DEFAULTS,
+      notification_sequences: [SEQUENCE_ROW],
+      notification_sequence_steps: [],
+    });
+    const bare = await listNotificationSequences(ctxFor({ from: bareReads.from }));
+    if (bare.status !== "available") throw new Error("expected available");
+    expect(bare.defaults.intake_reminder.bounceEscalationStep).toBeNull();
+    expect(bare.defaults.followup_digest.digestCcAllowed).toBeNull();
+    expect(bare.sequences.intake_reminder?.bounceEscalationStep).toBeNull();
+  });
+
+  it("sends the org's own bounce escalation step through the RPC", async () => {
+    const payload = buildSavePayload(
+      "intake_reminder",
+      { ...starterDraft(), enabled: true, bounceEscalationStep: 2 },
+      3,
+    );
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        sequence: { ...SEQUENCE_ROW, bounce_escalation_step: 2, revision: 4 },
+        steps: [],
+      },
+      error: null,
+    });
+    const saved = await saveNotificationSequence(
+      { purpose: "intake_reminder", payload },
+      ctxFor({ rpc }),
+    );
+    expect(rpc.mock.calls[0][1].p_payload).toMatchObject({ bounce_escalation_step: 2 });
+    expect(saved.bounceEscalationStep).toBe(2);
+  });
 });

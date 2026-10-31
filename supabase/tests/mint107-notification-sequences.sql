@@ -16,6 +16,9 @@
 --
 -- A check reads its statement's snapshot, so a write whose effect is checked
 -- runs as its own statement first, never inside the checking statement.
+-- m107_probe runs a write and then its check as two statements inside one
+-- PL/pgSQL block (each EXECUTE takes a fresh snapshot), then rolls the block
+-- back, so a probe leaves no row, revision or audit entry behind.
 \set ON_ERROR_STOP on
 \set QUIET on
 \pset format unaligned
@@ -97,6 +100,26 @@ BEGIN
 END;
 $$;
 
+-- Run p_statement, then p_check (a SELECT of one boolean) as its own
+-- statement, then undo both. True only when the statement succeeded and the
+-- check held.
+CREATE FUNCTION pg_temp.m107_probe(p_statement text, p_check text) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_ok boolean := false;
+BEGIN
+  BEGIN
+    EXECUTE p_statement;
+    EXECUTE p_check INTO v_ok;
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'm107_probe_rolled_back';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM = 'm107_probe_rolled_back' THEN
+      RETURN coalesce(v_ok, false);
+    END IF;
+    RETURN false;
+  END;
+END;
+$$;
+
 CREATE FUNCTION pg_temp.m107_as(p_user uuid) RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -153,6 +176,7 @@ GRANT EXECUTE ON FUNCTION pg_temp.m107_expect_state(text, text)
   TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION pg_temp.m107_expect_message(text, text)
   TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION pg_temp.m107_probe(text, text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION pg_temp.m107_as(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION pg_temp.m107_intake(int[], int) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION pg_temp.m107_digest(int, jsonb) TO authenticated, service_role;
@@ -372,6 +396,35 @@ SELECT pg_temp.m107_mark('defaults_seeded_with_compression_off_and_8am_central',
                                         AND template_key = 'followup_digest_daily')
          FROM public.notification_sequence_default_steps WHERE purpose = 'followup_digest')
   AND (SELECT count(*) = 2 FROM public.notification_sequence_defaults));
+-- Policy as configuration (MINT-113): the decided bounce step (1, Oct 30) and
+-- digest audience (no cc, D59) are seeded settings, each on its own purpose.
+SELECT pg_temp.m107_mark('defaults_seed_the_decided_policy_settings',
+  (SELECT bounce_escalation_step = 1 AND digest_cc_allowed IS NULL
+     FROM public.notification_sequence_defaults WHERE purpose = 'intake_reminder')
+  AND (SELECT bounce_escalation_step IS NULL AND digest_cc_allowed = false
+         FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest'));
+-- The bounce step is the org's own (like its cc lists): column grants for
+-- authenticated, nullable, no default (NULL inherits). digest_cc_allowed is
+-- Minted's: only on the defaults, which authenticated cannot write.
+SELECT pg_temp.m107_mark('bounce_step_is_org_owned_and_digest_cc_is_minted_only',
+  has_column_privilege('authenticated', 'public.notification_sequences',
+    'bounce_escalation_step', 'INSERT')
+  AND has_column_privilege('authenticated', 'public.notification_sequences',
+    'bounce_escalation_step', 'UPDATE')
+  AND (SELECT is_nullable = 'YES' AND column_default IS NULL
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'notification_sequences'
+          AND column_name = 'bounce_escalation_step')
+  AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'notification_sequences'
+       AND column_name = 'digest_cc_allowed')
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequence_defaults',
+    'digest_cc_allowed', 'UPDATE')
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequence_defaults',
+    'bounce_escalation_step', 'UPDATE')
+  AND has_column_privilege('service_role', 'public.notification_sequence_defaults',
+    'digest_cc_allowed', 'UPDATE'));
 
 -- ---------------------------------------------------------------------------
 -- Validators (pure, apart from the zone list).
@@ -592,6 +645,70 @@ SELECT pg_temp.m107_mark('own_steps_override_the_default_steps_again',
         WHERE org_id = '10700000-0000-4000-a000-00000000000a'
           AND template_key LIKE 'intake_reminder_%'));
 
+-- The bounce escalation step through the save RPC (probes: rolled back, so
+-- the revisions and audit counts below are unchanged). No key so far: the
+-- org inherits Minted's step.
+SELECT pg_temp.m107_mark('saves_without_a_bounce_step_inherit_it',
+  (SELECT bounce_escalation_step IS NULL AND revision = 5
+     FROM public.notification_sequences
+    WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'));
+SELECT pg_temp.m107_mark('rpc_saves_the_orgs_own_bounce_step',
+  pg_temp.m107_probe(
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'intake_reminder', pg_temp.m107_intake('{3,9}', 5) || '{"bounce_escalation_step":2}'::jsonb)$$,
+    $$SELECT bounce_escalation_step = 2 AND revision = 6
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$));
+SELECT pg_temp.m107_mark('rpc_saves_bounce_escalation_off_as_zero',
+  pg_temp.m107_probe(
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'intake_reminder', pg_temp.m107_intake('{3,9}', 5) || '{"bounce_escalation_step":0}'::jsonb)$$,
+    $$SELECT bounce_escalation_step = 0
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$));
+SELECT pg_temp.m107_mark('rpc_saves_a_null_bounce_step_as_inherit',
+  pg_temp.m107_probe(
+    $$DO $d$ BEGIN
+        UPDATE public.notification_sequences SET bounce_escalation_step = 4
+         WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder';
+        PERFORM public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+          'intake_reminder', pg_temp.m107_intake('{3,9}', 6) || '{"bounce_escalation_step":null}'::jsonb);
+      END $d$ $$,
+    $$SELECT bounce_escalation_step IS NULL AND revision = 7
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$));
+SELECT pg_temp.m107_mark('rpc_refuses_a_bad_bounce_step',
+  (SELECT bool_and(pg_temp.m107_expect_message(
+            'notification_sequence_invalid: bounce_escalation_step',
+            format($$SELECT public.save_notification_sequence(
+                       '10700000-0000-4000-a000-00000000000a', 'intake_reminder',
+                       pg_temp.m107_intake('{3,9}', 5) || %L::jsonb)$$, bad)))
+     FROM unnest(ARRAY['{"bounce_escalation_step":11}', '{"bounce_escalation_step":-1}',
+                       '{"bounce_escalation_step":1.5}', '{"bounce_escalation_step":"1"}',
+                       '{"bounce_escalation_step":true}', '{"bounce_escalation_step":100}'])
+          AS b(bad)));
+SELECT pg_temp.m107_mark('rpc_refuses_a_bounce_step_on_the_digest', pg_temp.m107_expect_message(
+  'notification_sequence_invalid: digest_has_no_intake_settings',
+  $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+      'followup_digest', pg_temp.m107_digest(1) || '{"bounce_escalation_step":1}'::jsonb)$$));
+-- A direct admin write of the bounce step is an edit of the org's settings.
+SELECT pg_temp.m107_mark('direct_bounce_step_write_is_an_attributed_org_edit',
+  pg_temp.m107_probe(
+    $$UPDATE public.notification_sequences SET bounce_escalation_step = 3
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$,
+    $$SELECT bounce_escalation_step = 3 AND revision = 6
+             AND updated_by = '10700000-0000-4000-a000-000000000001'
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$));
+SELECT pg_temp.m107_mark('probes_left_the_intake_row_alone',
+  (SELECT bounce_escalation_step IS NULL AND revision = 5
+     FROM public.notification_sequences
+    WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder')
+  -- Saves 1 to 6 only.
+  AND (SELECT count(*) = 6 FROM public.audit_log
+        WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+          AND entity_type = 'notification_sequence'));
+
 -- ---------------------------------------------------------------------------
 -- Direct PostgREST-style writes as org A's admin.
 -- ---------------------------------------------------------------------------
@@ -763,6 +880,14 @@ SELECT pg_temp.m107_mark('org_admin_cannot_write_the_defaults',
       VALUES ('intake_reminder', 4, 9, 'email', 'intake_reminder_final')$$)
   AND pg_temp.m107_expect_state('42501',
     $$DELETE FROM public.notification_sequence_default_steps$$));
+-- Nor relax the digest's audience, or change Minted's bounce step.
+SELECT pg_temp.m107_mark('org_admin_cannot_change_the_policy_defaults',
+  pg_temp.m107_expect_state('42501',
+    $$UPDATE public.notification_sequence_defaults SET digest_cc_allowed = true
+       WHERE purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_state('42501',
+    $$UPDATE public.notification_sequence_defaults SET bounce_escalation_step = 0
+       WHERE purpose = 'intake_reminder'$$));
 SELECT pg_temp.m107_mark('defaults_unchanged_after_the_admin_tried',
   (SELECT target_days_to_ready = 14 AND NOT compress_toward_start_date
      FROM public.notification_sequence_defaults WHERE purpose = 'intake_reminder')
@@ -926,6 +1051,33 @@ SELECT pg_temp.m107_mark('check_send_hour_bounds',
   AND pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET send_hour = -1
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
+SELECT pg_temp.m107_mark('check_bounce_escalation_step_bounds',
+  pg_temp.m107_expect_state('23514', $$
+    UPDATE public.notification_sequences SET bounce_escalation_step = 11
+     WHERE id = (SELECT intake_id FROM m107_ids)$$)
+  AND pg_temp.m107_expect_state('23514', $$
+    UPDATE public.notification_sequences SET bounce_escalation_step = -1
+     WHERE id = (SELECT intake_id FROM m107_ids)$$));
+SELECT pg_temp.m107_mark('check_digest_has_no_bounce_step', pg_temp.m107_expect_state('23514', $$
+  UPDATE public.notification_sequences SET bounce_escalation_step = 1
+   WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
+-- Each default carries its own policy setting, always set, and not the other's.
+SELECT pg_temp.m107_mark('defaults_keep_each_policy_setting_on_its_purpose',
+  pg_temp.m107_expect_state('23514', $$
+    UPDATE public.notification_sequence_defaults SET bounce_escalation_step = NULL
+     WHERE purpose = 'intake_reminder'$$)
+  AND pg_temp.m107_expect_state('23514', $$
+    UPDATE public.notification_sequence_defaults SET bounce_escalation_step = 11
+     WHERE purpose = 'intake_reminder'$$)
+  AND pg_temp.m107_expect_state('23514', $$
+    UPDATE public.notification_sequence_defaults SET digest_cc_allowed = false
+     WHERE purpose = 'intake_reminder'$$)
+  AND pg_temp.m107_expect_state('23514', $$
+    UPDATE public.notification_sequence_defaults SET digest_cc_allowed = NULL
+     WHERE purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_state('23514', $$
+    UPDATE public.notification_sequence_defaults SET bounce_escalation_step = 1
+     WHERE purpose = 'followup_digest'$$));
 SELECT pg_temp.m107_mark('check_send_time_zone_is_iana',
   pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET send_time_zone = 'Mars/Olympus_Mons'
@@ -1025,8 +1177,9 @@ SELECT pg_temp.m107_mark('a_default_inserted_without_steps_is_refused',
       ALTER TABLE public.notification_sequence_defaults
         DISABLE TRIGGER notification_sequence_defaults_no_delete;
       DELETE FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest';
-      INSERT INTO public.notification_sequence_defaults (purpose, send_hour, send_time_zone)
-      VALUES ('followup_digest', 8, 'America/Chicago');
+      INSERT INTO public.notification_sequence_defaults
+        (purpose, send_hour, send_time_zone, digest_cc_allowed)
+      VALUES ('followup_digest', 8, 'America/Chicago', false);
     END $d$ $$));
 -- A default is never deleted, even by the owner: every org would lose it.
 SELECT pg_temp.m107_mark('owner_cannot_delete_a_default', pg_temp.m107_expect_message(
@@ -1073,6 +1226,16 @@ SELECT pg_temp.m107_mark('platform_only_change_keeps_the_org_revision_and_author
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder')
   AND (SELECT revision = 2 FROM public.notification_sequences
         WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'));
+-- The bounce step is the org's, so a Minted write that changes it with a
+-- platform setting is an edit of the org's settings: it bumps the revision.
+SELECT pg_temp.m107_mark('minted_change_with_the_bounce_step_bumps_the_revision',
+  pg_temp.m107_probe(
+    $$UPDATE public.notification_sequences
+         SET compress_toward_start_date = false, bounce_escalation_step = 2
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$,
+    $$SELECT revision = 8 AND updated_by IS NULL AND bounce_escalation_step = 2
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$));
 -- Nor can Minted delete a default, though service_role holds DELETE.
 SELECT pg_temp.m107_mark('service_role_cannot_delete_a_default', pg_temp.m107_expect_message(
   'notification_default_cannot_be_deleted',
@@ -1109,6 +1272,56 @@ SELECT pg_temp.m107_mark('admin_save_keeps_the_platform_overrides',
               AND updated_by = '10700000-0000-4000-a000-000000000001'
          FROM public.notification_sequences
         WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'));
+
+-- ---------------------------------------------------------------------------
+-- D59 as Minted's setting: digest_cc_allowed on the digest default. While it
+-- is false (seeded) the RPC and a direct write refuse a digest cc (asserted
+-- above). Minted turns it on, as Mission Control will (MINT-113): the same
+-- writes go through (probes, rolled back). Minted turns it off again: refused.
+-- ---------------------------------------------------------------------------
+SET LOCAL ROLE service_role;
+UPDATE public.notification_sequence_defaults SET digest_cc_allowed = true
+ WHERE purpose = 'followup_digest';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
+SELECT pg_temp.m107_mark('digest_cc_saved_once_minted_allows_it',
+  pg_temp.m107_probe(
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$,
+    $$SELECT cc_recipients = '[{"kind":"role","role":"specialist"}]'::jsonb
+        FROM public.notification_sequence_steps
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$));
+SELECT pg_temp.m107_mark('direct_digest_cc_allowed_once_minted_allows_it',
+  pg_temp.m107_probe(
+    $$UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"admin"}]'
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$,
+    $$SELECT cc_recipients = '[{"kind":"role","role":"admin"}]'::jsonb
+        FROM public.notification_sequence_steps
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$));
+SET LOCAL ROLE service_role;
+UPDATE public.notification_sequence_defaults SET digest_cc_allowed = false
+ WHERE purpose = 'followup_digest';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
+SELECT pg_temp.m107_mark('digest_cc_refused_again_once_minted_turns_it_off',
+  pg_temp.m107_expect_message('notification_digest_has_no_cc',
+    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
+        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$)
+  AND pg_temp.m107_expect_message('notification_digest_has_no_cc',
+    $$UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"admin"}]'
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a'
+         AND template_key = 'followup_digest_daily'$$));
+SELECT pg_temp.m107_mark('digest_audience_back_to_coordinators_only',
+  (SELECT digest_cc_allowed = false FROM public.notification_sequence_defaults
+    WHERE purpose = 'followup_digest')
+  AND (SELECT revision = 4 AND bool_and(st.cc_recipients = '[]'::jsonb)
+         FROM public.notification_sequences AS s
+         JOIN public.notification_sequence_steps AS st ON st.sequence_id = s.id
+        WHERE s.org_id = '10700000-0000-4000-a000-00000000000a' AND s.purpose = 'followup_digest'
+        GROUP BY s.revision));
 RESET ROLE;
 
 -- ---------------------------------------------------------------------------
@@ -1193,6 +1406,125 @@ SELECT pg_temp.m107_mark('admin_cannot_write_consent', pg_temp.m107_expect_state
   INSERT INTO public.sms_consents (org_id, provider_id, phone_e164, source, consent_text_version)
   VALUES ('10700000-0000-4000-a000-00000000000a', '10700000-0000-4000-a000-0000000a0001',
           '+15555550177', 'staff_recorded', 'sms-consent.v1')$$));
+RESET ROLE;
+
+-- ---------------------------------------------------------------------------
+-- Consent evidence survives a provider delete (compliance). The provider FK
+-- nulls provider_id only (ON DELETE SET NULL (provider_id)); the number, the
+-- timestamps, the source, the text version and the revocation stay, and the
+-- row gains no copy of the provider's data.
+-- ---------------------------------------------------------------------------
+SELECT pg_temp.m107_mark('consent_provider_fk_detaches_instead_of_cascading',
+  (SELECT c.confdeltype = 'n'
+          AND c.confdelsetcols = ARRAY[(
+            SELECT a.attnum FROM pg_attribute AS a
+             WHERE a.attrelid = 'public.sms_consents'::regclass AND a.attname = 'provider_id'
+          )]::int2[]
+     FROM pg_constraint AS c
+    WHERE c.conrelid = 'public.sms_consents'::regclass
+      AND c.conname = 'sms_consents_provider_fkey')
+  AND (SELECT is_nullable = 'YES' FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sms_consents'
+          AND column_name = 'provider_id')
+  AND (SELECT is_nullable = 'NO' FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sms_consents'
+          AND column_name = 'org_id'));
+SELECT pg_temp.m107_mark('consent_rows_hold_no_provider_details',
+  (SELECT array_agg(column_name::text ORDER BY column_name)
+          = '{consent_text_version,consented_at,created_at,id,org_id,phone_e164,provider_id,recorded_by,revoked_at,revoked_source,source}'
+     FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'sms_consents'));
+
+SET LOCAL ROLE service_role;
+SELECT pg_temp.m107_mark('consent_needs_a_provider_on_insert',
+  pg_temp.m107_expect_message('sms_consent_needs_a_provider', $$
+    INSERT INTO public.sms_consents (org_id, provider_id, phone_e164, source, consent_text_version)
+    VALUES ('10700000-0000-4000-a000-00000000000a', NULL, '+15555550144', 'intake_form',
+            'sms-consent.v1')$$)
+  AND pg_temp.m107_expect_state('23502', $$
+    INSERT INTO public.sms_consents (org_id, phone_e164, source, consent_text_version)
+    VALUES ('10700000-0000-4000-a000-00000000000a', '+15555550144', 'intake_form',
+            'sms-consent.v1')$$));
+-- No writer detaches a consent from a provider who still exists, live or revoked.
+SELECT pg_temp.m107_mark('consent_cannot_be_detached_while_the_provider_exists',
+  pg_temp.m107_expect_message('sms_consent_immutable', $$
+    UPDATE public.sms_consents SET provider_id = NULL
+     WHERE id = '10700000-0000-4000-a000-0000000c0001'$$)
+  AND pg_temp.m107_expect_message('sms_consent_immutable', $$
+    UPDATE public.sms_consents SET provider_id = NULL
+     WHERE provider_id = '10700000-0000-4000-a000-0000000a0001'
+       AND phone_e164 = '+15555550188'$$));
+RESET ROLE;
+
+-- Provider C in org A, with one live consent and one revoked one.
+INSERT INTO public.providers(id, org_id, first_name, last_name, status) VALUES
+  ('10700000-0000-4000-a000-0000000a0002', '10700000-0000-4000-a000-00000000000a',
+   'Synthetic', 'Provider C', 'onboarding');
+SET LOCAL ROLE service_role;
+INSERT INTO public.sms_consents
+  (id, org_id, provider_id, phone_e164, source, consent_text_version)
+VALUES ('10700000-0000-4000-a000-0000000c0002', '10700000-0000-4000-a000-00000000000a',
+        '10700000-0000-4000-a000-0000000a0002', '+15555550166', 'intake_form', 'sms-consent.v1');
+INSERT INTO public.sms_consents
+  (id, org_id, provider_id, phone_e164, source, consent_text_version, recorded_by)
+VALUES ('10700000-0000-4000-a000-0000000c0003', '10700000-0000-4000-a000-00000000000a',
+        '10700000-0000-4000-a000-0000000a0002', '+15555550155', 'staff_recorded', 'sms-consent.v1',
+        '10700000-0000-4000-a000-000000000001');
+UPDATE public.sms_consents SET revoked_at = now(), revoked_source = 'provider_request'
+ WHERE id = '10700000-0000-4000-a000-0000000c0003';
+RESET ROLE;
+-- The hard delete the staging UAT reseed does (as the owner). With the old
+-- CASCADE both consent rows went with it.
+DELETE FROM public.providers WHERE id = '10700000-0000-4000-a000-0000000a0002';
+SELECT pg_temp.m107_mark('consent_evidence_survives_a_provider_delete',
+  NOT EXISTS (SELECT 1 FROM public.providers WHERE id = '10700000-0000-4000-a000-0000000a0002')
+  AND (SELECT count(*) = 2
+              AND bool_and(provider_id IS NULL
+                           AND org_id = '10700000-0000-4000-a000-00000000000a'
+                           AND consent_text_version = 'sms-consent.v1'
+                           AND consented_at = now() AND created_at = now())
+              AND count(*) FILTER (
+                WHERE id = '10700000-0000-4000-a000-0000000c0002'
+                  AND phone_e164 = '+15555550166' AND source = 'intake_form'
+                  AND recorded_by IS NULL AND revoked_at IS NULL AND revoked_source IS NULL) = 1
+              AND count(*) FILTER (
+                WHERE id = '10700000-0000-4000-a000-0000000c0003'
+                  AND phone_e164 = '+15555550155' AND source = 'staff_recorded'
+                  AND recorded_by = '10700000-0000-4000-a000-000000000001'
+                  AND revoked_at = now() AND revoked_source = 'provider_request') = 1
+         FROM public.sms_consents
+        WHERE id IN ('10700000-0000-4000-a000-0000000c0002',
+                     '10700000-0000-4000-a000-0000000c0003')));
+
+-- A detached row is still evidence: nothing else changes, it cannot be
+-- re-pointed at another provider, and it cannot be deleted; a STOP from that
+-- number can still be recorded on the live one.
+SET LOCAL ROLE service_role;
+SELECT pg_temp.m107_mark('a_detached_consent_stays_evidence',
+  pg_temp.m107_expect_message('sms_consent_immutable', $$
+    UPDATE public.sms_consents SET phone_e164 = '+15555550167'
+     WHERE id = '10700000-0000-4000-a000-0000000c0002'$$)
+  AND pg_temp.m107_expect_message('sms_consent_immutable', $$
+    UPDATE public.sms_consents SET provider_id = '10700000-0000-4000-a000-0000000a0001'
+     WHERE id = '10700000-0000-4000-a000-0000000c0002'$$)
+  AND pg_temp.m107_expect_message('sms_consent_immutable', $$
+    UPDATE public.sms_consents SET revoked_source = 'sms_stop'
+     WHERE id = '10700000-0000-4000-a000-0000000c0003'$$)
+  AND pg_temp.m107_expect_state('42501', $$
+    DELETE FROM public.sms_consents WHERE id = '10700000-0000-4000-a000-0000000c0002'$$));
+SELECT pg_temp.m107_mark('a_detached_live_consent_can_still_be_revoked',
+  pg_temp.m107_probe(
+    $$UPDATE public.sms_consents SET revoked_at = now(), revoked_source = 'sms_stop'
+       WHERE id = '10700000-0000-4000-a000-0000000c0002'$$,
+    $$SELECT revoked_source = 'sms_stop' AND provider_id IS NULL
+        FROM public.sms_consents WHERE id = '10700000-0000-4000-a000-0000000c0002'$$));
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000003');
+SELECT pg_temp.m107_mark('members_still_read_the_detached_consents',
+  (SELECT count(*) = 2 FROM public.sms_consents WHERE provider_id IS NULL));
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000004');
+SELECT pg_temp.m107_mark('other_org_reads_no_detached_consents',
+  (SELECT count(*) = 0 FROM public.sms_consents));
 RESET ROLE;
 
 -- ---------------------------------------------------------------------------

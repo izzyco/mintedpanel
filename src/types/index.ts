@@ -2363,6 +2363,11 @@ export interface NotificationSequence {
   stopConditions: NotificationStopCondition[] | null;
   /** Intake only (1 to 90); null uses Minted's default. Always null for the digest. */
   targetDaysToReady: number | null;
+  /**
+   * Intake only, org-owned: the step whose bounce escalates to its cc list
+   * (0: none); null uses Minted's default. Always null for the digest.
+   */
+  bounceEscalationStep: number | null;
   /** Intake only, platform-managed (only Minted sets it); null uses Minted's default. */
   compressTowardStartDate: boolean | null;
   /** Digest only, platform-managed: the local send hour (0 to 23); null uses Minted's default. */
@@ -2405,6 +2410,10 @@ export interface NotificationSequenceDefault {
   targetDaysToReady: number | null;
   /** Intake: set (false in R1). Digest: null. */
   compressTowardStartDate: boolean | null;
+  /** Intake: set (1: a bounce on step 1 escalates; 0: none). Digest: null. */
+  bounceEscalationStep: number | null;
+  /** Digest: set (false: coordinators only, D59). Intake: null. Minted's alone. */
+  digestCcAllowed: boolean | null;
   /** Digest: set (8). Intake: null. */
   sendHour: number | null;
   /** Digest: set (America/Chicago). Intake: null. */
@@ -2433,7 +2442,8 @@ export type SmsConsentRevokedSource = "sms_stop" | "provider_request" | "staff_r
 export interface SmsConsent {
   id: string;
   orgId: string;
-  providerId: string;
+  /** null once the provider was deleted: the consent evidence stays. */
+  providerId: string | null;
   phoneE164: string;
   consentedAt: string;
   source: SmsConsentSource;

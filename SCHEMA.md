@@ -697,9 +697,10 @@ effective sequence is `resolveNotificationSequence()` in
 - **`notification_sequence_defaults`**: Minted's default, one row per
   `purpose` (PK) ∈ `followup_digest | intake_reminder`. No `org_id`, no PHI,
   and no `enabled` column, so a default can never switch an org on. Intake:
-  `stop_conditions`, `target_days_to_ready`, `compress_toward_start_date`
-  all set; digest: `send_hour` (0 to 23) and `send_time_zone` (IANA) set;
-  each purpose's other columns NULL (CHECK). The zone is checked when it is
+  `stop_conditions`, `target_days_to_ready`, `compress_toward_start_date`,
+  `bounce_escalation_step` (0 to 10; 0 = no bounce escalates) all set;
+  digest: `send_hour` (0 to 23), `send_time_zone` (IANA) and
+  `digest_cc_allowed` set; each purpose's other columns NULL (CHECK). The zone is checked when it is
   written, by the `notification_send_time_zone_check` trigger
   (`private.notification_time_zone_valid`: Area/Location shape and listed in
   `pg_timezone_names`), not by a CHECK: a later tzdata release could drop a
@@ -707,8 +708,13 @@ effective sequence is `resolveNotificationSequence()` in
   row. A reader that cannot use a stored zone gets Minted's default zone
   (`resolveNotificationSequence`), or America/Chicago if that is unusable
   too. Seeded: intake = all four stop conditions, 14 days,
-  compression off; digest = 8 in America/Chicago (the old 13:00 UTC cron in
-  CDT). Never deleted, by anyone (BEFORE DELETE trigger
+  compression off, bounce escalation on step 1 (Oct 30); digest = 8 in
+  America/Chicago (the old 13:00 UTC cron in CDT), `digest_cc_allowed` false
+  (D59: coordinators only). The two policy settings are configuration
+  (`resolveNotificationPolicyRules`; Mission Control edits them, MINT-113):
+  `bounce_escalation_step` an org row overrides, `digest_cc_allowed` is
+  Minted's alone (the save RPC and the deferred step check read it; turning it
+  on only lets an org store a digest cc list, nothing sends a cc copy yet). Never deleted, by anyone (BEFORE DELETE trigger
   `notification_sequence_defaults_no_delete`): Minted changes it instead.
   Any member of any org reads it; only service_role writes it
   (Mission Control M6 adds the platform-admin write policy).
@@ -725,12 +731,14 @@ effective sequence is `resolveNotificationSequence()` in
   means off; `enabled` defaults to false and is never inherited. Every
   setting is nullable and NULL means "use Minted's default":
   `stop_conditions text[]` (intake; validated subset; `{}` is a real choice,
-  never stop early), `target_days_to_ready` (intake, 1 to 90), and the
+  never stop early), `target_days_to_ready` (intake, 1 to 90),
+  `bounce_escalation_step` (intake, org-owned, 0 to 10, 0 = none), and the
   **platform-managed** `compress_toward_start_date` (intake), `send_hour` and
   `send_time_zone` (digest). Each purpose's row carries only its own columns
   (CHECK). authenticated has column grants only: INSERT `(org_id, purpose,
-enabled, stop_conditions, target_days_to_ready)`, UPDATE `(enabled,
-stop_conditions, target_days_to_ready, updated_at)`; the platform-managed
+enabled, stop_conditions, target_days_to_ready, bounce_escalation_step)`,
+  UPDATE `(enabled, stop_conditions, target_days_to_ready,
+bounce_escalation_step, updated_at)`; the platform-managed
   columns are service_role's (Mission Control later), and the stamp trigger
   is a second wall, an allow-list: only `service_role`, `postgres` and
   `supabase_admin` may change them (42501 `notification_platform_setting`
@@ -753,16 +761,20 @@ stop_conditions, target_days_to_ready, updated_at)`; the platform-managed
   ties a step to its sequence's org. A BEFORE trigger refuses a cc'd user who
   is not a member of the org. A deferred constraint trigger enforces offsets
   strictly increasing by position, at most one digest step, **no cc on a
-  digest step** (`notification_digest_has_no_cc`: the digest goes to
-  coordinators only), and a `template_key` prefixed by the sequence's purpose.
+  digest step** while Minted's `digest_cc_allowed` is false
+  (`notification_digest_has_no_cc`: the digest goes to coordinators only),
+  and a `template_key` prefixed by the sequence's purpose.
 - **`sms_consents`**: `(org_id, provider_id) → providers(org_id, id)` ON
-  DELETE CASCADE (the staging UAT reseed hard-deletes its synthetic providers;
-  no app path deletes one), `phone_e164`, `consented_at`, `source` ∈
+  DELETE SET NULL (`provider_id`): deleting a provider (the staging UAT reseed
+  hard-deletes its synthetic ones; no app path does) keeps the consent and
+  revocation evidence with `provider_id` NULL; `provider_id` is required on
+  insert (`sms_consents_guard_insert`); the org FK still cascades.
+  `phone_e164`, `consented_at`, `source` ∈
   intake_form | staff_recorded | sms_keyword (`staff_recorded` requires
   `recorded_by`), `consent_text_version`, `recorded_by`, `revoked_at` +
   `revoked_source` (both or neither). One live consent per (org, provider,
-  number). Evidence: the only update allowed stamps a revocation on a live
-  row; no DELETE grant.
+  number). Evidence: the only updates allowed stamp a revocation on a live
+  row, and null `provider_id` once its provider row is gone; no DELETE grant.
 - **Access**: RLS on all five. Members read their org's rows and nobody
   reads another org's; members of any org read the defaults. Only
   `user_role(org_id) = 'admin'` writes sequences and steps; `sms_consents` and
@@ -770,16 +782,18 @@ stop_conditions, target_days_to_ready, updated_at)`; the platform-managed
   `save_notification_sequence(p_org_id, p_purpose, p_payload)` is the save
   path: SECURITY INVOKER, admin-checked, replaces the sequence and its own
   steps in one transaction (`steps: null` = use Minted's default steps; a
-  null setting = use Minted's default), refuses `compress_toward_start_date`,
-  `send_hour` and `send_time_zone` (42501 `notification_platform_setting`)
-  and any unknown key (22023), raises SQLSTATE PT409 (HTTP 409)
+  null or absent setting = use Minted's default), refuses
+  `compress_toward_start_date`, `send_hour` and `send_time_zone` (42501
+  `notification_platform_setting`), any unknown key (22023), and a digest cc
+  list while `digest_cc_allowed` is false, raises SQLSTATE PT409 (HTTP 409)
   `notification_sequence_conflict` on a stale `expected_revision`, and
   writes one `audit_log` row (`entity_type = notification_sequence`). Never
   call it with the service key. Direct admin writes to the tables pass the
   same grants, CHECKs and triggers but are not audited.
 - **Rules kept in code, not columns**: the resolution (org row over default,
-  field by field; `resolveNotificationSequence`); a bounce on intake step 1
-  escalates to step 1's cc list (`bounceEscalationRecipients`); the
+  field by field; `resolveNotificationSequence`); applying the bounce
+  escalation step (`bounceEscalationRecipients`: a bounce on that step reaches
+  that step's cc list); the
   start-date cadence rule (`scheduleSequenceSends`); the digest offset fixed
   at 0 and intake offsets from day 1 (validation only, so a later PR can
   relax them without a migration). All in `src/lib/notificationSequences.ts`.

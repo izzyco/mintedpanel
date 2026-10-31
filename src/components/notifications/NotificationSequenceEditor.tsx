@@ -30,6 +30,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   CHANNEL_LABELS,
+  COORDINATORS_ONLY_NOTE,
   NOTIFICATION_CHANNELS,
   NOTIFICATION_LIMITS,
   PLATFORM_DEFAULT_LABEL,
@@ -37,10 +38,14 @@ import {
   STOP_CONDITIONS,
   STOP_CONDITION_LABELS,
   addStep,
+  defaultStepsCcNote,
   describeSendTime,
   describeStep,
+  draftBounceEscalationStep,
   moveStep,
+  purposeAllowsCc,
   removeStep,
+  resolveNotificationPolicyRules,
   resolveNotificationSequence,
   stepMoveFocusTarget,
   stepsFromDefault,
@@ -175,6 +180,18 @@ export function NotificationSequenceEditor({
   const usesSms = (ownSteps ?? defaultSteps).some((step) => step.channel === "sms");
   const defaultTarget = platformDefault.targetDaysToReady;
   const stops = draft.stopConditions ?? platformDefault.stopConditions ?? [];
+  // The step whose bounce escalates to its cc list (the org's, else Minted's).
+  const bounceStep = draftBounceEscalationStep(draft, platformDefault);
+  // Whether this purpose's steps may cc anyone (the digest: Minted's setting).
+  const ccAllowed = purposeAllowsCc(
+    purpose,
+    resolveNotificationPolicyRules({ digestCcAllowed: platformDefault.digestCcAllowed }),
+  );
+  const stepsNote = rules.hasCcList
+    ? defaultStepsCcNote(bounceStep)
+    : ccAllowed
+      ? null
+      : COORDINATORS_ONLY_NOTE;
 
   return (
     <div className="space-y-4">
@@ -348,7 +365,7 @@ export function NotificationSequenceEditor({
                       stepNumber={n}
                       members={members}
                       membersLoaded={membersLoaded}
-                      bounceNote={index === 0}
+                      bounceNote={n === bounceStep}
                       onChange={(next) => onChange(updateStep(draft, index, next))}
                     />
                   ) : null}
@@ -415,11 +432,7 @@ export function NotificationSequenceEditor({
               </li>
             ))}
           </ol>
-          <p className="text-[12px] text-muted-foreground">
-            {rules.hasCcList
-              ? "Minted's default steps cc no one, so a bounce on step 1 reaches no one. Customize the steps to cc a member or a role."
-              : "Goes to each coordinator only. No one is cc'd."}
-          </p>
+          {stepsNote ? <p className="text-[12px] text-muted-foreground">{stepsNote}</p> : null}
         </section>
       )}
 

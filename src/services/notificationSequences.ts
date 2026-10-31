@@ -52,11 +52,11 @@ function browserCtx(): NotificationSequenceServiceCtx {
 }
 
 const SEQUENCE_COLUMNS =
-  "id, org_id, purpose, enabled, stop_conditions, target_days_to_ready, compress_toward_start_date, send_hour, send_time_zone, revision, created_at, updated_at, updated_by";
+  "id, org_id, purpose, enabled, stop_conditions, target_days_to_ready, bounce_escalation_step, compress_toward_start_date, send_hour, send_time_zone, revision, created_at, updated_at, updated_by";
 const STEP_COLUMNS =
   "id, sequence_id, org_id, position, offset_days, channel, template_key, cc_recipients, created_at, updated_at";
 const DEFAULT_COLUMNS =
-  "purpose, stop_conditions, target_days_to_ready, compress_toward_start_date, send_hour, send_time_zone, created_at, updated_at";
+  "purpose, stop_conditions, target_days_to_ready, bounce_escalation_step, digest_cc_allowed, compress_toward_start_date, send_hour, send_time_zone, created_at, updated_at";
 const DEFAULT_STEP_COLUMNS =
   "id, purpose, position, offset_days, channel, template_key, created_at, updated_at";
 
@@ -68,6 +68,7 @@ type SequenceRow = Pick<
   | "enabled"
   | "stop_conditions"
   | "target_days_to_ready"
+  | "bounce_escalation_step"
   | "compress_toward_start_date"
   | "send_hour"
   | "send_time_zone"
@@ -132,6 +133,8 @@ function toConfig(row: SequenceRow, steps: StepRow[]): NotificationSequenceConfi
     enabled: row.enabled,
     stopConditions: toStopConditions(row.stop_conditions),
     targetDaysToReady: row.target_days_to_ready,
+    // A row read without the column (a stub, an older reader) inherits.
+    bounceEscalationStep: row.bounce_escalation_step ?? null,
     compressTowardStartDate: row.compress_toward_start_date,
     sendHour: row.send_hour,
     sendTimeZone: row.send_time_zone,
@@ -193,6 +196,9 @@ function toDefaults(rows: DefaultRow[], steps: DefaultStepRow[]): NotificationSe
       purpose,
       stopConditions: toStopConditions(row.stop_conditions),
       targetDaysToReady: row.target_days_to_ready,
+      // Missing reads as unset; the resolver then uses the decided value.
+      bounceEscalationStep: row.bounce_escalation_step ?? null,
+      digestCcAllowed: row.digest_cc_allowed ?? null,
       compressTowardStartDate: row.compress_toward_start_date,
       sendHour: row.send_hour,
       sendTimeZone: row.send_time_zone,

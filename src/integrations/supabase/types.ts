@@ -1916,8 +1916,10 @@ export type Database = {
       };
       notification_sequence_defaults: {
         Row: {
+          bounce_escalation_step: number | null;
           compress_toward_start_date: boolean | null;
           created_at: string;
+          digest_cc_allowed: boolean | null;
           purpose: string;
           send_hour: number | null;
           send_time_zone: string | null;
@@ -1926,8 +1928,10 @@ export type Database = {
           updated_at: string;
         };
         Insert: {
+          bounce_escalation_step?: number | null;
           compress_toward_start_date?: boolean | null;
           created_at?: string;
+          digest_cc_allowed?: boolean | null;
           purpose: string;
           send_hour?: number | null;
           send_time_zone?: string | null;
@@ -1936,8 +1940,10 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
+          bounce_escalation_step?: number | null;
           compress_toward_start_date?: boolean | null;
           created_at?: string;
+          digest_cc_allowed?: boolean | null;
           purpose?: string;
           send_hour?: number | null;
           send_time_zone?: string | null;
@@ -1996,6 +2002,7 @@ export type Database = {
       };
       notification_sequences: {
         Row: {
+          bounce_escalation_step: number | null;
           compress_toward_start_date: boolean | null;
           created_at: string;
           enabled: boolean;
@@ -2011,6 +2018,7 @@ export type Database = {
           updated_by: string | null;
         };
         Insert: {
+          bounce_escalation_step?: number | null;
           compress_toward_start_date?: boolean | null;
           created_at?: string;
           enabled?: boolean;
@@ -2026,6 +2034,7 @@ export type Database = {
           updated_by?: string | null;
         };
         Update: {
+          bounce_escalation_step?: number | null;
           compress_toward_start_date?: boolean | null;
           created_at?: string;
           enabled?: boolean;
@@ -3856,7 +3865,7 @@ export type Database = {
           id: string;
           org_id: string;
           phone_e164: string;
-          provider_id: string;
+          provider_id: string | null;
           recorded_by: string | null;
           revoked_at: string | null;
           revoked_source: string | null;
@@ -3869,7 +3878,7 @@ export type Database = {
           id?: string;
           org_id: string;
           phone_e164: string;
-          provider_id: string;
+          provider_id?: string | null;
           recorded_by?: string | null;
           revoked_at?: string | null;
           revoked_source?: string | null;
@@ -3882,7 +3891,7 @@ export type Database = {
           id?: string;
           org_id?: string;
           phone_e164?: string;
-          provider_id?: string;
+          provider_id?: string | null;
           recorded_by?: string | null;
           revoked_at?: string | null;
           revoked_source?: string | null;
