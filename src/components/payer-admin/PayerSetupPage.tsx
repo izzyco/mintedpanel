@@ -35,7 +35,7 @@ import { usePayers, useReactivatePayer, useSops } from "@/hooks/useAdmin";
 import { useActiveNetworkPayerIds } from "@/hooks/useActiveNetworkPayerIds";
 import { usePayerReadinessFunnel } from "@/hooks/usePayerReadinessFunnel";
 import { useTemplateDraftRules } from "@/hooks/useSopTemplateDrafts";
-import { newTemplateSearch } from "@/lib/payerDetailView";
+import { newTemplateSearch, type TemplateDraftRules } from "@/lib/payerDetailView";
 import { fmtDate } from "@/lib/format";
 import { catalogSetupPayers } from "@/lib/payerSetup";
 import { resolvePayerNextAction } from "@/lib/payerNextAction";
@@ -261,13 +261,15 @@ function NextActionCell({
   funnel,
   inNetwork,
   readinessUnavailable,
+  draftRules,
 }: {
   row: PayerSetupViewRow;
   funnel: FunnelRow | null;
   inNetwork: boolean;
   readinessUnavailable: boolean;
+  /** "New template" with saved drafts (MINT-129), read once for the table. */
+  draftRules: TemplateDraftRules;
 }) {
-  const draftRules = useTemplateDraftRules();
   if (row.archived) {
     // Badge lives under Template status — do not repeat "Archived" here
     // (strict-mode e2e and visual noise).
@@ -336,6 +338,7 @@ export function PayerSetupPage() {
   const networkIds = useActiveNetworkPayerIds();
   const isAdmin = useIsAdmin();
   const reactivateMut = useReactivatePayer();
+  const draftRules = useTemplateDraftRules();
 
   const [filters, setFilters] = useState<PayerSetupFilters>(DEFAULT_PAYER_SETUP_FILTERS);
   const [page, setPage] = useState(1);
@@ -557,6 +560,7 @@ export function PayerSetupPage() {
                           funnel={funnelByPayer.get(row.payerId) ?? null}
                           inNetwork={networkIds.has(row.payerId)}
                           readinessUnavailable={readinessUnavailable}
+                          draftRules={draftRules}
                         />
                       </td>
                     </tr>

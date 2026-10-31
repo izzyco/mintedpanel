@@ -46,7 +46,8 @@ export function PayerTemplatesTab({ payer }: { payer: Payer }) {
   // Saved drafts are admin-only under RLS, so only an admin sees the group.
   const isAdmin = useIsAdmin();
   // "New template" with saved drafts is configuration (MINT-129).
-  const newSearch = newTemplateSearch(payer.id, useTemplateDraftRules());
+  const draftRules = useTemplateDraftRules();
+  const newSearch = newTemplateSearch(payer.id, draftRules);
   const [typeFilter, setTypeFilter] = useState<TemplateTypeFilter>("all");
 
   const rows = useMemo(
