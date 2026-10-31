@@ -23,7 +23,8 @@
 //   caseprofile cross-org case-bound profile served instead of 404 (6b)
 //   fillevents  cross-org fill-event accepted and stored             (7, 7b)
 //   cases       cross-org provider's case list served instead of 404 (8b)
-//   casesearch  cross-org case rows leak into ?q= search results      (15b)
+//   casesearch  cross-org case rows leak into ?q= search results (15b, 15c)
+//   casesearchcap ?q= honours any &limit=, past the cap of 50          (15d)
 //   touches     cross-org submission touch accepted and stored       (9, 9b)
 //   tasks       cross-org task_id closed by a submission touch        (13)
 //   casecontext cross-org case context served instead of 404         (14b)
@@ -115,6 +116,7 @@ export const LEAK_MODES = [
   "fillevents",
   "cases",
   "casesearch",
+  "casesearchcap",
   "touches",
   "tasks",
   "casecontext",
@@ -1915,7 +1917,10 @@ export async function createMockApiServer(options = {}) {
         // holds all of them; all three are always sent on this mode.
         const rawLimit = url.searchParams.get("limit");
         const requested = rawLimit !== null && /^\d+$/.test(rawLimit) ? Number(rawLimit) : null;
-        if (rawLimit !== null && !(requested >= 1 && requested <= CASE_SEARCH_MAX_LIMIT)) {
+        // Leak "casesearchcap": any positive &limit= is honoured, past the cap
+        // (assertion 15d red).
+        const maxLimit = leak === "casesearchcap" ? Number.MAX_SAFE_INTEGER : CASE_SEARCH_MAX_LIMIT;
+        if (rawLimit !== null && !(requested >= 1 && requested <= maxLimit)) {
           return envelope(
             res,
             422,
