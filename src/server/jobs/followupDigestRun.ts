@@ -65,6 +65,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import {
+  catchUpRuleProblem,
   digestSlot,
   planFollowUpDigests,
   resolveFollowUpDigestRules,
@@ -115,6 +116,11 @@ export class FollowUpDigestNotConfiguredError extends Error {
 export class FollowUpDigestTemplateError extends Error {
   override name = "FollowUpDigestTemplateError";
 }
+/** An org's digest rules that cannot apply to its send hour; the run uses the
+ *  default for that rule instead. */
+export class FollowUpDigestRulesError extends Error {
+  override name = "FollowUpDigestRulesError";
+}
 /** Only for a send time the resolver should never return: since #561 the
  *  zone always falls back to a usable one, and the database keeps the hour in
  *  0 to 23 and the default's hour set. Kept as a cheap guard. */
@@ -160,7 +166,12 @@ export interface FollowUpDigestDeps {
   config: () => FollowUpDigestConfig;
   send: (input: SendEmailInput<DigestTemplate>) => Promise<SendEmailResult>;
   ledger: (db: SupabaseClient<Database>) => NotificationSendLedger;
-  /** One org's resolved digest rules (resolveFollowUpDigestRules). */
+  /**
+   * One org's resolved digest rules (resolveFollowUpDigestRules). Synchronous
+   * on purpose: when Mission Control stores overrides (MINT-113), carry them
+   * on the existing discovery read (listEnabledNotificationSequences) rather
+   * than adding a read per org here.
+   */
   rules: (orgId: string) => FollowUpDigestRules;
 }
 
@@ -403,15 +414,31 @@ export async function runFollowUpDigest(
     const sequence = resolveNotificationSequence("followup_digest", row, discovery.platformDefault);
     if (!sequence.enabled) continue;
     counts.orgs_enabled += 1;
-    const rules = deps.rules(row.orgId);
+    let rules = deps.rules(row.orgId);
+    // A cut-off at or before the send hour would mean "never sent": run with
+    // the default (until local midnight) and count it, like a template skip.
+    const rulesProblem = catchUpRuleProblem(rules, sequence.sendHour);
+    if (rulesProblem) {
+      counts.orgs_rules_fallback += 1;
+      rules = { ...rules, catchUpUntilLocalHour: null };
+    }
     const slot = digestSlot(sequence, ctx.now, rules);
+    // Logged once per local date, in the first due hour (as a template skip).
+    if (rulesProblem && slot && slot.localHour === sequence.sendHour) {
+      ctx.log.error(`org_rules_${rulesProblem}`, new FollowUpDigestRulesError());
+    }
     if (!slot) {
       // Unreachable through data since #561 (see FollowUpDigestSendTimeError),
       // so it is logged every run rather than once a day.
       counts.orgs_skipped_send_time += 1;
       ctx.log.error("org_skipped_send_time", new FollowUpDigestSendTimeError());
     } else if (!slot.due) {
-      counts.orgs_not_due += 1;
+      // Not due at or after the send hour means past the catch-up cut-off.
+      if (sequence.sendHour != null && slot.localHour >= sequence.sendHour) {
+        counts.orgs_past_catch_up += 1;
+      } else {
+        counts.orgs_not_due += 1;
+      }
     } else {
       counts.orgs_due += 1;
       due.push({

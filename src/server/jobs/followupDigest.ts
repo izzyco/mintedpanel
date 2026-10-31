@@ -50,6 +50,12 @@ export const FOLLOWUP_DIGEST_COUNT_KEYS = [
   "orgs_due",
   /** Orgs whose local hour is still before their send hour: nothing read. */
   "orgs_not_due",
+  /** Orgs past their catch-up cut-off for the local date (FollowUpDigestRules):
+   *  nothing read. Always 0 with the default (until local midnight). */
+  "orgs_past_catch_up",
+  /** Orgs whose catch-up cut-off is at or before their send hour (it would
+   *  never send): run with the default, until local midnight, and counted. */
+  "orgs_rules_fallback",
   /** Due orgs that already had their digest for their local date. */
   "orgs_already_completed",
   /** Orgs whose digest for their local date was settled on this attempt. */

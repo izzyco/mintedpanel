@@ -86,8 +86,10 @@ export interface FollowUpDigestRules {
    * (default, D77: as built): until local midnight, so every hourly run from
    * the send hour through the 23:00 hour catches up. A whole hour H from 1 to
    * 23: only runs whose local hour is before H, so a digest not sent by H:00
-   * is not sent for that date. An H at or before the send hour means the
-   * digest is never due (validateFollowUpDigestRules says so).
+   * is not sent for that date. When DST start skips the send hour, the first
+   * hour after it stands in for it, whatever the cut-off. An H at or before
+   * the send hour would mean the digest is never due: it is invalid
+   * (catchUpRuleProblem), and the job falls back to midnight and counts it.
    */
   catchUpUntilLocalHour: number | null;
 }
@@ -144,6 +146,18 @@ export function resolveFollowUpDigestRules(
   };
 }
 
+/** Why resolved rules cannot be applied to an org with this send hour, or null. */
+export type CatchUpRuleProblem = "cut_off_not_after_send_hour";
+
+export function catchUpRuleProblem(
+  rules: Pick<FollowUpDigestRules, "catchUpUntilLocalHour">,
+  sendHour: number | null,
+): CatchUpRuleProblem | null {
+  const cutOff = rules.catchUpUntilLocalHour;
+  if (cutOff == null || cutOff >= CATCH_UP_UNTIL_MIDNIGHT || sendHour == null) return null;
+  return cutOff <= sendHour ? "cut_off_not_after_send_hour" : null;
+}
+
 /**
  * Plain-language problems with an override (or resolved rules); empty when it
  * can go live. null leaves a rule to the layer below. Pass the org's send
@@ -172,9 +186,7 @@ export function validateFollowUpDigestRules(
     );
   } else if (
     isCatchUpHour(cutOff) &&
-    cutOff < CATCH_UP_UNTIL_MIDNIGHT &&
-    context.sendHour != null &&
-    cutOff <= context.sendHour
+    catchUpRuleProblem({ catchUpUntilLocalHour: cutOff }, context.sendHour ?? null)
   ) {
     errors.push(
       `The catch-up cut-off (${cutOff}:00) must be after the send hour (${context.sendHour}:00), or the digest never goes out.`,
@@ -346,7 +358,19 @@ export function digestSlot(
     return null;
   }
   const cutOff = rules.catchUpUntilLocalHour;
-  const beforeCutOff = cutOff == null || local.hour < cutOff;
+  let beforeCutOff = cutOff == null || local.hour < cutOff;
+  if (!beforeCutOff && local.hour > sendHour) {
+    // DST start can skip the send hour (2 am on Mar 14 2027 in Chicago). The
+    // first hour after it then stands in for it, so a cut-off just after the
+    // send hour still leaves that one attempt. On any other day the hour
+    // before this one is at or after the send hour.
+    try {
+      const hourBefore = zonedDateHour(new Date(now.getTime() - 3_600_000), sendTimeZone);
+      if (hourBefore.date === local.date && hourBefore.hour < sendHour) beforeCutOff = true;
+    } catch {
+      // The zone formatted a moment ago; leave the cut-off as it is.
+    }
+  }
   return {
     due: local.hour >= sendHour && beforeCutOff,
     localDate: local.date,
@@ -448,9 +472,13 @@ export function planFollowUpDigests(input: FollowUpDigestPlanInput): FollowUpDig
     const followUp = due.get(c.id);
     if (!followUp) continue;
     if (!rows) {
-      // No coordinator to send it to, and no cc list: never sent. count_only
-      // (the one mode until MINT-127) counts it.
-      if (rules.unassignedFollowUps === "count_only") unassignedFollowUps += 1;
+      // A fact, counted whatever the mode. The mode decides routing only:
+      // count_only (the one mode until MINT-127) sends it to no one.
+      unassignedFollowUps += 1;
+      switch (rules.unassignedFollowUps) {
+        case "count_only":
+          break;
+      }
       continue;
     }
     rows.push({

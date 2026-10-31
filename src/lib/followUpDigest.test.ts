@@ -9,6 +9,7 @@ import {
   digestSlot,
   dueFollowUps,
   planFollowUpDigests,
+  catchUpRuleProblem,
   resolveFollowUpDigestRules,
   touchCanResolveFollowUp,
   validateFollowUpDigestRules,
@@ -625,6 +626,42 @@ describe("digestSlot with the catch-up rule", () => {
   });
 });
 
+describe("catch-up cut-off edges (review)", () => {
+  it("calls a cut-off at or before the send hour a problem, and none otherwise", () => {
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 8 }, 8)).toBe("cut_off_not_after_send_hour");
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 6 }, 8)).toBe("cut_off_not_after_send_hour");
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 9 }, 8)).toBeNull();
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: null }, 23)).toBeNull();
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 24 }, 23)).toBeNull();
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 8 }, null)).toBeNull();
+  });
+
+  it("lets the first hour after a send hour DST skips stand in for it, past a cut-off", () => {
+    const twoAm = { sendHour: 2, sendTimeZone: "America/Chicago" };
+    const cutAtThree = { catchUpUntilLocalHour: 3 };
+    // Mar 14 2027: 1:59 am CST, then 3:00 am CDT.
+    expect(digestSlot(twoAm, at("2027-03-14T07:07:00Z"), cutAtThree)).toEqual({
+      due: false,
+      localDate: "2027-03-14",
+      localHour: 1,
+    });
+    expect(digestSlot(twoAm, at("2027-03-14T08:07:00Z"), cutAtThree)).toEqual({
+      due: true,
+      localDate: "2027-03-14",
+      localHour: 3,
+    });
+    expect(digestSlot(twoAm, at("2027-03-14T09:07:00Z"), cutAtThree)).toMatchObject({
+      due: false,
+      localHour: 4,
+    });
+    // The next day, 2 am exists again: 3 am is past the cut-off.
+    expect(digestSlot(twoAm, at("2027-03-15T08:07:00Z"), cutAtThree)).toMatchObject({
+      due: false,
+      localHour: 3,
+    });
+  });
+});
+
 describe("planFollowUpDigests with the unassigned rule", () => {
   it("counts unassigned follow-ups and sends them to no one under count_only, as with no rules", () => {
     const mine = kase({ assignedTo: JANE });
@@ -638,5 +675,19 @@ describe("planFollowUpDigests with the unassigned rule", () => {
     expect(explicit.digests.map((d) => d.recipientUserId)).toEqual([JANE]);
     expect(JSON.stringify(explicit.digests)).not.toContain(nobody.id);
     expect(explicit).toEqual(plan(input));
+  });
+
+  it("counts unassigned follow-ups whatever the mode: the mode decides routing only", () => {
+    const nobody = kase({ assignedTo: null });
+    const input = {
+      cases: [nobody],
+      touchpoints: [touch(nobody.id, "2026-10-01", "2026-10-30")],
+    };
+    const unknownMode = plan({
+      ...input,
+      rules: { unassignedFollowUps: "work_queue" as never },
+    });
+    expect(unknownMode.unassignedFollowUps).toBe(1);
+    expect(unknownMode.digests).toEqual([]);
   });
 });

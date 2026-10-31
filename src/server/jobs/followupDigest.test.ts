@@ -105,7 +105,8 @@ function defaultTables(): Record<string, FakeRow[]> {
         id: `dstep-intake-${i + 1}`,
         purpose: "intake_reminder",
         position: i + 1,
-        offset_days: [2, 4, 7][i],
+        // Minted's seeded intake default: days 1, 2 and 3 (Oct 31).
+        offset_days: [1, 2, 3][i],
         channel: "email",
         template_key: `intake_reminder_${name}`,
         ...STAMP,
@@ -1568,7 +1569,7 @@ describe("followup-digest: FollowUpDigestRules per org (policy as configuration,
     expect(result).toEqual(
       counts({
         orgs_enabled: 2,
-        orgs_not_due: 1,
+        orgs_past_catch_up: 1,
         orgs_due: 1,
         orgs_completed: 1,
         digests_sent: 1,
@@ -1576,6 +1577,52 @@ describe("followup-digest: FollowUpDigestRules per org (policy as configuration,
     );
     expect(recipients()).toEqual(["bill@example.test"]);
     expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
+  });
+
+  it("counts an org before its send hour as not due, not past the cut-off", async () => {
+    // 7 am Central: before the 8 am send hour; the noon cut-off is irrelevant.
+    const result = await runFollowUpDigest(
+      ctx(new Date("2026-10-31T12:00:00Z")),
+      deps({ rules: () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 12 }) }),
+    );
+    expect(result).toEqual(counts({ orgs_enabled: 2, orgs_not_due: 2 }));
+  });
+
+  it("treats a cut-off at or before the send hour as invalid: sends as by default, counted, logged once a date", async () => {
+    const event = "[jobs:followup-digest] org_rules_cut_off_not_after_send_hour";
+    const lines = () => logged().split(event).length - 1;
+    const invalid = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 8 });
+    // 8 am Central, the send hour: without the fallback nothing would ever go.
+    const first = await runFollowUpDigest(ctx(), deps({ rules: invalid }));
+    expect(first).toEqual({ ...BASELINE, orgs_rules_fallback: 2 });
+    expect(recipients()).toEqual(["bill@example.test", "jane@example.test", "omar@example.test"]);
+    expect(lines()).toBe(2);
+    // 10 am: counted again, not logged again (one line per org per local date).
+    const later = await runFollowUpDigest(
+      ctx(new Date("2026-10-31T15:00:00Z")),
+      deps({ rules: invalid }),
+    );
+    expect(later).toEqual({ ...ALREADY, orgs_rules_fallback: 2 });
+    expect(lines()).toBe(2);
+  });
+
+  it("keeps one attempt when DST start skips the send hour and the cut-off is the hour after", async () => {
+    // Mar 14 2027 in Chicago: 1:59 am CST is followed by 3:00 am CDT. A 2 am
+    // send hour with a 3 am cut-off would otherwise have no due hour at all.
+    fake = createFollowUpDigestFakeDb(world({ a: { send_hour: 2 }, b: { send_hour: 2 } }).tables);
+    const rules = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 3 });
+    // 1:07 am CST: before the send hour.
+    const early = await runFollowUpDigest(ctx(new Date("2027-03-14T07:07:00Z")), deps({ rules }));
+    expect(early.orgs_not_due).toBe(2);
+    // 3:07 am CDT: the first hour after the skipped 2 am stands in for it.
+    const stand = await runFollowUpDigest(ctx(new Date("2027-03-14T08:07:00Z")), deps({ rules }));
+    expect(stand.orgs_due).toBe(2);
+    expect(stand.orgs_past_catch_up).toBe(0);
+    expect(stand.orgs_rules_fallback).toBe(0);
+    // 4:07 am CDT: past the cut-off.
+    const late = await runFollowUpDigest(ctx(new Date("2027-03-14T09:07:00Z")), deps({ rules }));
+    expect(late.orgs_past_catch_up).toBe(2);
+    expect(late.orgs_due).toBe(0);
   });
 
   it("still sends before the cut-off, and counts unassigned follow-ups under count_only", async () => {
