@@ -8,9 +8,10 @@
 //      (listEnabledNotificationSequences). resolveNotificationSequence gives
 //      each org's effective sequence: its send hour, time zone and step.
 //   2. The hour gate (digestSlot, src/lib/followUpDigest.ts): an org is due
-//      when its local hour is at or after its send hour. Its local date is
-//      the digest's "today" and its slot. An org not yet due is counted and
-//      nothing of it is read.
+//      when its local hour is at or after its send hour and before its
+//      catch-up cut-off (FollowUpDigestRules; local midnight by default). Its
+//      local date is the digest's "today" and its slot. An org not due is
+//      counted and nothing of it is read.
 //   3. Once per local date: a due org that already has a completion row for
 //      (job, org, local date) in notification_org_slots is skipped.
 //   4. The step's template_key must pass the consumer contract
@@ -19,7 +20,8 @@
 //   5. Read the org's name, members, open cases and touchpoints
 //      (src/services/followUpDigest.ts), each scoped to the org, and plan the
 //      digests (planFollowUpDigests): one per coordinator with something due.
-//      Unassigned follow-ups go to no one and are counted.
+//      Unassigned follow-ups go to no one and are counted (the rules'
+//      count_only, the one mode until MINT-127).
 //   6. For each digest, claim (job, local date, org, recipient) in
 //      notification_sends, send followup_digest_daily through sendEmail, and
 //      record the send sent or failed.
@@ -62,7 +64,12 @@
 // logs an address, a name, a case, a date or a count.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-import { digestSlot, planFollowUpDigests } from "@/lib/followUpDigest";
+import {
+  digestSlot,
+  planFollowUpDigests,
+  resolveFollowUpDigestRules,
+  type FollowUpDigestRules,
+} from "@/lib/followUpDigest";
 import {
   resolveNotificationSequence,
   type EffectiveNotificationSequence,
@@ -153,12 +160,18 @@ export interface FollowUpDigestDeps {
   config: () => FollowUpDigestConfig;
   send: (input: SendEmailInput<DigestTemplate>) => Promise<SendEmailResult>;
   ledger: (db: SupabaseClient<Database>) => NotificationSendLedger;
+  /** One org's resolved digest rules (resolveFollowUpDigestRules). */
+  rules: (orgId: string) => FollowUpDigestRules;
 }
 
 const DEFAULT_DEPS: FollowUpDigestDeps = {
   config: resolveFollowUpDigestConfig,
   send: (input) => sendEmail(input),
   ledger: supabaseNotificationSendLedger,
+  // Nothing stores a platform or org override yet, so every org gets the
+  // decided rules. Mission Control (MINT-113) adds the stored overrides; a
+  // services/ reader then passes them to resolveFollowUpDigestRules here.
+  rules: () => resolveFollowUpDigestRules(),
 };
 
 export type DigestStepProblem =
@@ -275,10 +288,11 @@ async function deliver(
   return "unrecorded";
 }
 
-/** A due org: its effective sequence and the local date and hour of the run. */
+/** A due org: its effective sequence, its rules, and the local date and hour of the run. */
 interface DueOrg {
   orgId: string;
   sequence: EffectiveNotificationSequence;
+  rules: FollowUpDigestRules;
   localDate: string;
   localHour: number;
 }
@@ -310,6 +324,7 @@ async function runOrg(
 
   const data = await loadFollowUpDigestOrgData({ db: ctx.db }, org.orgId);
   const plan = planFollowUpDigests({
+    rules: org.rules,
     practiceName: data.practiceName,
     today: org.localDate,
     appBaseUrl: config.appBaseUrl,
@@ -388,7 +403,8 @@ export async function runFollowUpDigest(
     const sequence = resolveNotificationSequence("followup_digest", row, discovery.platformDefault);
     if (!sequence.enabled) continue;
     counts.orgs_enabled += 1;
-    const slot = digestSlot(sequence, ctx.now);
+    const rules = deps.rules(row.orgId);
+    const slot = digestSlot(sequence, ctx.now, rules);
     if (!slot) {
       // Unreachable through data since #561 (see FollowUpDigestSendTimeError),
       // so it is logged every run rather than once a day.
@@ -401,6 +417,7 @@ export async function runFollowUpDigest(
       due.push({
         orgId: row.orgId,
         sequence,
+        rules,
         localDate: slot.localDate,
         localHour: slot.localHour,
       });

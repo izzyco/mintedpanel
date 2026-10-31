@@ -20,6 +20,7 @@ import {
   type FollowUpDigestCounts,
 } from "./followupDigest";
 import { DIGEST_TOUCH_CASE_CHUNK, DIGEST_TOUCH_FILTER } from "@/services/followUpDigest";
+import { resolveFollowUpDigestRules } from "@/lib/followUpDigest";
 import {
   FollowUpDigestIncompleteError,
   FollowUpDigestNotConfiguredError,
@@ -1535,5 +1536,61 @@ describe("followup-digest: registry entry", () => {
       expect(utcHourKey(new Date(iso))).toBe(key);
       expect(key).toMatch(RUN_KEY_RE);
     }
+  });
+});
+
+describe("followup-digest: FollowUpDigestRules per org (policy as configuration, MINT-113)", () => {
+  it("reads each enabled org's rules, and with the defaults sends exactly as before", async () => {
+    const asked: string[] = [];
+    const result = await runFollowUpDigest(
+      ctx(),
+      deps({
+        rules: (orgId) => {
+          asked.push(orgId);
+          return resolveFollowUpDigestRules();
+        },
+      }),
+    );
+    expect(result).toEqual(BASELINE);
+    expect(asked.sort()).toEqual([ORG_A, ORG_B].sort());
+  });
+
+  it("stops catching up an org past its cut-off, and still catches up the other", async () => {
+    // 1 pm Central (18:00 UTC in CDT); nothing ran since 8 am. Org A stops
+    // catching up at noon; org B keeps the default (local midnight).
+    const result = await runFollowUpDigest(
+      ctx(new Date("2026-10-31T18:00:00Z")),
+      deps({
+        rules: (orgId) =>
+          resolveFollowUpDigestRules(null, orgId === ORG_A ? { catchUpUntilLocalHour: 12 } : null),
+      }),
+    );
+    expect(result).toEqual(
+      counts({
+        orgs_enabled: 2,
+        orgs_not_due: 1,
+        orgs_due: 1,
+        orgs_completed: 1,
+        digests_sent: 1,
+      }),
+    );
+    expect(recipients()).toEqual(["bill@example.test"]);
+    expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
+  });
+
+  it("still sends before the cut-off, and counts unassigned follow-ups under count_only", async () => {
+    // 11 am Central: before org A's noon cut-off.
+    const result = await runFollowUpDigest(
+      ctx(new Date("2026-10-31T16:00:00Z")),
+      deps({
+        rules: () =>
+          resolveFollowUpDigestRules({
+            catchUpUntilLocalHour: 12,
+            unassignedFollowUps: "count_only",
+          }),
+      }),
+    );
+    expect(result).toEqual(BASELINE);
+    expect(result.unassigned_follow_ups).toBe(1);
   });
 });

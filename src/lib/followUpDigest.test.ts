@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import { resolveActiveFollowUp } from "./followUps";
 import * as digest from "./followUpDigest";
 import {
+  CATCH_UP_UNTIL_MIDNIGHT,
+  DEFAULT_FOLLOW_UP_DIGEST_RULES,
   MAX_DIGEST_SECTION_ROWS,
+  UNASSIGNED_FOLLOW_UP_MODES,
   digestSlot,
   dueFollowUps,
   planFollowUpDigests,
+  resolveFollowUpDigestRules,
   touchCanResolveFollowUp,
+  validateFollowUpDigestRules,
   zonedDateHour,
   type DigestCase,
   type DigestMember,
@@ -478,5 +483,160 @@ describe("planFollowUpDigests", () => {
     ]) {
       expect(Object.hasOwn(digest, gone), gone).toBe(false);
     }
+  });
+});
+
+/* -------- FollowUpDigestRules (policy as configuration, MINT-113) -------- */
+
+describe("FollowUpDigestRules: decided defaults", () => {
+  it("count unassigned follow-ups only (Oct 31) and catch up until local midnight (D77)", () => {
+    expect(DEFAULT_FOLLOW_UP_DIGEST_RULES).toEqual({
+      unassignedFollowUps: "count_only",
+      catchUpUntilLocalHour: null,
+    });
+    expect(Object.isFrozen(DEFAULT_FOLLOW_UP_DIGEST_RULES)).toBe(true);
+    // The Work-queue mode is MINT-127's, not built here.
+    expect(UNASSIGNED_FOLLOW_UP_MODES).toEqual(["count_only"]);
+    expect(CATCH_UP_UNTIL_MIDNIGHT).toBe(24);
+  });
+});
+
+describe("resolveFollowUpDigestRules: org over platform over default, field by field", () => {
+  it("gives the defaults with no layers", () => {
+    expect(resolveFollowUpDigestRules()).toEqual(DEFAULT_FOLLOW_UP_DIGEST_RULES);
+    expect(resolveFollowUpDigestRules(null, null)).toEqual(DEFAULT_FOLLOW_UP_DIGEST_RULES);
+  });
+
+  it("takes the platform over the default, and the org over the platform", () => {
+    expect(resolveFollowUpDigestRules({ catchUpUntilLocalHour: 18 })).toEqual({
+      unassignedFollowUps: "count_only",
+      catchUpUntilLocalHour: 18,
+    });
+    expect(
+      resolveFollowUpDigestRules({ catchUpUntilLocalHour: 18 }, { catchUpUntilLocalHour: 12 }),
+    ).toMatchObject({ catchUpUntilLocalHour: 12 });
+    expect(
+      resolveFollowUpDigestRules(
+        { unassignedFollowUps: "count_only" },
+        { catchUpUntilLocalHour: 20 },
+      ),
+    ).toEqual({ unassignedFollowUps: "count_only", catchUpUntilLocalHour: 20 });
+  });
+
+  it("inherits on null or undefined, and spells an explicit midnight 24", () => {
+    expect(
+      resolveFollowUpDigestRules({ catchUpUntilLocalHour: 18 }, { catchUpUntilLocalHour: null }),
+    ).toMatchObject({ catchUpUntilLocalHour: 18 });
+    // An org can go back to midnight under a platform cut-off: 24, resolved as null.
+    expect(
+      resolveFollowUpDigestRules(
+        { catchUpUntilLocalHour: 18 },
+        { catchUpUntilLocalHour: CATCH_UP_UNTIL_MIDNIGHT },
+      ),
+    ).toMatchObject({ catchUpUntilLocalHour: null });
+  });
+
+  it("skips a value of the wrong shape like a missing one", () => {
+    const junk = { unassignedFollowUps: "work_queue", catchUpUntilLocalHour: 25 } as never;
+    expect(resolveFollowUpDigestRules(junk)).toEqual(DEFAULT_FOLLOW_UP_DIGEST_RULES);
+    for (const bad of [0, -1, 7.5, "18", true]) {
+      expect(
+        resolveFollowUpDigestRules({ catchUpUntilLocalHour: 18 }, {
+          catchUpUntilLocalHour: bad,
+        } as never).catchUpUntilLocalHour,
+      ).toBe(18);
+    }
+  });
+});
+
+describe("validateFollowUpDigestRules", () => {
+  it("passes the defaults, partial overrides and null as inherit", () => {
+    expect(validateFollowUpDigestRules(DEFAULT_FOLLOW_UP_DIGEST_RULES)).toEqual([]);
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 18 })).toEqual([]);
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 24 })).toEqual([]);
+    expect(validateFollowUpDigestRules({ unassignedFollowUps: null })).toEqual([]);
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 9 }, { sendHour: 8 })).toEqual([]);
+  });
+
+  it("names every unknown or invalid value in plain language", () => {
+    expect(validateFollowUpDigestRules({ unassignedFollowUps: "work_queue" })).toEqual([
+      'Unassigned follow-ups can only be counted for now ("count_only").',
+    ]);
+    for (const bad of [0, 25, 7.5, "18"]) {
+      expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: bad })).toEqual([
+        "The catch-up cut-off must be a whole hour from 1 to 23, or 24 (or none) for local midnight.",
+      ]);
+    }
+    expect(validateFollowUpDigestRules({ lookAheadDays: 2 })).toEqual([
+      '"lookAheadDays" is not a follow-up digest rule.',
+    ]);
+    expect(validateFollowUpDigestRules(null)).toEqual([
+      "The follow-up digest rules must be a set of named values.",
+    ]);
+  });
+
+  it("refuses a cut-off at or before the org's send hour: the digest would never go out", () => {
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 8 }, { sendHour: 8 })).toEqual([
+      "The catch-up cut-off (8:00) must be after the send hour (8:00), or the digest never goes out.",
+    ]);
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 6 }, { sendHour: 8 })).toHaveLength(
+      1,
+    );
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 24 }, { sendHour: 23 })).toEqual(
+      [],
+    );
+  });
+});
+
+describe("digestSlot with the catch-up rule", () => {
+  it("catches up through 11 pm with the default, the same as no rules passed", () => {
+    for (const iso of ["2026-10-31T13:00:00Z", "2026-10-31T22:00:00Z", "2026-11-01T04:59:00Z"]) {
+      expect(digestSlot(CHICAGO, at(iso), DEFAULT_FOLLOW_UP_DIGEST_RULES)).toEqual(
+        digestSlot(CHICAGO, at(iso)),
+      );
+    }
+    expect(digestSlot(CHICAGO, at("2026-11-01T04:59:00Z"), DEFAULT_FOLLOW_UP_DIGEST_RULES)).toEqual(
+      { due: true, localDate: "2026-10-31", localHour: 23 },
+    );
+  });
+
+  it("stops catching up at a cut-off hour, on the same local date", () => {
+    const noon = { catchUpUntilLocalHour: 12 };
+    // 11 am Central (16:00 UTC, CDT) is still due; noon is not.
+    expect(digestSlot(CHICAGO, at("2026-10-31T16:59:00Z"), noon)).toEqual({
+      due: true,
+      localDate: "2026-10-31",
+      localHour: 11,
+    });
+    expect(digestSlot(CHICAGO, at("2026-10-31T17:00:00Z"), noon)).toEqual({
+      due: false,
+      localDate: "2026-10-31",
+      localHour: 12,
+    });
+    // Never before the send hour, cut-off or not.
+    expect(digestSlot(CHICAGO, at("2026-10-31T12:00:00Z"), noon)).toMatchObject({ due: false });
+  });
+
+  it("is never due when the cut-off is at or before the send hour", () => {
+    for (let h = 0; h < 24; h += 1) {
+      const now = new Date(Date.UTC(2026, 9, 31, 5 + h));
+      expect(digestSlot(CHICAGO, now, { catchUpUntilLocalHour: 8 })?.due).toBe(false);
+    }
+  });
+});
+
+describe("planFollowUpDigests with the unassigned rule", () => {
+  it("counts unassigned follow-ups and sends them to no one under count_only, as with no rules", () => {
+    const mine = kase({ assignedTo: JANE });
+    const nobody = kase({ assignedTo: null });
+    const input = {
+      cases: [mine, nobody],
+      touchpoints: [mine, nobody].map((c) => touch(c.id, "2026-10-01", "2026-10-30")),
+    };
+    const explicit = plan({ ...input, rules: { unassignedFollowUps: "count_only" } });
+    expect(explicit.unassignedFollowUps).toBe(1);
+    expect(explicit.digests.map((d) => d.recipientUserId)).toEqual([JANE]);
+    expect(JSON.stringify(explicit.digests)).not.toContain(nobody.id);
+    expect(explicit).toEqual(plan(input));
   });
 });
