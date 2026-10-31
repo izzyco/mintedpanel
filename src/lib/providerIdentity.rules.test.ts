@@ -11,6 +11,8 @@ import {
   validateIdentityValidationRules,
   type IdentityValidationRules,
 } from "./providerIdentity";
+// Aliased so it reads as the plain function it is outside a component.
+import { useIdentityValidationRules as identityRulesInForce } from "@/hooks/useIdentityValidationRules";
 
 const RECHECK: IdentityValidationRules = { recheckStoredOnEdit: true, deaLastNameLetter: "off" };
 const EVERY_RULE_SET: IdentityValidationRules[] = [DEFAULT_IDENTITY_VALIDATION_RULES, RECHECK];
@@ -23,6 +25,12 @@ describe("DEFAULT_IDENTITY_VALIDATION_RULES", () => {
       deaLastNameLetter: "off",
     });
     expect(Object.isFrozen(DEFAULT_IDENTITY_VALIDATION_RULES)).toBe(true);
+  });
+
+  it("is what every consumer reads today, as one frozen object", () => {
+    expect(identityRulesInForce()).toEqual(DEFAULT_IDENTITY_VALIDATION_RULES);
+    expect(Object.isFrozen(identityRulesInForce())).toBe(true);
+    expect(identityRulesInForce()).toBe(identityRulesInForce());
   });
 });
 
@@ -111,7 +119,16 @@ describe("validateIdentityValidationRules", () => {
   });
 
   it("rejects any setting that would loosen the NPI or DEA check digit", () => {
-    for (const key of ["npiCheckDigit", "skipChecksum", "luhn", "deaCheckDigit", "allowAnyNpi"]) {
+    for (const key of [
+      "npiCheckDigit",
+      "skipChecksum",
+      "luhn",
+      "deaCheckDigit",
+      "allowAnyNpi",
+      "allowAnyNPI",
+      "npi_check_digit",
+      "checkDigitOff",
+    ]) {
       expect(validateIdentityValidationRules({ [key]: false })).toEqual([
         `"${key}" can't be configured: the NPI and DEA check digits are facts about the number, so no setting can turn them off or relax them. A setting can only make identity checks stricter.`,
       ]);
@@ -122,6 +139,14 @@ describe("validateIdentityValidationRules", () => {
     expect(validateIdentityValidationRules({ recheckStoredOnEdit: true, cadence: 3 })).toEqual([
       '"cadence" is not an identity validation setting.',
     ]);
+  });
+
+  it("matches a fixed check on whole words only, so a word that merely contains one is just unknown", () => {
+    for (const key of ["idea", "ideaBoard", "deadline", "recheckDigits"]) {
+      expect(validateIdentityValidationRules({ [key]: true })).toEqual([
+        `"${key}" is not an identity validation setting.`,
+      ]);
+    }
   });
 });
 

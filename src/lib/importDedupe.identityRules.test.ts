@@ -4,7 +4,9 @@
 import { describe, expect, it } from "vitest";
 import {
   STORED_NPI_CHECK_DIGIT_REASON,
+  buildCommitPlan,
   dedupeImportRows,
+  summarizeImportPreview,
   type DedupeInputs,
   type StagedImportRow,
 } from "@/lib/importDedupe";
@@ -121,5 +123,51 @@ describe("dedupeImportRows — identity validation rules", () => {
       );
       expect(valid).toEqual([expect.objectContaining({ kind: "create" })]);
     }
+  });
+
+  it("with recheckStoredOnEdit, a mixed file blocks the legacy provider's row and still updates the valid one, through the preview and the commit plan", () => {
+    const dispositions = dedupeImportRows(inputs([rowFor(2, LEGACY), rowFor(3, VALID)], RECHECK));
+    expect(dispositions).toEqual([
+      expect.objectContaining({ kind: "blocked", line: 2, reason: STORED_NPI_CHECK_DIGIT_REASON }),
+      expect.objectContaining({ kind: "update", line: 3, providerId: VALID.id }),
+    ]);
+
+    expect(summarizeImportPreview(dispositions, {}, 0)).toEqual({
+      createProviders: 0,
+      updateProviders: 1,
+      blockedRows: 1,
+      skippedProviders: 0,
+      stagedRowsCovered: 2,
+    });
+
+    expect(buildCommitPlan(dispositions, {})).toEqual({
+      creates: [],
+      updates: [
+        {
+          line: 3,
+          provider_id: VALID.id,
+          set: {},
+          add_group_ids: [GROUP2.id],
+          add_facility_ids: [],
+          license_inserts: [],
+          license_updates: [],
+        },
+      ],
+      skipped_count: 0,
+      blocked_entries: [{ line: 2, column: "npi", reason: STORED_NPI_CHECK_DIGIT_REASON }],
+    });
+  });
+
+  it("by default the same mixed file updates both providers", () => {
+    const dispositions = dedupeImportRows(inputs([rowFor(2, LEGACY), rowFor(3, VALID)]));
+    expect(summarizeImportPreview(dispositions, {}, 0)).toMatchObject({
+      updateProviders: 2,
+      blockedRows: 0,
+    });
+    expect(buildCommitPlan(dispositions, {}).blocked_entries).toEqual([]);
+    expect(buildCommitPlan(dispositions, {}).updates.map((u) => u.provider_id)).toEqual([
+      LEGACY.id,
+      VALID.id,
+    ]);
   });
 });

@@ -75,6 +75,7 @@ import { useEnrollmentReadiness } from "@/hooks/useEnrollmentReadiness";
 import { AddTouchDialog, type TouchCaseCandidate } from "@/components/cases/AddTouchDialog";
 import { usePayers } from "@/hooks/useAdmin";
 import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
+import { normalizeNpi } from "@/lib/providerGroup";
 import { useCanWrite } from "@/lib/permissions";
 import { isValidEmail } from "@/lib/contactValidation";
 import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
@@ -368,9 +369,10 @@ interface FieldDef {
   masked?: boolean;
   mono?: boolean;
   display?: (value: string | null) => string;
-  /** Validate the stored value on save even when unchanged
-   * (IdentityValidationRules.recheckStoredOnEdit). */
-  recheckStored?: boolean;
+  /** Set only under IdentityValidationRules.recheckStoredOnEdit (MINT-129):
+   * an unchanged stored value is validated on save too, after this
+   * normalization. It never reaches the save patch. */
+  recheckStoredAs?: (stored: string) => string;
 }
 type Cell = FieldDef | { ssn: true };
 
@@ -430,8 +432,9 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
             return isValidNpi(v) ? null : NPI_CHECK_DIGIT_MESSAGE;
           },
           // Off by default; under recheckStoredOnEdit (MINT-129) an unchanged
-          // stored NPI is checked on save too.
-          recheckStored: identityRules.recheckStoredOnEdit,
+          // stored NPI is checked on save too, separators stripped as the
+          // roster form strips them.
+          recheckStoredAs: identityRules.recheckStoredOnEdit ? normalizeNpi : undefined,
         },
         { label: "CAQH ID", key: "caqhId", value: provider.caqhId ?? null, mono: true },
         { label: "Specialty", key: "specialty", value: provider.specialty ?? null },
@@ -489,8 +492,11 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       // Validate only fields the user actually changed — a legacy invalid
       // value in an untouched field must not block an unrelated edit.
       const changed = (v === "" ? null : v) !== (f.value ?? null);
-      if ((changed || f.recheckStored) && v !== "" && f.validate) {
+      if (changed && v !== "" && f.validate) {
         const message = f.validate(v);
+        if (message) errors[f.key] = message;
+      } else if (!changed && v !== "" && f.validate && f.recheckStoredAs) {
+        const message = f.validate(f.recheckStoredAs(v));
         if (message) errors[f.key] = message;
       }
     }

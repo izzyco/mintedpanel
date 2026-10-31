@@ -5,6 +5,7 @@ import {
   type Page,
   type BrowserContext,
 } from "./fixtures/legacy-access-context";
+import { RECHECK_STORED_RULES, serveIdentityValidationRules } from "./fixtures/identityRules";
 
 // E1.3 TE-10 — Provider Roster coverage over the mock harness:
 //   TS-33 Tree Hill first provider: CAQH baseline + required group
@@ -1117,4 +1118,59 @@ test("P03: a saved add with failed cache refresh requires reload and never repea
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("row", { name: /CO-SAVED/ })).toBeVisible();
   expect(insertAttempts).toBe(1);
+});
+
+// MINT-129: the roster form under recheckStoredOnEdit (served in place of the
+// default rules). prov-ob's stored NPI (1093817465) fails the check digit.
+async function openRecheckRoster(context: BrowserContext, page: Page, storedNpi: string) {
+  const fixtures = p03Fixtures();
+  (fixtures.providers as Record<string, unknown>[])[0].npi = storedNpi;
+  const handler = makeHandler(fixtures);
+  const providerPatches: Record<string, unknown>[] = [];
+  await context.route(/\/(rest|auth)\/v1\//, (route) => {
+    const req = route.request();
+    if (req.method() === "PATCH" && new URL(req.url()).pathname.endsWith("/rest/v1/providers"))
+      providerPatches.push(JSON.parse(req.postData() ?? "{}") as Record<string, unknown>);
+    return handler(route);
+  });
+  await serveIdentityValidationRules(context, RECHECK_STORED_RULES);
+  const dialog = await openP03Roster(context, page);
+  await expect(dialog.locator("#prov-npi")).toHaveValue(storedNpi);
+  return { dialog, providerPatches };
+}
+
+test("MINT-129: under recheckStoredOnEdit, the roster form checks the stored NPI on an unrelated edit", async ({
+  context,
+  page,
+}) => {
+  const { dialog, providerPatches } = await openRecheckRoster(context, page, "1093817465");
+
+  // A phone change alone is blocked by the stored NPI, and nothing is written.
+  await dialog.locator("#prov-phone").fill("252-555-0142");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toContainText("NPI check digit is invalid");
+  expect(providerPatches).toEqual([]);
+
+  // Correcting the NPI saves both edits.
+  await dialog.locator("#prov-npi").fill("1093817462");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(providerPatches).toEqual([
+    expect.objectContaining({ phone: "252-555-0142", npi: "1093817462" }),
+  ]);
+});
+
+test("MINT-129: under recheckStoredOnEdit, the roster form passes a valid stored NPI typed with dashes", async ({
+  context,
+  page,
+}) => {
+  const { dialog, providerPatches } = await openRecheckRoster(context, page, "109-381-7462");
+  await dialog.locator("#prov-phone").fill("252-555-0142");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toHaveCount(0);
+  // The roster form has always saved the NPI's digits; the re-check adds
+  // nothing to the patch.
+  expect(providerPatches).toEqual([
+    expect.objectContaining({ phone: "252-555-0142", npi: "1093817462" }),
+  ]);
 });

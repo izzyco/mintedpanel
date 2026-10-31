@@ -120,12 +120,14 @@ export const DEA_LAST_NAME_LETTER_RULES = ["off"] as const;
 export type DeaLastNameLetterRule = (typeof DEA_LAST_NAME_LETTER_RULES)[number];
 
 export interface IdentityValidationRules {
-  /** False (default): an edit checks the NPI only when it is changed, and an
-   * import row that matches an existing provider by NPI is not checked, so an
-   * NPI stored before the check digit never blocks an unrelated save. True:
-   * every edit, and every import row that matches an existing provider by
-   * NPI, checks the stored NPI too, so a wrong check digit has to be corrected
-   * before anything else about that provider saves. */
+  /** False (default): the provider record's Provider Info edit and the roster
+   * form check the NPI only when it is changed, and an import row that matches
+   * an existing provider by NPI is not checked, so an NPI stored before the
+   * check digit never blocks an unrelated save there. True: those two edits
+   * check the stored NPI on every save, and the import blocks a matching row
+   * whose stored NPI fails. No other write checks a provider's NPI under
+   * either value: not the license dialogs, terminate, or
+   * PATCH /api/providers/:id. */
   recheckStoredOnEdit: boolean;
   /** "off" (default): the DEA's second character is not matched to the
    * registrant's last name. */
@@ -173,8 +175,20 @@ export function resolveIdentityValidationRules(
 }
 
 // A setting whose name points at one of the fixed checks gets the reason it
-// can't exist, not just "unknown".
-const FIXED_CHECK_KEY_RE = /check.?digit|checksum|luhn|npi|dea/i;
+// can't exist, not just "unknown". Matched on whole words of the key
+// ("npiCheckDigit", "skip_checksum", "allowAnyNPI"), so "idea" is not "dea".
+const FIXED_CHECK_WORDS_RE = /(?:^| )(?:npi|dea|luhn|checksums?|check ?digits?)(?= |$)/;
+
+function namesFixedCheck(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .join(" ");
+  return FIXED_CHECK_WORDS_RE.test(words);
+}
 
 /** Plain-language problems with an override; empty when it can go live. A
  * null or missing field inherits and is fine. */
@@ -197,7 +211,7 @@ export function validateIdentityValidationRules(input: unknown): string[] {
       } else if (value != null && !IDENTITY_RULE_CHECKS.deaLastNameLetter(value)) {
         errors.push('The DEA last-name letter rule must be "off".');
       }
-    } else if (FIXED_CHECK_KEY_RE.test(key)) {
+    } else if (namesFixedCheck(key)) {
       errors.push(
         `"${key}" can't be configured: the NPI and DEA check digits are facts about the number, so no setting can turn them off or relax them. A setting can only make identity checks stricter.`,
       );
