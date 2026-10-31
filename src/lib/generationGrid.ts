@@ -14,8 +14,90 @@
 // (no reason, no ceremony, no persistence — the candidate stays in the buffer
 // and reappears checked on the next preview); Exclude… is the deliberate,
 // persisted opt-out (the E2.0 store, restorable in one click). No I/O here.
+//
+// Which bucket a blocked candidate takes when a live fact also covers it is
+// business policy, so it is configuration (GenerationRules), never a
+// constant: it resolves from the decided default, then a platform override,
+// then an organization override (resolveGenerationRules), and
+// validateGenerationRules is the check an override must pass before it goes
+// live. Nothing stores an override yet; the Mission Control setting is
+// MINT-116. The confirm ledgers what the grid showed (splitGridSelection
+// reads the bucket), so a run row records the rule in force at confirm and a
+// later change never re-evaluates past rows.
 import type { BufferFactInput } from "@/lib/generationBuffer";
 import { previewRowKey, type GenerationPreviewRow } from "@/lib/generationPreview";
+
+// ---------------------------------------------------------------------------
+// Rules
+
+export type FactCoveredBlockedBucket = "enrolled" | "blocked";
+
+/** The grid's policy rules. Each field names its default. */
+export interface GenerationRules {
+  /** A candidate the gating blocks (missing attribute, tied SOPs, no SOP)
+   * that a LIVE enrollment fact already covers. "enrolled" (default;
+   * Sowmya, Oct 30, D30): it shows as enrolled and the confirm records it in
+   * the run ledger with disposition `enrolled`; it never becomes a case.
+   * "blocked": it shows as blocked like any other blocked candidate, and
+   * the confirm leaves it out of the ledger. */
+  factCoveredBlockedAs: FactCoveredBlockedBucket;
+}
+
+/** The platform default: the decided rule. */
+export const DEFAULT_GENERATION_RULES: Readonly<GenerationRules> = Object.freeze({
+  factCoveredBlockedAs: "enrolled",
+});
+
+/** A platform or organization override. A null or missing field inherits. */
+export type GenerationRulesOverride = {
+  readonly [K in keyof GenerationRules]?: GenerationRules[K] | null;
+};
+
+const FACT_COVERED_BLOCKED_BUCKETS: readonly FactCoveredBlockedBucket[] = ["enrolled", "blocked"];
+
+const RULE_CHECKS: { [K in keyof GenerationRules]: (value: unknown) => boolean } = {
+  factCoveredBlockedAs: (value) =>
+    FACT_COVERED_BLOCKED_BUCKETS.includes(value as FactCoveredBlockedBucket),
+};
+
+const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof GenerationRules>;
+
+/** Field by field: the organization's value, else the platform's, else the
+ * default. A stored value of the wrong shape is skipped like a missing one. */
+export function resolveGenerationRules(
+  platform?: GenerationRulesOverride | null,
+  organization?: GenerationRulesOverride | null,
+): GenerationRules {
+  const pick = <K extends keyof GenerationRules>(key: K): GenerationRules[K] => {
+    for (const override of [organization, platform]) {
+      const value: unknown = override?.[key];
+      if (value != null && RULE_CHECKS[key](value)) return value as GenerationRules[K];
+    }
+    return DEFAULT_GENERATION_RULES[key];
+  };
+  return { factCoveredBlockedAs: pick("factCoveredBlockedAs") };
+}
+
+/** Plain-language problems with an override; empty when it can go live. */
+export function validateGenerationRules(override: unknown): string[] {
+  if (override == null) return [];
+  if (typeof override !== "object" || Array.isArray(override))
+    return ["The generation rules must be a set of named rules."];
+  const errors: string[] = [];
+  const given = override as Record<string, unknown>;
+  for (const key of Object.keys(given)) {
+    if (!(RULE_KEYS as string[]).includes(key)) errors.push(`"${key}" is not a generation rule.`);
+  }
+  const covered = given.factCoveredBlockedAs;
+  if (covered != null && !RULE_CHECKS.factCoveredBlockedAs(covered))
+    errors.push(
+      'A blocked candidate an enrollment fact covers must show as "enrolled" or "blocked".',
+    );
+  return errors;
+}
+
+// ---------------------------------------------------------------------------
+// Buckets
 
 export type GridBucket = "candidate" | "blocked" | "enrolled" | "existing" | "excluded";
 
@@ -38,13 +120,15 @@ export interface GridRow {
 
 /** Assign every preview row its single bucket (the facts overlay wins only
  * over proposed rows — an existing case or standing exclusion stays what it
- * is even when a fact also covers the key). A blocker applies only to a
- * proposed row no live fact covers: an enrolled row needs no case, so its
- * setup gap blocks nothing. */
+ * is even when a fact also covers the key). A proposed row that is both
+ * blocked and covered by a live fact takes `rules.factCoveredBlockedAs`: by
+ * default enrolled (an enrolled row needs no case, so its setup gap blocks
+ * nothing), or blocked. */
 export function bucketGridRows(
   rows: readonly GenerationPreviewRow[],
   facts: readonly BufferFactInput[],
   blockers: ReadonlyMap<string, GridBlocker> = new Map(),
+  rules: GenerationRules = DEFAULT_GENERATION_RULES,
 ): GridRow[] {
   const liveFactKeys = new Set(
     facts
@@ -54,15 +138,16 @@ export function bucketGridRows(
   return rows.map((row) => {
     const key = previewRowKey(row);
     const blocker = blockers.get(key);
+    const covered = liveFactKeys.has(key);
     const bucket: GridBucket =
       row.disposition === "existing"
         ? "existing"
         : row.disposition === "excluded"
           ? "excluded"
-          : liveFactKeys.has(key)
-            ? "enrolled"
-            : blocker
-              ? "blocked"
+          : blocker && (!covered || rules.factCoveredBlockedAs === "blocked")
+            ? "blocked"
+            : covered
+              ? "enrolled"
               : "candidate";
     return bucket === "blocked" ? { key, bucket, row, blocker } : { key, bucket, row };
   });
@@ -187,7 +272,10 @@ export interface GridSelectionSplit {
 }
 
 /** Split the grid by bucket + selection into the confirm inputs. Blocked rows
- * ride none of them: the confirm never attempts or ledgers a blocked row. */
+ * ride none of them: the confirm never attempts or ledgers a blocked row.
+ * The split reads only the bucket, so the ledger records what the grid
+ * showed: a fact-covered blocked row is ledgered `enrolled` under the
+ * default rule and left out under "blocked" (GenerationRules). */
 export function splitGridSelection(
   rows: readonly GridRow[],
   selectedKeys: ReadonlySet<string>,

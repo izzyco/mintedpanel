@@ -5,11 +5,15 @@
 import { describe, expect, it } from "vitest";
 import {
   bucketGridRows,
+  DEFAULT_GENERATION_RULES,
   filterGridRows,
   groupGridRows,
   inGridScope,
   reconcileGrid,
+  resolveGenerationRules,
   splitGridSelection,
+  validateGenerationRules,
+  type GenerationRules,
   type GridBlocker,
 } from "@/lib/generationGrid";
 import {
@@ -263,5 +267,164 @@ describe("filterGridRows — scoped entries", () => {
     expect(inGridScope(skip, { providerId: "prov2" })).toBe(false);
     // A provider with no facility assignment is outside any facility scope.
     expect(inGridScope(skip, { facilityId: "f1" }, new Map())).toBe(false);
+  });
+});
+
+describe("GenerationRules (MINT-116)", () => {
+  const AS_BLOCKED: GenerationRules = { factCoveredBlockedAs: "blocked" };
+  // a: blocked + fact-covered; b: blocked only; c: fact-covered only; d: plain
+  // candidate; e: an existing case a fact also covers, with a blocker.
+  const mixed = (rules?: GenerationRules) =>
+    bucketGridRows(
+      [
+        row("a", "proposed"),
+        row("b", "proposed"),
+        row("c", "proposed"),
+        row("d", "proposed"),
+        row("e", "existing"),
+      ],
+      [liveFact("a"), liveFact("c"), liveFact("e")],
+      blockersFor({ a: "unmatched", b: "gated", e: "ambiguous" }),
+      rules,
+    );
+  const confirmInputs = (rows: ReturnType<typeof mixed>) => {
+    const split = splitGridSelection(rows, new Set(rows.map((r) => r.key)));
+    return {
+      selected: split.selectedRows.map((r) => r.payerId),
+      skipped: split.skippedRows.map((r) => r.payerId),
+      enrolled: split.enrolledRows.map((r) => r.payerId),
+      existing: split.existingRows.map((r) => r.payerId),
+      excluded: split.excludedRows.map((r) => r.payerId),
+    };
+  };
+
+  it("defaults to the decided rule: a fact-covered blocked candidate is enrolled", () => {
+    expect(DEFAULT_GENERATION_RULES).toEqual({ factCoveredBlockedAs: "enrolled" });
+    expect(Object.isFrozen(DEFAULT_GENERATION_RULES)).toBe(true);
+    // Passing the default is the same as passing nothing.
+    expect(mixed(DEFAULT_GENERATION_RULES)).toEqual(mixed());
+    const rows = mixed(DEFAULT_GENERATION_RULES);
+    expect(rows.map((r) => r.bucket)).toEqual([
+      "enrolled",
+      "blocked",
+      "enrolled",
+      "candidate",
+      "existing",
+    ]);
+    expect(rows[0].blocker).toBeUndefined();
+  });
+
+  it("under the default the confirm ledgers it as enrolled, and it is never created", () => {
+    expect(confirmInputs(mixed())).toEqual({
+      selected: ["d"],
+      skipped: [],
+      enrolled: ["a", "c"],
+      existing: ["e"],
+      excluded: [],
+    });
+    expect(reconcileGrid(mixed(), new Set()).line).toBe(
+      "Create 0 · 1 skipped · 1 blocked · 2 enrolled · 1 existing — 5 of 5 accounted for",
+    );
+  });
+
+  it('with "blocked", it shows as blocked with its reason and the confirm leaves it out of the ledger', () => {
+    const rows = mixed(AS_BLOCKED);
+    expect(rows.map((r) => r.bucket)).toEqual([
+      "blocked",
+      "blocked",
+      "enrolled",
+      "candidate",
+      "existing",
+    ]);
+    expect(rows[0].blocker).toBe("unmatched");
+    expect(confirmInputs(rows)).toEqual({
+      selected: ["d"],
+      skipped: [],
+      enrolled: ["c"],
+      existing: ["e"],
+      excluded: [],
+    });
+    expect(groupGridRows(rows, "provider")[0].candidateKeys).toEqual([rows[3].key]);
+    const result = reconcileGrid(rows, new Set());
+    expect(result.line).toBe(
+      "Create 0 · 1 skipped · 2 blocked · 1 enrolled · 1 existing — 5 of 5 accounted for",
+    );
+    expect(
+      result.create +
+        result.skipped +
+        result.blocked +
+        result.excluded +
+        result.enrolled +
+        result.existing,
+    ).toBe(result.total);
+  });
+
+  it("either way, the rule never touches an unblocked, existing or excluded row", () => {
+    for (const rules of [DEFAULT_GENERATION_RULES, AS_BLOCKED]) {
+      const rows = bucketGridRows(
+        [row("c", "proposed"), row("e", "existing"), row("x", "excluded")],
+        [liveFact("c"), liveFact("e"), liveFact("x")],
+        blockersFor({ e: "gated", x: "unmatched" }),
+        rules,
+      );
+      expect(rows.map((r) => r.bucket)).toEqual(["enrolled", "existing", "excluded"]);
+    }
+  });
+
+  describe("resolveGenerationRules", () => {
+    it("is the default with nothing stored", () => {
+      expect(resolveGenerationRules()).toEqual(DEFAULT_GENERATION_RULES);
+      expect(resolveGenerationRules(null, null)).toEqual(DEFAULT_GENERATION_RULES);
+    });
+
+    it("takes the organization's value, else the platform's, else the default", () => {
+      expect(resolveGenerationRules(AS_BLOCKED)).toEqual(AS_BLOCKED);
+      expect(resolveGenerationRules(AS_BLOCKED, { factCoveredBlockedAs: "enrolled" })).toEqual(
+        DEFAULT_GENERATION_RULES,
+      );
+      expect(resolveGenerationRules(null, AS_BLOCKED)).toEqual(AS_BLOCKED);
+    });
+
+    it("inherits on null or undefined", () => {
+      expect(resolveGenerationRules(AS_BLOCKED, { factCoveredBlockedAs: null })).toEqual(
+        AS_BLOCKED,
+      );
+      expect(resolveGenerationRules(AS_BLOCKED, { factCoveredBlockedAs: undefined })).toEqual(
+        AS_BLOCKED,
+      );
+      expect(resolveGenerationRules({ factCoveredBlockedAs: null }, {})).toEqual(
+        DEFAULT_GENERATION_RULES,
+      );
+    });
+
+    it("skips a value of the wrong shape like a missing one", () => {
+      for (const bad of ["candidate", "Blocked", "", true, 1]) {
+        const override = { factCoveredBlockedAs: bad } as unknown as GenerationRules;
+        expect(resolveGenerationRules(AS_BLOCKED, override)).toEqual(AS_BLOCKED);
+        expect(resolveGenerationRules(override)).toEqual(DEFAULT_GENERATION_RULES);
+      }
+    });
+  });
+
+  describe("validateGenerationRules", () => {
+    it("passes either decided value, an empty override, and nothing", () => {
+      expect(validateGenerationRules(DEFAULT_GENERATION_RULES)).toEqual([]);
+      expect(validateGenerationRules(AS_BLOCKED)).toEqual([]);
+      expect(validateGenerationRules({})).toEqual([]);
+      expect(validateGenerationRules({ factCoveredBlockedAs: null })).toEqual([]);
+      expect(validateGenerationRules(null)).toEqual([]);
+    });
+
+    it("rejects an unknown value or rule, in plain language", () => {
+      expect(validateGenerationRules({ factCoveredBlockedAs: "candidate" })).toEqual([
+        'A blocked candidate an enrollment fact covers must show as "enrolled" or "blocked".',
+      ]);
+      expect(validateGenerationRules({ blockedAs: "enrolled" })).toEqual([
+        '"blockedAs" is not a generation rule.',
+      ]);
+      expect(validateGenerationRules("enrolled")).toEqual([
+        "The generation rules must be a set of named rules.",
+      ]);
+    });
   });
 });

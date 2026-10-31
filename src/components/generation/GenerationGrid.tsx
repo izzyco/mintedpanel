@@ -37,6 +37,7 @@ import { ExclusionReasonDialog } from "@/components/generation/ExclusionReasonDi
 import {
   useConfirmGeneration,
   useGenerationPreview,
+  useGenerationRules,
   useVoidCaseGenerationExclusion,
 } from "@/hooks/useGenerationPreview";
 import { useEnrollmentFacts } from "@/hooks/useEnrollmentFacts";
@@ -101,6 +102,8 @@ export interface GenerationGridProps {
 export function GenerationGrid({ scope = {}, defaultPivot = "provider" }: GenerationGridProps) {
   const preview = useGenerationPreview();
   const factsQ = useEnrollmentFacts();
+  // How a fact-covered blocked row buckets is configuration (MINT-116).
+  const rules = useGenerationRules();
   const isAdmin = useIsAdmin();
   const canWrite = useCanWrite();
   const navigate = useNavigate();
@@ -134,9 +137,9 @@ export function GenerationGrid({ scope = {}, defaultPivot = "provider" }: Genera
   // the count) as their own bucket; they are never selectable or confirmed.
   const gridRows = useMemo<GridRow[] | undefined>(() => {
     if (!preview.rows || factsQ.data === undefined) return undefined;
-    const bucketed = bucketGridRows(preview.rows, factsQ.data, blockers);
+    const bucketed = bucketGridRows(preview.rows, factsQ.data, blockers, rules);
     return filterGridRows(bucketed, scope, preview.providerFacilities);
-  }, [preview.rows, factsQ.data, blockers, scope, preview.providerFacilities]);
+  }, [preview.rows, factsQ.data, blockers, rules, scope, preview.providerFacilities]);
 
   const selectedKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -169,8 +172,9 @@ export function GenerationGrid({ scope = {}, defaultPivot = "provider" }: Genera
   const released = applyReleaseScope(split.selectedRows, releaseScope);
   const releasedCount = released.length;
   const releasedFallbackCount = released.filter((r) => fallbackKeys.has(previewRowKey(r))).length;
-  // The banners list exactly the grid's blocked rows (in scope, not covered by
-  // a live fact), so their counts always agree with the reconciliation line.
+  // The banners list exactly the grid's blocked rows (in scope; a row a live
+  // fact covers only under the "blocked" rule), so their counts always agree
+  // with the reconciliation line.
   const blockedKeys = new Set(gridRows.filter((r) => r.bucket === "blocked").map((r) => r.key));
   const gated = (preview.gated ?? []).filter((g) => blockedKeys.has(previewRowKey(g.row)));
   const ambiguous = (preview.ambiguous ?? []).filter((r) => blockedKeys.has(previewRowKey(r)));
