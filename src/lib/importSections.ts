@@ -35,11 +35,10 @@ import { toCsv } from "@/lib/csv";
 import { matchFacilityLocator, type FacilityLocatorRecord } from "@/lib/facilityLocator";
 import { matchGroupLocator, type GroupMatchCandidate } from "@/lib/groupLocator";
 import { validatePayerAttachRow, type PayerAttachScanContext } from "@/lib/groupPayerAttach";
-import { stripNpiSeparators } from "@/lib/providerIdentity";
+import { NPI_FORMAT_MESSAGE, stripNpiSeparators } from "@/lib/providerIdentity";
 import {
   CAQH_RE,
   EMAIL_RE,
-  NPI_RE,
   type ProviderFormState,
 } from "@/components/providers/providerFormShared";
 import type { ImportEntityKind } from "@/types";
@@ -412,8 +411,12 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
     if (spec.npiColumns.includes(h) && v && !isNpi(v)) {
       fail(h, `${h} must be exactly 10 digits, got "${raw[h] ?? ""}"`);
     }
-    if (spec.addProviderNpiColumns?.includes(h) && v && !NPI_RE.test(v)) {
-      fail(h, "NPI must be 10 digits and start with 1");
+    // A provider's NPI, as Add Provider checks it: ten digits (no first-digit
+    // rule; the CMS check digit is the NPI rule). The check digit itself binds
+    // at dedupe, on new identities only (MINT-7), so a re-import of a
+    // provider whose stored NPI predates the check never newly fails here.
+    if (spec.addProviderNpiColumns?.includes(h) && v && !isNpi(v)) {
+      fail(h, NPI_FORMAT_MESSAGE);
     }
     if (spec.caqhColumns?.includes(h) && v && !CAQH_RE.test(v)) {
       fail(h, "CAQH must be 8 digits");
