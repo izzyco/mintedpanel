@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   FixedWindowRateLimiter,
   NPPES_API_URL,
+  NPPES_IDENTIFIERS_MAX,
+  NPPES_PRACTICE_LOCATIONS_MAX,
+  NPPES_TAXONOMIES_MAX,
   NpiRegistryQueryRejectedError,
   NpiRegistryUnavailableError,
   TtlCache,
@@ -46,14 +49,30 @@ const NPPES_INDIVIDUAL = {
     sole_proprietor: "NO",
     status: "A",
     name_prefix: "--",
+    name_suffix: "JR",
+    certification_date: "2020-01-01",
   },
   created_epoch: "1425254400000",
   endpoints: [],
   enumeration_type: "NPI-1",
-  identifiers: [{ identifier: "MEDICAID-1", state: "CO" }],
+  identifiers: [
+    { code: "05", desc: "MEDICAID", identifier: "MEDICAID-1", issuer: "", state: "CO" },
+  ],
   number: "1234567893",
-  other_names: [{ type: "Former Name", code: "1", first_name: "JANE", last_name: "SMITH" }],
-  practiceLocations: [],
+  other_names: [
+    { type: "Former Name", code: "1", first_name: "JANE", middle_name: "Q", last_name: "SMITH" },
+  ],
+  practiceLocations: [
+    {
+      address_1: "300 SATELLITE RD",
+      address_purpose: "LOCATION",
+      city: "GOLDEN",
+      country_code: "US",
+      state: "CO",
+      postal_code: "80401",
+      fax_number: "303-555-0111",
+    },
+  ],
   taxonomies: [
     {
       code: "2251X0800X",
@@ -93,7 +112,7 @@ function calledUrl(fn: ReturnType<typeof vi.fn<typeof fetch>>, call = 0): URL {
 }
 
 describe("toNpiRegistryRecord", () => {
-  it("keeps only public registry fields, primary taxonomy and practice location", () => {
+  it("keeps only the public registry fields a pick can fill or show", () => {
     expect(toNpiRegistryRecord(NPPES_INDIVIDUAL)).toEqual({
       npi: "1234567893",
       enumerationType: "NPI-1",
@@ -107,12 +126,91 @@ describe("toNpiRegistryRecord", () => {
       practiceState: "CO",
       status: "active",
       enumerationDate: "2015-03-02",
-      otherNames: [{ firstName: "JANE", lastName: "SMITH" }],
+      otherNames: [{ firstName: "JANE", lastName: "SMITH", middleName: "Q", type: "Former Name" }],
+      suffix: "JR",
+      // The primary first, then registry order.
+      taxonomies: [
+        {
+          code: "225100000X",
+          description: "Physical Therapist",
+          primary: true,
+          license: "PTL-2",
+          licenseState: "CO",
+        },
+        {
+          code: "2251X0800X",
+          description: "Physical Therapist, Orthopedic",
+          primary: false,
+          license: "PTL-1",
+          licenseState: "CO",
+        },
+      ],
+      practiceAddress: {
+        line1: "200 CLINIC WAY",
+        line2: null,
+        city: "DENVER",
+        state: "CO",
+        postalCode: "802021234",
+        countryCode: null,
+        phone: "303-555-0199",
+      },
+      mailingAddress: {
+        line1: "100 MAIN ST",
+        line2: null,
+        city: "BOULDER",
+        state: "CO",
+        postalCode: "803021234",
+        countryCode: null,
+        phone: "303-555-0100",
+      },
+      otherPracticeAddresses: [
+        {
+          line1: "300 SATELLITE RD",
+          line2: null,
+          city: "GOLDEN",
+          state: "CO",
+          postalCode: "80401",
+          countryCode: "US",
+          phone: null,
+        },
+      ],
+      identifiers: [{ identifier: "MEDICAID-1", type: "MEDICAID", state: "CO", issuer: null }],
     });
+    // Registry fields with no use here stay behind: sex, sole proprietor,
+    // dates other than enumeration, fax numbers, the prefix placeholder.
     const json = JSON.stringify(toNpiRegistryRecord(NPPES_INDIVIDUAL));
-    for (const leaked of ["303-555", "MAIN ST", "PTL-1", "MEDICAID", "sex", "802021234"]) {
-      expect(json).not.toContain(leaked);
+    for (const dropped of ["sex", "sole", "2024-01-01", "2020-01-01", "303-555-0111", "--"]) {
+      expect(json).not.toContain(dropped);
     }
+  });
+
+  it("caps every list and drops empty rows", () => {
+    const many = <T>(count: number, row: (i: number) => T) =>
+      Array.from({ length: count }, (_, i) => row(i));
+    const record = toNpiRegistryRecord({
+      ...NPPES_INDIVIDUAL,
+      taxonomies: [
+        { desc: "no code", primary: true },
+        ...many(20, (i) => ({ code: `22510000${i}X`, primary: false })),
+      ],
+      identifiers: [{ desc: "no number" }, ...many(14, (i) => ({ identifier: `ID-${i}` }))],
+      practiceLocations: [
+        { address_purpose: "LOCATION" },
+        ...many(8, (i) => ({ address_1: `${i} WAY` })),
+      ],
+      addresses: [{ address_purpose: "MAILING", address_1: "--" }],
+    });
+    expect(record?.taxonomies).toHaveLength(NPPES_TAXONOMIES_MAX);
+    expect(record?.taxonomies?.every((row) => row.primary === false)).toBe(true);
+    expect(record?.identifiers).toHaveLength(NPPES_IDENTIFIERS_MAX);
+    expect(record?.otherPracticeAddresses).toHaveLength(NPPES_PRACTICE_LOCATIONS_MAX);
+    expect(record?.otherPracticeAddresses?.[0].line1).toBe("0 WAY");
+    expect(record).toMatchObject({
+      mailingAddress: null,
+      practiceAddress: null,
+      practiceCity: null,
+      practiceState: null,
+    });
   });
 
   it("names an organization and skips malformed rows", () => {
@@ -128,6 +226,12 @@ describe("toNpiRegistryRecord", () => {
       organizationName: "DENVER REHAB LLC",
       firstName: null,
       primaryTaxonomy: null,
+      suffix: null,
+      taxonomies: [],
+      practiceAddress: null,
+      mailingAddress: null,
+      otherPracticeAddresses: [],
+      identifiers: [],
     });
     expect(toNpiRegistryRecord({ ...NPPES_INDIVIDUAL, number: "12345" })).toBeNull();
     expect(toNpiRegistryRecord({ ...NPPES_INDIVIDUAL, enumeration_type: "X" })).toBeNull();

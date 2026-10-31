@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { maskSsn } from "@/lib/ssnMask";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
+import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiRegistry";
 import {
   CredentialsSection,
   EmploymentSection,
@@ -37,9 +38,13 @@ const STEPS = [
   { id: 5, label: "Review" },
 ] as const;
 
-function validateStep(step: number, f: ProviderFormState): ProviderFormErrors {
+function validateStep(
+  step: number,
+  f: ProviderFormState,
+  registryBlock: string | null,
+): ProviderFormErrors {
   if (step === 1) return validatePersonal(f);
-  if (step === 2) return validateCredentials(f);
+  if (step === 2) return validateCredentials(f, registryBlock);
   return {};
 }
 
@@ -65,13 +70,21 @@ export function ProviderForm({
   const [form, setForm] = useState<ProviderFormState>(initial);
   const [errors, setErrors] = useState<ProviderFormErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // MINT-110: why the NPI Registry policy refuses this NPI, or null (always
+  // null under the default policy, where every registry answer only warns).
+  const registryBlock = useNpiRegistrySaveBlock(
+    form.npi,
+    true,
+    { firstName: form.firstName, lastName: form.lastName },
+    useNpiRegistryPolicy(),
+  );
 
   const update: UpdateProviderField = (key, value) => {
     setForm((p) => ({ ...p, [key]: value }));
   };
 
   const next = () => {
-    const e = validateStep(step, form);
+    const e = validateStep(step, form, registryBlock);
     setErrors(e);
     if (Object.keys(e).length === 0) setStep((s) => Math.min(5, s + 1));
   };
@@ -86,7 +99,7 @@ export function ProviderForm({
 
   const submit = async () => {
     setSubmitError(null);
-    const allErrors = validateAll(form);
+    const allErrors = validateAll(form, registryBlock);
     if (Object.keys(allErrors).length > 0) {
       setErrors(allErrors);
       // Jump back to the first step with an error so the user sees it.

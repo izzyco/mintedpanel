@@ -30,8 +30,10 @@ import { GroupAssignmentPicker } from "@/components/onboarding/GroupAssignmentPi
 import { LicenseListEditor } from "@/components/onboarding/LicenseListEditor";
 import {
   EMPTY_LICENSE_DRAFT,
+  isBlankLicenseDraft,
   licenseDraftToValues,
   licenseDraftsEqual,
+  placeRegistryLicenses,
   type LicenseDraft,
 } from "@/components/onboarding/licenseDraft";
 import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
@@ -42,13 +44,12 @@ import { usePayers } from "@/hooks/useAdmin";
 import { StateSelect } from "@/components/StateSelect";
 import { ENROLLMENT_GUARD_TEXT } from "@/components/providers/EnrollmentsPanel";
 import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
-import {
-  NPI_CHECK_DIGIT_MESSAGE,
-  identityFieldChanged,
-  isValidNpi,
-  stripNpiSeparators,
-} from "@/lib/providerIdentity";
+import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiRegistry";
+import { rosterNpiError } from "@/components/onboarding/rosterNpi";
+import { identityFieldChanged, stripNpiSeparators } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
+import { planNpiRegistryFill, type NpiFillSummary } from "@/lib/npiRegistryFill";
+import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import {
   ProviderSaveError,
@@ -211,6 +212,44 @@ function FormBody({
     provider ? initialForm.npi : undefined,
     stripNpiSeparators,
   );
+  const npiPolicy = useNpiRegistryPolicy();
+  // MINT-110: why the NPI Registry policy refuses this NPI, or null (always
+  // null under the default policy, where every registry answer only warns).
+  const registryBlock = useNpiRegistrySaveBlock(
+    npiDigits,
+    npiChanged,
+    { firstName: form.firstName, lastName: form.lastName },
+    npiPolicy,
+  );
+
+  // MINT-110: a picked registry match sets the NPI and, under the policy's
+  // "blank_fields", fills only blank fields; a saved license row is never
+  // blank, so it is never altered.
+  const pickFromRegistry = (record: NpiRegistryRecord): NpiFillSummary => {
+    const plan = planNpiRegistryFill(
+      record,
+      {
+        npi: form.npi,
+        credentials: form.credentials,
+        taxonomyCode: form.taxonomyCode,
+        licenses: licenses.map((draft) => ({
+          state: draft.state,
+          number: draft.licenseNumber,
+          blank: isBlankLicenseDraft(draft),
+        })),
+        // A row needs only its state to save; the expiration date is optional.
+        licenseRowSaveable: true,
+      },
+      npiPolicy.fillOnPick,
+    );
+    set({
+      npi: plan.npi,
+      ...(plan.credentials !== null ? { credentials: plan.credentials } : {}),
+      ...(plan.taxonomyCode !== null ? { taxonomyCode: plan.taxonomyCode } : {}),
+    });
+    if (plan.licenses.length > 0) setLicenses(placeRegistryLicenses(licenses, plan.licenses));
+    return plan.summary;
+  };
 
   const reload = async () => {
     if (!onReload) return;
@@ -230,13 +269,8 @@ function FormBody({
     const next: RosterFormErrors = {};
     if (!form.firstName.trim()) next.firstName = "First name is required";
     if (!form.lastName.trim()) next.lastName = "Last name is required";
-    // MINT-7: an entered or changed NPI must pass the CMS check digit; an
-    // unchanged stored NPI is not re-validated, so legacy data never blocks
-    // an unrelated edit. MINT-110: only dashes and spaces are stripped, so
-    // any other junk still fails.
-    if (!form.npi.trim()) next.npi = "Type 1 NPI is required";
-    else if (npiChanged && !/^\d{10}$/.test(npiDigits)) next.npi = "NPI must be 10 digits";
-    else if (npiChanged && !isValidNpi(npiDigits)) next.npi = NPI_CHECK_DIGIT_MESSAGE;
+    const npiError = rosterNpiError(form.npi, npiChanged, registryBlock);
+    if (npiError) next.npi = npiError;
     if (form.ssnLast4.trim() && !/^\d{4}$/.test(form.ssnLast4.trim()))
       next.ssnLast4 = "Enter the LAST 4 digits only";
     const assignmentError = validateGroupAssignments(assignments);
@@ -543,8 +577,9 @@ function FormBody({
             firstName={form.firstName}
             lastName={form.lastName}
             verify={npiChanged}
-            onPick={(npi) => set({ npi })}
+            onPick={pickFromRegistry}
             noticeId={npiNoticeId}
+            policy={npiPolicy}
           />
           <div className="grid grid-cols-3 gap-3">
             <div>

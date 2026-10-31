@@ -1,16 +1,32 @@
 // MINT-110 — NPI Registry pure rules: what the route accepts, how a typed
-// name is compared with the registry's, and the note shown under the NPI.
+// name is compared with the registry's, the note shown under the NPI, and
+// what the policy's severities do to a save.
 import { describe, expect, it } from "vitest";
 import {
+  NPI_REGISTRY_BLOCK_REASONS,
+  NPI_REGISTRY_CHECK_PENDING_MESSAGE,
+  NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
+  NPI_REGISTRY_RATE_LIMIT_MESSAGE,
   NPI_REGISTRY_UNAVAILABLE_MESSAGE,
   compareNpiRegistryName,
+  npiLookupOutcome,
+  npiLookupStateOf,
+  npiRegistrySaveBlock,
+  npiToCheck,
   foldNameForRegistry,
   npiVerificationView,
   registrySummary,
   validateNpiRegistryLookup,
   validateNpiRegistrySearch,
+  type NpiLookupState,
   type NpiRegistryRecord,
 } from "./npiRegistry";
+import {
+  DEFAULT_NPI_REGISTRY_POLICY,
+  NPI_REGISTRY_OUTCOMES,
+  resolveNpiRegistryPolicy,
+  type NpiRegistryOutcome,
+} from "./npiRegistryPolicy";
 
 const jane: NpiRegistryRecord = {
   npi: "1234567893",
@@ -373,5 +389,105 @@ describe("npiVerificationView", () => {
     expect(
       npiVerificationView({ status: "done", record: jane }, { firstName: "", lastName: "" }),
     ).toMatchObject({ tone: "ok", title: "Found in the NPI Registry" });
+  });
+});
+
+describe("the NPI Registry policy at save", () => {
+  const typed = { firstName: "Jane", lastName: "Doe" };
+  const organization: NpiRegistryRecord = {
+    ...jane,
+    enumerationType: "NPI-2",
+    organizationName: "DENVER REHAB LLC",
+    firstName: null,
+    middleName: null,
+    lastName: null,
+  };
+  // Each outcome with the lookup state and typed name that produce it.
+  const answers: Record<NpiRegistryOutcome, [NpiLookupState, typeof typed]> = {
+    organizationNumber: [{ status: "done", record: organization }, typed],
+    notFound: [{ status: "done", record: null }, typed],
+    nameMismatch: [
+      { status: "done", record: jane },
+      { firstName: "Mary", lastName: "Roe" },
+    ],
+    inactive: [{ status: "done", record: { ...jane, status: "inactive" } }, typed],
+  };
+  const blocking = (outcome: NpiRegistryOutcome) =>
+    resolveNpiRegistryPolicy(null, { severity: { [outcome]: "block" } });
+  const strict = resolveNpiRegistryPolicy(null, {
+    severity: {
+      organizationNumber: "block",
+      notFound: "block",
+      nameMismatch: "block",
+      inactive: "block",
+    },
+  });
+
+  it("names the outcome a policy acts on", () => {
+    for (const outcome of NPI_REGISTRY_OUTCOMES) {
+      const [state, names] = answers[outcome];
+      expect(npiLookupOutcome(state, names)).toBe(outcome);
+    }
+    expect(npiLookupOutcome({ status: "done", record: jane }, typed)).toBeNull();
+    expect(npiLookupOutcome({ status: "idle" }, typed)).toBeNull();
+    expect(npiLookupOutcome({ status: "loading" }, typed)).toBeNull();
+    expect(npiLookupOutcome({ status: "error", message: "x" }, typed)).toBeNull();
+  });
+
+  it.each(NPI_REGISTRY_OUTCOMES)("%s: warn saves, block refuses with a plain reason", (outcome) => {
+    const [state, names] = answers[outcome];
+    expect(npiRegistrySaveBlock(state, names)).toBeNull();
+    expect(npiRegistrySaveBlock(state, names, DEFAULT_NPI_REGISTRY_POLICY)).toBeNull();
+    expect(npiVerificationView(state, names, DEFAULT_NPI_REGISTRY_POLICY)?.tone).toBe("warn");
+
+    expect(npiRegistrySaveBlock(state, names, blocking(outcome))).toBe(
+      NPI_REGISTRY_BLOCK_REASONS[outcome],
+    );
+    const view = npiVerificationView(state, names, blocking(outcome));
+    expect(view?.tone).toBe("block");
+    expect(view?.detail).toContain(NPI_REGISTRY_BLOCK_REASONS[outcome]);
+    expect(view?.detail).not.toContain("You can still save");
+    // Another outcome's block leaves this one a warning.
+    const other = NPI_REGISTRY_OUTCOMES.find((candidate) => candidate !== outcome) ?? outcome;
+    expect(npiRegistrySaveBlock(state, names, blocking(other))).toBeNull();
+  });
+
+  it("never refuses a match, a skipped check, or a check the registry could not answer", () => {
+    expect(npiRegistrySaveBlock({ status: "done", record: jane }, typed, strict)).toBeNull();
+    expect(npiRegistrySaveBlock({ status: "idle" }, typed, strict)).toBeNull();
+    for (const message of [
+      NPI_REGISTRY_UNAVAILABLE_MESSAGE,
+      NPI_REGISTRY_RATE_LIMIT_MESSAGE,
+      NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
+    ]) {
+      expect(npiRegistrySaveBlock({ status: "error", message }, typed, strict)).toBeNull();
+      expect(npiVerificationView({ status: "error", message }, typed, strict)?.tone).toBe("warn");
+    }
+  });
+
+  it("waits for a running check only when some answer would block", () => {
+    expect(npiRegistrySaveBlock({ status: "loading" }, typed)).toBeNull();
+    expect(npiRegistrySaveBlock({ status: "loading" }, typed, blocking("inactive"))).toBe(
+      NPI_REGISTRY_CHECK_PENDING_MESSAGE,
+    );
+  });
+
+  it("reads a lookup query as a state, and checks only a check-digit-valid NPI on request", () => {
+    expect(npiToCheck("1234567893", true)).toBe("1234567893");
+    expect(npiToCheck("1234567893", false)).toBeNull();
+    expect(npiToCheck("1234567890", true)).toBeNull();
+    expect(npiLookupStateOf(null, { isError: false, error: null })).toEqual({ status: "idle" });
+    expect(npiLookupStateOf("1234567893", { isError: false, error: null })).toEqual({
+      status: "loading",
+    });
+    expect(
+      npiLookupStateOf("1234567893", { isError: false, error: null, data: { record: null } }),
+    ).toEqual({ status: "done", record: null });
+    expect(
+      npiLookupStateOf("1234567893", {
+        isError: true,
+        error: new Error("Invalid or expired token"),
+      }),
+    ).toEqual({ status: "error", message: NPI_REGISTRY_UNAVAILABLE_MESSAGE });
   });
 });
