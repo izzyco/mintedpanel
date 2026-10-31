@@ -557,6 +557,41 @@ describe("LaunchReportRules (MINT-116)", () => {
       ).toEqual({ ...DEFAULT, overdueWindowDays: 120 });
     });
 
+    it("never resolves an overdue window shorter than the recent window: it is raised to match", () => {
+      // Each layer passes on its own: the organization's 45 over the old
+      // platform, then the platform later sets recent 60.
+      expect(validateLaunchReportRules({ overdueWindowDays: 45 })).toEqual([]);
+      expect(validateLaunchReportRules({ recentWindowDays: 60 })).toEqual([]);
+      const rules = resolveLaunchReportRules({ recentWindowDays: 60 }, { overdueWindowDays: 45 });
+      expect(rules).toEqual({
+        overdueWindowDays: 60,
+        recentWindowDays: 60,
+        upcomingWindowDays: 30,
+      });
+      expect(validateLaunchReportRules(rules)).toEqual([]);
+      // So a location still at risk 50 days past stays on the report, as one
+      // with nothing outstanding does.
+      const rows = buildLaunchReportRows(
+        [at("risk-past-50", -50), at("clean-past-50", -50)],
+        new Map([["clean-past-50", 1]]),
+        new Map(),
+        TODAY,
+        rules,
+      );
+      expect(rows.map((r) => [r.facilityId, r.riskKind])).toEqual([
+        ["clean-past-50", null],
+        ["risk-past-50", "overdue"],
+      ]);
+      expect(launchAtRiskRuleText(rules)).toContain("passed within the last 60 days");
+      // The org-only and platform-only cases are untouched.
+      expect(resolveLaunchReportRules(null, { overdueWindowDays: 45 }).overdueWindowDays).toBe(45);
+      expect(resolveLaunchReportRules({ recentWindowDays: 60 })).toEqual({
+        overdueWindowDays: 90,
+        recentWindowDays: 60,
+        upcomingWindowDays: 30,
+      });
+    });
+
     it("skips a value of the wrong shape like a missing one", () => {
       for (const bad of [
         0,

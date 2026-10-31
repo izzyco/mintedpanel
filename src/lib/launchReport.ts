@@ -72,10 +72,10 @@ const RULE_LABELS: { [K in keyof LaunchReportRules]: string } = {
 
 const RULE_KEYS = Object.keys(RULE_LABELS) as Array<keyof LaunchReportRules>;
 
-/** Field by field: the organization's value, else the platform's, else the
- * default. A stored value of the wrong shape (not a whole number of days
- * from 1 to LAUNCH_REPORT_MAX_WINDOW_DAYS) is skipped like a missing one. */
-export function resolveLaunchReportRules(
+// Field by field: the organization's value, else the platform's, else the
+// default. A stored value of the wrong shape (not a whole number of days from
+// 1 to LAUNCH_REPORT_MAX_WINDOW_DAYS) is skipped like a missing one.
+function mergeLaunchReportRules(
   platform?: LaunchReportRulesOverride | null,
   organization?: LaunchReportRulesOverride | null,
 ): LaunchReportRules {
@@ -90,6 +90,25 @@ export function resolveLaunchReportRules(
     overdueWindowDays: pick("overdueWindowDays"),
     recentWindowDays: pick("recentWindowDays"),
     upcomingWindowDays: pick("upcomingWindowDays"),
+  };
+}
+
+/** The rules in force, field by field (organization, else platform, else
+ * default; a malformed value inherits). The layers can each be valid and
+ * still combine into an overdue window shorter than the recent one (an
+ * organization sets overdue 45, the platform later sets recent 60). That
+ * would drop a location still at risk before one with nothing outstanding,
+ * so the overdue window in force is never shorter than the recent window:
+ * it is raised to match. validateLaunchReportRules still refuses to store
+ * such an override. */
+export function resolveLaunchReportRules(
+  platform?: LaunchReportRulesOverride | null,
+  organization?: LaunchReportRulesOverride | null,
+): LaunchReportRules {
+  const merged = mergeLaunchReportRules(platform, organization);
+  return {
+    ...merged,
+    overdueWindowDays: Math.max(merged.overdueWindowDays, merged.recentWindowDays),
   };
 }
 
@@ -118,7 +137,7 @@ export function validateLaunchReportRules(
       );
   }
   if (errors.length > 0) return errors;
-  const rules = resolveLaunchReportRules(base, given as LaunchReportRulesOverride);
+  const rules = mergeLaunchReportRules(base, given as LaunchReportRulesOverride);
   if (rules.overdueWindowDays < rules.recentWindowDays)
     errors.push(
       "The overdue window must be at least as long as the recently launched window, or a location still at risk would leave the report before one with nothing outstanding.",
