@@ -9,10 +9,10 @@ import { fmtDate } from "@/lib/format";
 import { maskSsn } from "@/lib/ssnMask";
 import { localCalendarDate } from "@/lib/systemTokens";
 import {
-  DEFAULT_PROVIDER_INTAKE_RULES,
-  intakeStartDates,
-  type ProviderIntakeRules,
-} from "@/lib/providerIntakeRules";
+  DEFAULT_ADD_PROVIDER_RULES,
+  addProviderStartDates,
+  type AddProviderRules,
+} from "@/lib/addProviderRules";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import {
   CredentialsSection,
@@ -48,7 +48,7 @@ const STEPS = [
 function validateStep(
   step: number,
   f: ProviderFormState,
-  rules: ProviderIntakeRules,
+  rules: AddProviderRules,
 ): ProviderFormErrors {
   if (step === 1) return validatePersonal(f);
   if (step === 2) return validateCredentials(f);
@@ -63,8 +63,9 @@ export interface ProviderFormProps {
   isPending: boolean;
   onSubmit: (form: ProviderFormState) => Promise<void>;
   onCancel?: () => void;
-  /** What a blank Start date saves (MINT-116); the defaults when omitted. */
-  intakeRules?: ProviderIntakeRules;
+  /** What a blank Start date gives the facility assignments (MINT-116); the
+   * default when omitted. */
+  addProviderRules?: AddProviderRules;
 }
 
 export function ProviderForm({
@@ -74,7 +75,7 @@ export function ProviderForm({
   isPending,
   onSubmit,
   onCancel,
-  intakeRules = DEFAULT_PROVIDER_INTAKE_RULES,
+  addProviderRules = DEFAULT_ADD_PROVIDER_RULES,
 }: ProviderFormProps) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -87,7 +88,7 @@ export function ProviderForm({
   };
 
   const next = () => {
-    const e = validateStep(step, form, intakeRules);
+    const e = validateStep(step, form, addProviderRules);
     setErrors(e);
     if (Object.keys(e).length === 0) setStep((s) => Math.min(5, s + 1));
   };
@@ -102,7 +103,7 @@ export function ProviderForm({
 
   const submit = async () => {
     setSubmitError(null);
-    const allErrors = validateAll(form, intakeRules);
+    const allErrors = validateAll(form, addProviderRules);
     if (Object.keys(allErrors).length > 0) {
       setErrors(allErrors);
       // Jump back to the first step with an error so the user sees it.
@@ -142,10 +143,12 @@ export function ProviderForm({
               form={form}
               errors={errors}
               update={update}
-              intakeRules={intakeRules}
+              addProviderRules={addProviderRules}
             />
           ) : null}
-          {step === 5 ? <ReviewStep form={form} jumpTo={jumpTo} intakeRules={intakeRules} /> : null}
+          {step === 5 ? (
+            <ReviewStep form={form} jumpTo={jumpTo} addProviderRules={addProviderRules} />
+          ) : null}
 
           {submitError ? <p className="mt-4 text-sm text-destructive">{submitError}</p> : null}
         </div>
@@ -208,11 +211,11 @@ function Stepper({ current }: { current: number }) {
 function ReviewStep({
   form,
   jumpTo,
-  intakeRules,
+  addProviderRules,
 }: {
   form: ProviderFormState;
   jumpTo: (s: number) => void;
-  intakeRules: ProviderIntakeRules;
+  addProviderRules: AddProviderRules;
 }) {
   const groups = useProviderGroups();
   const facilities = useFacilities(form.groupId || null);
@@ -220,12 +223,12 @@ function ReviewStep({
     () => groups.data?.find((g) => g.id === form.groupId)?.name ?? "—",
     [groups.data, form.groupId],
   );
-  // MINT-96: name the dates a save writes, from the same rules the save reads
-  // (ProviderIntakeRules). By default a blank Start date stays null on the
-  // provider and the assignments start local today, read on every render so
-  // it never goes stale.
-  const { providerStartDate, assignmentStartDate } = intakeStartDates(
-    intakeRules,
+  // MINT-96: name the dates a save writes, from the same function the save
+  // uses (addProviderStartDates). A blank Start date always stays null on the
+  // provider; by default the assignments start local today, read on every
+  // render so it never goes stale.
+  const { providerStartDate, assignmentStartDate } = addProviderStartDates(
+    addProviderRules,
     form.startDate,
     localCalendarDate(new Date()),
   );

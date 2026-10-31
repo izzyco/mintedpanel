@@ -13,7 +13,7 @@ import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useAuthStore, useRole } from "@/lib/auth-store";
-import { useCreateProviderWithDetails, useProviderIntakeRules } from "@/hooks/useProviders";
+import { useAddProviderRules, useCreateProviderWithDetails } from "@/hooks/useProviders";
 import { useLaunchLocation } from "@/hooks/useLaunches";
 import {
   ProviderForm,
@@ -21,7 +21,7 @@ import {
   type ProviderFormState,
 } from "@/components/providers/ProviderForm";
 import { isBlankLicenseRow } from "@/components/providers/providerFormShared";
-import { intakeStartDates } from "@/lib/providerIntakeRules";
+import { addProviderStartDates } from "@/lib/addProviderRules";
 import { localCalendarDate } from "@/lib/systemTokens";
 import type {
   CreateProviderWithDetailsResult,
@@ -43,7 +43,7 @@ export const Route = createFileRoute("/providers/new")({
   component: Page,
 });
 
-function toProviderInput(form: ProviderFormState, startDate: string | null): ProviderInput {
+function toProviderInput(form: ProviderFormState): ProviderInput {
   return {
     firstName: form.firstName.trim(),
     lastName: form.lastName.trim(),
@@ -62,8 +62,8 @@ function toProviderInput(form: ProviderFormState, startDate: string | null): Pro
     // overwrites group_id from the primary assignment when one is passed.
     groupId: form.groupId || null,
     specialty: form.specialty.trim() || null,
-    // A blank Start date follows ProviderIntakeRules (stays null by default).
-    startDate,
+    // Never guessed: it fills the provider.startDate payer-form token.
+    startDate: form.startDate || null,
     degree: form.degree.trim() || null,
     schoolName: form.schoolName.trim() || null,
     graduationDate: form.graduationDate || null,
@@ -99,8 +99,9 @@ function Page() {
   const locationQ = useLaunchLocation(locationId);
   const launchLocation = locationId ? (locationQ.data ?? null) : null;
   const create = useCreateProviderWithDetails();
-  // What a blank Start date saves is configuration (MINT-116).
-  const intakeRules = useProviderIntakeRules();
+  // What a blank Start date gives the facility assignments is configuration
+  // (MINT-116).
+  const addProviderRules = useAddProviderRules();
 
   const initial = useMemo(
     () =>
@@ -119,17 +120,18 @@ function Page() {
       const groupAssignments = form.groupId
         ? [{ groupId: form.groupId, isPrimary: true as const }]
         : undefined;
-      const { providerStartDate } = intakeStartDates(
-        intakeRules,
+      // The same dates the Review step showed (addProviderStartDates).
+      const { assignmentStartDate } = addProviderStartDates(
+        addProviderRules,
         form.startDate,
         localCalendarDate(new Date()),
       );
       const result: CreateProviderWithDetailsResult = await create.mutateAsync({
-        provider: toProviderInput(form, providerStartDate),
+        provider: toProviderInput(form),
         licenses: toLicenseInputs(form),
         facilityIds: form.facilityIds,
         groupAssignments,
-        assignmentStartDateDefault: intakeRules.assignmentStartDateDefault,
+        assignmentStartDate,
       });
       if (result.warnings.length > 0) {
         for (const w of result.warnings) toast.error(w);
@@ -170,7 +172,7 @@ function Page() {
         pendingLabel="Creating…"
         isPending={create.isPending}
         onSubmit={onSubmit}
-        intakeRules={intakeRules}
+        addProviderRules={addProviderRules}
       />
     </div>
   );

@@ -29,7 +29,7 @@ import {
 } from "@/services/providerAssignments";
 import type { AssignmentDraft } from "@/lib/assignmentScope";
 import { invalidateProviderRosterCaches } from "@/lib/providerRosterCaches";
-import { resolveProviderIntakeRules, type ProviderIntakeRules } from "@/lib/providerIntakeRules";
+import { resolveAddProviderRules, type AddProviderRules } from "@/lib/addProviderRules";
 
 const THIRTY_SECONDS = 30_000;
 
@@ -229,10 +229,10 @@ export function useVerifyProviders() {
   });
 }
 
-/** The Add Provider start-date rules for the active organization. Nothing
+/** The Add Provider start-date rule for the active organization. Nothing
  * stores a platform or organization override yet (the Mission Control
- * setting is MINT-116), so this resolves to the decided defaults; when the
+ * setting is MINT-116), so this resolves to the decided default; when the
  * setting lands, its read replaces the two nulls. */
-export function useProviderIntakeRules(): ProviderIntakeRules {
-  return useMemo(() => resolveProviderIntakeRules(null, null), []);
+export function useAddProviderRules(): AddProviderRules {
+  return useMemo(() => resolveAddProviderRules(null, null), []);
 }

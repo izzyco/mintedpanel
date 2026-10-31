@@ -26,10 +26,10 @@ import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { PROVIDER_GENDER_OPTIONS, PROVIDER_GENDER_UNSET_VALUE } from "@/lib/providerGender";
 import { localCalendarDate } from "@/lib/systemTokens";
 import {
-  DEFAULT_PROVIDER_INTAKE_RULES,
-  intakeStartDateHint,
-  type ProviderIntakeRules,
-} from "@/lib/providerIntakeRules";
+  DEFAULT_ADD_PROVIDER_RULES,
+  addProviderStartDateHint,
+  type AddProviderRules,
+} from "@/lib/addProviderRules";
 
 interface SectionProps {
   form: ProviderFormState;
@@ -272,8 +272,8 @@ export function EmploymentSection({
   form,
   errors,
   update,
-  intakeRules = DEFAULT_PROVIDER_INTAKE_RULES,
-}: SectionProps & { intakeRules?: ProviderIntakeRules }) {
+  addProviderRules = DEFAULT_ADD_PROVIDER_RULES,
+}: SectionProps & { addProviderRules?: AddProviderRules }) {
   const groups = useProviderGroups();
   const facilities = useFacilities(form.groupId || null);
 
@@ -285,14 +285,15 @@ export function EmploymentSection({
   };
 
   const facilityList = facilities.data ?? [];
-  // MINT-96: say what a blank Start date saves before save, from the rules
-  // the save reads (ProviderIntakeRules, MINT-116), instead of letting a date
-  // appear on the record after. By default the provider's stays null and the
-  // facility assignments start local today.
-  const startDateHint = intakeStartDateHint(intakeRules, {
+  // MINT-96: say what a blank Start date saves before save, from the rule
+  // the save reads (AddProviderRules, MINT-116), instead of letting a date
+  // appear on the record after. The provider's stays null; by default the
+  // facility assignments start local today. An error replaces the hint.
+  const startDateHint = addProviderStartDateHint(addProviderRules, {
     startDate: form.startDate,
     facilityCount: form.facilityIds.length,
     today: localCalendarDate(new Date()),
+    error: errors.startDate,
   });
 
   return (
