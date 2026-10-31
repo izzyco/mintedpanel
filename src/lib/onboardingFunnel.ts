@@ -41,13 +41,17 @@
 //    Verified awaiting assignment, Ready for credentialing, Credentialing
 //    (never split by status, which belongs on the case board).
 //
-// Business policy is configuration, never a constant: the stage list and the
-// rules (OnboardingFunnelRules) resolve from the platform default, then a
-// platform override, then an organization override
-// (resolveOnboardingFunnelConfig). Nothing stores an override yet; the
-// Mission Control setting is MINT-125. A list that fails validation never
-// goes live: the next level down is used instead, and the default list is
-// valid under every rule.
+// Business policy is configuration, never a constant
+// (resolveOnboardingFunnelConfig). Minted's platform layer sets the stage
+// list: its count, order, gates and copy. An organization's layer may give
+// those stages its own labels and descriptions, keyed by stage key, and
+// nothing else about them (Platform Settings row 26). The rules
+// (OnboardingFunnelRules) resolve field by field, organization over platform
+// over default; Minted sets an organization's rules at onboarding and org
+// admins only read them (PM, S10). Nothing stores either layer yet; the
+// Mission Control setting is MINT-125. A list or an organization's copy that
+// fails validation never goes live: the default list, or Minted's copy, is
+// used instead, and the default list is valid under every rule.
 //
 // A group membership counts while its group is active and until its end
 // date passes; by default its start date is ignored, because credentialing
@@ -394,11 +398,27 @@ export const DEFAULT_ONBOARDING_FUNNEL_CONFIG: Readonly<OnboardingFunnelConfig> 
   rules: DEFAULT_ONBOARDING_FUNNEL_RULES,
 });
 
-/** A platform or organization override. A stage list replaces the whole list
- * (order is part of it); null or missing inherits. Rules resolve field by
+/** Minted's platform layer: a whole stage list (count, order, gates, copy)
+ * and rules. null or missing inherits the default; rules resolve field by
  * field. */
-export interface OnboardingFunnelConfigOverride {
+export interface OnboardingFunnelPlatformOverride {
   stages?: ReadonlyArray<OnboardingFunnelStageConfig> | null;
+  rules?: OnboardingFunnelRulesOverride | null;
+}
+
+/** One stage's copy for an organization. null or missing keeps Minted's. */
+export interface OnboardingFunnelStageText {
+  label?: string | null;
+  description?: string | null;
+}
+
+/** An organization's layer (Platform Settings row 26; PM S10). It may give
+ * each of Minted's stages its own label and description, keyed by stage
+ * key; it can never add, remove, reorder or re-gate a stage. Its rules
+ * resolve field by field over Minted's; Minted sets them at onboarding and
+ * org admins only read them. */
+export interface OnboardingFunnelOrganizationOverride {
+  stageText?: Readonly<Record<OnboardingFunnelStageKey, OnboardingFunnelStageText>> | null;
   rules?: OnboardingFunnelRulesOverride | null;
 }
 
@@ -514,10 +534,13 @@ const copyStage = (stage: OnboardingFunnelStageConfig): OnboardingFunnelStageCon
   gate: stage.gate,
 });
 
-/** The configuration the funnel actually runs: rules field by field (a bad
- * value falls back to the default), and the stage list only if it validates
- * under those rules, else the default list, which is valid under every
- * rule. A broken configuration therefore never drops a provider. */
+/** The configuration the funnel actually runs, from a resolved one (Minted's
+ * list with the organization's copy already applied): rules field by field
+ * (a bad value falls back to the default), and the stage list only if it
+ * validates under those rules, else the default list, which is valid under
+ * every rule. A broken configuration therefore never drops a provider. The
+ * resolver never lets an organization's copy break a valid list, so this
+ * fallback never discards Minted's list because of an organization. */
 export function effectiveOnboardingFunnelConfig(
   config: OnboardingFunnelConfig | null | undefined,
 ): OnboardingFunnelConfig {
@@ -530,21 +553,103 @@ export function effectiveOnboardingFunnelConfig(
   return { stages: stages.map(copyStage), rules };
 }
 
-/** Rules field by field; a stage list is used only if it validates with
- * those rules, else the next level down: organization, platform, default. */
+const STAGE_TEXT_FIELDS = new Set(["label", "description"]);
+
+/** Plain-language problems with an organization's layer, checked against
+ * the stage list it relabels; empty when it can go live. */
+export function validateOnboardingFunnelOrganizationOverride(
+  organization: OnboardingFunnelOrganizationOverride | null | undefined,
+  stages: ReadonlyArray<OnboardingFunnelStageConfig> = DEFAULT_ONBOARDING_FUNNEL_STAGES,
+): string[] {
+  if (organization == null) return [];
+  if (!isRecord(organization)) return ["An organization's funnel settings must be an object."];
+  const errors: string[] = [];
+  if (organization.stages != null)
+    errors.push(
+      "An organization cannot change the stage list: Minted sets the stages, their order and their gates. Change labels and descriptions instead.",
+    );
+
+  const text: unknown = organization.stageText;
+  const labels = new Map(stages.map((stage) => [stage.key, stage.label.trim()]));
+  if (text != null && !isRecord(text))
+    errors.push("Stage labels and descriptions must be given per stage key.");
+  else if (isRecord(text)) {
+    for (const [key, entry] of Object.entries(text)) {
+      if (!labels.has(key)) {
+        errors.push(`"${key}" is not one of Minted's stages, so it cannot be relabelled.`);
+        continue;
+      }
+      if (!isRecord(entry)) {
+        errors.push(`"${key}": give a label, a description, or both.`);
+        continue;
+      }
+      if (Object.keys(entry).some((field) => !STAGE_TEXT_FIELDS.has(field)))
+        errors.push(`"${key}": only the label and the description can change.`);
+      if (entry.label != null) {
+        const label = typeof entry.label === "string" ? entry.label.trim() : "";
+        if (!label) errors.push(`"${key}": the label cannot be empty.`);
+        else if (label.length > MAX_LABEL)
+          errors.push(`"${key}": keep the label to ${MAX_LABEL} characters.`);
+        else labels.set(key, label);
+      }
+      if (entry.description != null) {
+        const description = typeof entry.description === "string" ? entry.description.trim() : "";
+        if (!description) errors.push(`"${key}": the description cannot be empty.`);
+        else if (description.length > MAX_DESCRIPTION)
+          errors.push(`"${key}": keep the description to ${MAX_DESCRIPTION} characters.`);
+      }
+    }
+    const seen = new Set<string>();
+    for (const label of labels.values()) {
+      if (seen.has(label.toLowerCase())) errors.push(`The label "${label}" would be used twice.`);
+      seen.add(label.toLowerCase());
+    }
+  }
+
+  const rules: unknown = organization.rules;
+  if (rules != null && !isRecord(rules)) errors.push("The organization's rules must be an object.");
+  else if (isRecord(rules)) {
+    for (const [key, value] of Object.entries(rules)) {
+      if (!(key in RULE_CHECKS)) errors.push(`"${key}" is not a funnel rule.`);
+      else if (value != null && !RULE_CHECKS[key as keyof OnboardingFunnelRules](value))
+        errors.push(
+          key === "caseStatusesNotCountedAsCredentialing"
+            ? "Case statuses that do not count must be known case statuses."
+            : `The rule "${key}" must be on or off.`,
+        );
+    }
+  }
+  return errors;
+}
+
+/** Minted's stage list (the platform's, if it validates under the resolved
+ * rules, else the default), with the organization's labels and descriptions
+ * applied when its layer validates; rules field by field, organization over
+ * platform over default. An organization never changes a stage's count,
+ * order or gate. */
 export function resolveOnboardingFunnelConfig(
-  platform?: OnboardingFunnelConfigOverride | null,
-  organization?: OnboardingFunnelConfigOverride | null,
+  platform?: OnboardingFunnelPlatformOverride | null,
+  organization?: OnboardingFunnelOrganizationOverride | null,
 ): OnboardingFunnelConfig {
-  // Stored values may be any shape; the rules resolver and the validator
-  // both check, so a bad one is skipped rather than run.
+  // Stored values may be any shape; the rules resolver and the validators
+  // all check, so a bad one is skipped rather than run.
   const rules = resolveOnboardingFunnelRules(platform?.rules, organization?.rules);
-  const stages =
-    [organization?.stages, platform?.stages].find(
-      (list): list is ReadonlyArray<OnboardingFunnelStageConfig> =>
-        list != null && validateOnboardingFunnelConfig({ stages: list, rules }).length === 0,
-    ) ?? DEFAULT_ONBOARDING_FUNNEL_STAGES;
-  return { stages: stages.map(copyStage), rules };
+  const list = platform?.stages;
+  const stages = (
+    list != null && validateOnboardingFunnelConfig({ stages: list, rules }).length === 0
+      ? list
+      : DEFAULT_ONBOARDING_FUNNEL_STAGES
+  ).map(copyStage);
+  // An organization's copy goes live whole or not at all.
+  const text = organization?.stageText;
+  if (text && validateOnboardingFunnelOrganizationOverride(organization, stages).length === 0) {
+    for (const stage of stages) {
+      const own = text[stage.key];
+      if (own?.label != null) stage.label = own.label.trim();
+      if (own?.description != null) stage.description = own.description.trim();
+    }
+  }
+  return { stages, rules };
 }
 
 /** The stages the report shows, in order: intake-gated stages need the

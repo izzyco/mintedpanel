@@ -170,7 +170,7 @@ describe("Provider Onboarding report", () => {
     expect(html).toContain("xl:grid-cols-6");
   });
 
-  it("renders the organization's labels, gates and order", () => {
+  it("renders the configured labels, gates and order", () => {
     state.config = {
       stages: [
         {
