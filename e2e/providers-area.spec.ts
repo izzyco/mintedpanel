@@ -286,7 +286,9 @@ function baseFixtures() {
         is_correction: false,
         note: null,
         changed_by: USER_ID,
-        changed_at: "2026-07-05T00:00:00Z",
+        // Midday UTC: the date reads Jul 5 in every US time zone (midnight
+        // UTC is still Jul 4 in Denver, which failed TS-112 there).
+        changed_at: "2026-07-05T12:00:00Z",
       },
     ],
     denial_reason_codes: [

@@ -30,7 +30,7 @@ import {
 import { stripNpiSeparators } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { PROVIDER_GENDER_OPTIONS, PROVIDER_GENDER_UNSET_VALUE } from "@/lib/providerGender";
-import { markNpiLicenseOfferAdded, type NpiPickState } from "@/lib/npiRegistryFill";
+import { npiOffersOnForm, touchNpiRowOrigin, type NpiPickState } from "@/lib/npiRegistryFill";
 
 interface SectionProps {
   form: ProviderFormState;
@@ -55,24 +55,26 @@ export function PersonalSection({ form, errors, update }: SectionProps) {
         />
       </Field>
       <Field label="Gender">
-        <Select
-          value={form.gender || PROVIDER_GENDER_UNSET_VALUE}
-          onValueChange={(value) =>
-            update("gender", value === PROVIDER_GENDER_UNSET_VALUE ? "" : value)
-          }
-        >
-          <SelectTrigger aria-label="Gender">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={PROVIDER_GENDER_UNSET_VALUE}>Not set</SelectItem>
-            {PROVIDER_GENDER_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {(control) => (
+          <Select
+            value={form.gender || PROVIDER_GENDER_UNSET_VALUE}
+            onValueChange={(value) =>
+              update("gender", value === PROVIDER_GENDER_UNSET_VALUE ? "" : value)
+            }
+          >
+            <SelectTrigger aria-label="Gender" {...control}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={PROVIDER_GENDER_UNSET_VALUE}>Not set</SelectItem>
+              {PROVIDER_GENDER_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </Field>
       <Field label="Date of birth">
         <Input
@@ -86,16 +88,19 @@ export function PersonalSection({ form, errors, update }: SectionProps) {
         error={errors.ssnLast4}
         helper="Last 4 only — Minted Panel never stores full SSNs"
       >
-        <div className="flex items-center gap-2">
-          <span className="select-none font-mono text-sm text-muted-foreground">xxx-xx-</span>
-          <Input
-            inputMode="numeric"
-            maxLength={4}
-            className="w-24 font-mono"
-            value={form.ssnLast4}
-            onChange={(e) => update("ssnLast4", e.target.value.replace(/\D/g, "").slice(0, 4))}
-          />
-        </div>
+        {(control) => (
+          <div className="flex items-center gap-2">
+            <span className="select-none font-mono text-sm text-muted-foreground">xxx-xx-</span>
+            <Input
+              {...control}
+              inputMode="numeric"
+              maxLength={4}
+              className="w-24 font-mono"
+              value={form.ssnLast4}
+              onChange={(e) => update("ssnLast4", e.target.value.replace(/\D/g, "").slice(0, 4))}
+            />
+          </div>
+        )}
       </Field>
       <Field label="Email" error={errors.email}>
         <Input type="email" value={form.email} onChange={(e) => update("email", e.target.value)} />
@@ -108,31 +113,30 @@ export function PersonalSection({ form, errors, update }: SectionProps) {
 }
 
 /** What the stepper keeps for the NPI Registry across steps (CredentialsSection
- * unmounts on every step change). */
+ * unmounts on every step change). Required, so the stepper cannot leave it
+ * out. */
 export interface CredentialsNpiProps {
   npiPick: NpiPickState | null;
-  onNpiPick: (pick: NpiPickState) => void;
-  /** Staff chose a taxonomy: the preset is no longer a default nobody chose. */
-  taxonomyTouched: boolean;
-  onTaxonomyTouched: () => void;
+  /** Staff edited Credentials / chose the taxonomy (from user input only). */
+  touched: { credentials: boolean; taxonomyCode: boolean };
+  /** Set the form and the pick together, marking nothing as staff's. */
+  applyNpi: (form: ProviderFormState, pick: NpiPickState | null) => void;
 }
-
-const NO_NPI_PICK: CredentialsNpiProps = {
-  npiPick: null,
-  onNpiPick: () => undefined,
-  taxonomyTouched: false,
-  onTaxonomyTouched: () => undefined,
-};
 
 export function CredentialsSection({
   form,
   errors,
   update,
-  npi = NO_NPI_PICK,
-}: SectionProps & { npi?: CredentialsNpiProps }) {
+  npi,
+}: SectionProps & { npi: CredentialsNpiProps }) {
   const npiNoticeId = useId();
   const npiPolicy = useNpiRegistryPolicy();
-  const { npiPick, onNpiPick, taxonomyTouched, onTaxonomyTouched } = npi;
+  const { npiPick, touched, applyNpi } = npi;
+  // Whether each offer is on the form is read from the rows, so a removed row
+  // can be added again.
+  const shownPick = npiPick
+    ? { ...npiPick, summary: npiOffersOnForm(npiPick.summary, form.licenses) }
+    : null;
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <Field label="NPI" error={errors.npi}>
@@ -150,19 +154,15 @@ export function CredentialsSection({
           firstName={form.firstName}
           lastName={form.lastName}
           verify
-          pick={npiPick}
+          pick={shownPick}
           onPick={(record) => {
             // Credentials (Personal) and licenses (Licenses) live on other
             // steps; the summary under the search names what changed.
             const next = applyNpiRegistryPick(form, record, npiPolicy.fillOnPick, {
-              taxonomyTouched,
+              touched,
               lastPick: npiPick?.trace ?? null,
             });
-            update("npi", next.form.npi);
-            update("credentials", next.form.credentials);
-            update("taxonomyCode", next.form.taxonomyCode);
-            update("licenses", next.form.licenses);
-            onNpiPick({
+            applyNpi(next.form, {
               seq: (npiPick?.seq ?? 0) + 1,
               npi: record.npi,
               trace: next.trace,
@@ -170,32 +170,39 @@ export function CredentialsSection({
             });
           }}
           onAddLicense={(offer) => {
-            update("licenses", addNpiLicenseOffer(form.licenses, offer));
-            if (npiPick) onNpiPick(markNpiLicenseOfferAdded(npiPick, offer));
+            const next = addNpiLicenseOffer(form.licenses, offer);
+            if (next.existing !== null) return "exists";
+            applyNpi({ ...form, licenses: next.licenses }, npiPick);
+            return "added";
           }}
           noticeId={npiNoticeId}
           policy={npiPolicy}
         />
       </div>
       <Field label="CAQH ID" error={errors.caqhId}>
-        <Input
-          inputMode="numeric"
-          maxLength={8}
-          disabled={form.isNewGrad}
-          value={form.caqhId}
-          onChange={(e) => update("caqhId", e.target.value.replace(/\D/g, "").slice(0, 8))}
-        />
-        <label className="mt-2 flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={form.isNewGrad}
-            onCheckedChange={(c) => {
-              const v = c === true;
-              update("isNewGrad", v);
-              if (v) update("caqhId", "");
-            }}
-          />
-          New grad — no CAQH yet
-        </label>
+        {(control) => (
+          <>
+            <Input
+              {...control}
+              inputMode="numeric"
+              maxLength={8}
+              disabled={form.isNewGrad}
+              value={form.caqhId}
+              onChange={(e) => update("caqhId", e.target.value.replace(/\D/g, "").slice(0, 8))}
+            />
+            <label className="mt-2 flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={form.isNewGrad}
+                onCheckedChange={(c) => {
+                  const v = c === true;
+                  update("isNewGrad", v);
+                  if (v) update("caqhId", "");
+                }}
+              />
+              New grad — no CAQH yet
+            </label>
+          </>
+        )}
       </Field>
       <Field label="CAQH last attested date">
         <Input
@@ -210,35 +217,44 @@ export function CredentialsSection({
         error={errors.taxonomyCode}
         helper="NUCC taxonomy for this provider's specialty"
       >
-        <Select
-          value={form.taxonomyCode || undefined}
-          onValueChange={(v) => {
-            update("taxonomyCode", v);
-            onTaxonomyTouched();
-          }}
-        >
-          <SelectTrigger aria-label="Taxonomy code">
-            <SelectValue placeholder="Select taxonomy" />
-          </SelectTrigger>
-          <SelectContent>
-            {taxonomyOptionsForValue(form.taxonomyCode).map(({ code, label }) => (
-              <SelectItem key={code} value={code}>
-                <span className="font-mono text-[13px]">{code}</span>
-                <span className="text-muted-foreground"> — {label}</span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {(control) => (
+          <Select
+            value={form.taxonomyCode || undefined}
+            // The stepper's update marks the taxonomy as chosen by staff.
+            onValueChange={(v) => update("taxonomyCode", v)}
+          >
+            <SelectTrigger aria-label="Taxonomy code" {...control}>
+              <SelectValue placeholder="Select taxonomy" />
+            </SelectTrigger>
+            <SelectContent>
+              {taxonomyOptionsForValue(form.taxonomyCode).map(({ code, label }) => (
+                <SelectItem key={code} value={code}>
+                  <span className="font-mono text-[13px]">{code}</span>
+                  <span className="text-muted-foreground"> — {label}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </Field>
     </div>
   );
 }
 
 export function LicensesSection({ form, errors, update }: SectionProps) {
+  // A staff edit marks registry data on the row as theirs (MINT-110).
   const updateRow = (i: number, patch: Partial<LicenseRow>) => {
     update(
       "licenses",
-      form.licenses.map((l, idx) => (idx === i ? { ...l, ...patch } : l)),
+      form.licenses.map((l, idx) =>
+        idx === i
+          ? {
+              ...l,
+              ...patch,
+              npiOrigin: touchNpiRowOrigin(l.npiOrigin, { number: "number" in patch }),
+            }
+          : l,
+      ),
     );
   };
   const addRow = () => {
@@ -347,24 +363,26 @@ export function EmploymentSection({ form, errors, update }: SectionProps) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <Field label="Group" error={errors.groupId}>
-        <Select
-          value={form.groupId}
-          onValueChange={(v) => {
-            update("groupId", v);
-            update("facilityIds", []);
-          }}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select group" />
-          </SelectTrigger>
-          <SelectContent>
-            {(groups.data ?? []).map((g) => (
-              <SelectItem key={g.id} value={g.id}>
-                {g.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {(control) => (
+          <Select
+            value={form.groupId}
+            onValueChange={(v) => {
+              update("groupId", v);
+              update("facilityIds", []);
+            }}
+          >
+            <SelectTrigger {...control}>
+              <SelectValue placeholder="Select group" />
+            </SelectTrigger>
+            <SelectContent>
+              {(groups.data ?? []).map((g) => (
+                <SelectItem key={g.id} value={g.id}>
+                  {g.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </Field>
       <Field label="Specialty">
         <Input value={form.specialty} onChange={(e) => update("specialty", e.target.value)} />

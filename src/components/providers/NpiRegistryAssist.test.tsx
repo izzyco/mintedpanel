@@ -60,7 +60,7 @@ vi.mock("@/hooks/useLookups", () => ({
 }));
 
 import { useNpiRegistryLookup } from "@/hooks/useNpiRegistry";
-import { CredentialsSection } from "./ProviderFormSections";
+import { CredentialsSection, PersonalSection } from "./ProviderFormSections";
 import { emptyProviderFormState } from "./providerFormShared";
 import {
   NpiRegistryAssist,
@@ -82,8 +82,15 @@ const NO_FILL: NpiFillSummary = {
   filled: [],
   cleared: [],
   kept: [],
+  staleRows: [],
   licenseOffers: [],
   details: [],
+};
+// What the stepper hands the Credentials step.
+const NO_PICK = {
+  npiPick: null,
+  touched: { credentials: false, taxonomyCode: false },
+  applyNpi: () => undefined,
 };
 
 const jane: NpiRegistryRecord = {
@@ -113,7 +120,7 @@ function renderAssist(props: Partial<Parameters<typeof NpiRegistryAssist>[0]> = 
       verify
       pick={null}
       onPick={() => undefined}
-      onAddLicense={() => undefined}
+      onAddLicense={() => "added"}
       noticeId="npi-note"
       policy={DEFAULT_NPI_REGISTRY_POLICY}
       {...props}
@@ -320,6 +327,7 @@ describe("NpiRegistryPickSummary", () => {
     filled: ["NPI", "CO license number"],
     cleared: ["Taxonomy code"],
     kept: [{ field: "Credentials", registryValue: "DPT" }],
+    staleRows: ["NM NM-7"],
     licenseOffers: [
       { state: "WY", number: "WY-0099", added: false },
       { state: "MT", number: "MT-12", added: true },
@@ -342,12 +350,13 @@ describe("NpiRegistryPickSummary", () => {
     expect(text(html)).toBe(
       "|From the NPI Registry" +
         "|Filled from the NPI Registry: NPI, CO license number." +
-        "|Cleared what the previous pick filled: Taxonomy code." +
+        "|Cleared from the previous pick: Taxonomy code." +
         "|Kept yours: Credentials — registry has DPT." +
-        "|The registry lists 2 licenses for states with no license row. " +
+        "|Added from the previous pick — remove if it doesn't apply: NM NM-7." +
+        "|The registry lists 2 licenses that are not on the form. " +
         "|A license row counts toward the provider's states, and NPPES lists no expiration date — add one only if it applies." +
         "|WY WY-0099|Add license row| for WY WY-0099" +
-        "|MT MT-12|Added| for MT MT-12" +
+        "|MT MT-12|On the form| for MT MT-12" +
         "|Shown for reference; not saved:" +
         "|Middle name|M|Other identifiers|MEDICAID CO-MCD-77 (CO)|OTHER 55 (WY)|",
     );
@@ -360,7 +369,7 @@ describe("NpiRegistryPickSummary", () => {
     expect(html).not.toContain("tabindex");
     // An added offer keeps its focusable button, marked aria-disabled.
     expect(html.match(/<button[^>]*>/g)).toHaveLength(2);
-    expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>Added/);
+    expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>On the form/);
     expect(html).not.toMatch(/<button[^>]*disabled=""/);
   });
 
@@ -385,7 +394,7 @@ describe("NpiRegistryPickSummary", () => {
     const pick: NpiPickState = {
       seq: 3,
       npi: "1234567893",
-      trace: { credentials: null, taxonomyCode: null, licenseNumbers: [] },
+      trace: { credentials: null, taxonomyCode: null },
       summary: { ...NO_FILL, filled: ["Credentials"] },
     };
     const shown = renderAssist({ pick });
@@ -440,6 +449,7 @@ describe("Add Provider credentials step", () => {
         form={{ ...emptyProviderFormState, firstName: "Jane", lastName: "Doe", npi: "" }}
         errors={{}}
         update={() => undefined}
+        npi={NO_PICK}
       />,
     );
     expect(html).toContain("Search NPI Registry");
@@ -461,6 +471,7 @@ describe("Add Provider credentials step", () => {
         form={{ ...emptyProviderFormState, firstName: "Jane", lastName: "Doe", npi: "1234567893" }}
         errors={{ npi: NPI_REGISTRY_BLOCK_REASONS.notFound }}
         update={() => undefined}
+        npi={NO_PICK}
       />,
     ).replace(/&#x27;/g, "'");
     const input = /<input[^>]*aria-describedby="([^"]+)"[^>]*>/.exec(html);
@@ -479,11 +490,50 @@ describe("Add Provider credentials step", () => {
         form={{ ...emptyProviderFormState, firstName: "Jane", lastName: "Doe", npi: "1234567893" }}
         errors={{}}
         update={() => undefined}
+        npi={NO_PICK}
       />,
     );
     const input = /<input[^>]*aria-describedby="([^"]+)"[^>]*>/.exec(html);
     expect(input?.[0]).not.toContain("aria-invalid");
     expect(input?.[1].split(" ")).toHaveLength(1);
     expect(html).toContain("You can still save this provider.");
+  });
+});
+
+describe("Field puts the error on the control itself", () => {
+  it("names the error from the Taxonomy code trigger, not the Select root", () => {
+    const html = renderToStaticMarkup(
+      <CredentialsSection
+        form={{ ...emptyProviderFormState, taxonomyCode: "BOGUS" }}
+        errors={{ taxonomyCode: "Select a taxonomy from the list" }}
+        update={() => undefined}
+        npi={NO_PICK}
+      />,
+    );
+    const trigger = /<button[^>]*aria-label="Taxonomy code"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(trigger).toContain('role="combobox"');
+    expect(trigger).toContain('aria-invalid="true"');
+    const errorId = /aria-describedby="([^"]+)"/.exec(trigger)?.[1];
+    expect(html).toContain(`<p id="${errorId}" class="mt-1 text-xs text-destructive">`);
+    // The label points at the trigger.
+    const triggerId = /\bid="([^"]+)"/.exec(trigger)?.[1];
+    expect(html).toContain(`for="${triggerId}"`);
+  });
+
+  it("names the error from the SSN input inside its wrapper", () => {
+    const html = renderToStaticMarkup(
+      <PersonalSection
+        form={{ ...emptyProviderFormState, ssnLast4: "12" }}
+        errors={{ ssnLast4: "Enter exactly 4 digits" }}
+        update={() => undefined}
+      />,
+    );
+    const input = /<input[^>]*maxLength="4"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(input).toContain('aria-invalid="true"');
+    expect(input).toMatch(/aria-describedby="[^"]+-error"/);
+    expect(html).not.toMatch(/<div[^>]*aria-invalid/);
+    const genderTrigger = /<button[^>]*aria-label="Gender"[^>]*>/.exec(html)?.[0] ?? "";
+    // No error on Gender: nothing is marked invalid there.
+    expect(genderTrigger).not.toContain("aria-invalid");
   });
 });

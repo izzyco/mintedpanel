@@ -1,6 +1,7 @@
 // License editor draft model (E1.3). Non-component module so the editor
 // file exports only components (react-refresh rule).
 import type { PsvStatus } from "@/lib/licensePsv";
+import { npiOfferTarget, type NpiRowOrigin } from "@/lib/npiRegistryFill";
 import type { LicenseInput } from "@/services/providers";
 
 export interface LicenseDraft {
@@ -16,6 +17,9 @@ export interface LicenseDraft {
   /** Stored values (edit) — for the verified-on display + reset warnings. */
   storedExpirationDate?: string | null;
   storedVerifiedAt?: string | null;
+  /** MINT-110: set when the row (or its number) came from the NPI Registry;
+   * never saved (licenseDraftToValues names its fields). */
+  npiOrigin?: NpiRowOrigin | null;
 }
 
 export const EMPTY_LICENSE_DRAFT: LicenseDraft = {
@@ -65,13 +69,34 @@ export function isBlankLicenseDraft(draft: LicenseDraft): boolean {
 
 /** MINT-110: staff added a registry license offered after an NPI Registry
  * pick. It fills the untouched empty row when there is one, or a new row with
- * the editor's defaults; dates stay blank (NPPES has no expiration date). */
+ * the editor's defaults, marked as added from the pick (so the next pick can
+ * take it back while it is untouched); dates stay blank (NPPES has no
+ * expiration date). When a row already holds that license nothing is added —
+ * a second row would break uq_state_licenses_provider_state_number — and
+ * `existing` names it. */
 export function addRegistryLicenseDraft(
   drafts: LicenseDraft[],
   offer: { state: string; number: string },
-): LicenseDraft[] {
-  const filled = { state: offer.state, licenseNumber: offer.number };
-  const emptyRow = drafts.findIndex(isBlankLicenseDraft);
-  if (emptyRow < 0) return [...drafts, { ...EMPTY_LICENSE_DRAFT, ...filled }];
-  return drafts.map((draft, index) => (index === emptyRow ? { ...draft, ...filled } : draft));
+): { licenses: LicenseDraft[]; existing: number | null } {
+  const target = npiOfferTarget(
+    drafts,
+    offer,
+    (draft) => ({ state: draft.state, number: draft.licenseNumber }),
+    isBlankLicenseDraft,
+  );
+  if ("existing" in target) return { licenses: drafts, existing: target.existing };
+  const filled: Partial<LicenseDraft> = {
+    state: offer.state,
+    licenseNumber: offer.number,
+    npiOrigin: { kind: "added", touched: false },
+  };
+  if ("append" in target) {
+    return { licenses: [...drafts, { ...EMPTY_LICENSE_DRAFT, ...filled }], existing: null };
+  }
+  return {
+    licenses: drafts.map((draft, index) =>
+      index === target.fill ? { ...draft, ...filled } : draft,
+    ),
+    existing: null,
+  };
 }

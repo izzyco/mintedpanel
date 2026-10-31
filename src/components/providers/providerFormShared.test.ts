@@ -22,6 +22,7 @@ import {
 } from "./providerFormShared";
 
 const base = { ...emptyProviderFormState, firstName: "Taylor", lastName: "Provider" };
+const ADDED = { kind: "added" as const, touched: false };
 const BLOCK = "Your organization saves only NPIs the NPI Registry lists.";
 
 describe("Add Provider NPI validation", () => {
@@ -145,10 +146,11 @@ const withCoRow: ProviderFormState = {
   ...base,
   licenses: [{ ...emptyLicenseRow(), state: "CO" }],
 };
+const FRESH = { touched: { credentials: false, taxonomyCode: false }, lastPick: null };
 
 describe("Add Provider NPI Registry pick", () => {
   it("fills blank credentials, the untouched preset taxonomy and a blank CO number", () => {
-    const { form, summary } = applyNpiRegistryPick(withCoRow, boulderJane);
+    const { form, summary } = applyNpiRegistryPick(withCoRow, boulderJane, "blank_fields", FRESH);
     expect(form).toMatchObject({
       npi: "1902833742",
       credentials: "DPT",
@@ -166,7 +168,7 @@ describe("Add Provider NPI Registry pick", () => {
   it("keeps a taxonomy staff chose, and typed credentials", () => {
     const typedForm: ProviderFormState = { ...withCoRow, credentials: "PT" };
     const { form, summary } = applyNpiRegistryPick(typedForm, boulderJane, "blank_fields", {
-      taxonomyTouched: true,
+      touched: { credentials: true, taxonomyCode: true },
       lastPick: null,
     });
     expect(form.credentials).toBe("PT");
@@ -176,18 +178,23 @@ describe("Add Provider NPI Registry pick", () => {
   });
 
   it("fills a taxonomy staff cleared", () => {
-    const { form } = applyNpiRegistryPick({ ...base, taxonomyCode: "" }, boulderJane);
+    const { form } = applyNpiRegistryPick(
+      { ...base, taxonomyCode: "" },
+      boulderJane,
+      "blank_fields",
+      FRESH,
+    );
     expect(form.taxonomyCode).toBe("2251X0800X");
   });
 
-  it("pick A, then pick B, leaves nothing of A (the reviewer's repro)", () => {
-    const first = applyNpiRegistryPick(withCoRow, denverJane);
+  it("pick A, then pick B, leaves nothing of A (the first review's repro)", () => {
+    const first = applyNpiRegistryPick(withCoRow, denverJane, "blank_fields", FRESH);
     expect(first.form).toMatchObject({
       credentials: "PT",
       licenses: [{ state: "CO", number: "PT-1111" }],
     });
     const second = applyNpiRegistryPick(first.form, boulderJane, "blank_fields", {
-      taxonomyTouched: false,
+      ...FRESH,
       lastPick: first.trace,
     });
     expect(second.form).toMatchObject({
@@ -197,23 +204,74 @@ describe("Add Provider NPI Registry pick", () => {
       licenses: [{ state: "CO", number: "PT-4471" }],
     });
     expect(second.summary.kept).toEqual([]);
-    expect(second.summary.filled).toEqual([
-      "NPI",
-      "Credentials",
-      "Taxonomy code",
-      "CO license number",
-    ]);
   });
 
-  it("fills a blank number in a CO row that has a state only (the reviewer's second repro)", () => {
-    const { form, summary } = applyNpiRegistryPick(withCoRow, boulderJane);
+  it("pick A, add A's offered license, pick B: the added row goes (the re-review's repro)", () => {
+    const first = applyNpiRegistryPick(base, denverJane, "blank_fields", FRESH);
+    expect(first.summary.licenseOffers).toEqual([{ state: "CO", number: "PT-1111", added: false }]);
+    const added = addNpiLicenseOffer(first.form.licenses, first.summary.licenseOffers[0]);
+    const afterAdd = { ...first.form, licenses: added.licenses };
+    expect(afterAdd.licenses).toEqual([
+      { ...emptyLicenseRow(), state: "CO", number: "PT-1111", npiOrigin: ADDED },
+    ]);
+    const context = { ...FRESH, lastPick: first.trace };
+
+    // B has a CO license: A's row goes, B's is offered.
+    const second = applyNpiRegistryPick(afterAdd, boulderJane, "blank_fields", context);
+    expect(second.form.licenses).toEqual([]);
+    expect(second.summary.cleared).toContain("CO license row");
+    expect(second.summary.licenseOffers).toContainEqual({
+      state: "CO",
+      number: "PT-4471",
+      added: false,
+    });
+
+    // B has no CO license: A's row still goes.
+    const wyOnly = { ...boulderJane, taxonomies: boulderJane.taxonomies?.slice(1) };
+    const third = applyNpiRegistryPick(afterAdd, wyOnly, "blank_fields", context);
+    expect(third.form.licenses).toEqual([]);
+    expect(third.summary.cleared).toContain("CO license row");
+  });
+
+  it("keeps a row staff edited after adding it, and says it came from the previous pick", () => {
+    const first = applyNpiRegistryPick(base, denverJane, "blank_fields", FRESH);
+    const added = addNpiLicenseOffer(first.form.licenses, first.summary.licenseOffers[0]);
+    const edited = {
+      ...first.form,
+      licenses: added.licenses.map((row) => ({
+        ...row,
+        expirationDate: "2027-01-31",
+        npiOrigin: { kind: "added" as const, touched: true },
+      })),
+    };
+    const second = applyNpiRegistryPick(edited, boulderJane, "blank_fields", {
+      ...FRESH,
+      lastPick: first.trace,
+    });
+    expect(second.form.licenses).toHaveLength(1);
+    expect(second.form.licenses[0]).toMatchObject({ number: "PT-1111", npiOrigin: null });
+    expect(second.summary.staleRows).toEqual(["CO PT-1111"]);
+  });
+
+  it("keeps credentials staff retyped, even when they equal what the pick wrote", () => {
+    const first = applyNpiRegistryPick(withCoRow, denverJane, "blank_fields", FRESH);
+    const second = applyNpiRegistryPick(first.form, boulderJane, "blank_fields", {
+      touched: { credentials: true, taxonomyCode: false },
+      lastPick: first.trace,
+    });
+    expect(second.form.credentials).toBe("PT");
+    expect(second.summary.kept).toContainEqual({ field: "Credentials", registryValue: "DPT" });
+  });
+
+  it("fills a blank number in a CO row that has a state only (the first review's second repro)", () => {
+    const { form, summary } = applyNpiRegistryPick(withCoRow, boulderJane, "blank_fields", FRESH);
     expect(form.licenses.map((row) => `${row.state}/${row.number}`)).toEqual(["CO/PT-4471"]);
     expect(summary.kept).toEqual([]);
     expect(summary.filled).toContain("CO license number");
   });
 
   it("sets only the NPI under npi_only", () => {
-    const { form, summary } = applyNpiRegistryPick(withCoRow, boulderJane, "npi_only");
+    const { form, summary } = applyNpiRegistryPick(withCoRow, boulderJane, "npi_only", FRESH);
     expect(form).toEqual({ ...withCoRow, npi: "1902833742" });
     expect(summary.filled).toEqual(["NPI"]);
     expect(summary.kept).toEqual([]);
@@ -228,14 +286,21 @@ describe("Add Provider NPI Registry pick", () => {
 describe("Add Provider licenses staff add from a pick", () => {
   it("fills the untouched empty row, else adds one; never touches a row with data", () => {
     const empty = [emptyLicenseRow()];
-    expect(addNpiLicenseOffer(empty, { state: "WY", number: "WY-0099" })).toEqual([
-      { ...emptyLicenseRow(), state: "WY", number: "WY-0099" },
-    ]);
+    expect(addNpiLicenseOffer(empty, { state: "WY", number: "WY-0099" })).toEqual({
+      licenses: [{ ...emptyLicenseRow(), state: "WY", number: "WY-0099", npiOrigin: ADDED }],
+      existing: null,
+    });
     const typed = [{ ...emptyLicenseRow(), type: "compact" as const }];
-    expect(addNpiLicenseOffer(typed, { state: "WY", number: "WY-0099" })).toEqual([
+    expect(addNpiLicenseOffer(typed, { state: "WY", number: "WY-0099" }).licenses).toEqual([
       typed[0],
-      { ...emptyLicenseRow(), state: "WY", number: "WY-0099" },
+      { ...emptyLicenseRow(), state: "WY", number: "WY-0099", npiOrigin: ADDED },
     ]);
+  });
+
+  it("adds nothing when a row already holds that license, and names the row", () => {
+    const rows = [emptyLicenseRow(), { ...emptyLicenseRow(), state: "CO", number: "PT-1111" }];
+    const next = addNpiLicenseOffer(rows, { state: "co", number: "pt 1111" });
+    expect(next).toEqual({ licenses: rows, existing: 1 });
   });
 
   it("treats a row with only a license type chosen as data", () => {

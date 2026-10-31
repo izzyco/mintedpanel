@@ -31,6 +31,7 @@ import {
   npiFillFilledText,
   npiFillKeptText,
   npiFillOffersText,
+  npiFillStaleText,
   type NpiFillSummary,
   type NpiLicenseOffer,
   type NpiPickState,
@@ -246,6 +247,7 @@ export function NpiRegistryPickSummary({
   const titleId = useId();
   const cleared = npiFillClearedText(summary);
   const kept = npiFillKeptText(summary);
+  const stale = npiFillStaleText(summary);
   const offers = npiFillOffersText(summary);
   return (
     <section
@@ -258,6 +260,7 @@ export function NpiRegistryPickSummary({
       <p>{npiFillFilledText(summary)}</p>
       {cleared ? <p>{cleared}</p> : null}
       {kept ? <p>{kept}</p> : null}
+      {stale ? <p>{stale}</p> : null}
       {offers ? (
         <>
           <p>
@@ -279,13 +282,12 @@ export function NpiRegistryPickSummary({
                     variant="outline"
                     size="sm"
                     className={cn("h-7 px-2 text-[12px]", offer.added && "opacity-60")}
-                    // aria-disabled, not disabled: focus stays on the button.
+                    // aria-disabled, not disabled: focus stays on the button,
+                    // and a click says the row is already there.
                     aria-disabled={offer.added || undefined}
-                    onClick={() => {
-                      if (!offer.added) onAddLicense(offer);
-                    }}
+                    onClick={() => onAddLicense(offer)}
                   >
-                    {offer.added ? "Added" : "Add license row"}
+                    {offer.added ? "On the form" : "Add license row"}
                     <span className="sr-only">
                       {" "}
                       for {offer.state} {offer.number}
@@ -334,8 +336,9 @@ export interface NpiRegistryAssistProps {
   /** Apply a picked match (set the NPI, fill what the policy's fillOnPick
    * allows, never a value of staff's) and remember it as the form's pick. */
   onPick: (record: NpiRegistryRecord) => void;
-  /** Staff add a license the pick offered. */
-  onAddLicense: (offer: NpiLicenseOffer) => void;
+  /** Staff add a license the pick offered: "exists" when a row already holds
+   * it, and nothing was added. */
+  onAddLicense: (offer: NpiLicenseOffer) => "added" | "exists";
   /** The verification note's id; the NPI input names it in aria-describedby. */
   noticeId: string;
   /** The resolved NPI Registry policy (useNpiRegistryPolicy): which answers
@@ -416,12 +419,15 @@ export function NpiRegistryAssist({
   };
 
   const addLicense = (offer: NpiLicenseOffer) => {
-    onAddLicense(offer);
+    const result = offer.added ? "exists" : onAddLicense(offer);
     const next = addCount + 1;
     setAddCount(next);
     setAnnouncement({
       key: `add:${next}`,
-      text: `Added a ${offer.state} license row with number ${offer.number}.`,
+      text:
+        result === "added"
+          ? `Added a ${offer.state} license row with number ${offer.number}.`
+          : `A ${offer.state} license row with number ${offer.number} is already on the form.`,
       withCheck: false,
     });
   };

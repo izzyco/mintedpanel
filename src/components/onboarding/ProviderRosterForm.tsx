@@ -47,7 +47,7 @@ import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiReg
 import { applyRosterNpiPick, rosterNpiError } from "@/components/onboarding/rosterNpi";
 import { identityFieldChanged, stripNpiSeparators } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
-import { markNpiLicenseOfferAdded, type NpiPickState } from "@/lib/npiRegistryFill";
+import { npiOffersOnForm, type NpiPickState } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import {
@@ -229,6 +229,9 @@ function FormBody({
   // second pick can replace it). Picking never adds a license row; staff add
   // an offered one from the summary.
   const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
+  // Which fields staff edited (set from their input only); a pick's values
+  // are the pick's until then.
+  const [npiTouched, setNpiTouched] = useState({ credentials: false, taxonomyCode: false });
   const npiErrorId = useId();
   const pickFromRegistry = (record: NpiRegistryRecord) => {
     const next = applyRosterNpiPick(
@@ -236,10 +239,11 @@ function FormBody({
       licenses,
       record,
       npiPolicy.fillOnPick,
-      npiPick?.trace ?? null,
+      { touched: npiTouched, lastPick: npiPick?.trace ?? null },
     );
     set(next.patch);
     setLicenses(next.licenses);
+    if (next.trace.credentials) setNpiTouched((touched) => ({ ...touched, credentials: false }));
     setNpiPick({
       seq: (npiPick?.seq ?? 0) + 1,
       npi: record.npi,
@@ -430,7 +434,10 @@ function FormBody({
               <Input
                 id="prov-credentials"
                 value={form.credentials}
-                onChange={(e) => set({ credentials: e.target.value })}
+                onChange={(e) => {
+                  set({ credentials: e.target.value });
+                  setNpiTouched((touched) => ({ ...touched, credentials: true }));
+                }}
                 className="h-9"
               />
             </div>
@@ -531,7 +538,10 @@ function FormBody({
               </Label>
               <Select
                 value={form.taxonomyCode || undefined}
-                onValueChange={(v) => set({ taxonomyCode: v })}
+                onValueChange={(v) => {
+                  set({ taxonomyCode: v });
+                  setNpiTouched((touched) => ({ ...touched, taxonomyCode: true }));
+                }}
               >
                 <SelectTrigger id="prov-taxonomy" className="h-9" aria-label="Taxonomy code">
                   <SelectValue placeholder="Select taxonomy" />
@@ -575,11 +585,28 @@ function FormBody({
             firstName={form.firstName}
             lastName={form.lastName}
             verify={npiChanged}
-            pick={npiPick}
+            // Whether each offer is on the form is read from the rows, so a
+            // removed row can be added again.
+            pick={
+              npiPick
+                ? {
+                    ...npiPick,
+                    summary: npiOffersOnForm(
+                      npiPick.summary,
+                      licenses.map((draft) => ({
+                        state: draft.state,
+                        number: draft.licenseNumber,
+                      })),
+                    ),
+                  }
+                : null
+            }
             onPick={pickFromRegistry}
             onAddLicense={(offer) => {
-              setLicenses((rows) => addRegistryLicenseDraft(rows, offer));
-              setNpiPick((pick) => (pick ? markNpiLicenseOfferAdded(pick, offer) : pick));
+              const next = addRegistryLicenseDraft(licenses, offer);
+              if (next.existing !== null) return "exists";
+              setLicenses(next.licenses);
+              return "added";
             }}
             noticeId={npiNoticeId}
             policy={npiPolicy}

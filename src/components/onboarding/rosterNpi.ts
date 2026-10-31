@@ -3,7 +3,12 @@
 // (react-refresh rule).
 import type { LicenseDraft } from "@/components/onboarding/licenseDraft";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
-import { planNpiRegistryFill, type NpiFillSummary, type NpiPickTrace } from "@/lib/npiRegistryFill";
+import {
+  applyNpiLicenseRows,
+  planNpiRegistryFill,
+  type NpiFillSummary,
+  type NpiPickTrace,
+} from "@/lib/npiRegistryFill";
 import type { NpiFillOnPick } from "@/lib/npiRegistryPolicy";
 import {
   NPI_CHECK_DIGIT_MESSAGE,
@@ -40,14 +45,21 @@ export interface RosterNpiFields {
 /** A picked NPI Registry match applied to the roster form: the NPI is set
  * and, at "blank_fields", credentials, the taxonomy and the number of a
  * license row whose state matches fill when blank — or when they still hold
- * what the last pick wrote. A saved row's number is filled only when it is
- * blank, and the save still goes through the form. No row is added. */
+ * what the last pick wrote and staff have not touched them. An untouched row
+ * added from the last pick's offer goes unless this match lists it. A saved
+ * row's blank number is filled only while its verification is Unverified
+ * (a verified or failed row is skipped and its license offered instead), and
+ * the save still goes through the form. No row is added. */
 export function applyRosterNpiPick(
   fields: RosterNpiFields,
   licenses: LicenseDraft[],
   record: NpiRegistryRecord,
   fillOnPick: NpiFillOnPick,
-  lastPick: NpiPickTrace | null,
+  context: {
+    /** Staff edited the field since the last pick wrote it (or at all). */
+    touched: { credentials: boolean; taxonomyCode: boolean };
+    lastPick: NpiPickTrace | null;
+  },
 ): {
   patch: Partial<RosterNpiFields>;
   licenses: LicenseDraft[];
@@ -59,25 +71,33 @@ export function applyRosterNpiPick(
     {
       npi: fields.npi,
       credentials: fields.credentials,
+      credentialsTouched: context.touched.credentials,
       taxonomyCode: fields.taxonomyCode,
+      taxonomyTouched: context.touched.taxonomyCode,
       // The roster form has no preset taxonomy: blank is "".
-      taxonomyUntouched: false,
-      licenses: licenses.map((draft) => ({ state: draft.state, number: draft.licenseNumber })),
+      taxonomyPreset: null,
+      licenses: licenses.map((draft) => ({
+        state: draft.state,
+        number: draft.licenseNumber,
+        origin: draft.npiOrigin ?? null,
+        numberLocked: draft.verifiedStatus !== "unverified",
+      })),
       // A row needs only its state to save; the expiration date is optional.
       licenseRowSaveable: true,
     },
     fillOnPick,
-    lastPick,
+    context.lastPick,
   );
   const patch: Partial<RosterNpiFields> = { npi: plan.npi };
   if (plan.credentials !== null) patch.credentials = plan.credentials;
   if (plan.taxonomyCode !== null) patch.taxonomyCode = plan.taxonomyCode;
   return {
     patch,
-    licenses: licenses.map((draft, index) => {
-      const change = plan.licenseNumbers.find((item) => item.rowIndex === index);
-      return change ? { ...draft, licenseNumber: change.number } : draft;
-    }),
+    licenses: applyNpiLicenseRows(licenses, plan, (draft, number, origin) => ({
+      ...draft,
+      licenseNumber: number,
+      npiOrigin: origin,
+    })),
     trace: plan.trace,
     summary: plan.summary,
   };

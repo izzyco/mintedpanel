@@ -3,11 +3,13 @@
 // reaches our server's registry route, and nothing reaches NPPES.
 // Announcements are counted from every live-region change (recordAnnouncements).
 //   1. Add Provider (/providers/new): a typed dashed NPI is stripped and
-//      verified; a name search (plus state) lists matches; the keyboard picks
-//      one, which sets the NPI and replaces the untouched preset taxonomy,
-//      keeps the typed credentials, and offers the licenses for states with
-//      no row; staff add one; the summary survives a step change; the pick
-//      and the add are each announced once; the save carries all of it.
+//      verified; a name search (plus state) lists matches; staff pick the
+//      wrong Jane and add her offered license, then pick the right one by
+//      keyboard: the added row goes, the untouched preset taxonomy is
+//      replaced, the typed credentials are kept, and her licenses are
+//      offered; adding one twice adds one row; removing it makes the offer
+//      available again; the summary survives a step change; each pick and add
+//      is announced once; the save carries only what applies.
 //   2. Roster form (/onboarding/wizard → Add provider): a name that differs
 //      and a registry outage are both warnings — the provider still saves; a
 //      name fix that blocks nothing is not announced; a failed name search
@@ -393,8 +395,18 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     body: { firstName: "Jane", lastName: "Doe", state: "CO" },
   });
 
-  // Keyboard: focus the list, arrow to the second match, Enter picks it.
+  // Pick A: the Denver Jane. Its CO license is offered, and staff add it.
   const matches = page.getByRole("list", { name: "NPI Registry matches" });
+  await matches.getByRole("button", { name: /^JANE DOE, PT NPI 1234567893/ }).click();
+  const summary = page.getByRole("region", { name: "From the NPI Registry" });
+  await summary.getByRole("button", { name: "Add license row for CO PT-1001" }).click();
+  await expect(summary.getByRole("button", { name: "On the form for CO PT-1001" })).toBeFocused();
+  await expect
+    .poll(() => announcements(page, "Added a CO license row with number PT-1001."))
+    .toBe(1);
+
+  // Pick B by keyboard: focus the list, arrow to the second match, Enter.
+  await page.getByRole("button", { name: "Search NPI Registry" }).click();
   await matches.getByRole("button").first().focus();
   await page.keyboard.press("ArrowDown");
   // The button's name starts with its visible text (WCAG 2.5.3).
@@ -410,26 +422,27 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
   await expect(npi).toHaveAccessibleDescription(
     /Found in the NPI Registry.*JANE M DOE, DPT · Physical Therapist, Orthopedic · BOULDER, CO/,
   );
-  // The picked record seeds the check: no second lookup call.
+  // The picked records seed the check: no further lookup call.
   expect(registry.calls.filter((call) => call.path === "lookup")).toHaveLength(1);
 
-  // Filled: the preset taxonomy nobody chose. Kept: the typed credentials.
-  // The licenses (no license row has a state yet) are offered, not added.
-  // Announced once, politely, with the check the pick caused.
+  // Filled: the preset taxonomy nobody chose. Cleared: the row staff added
+  // from A's offer and left alone. Kept: the typed credentials. B's licenses
+  // are offered, not added. Announced once, with the check the pick caused.
   const filledText = "Filled from the NPI Registry: NPI, Taxonomy code.";
+  const clearedText = "Cleared from the previous pick: CO license row.";
   const keptText = "Kept yours: Credentials — registry has DPT.";
-  const offersText = "The registry lists 2 licenses for states with no license row.";
+  const offersText = "The registry lists 2 licenses that are not on the form.";
   await expect
     .poll(() =>
       announcements(
         page,
-        `${filledText} ${keptText} ${offersText} Add them below if they apply. ` +
+        `${filledText} ${clearedText} ${keptText} ${offersText} Add them below if they apply. ` +
           "Found in the NPI Registry. JANE M DOE, DPT",
       ),
     )
     .toBe(1);
-  const summary = page.getByRole("region", { name: "From the NPI Registry" });
   await expect(summary.getByText(filledText, { exact: true })).toBeVisible();
+  await expect(summary.getByText(clearedText, { exact: true })).toBeVisible();
   await expect(summary.getByText(keptText, { exact: true })).toBeVisible();
   await expect(summary).toContainText(
     "Practice address200 CLINIC WAY, BOULDER, CO 80302-1234 · 303-555-0199",
@@ -438,29 +451,41 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
   await expect(summary).toContainText("Other namesJANE SMITH (Former Name)");
   await expect(page.getByRole("combobox", { name: "Taxonomy code" })).toContainText("2251X0800X");
 
-  // Staff add the CO license; focus stays on the button, the add is announced.
+  // Staff add B's CO license; focus stays on the button, the add is announced.
   await summary.getByRole("button", { name: "Add license row for CO PT-4471" }).click();
-  await expect(summary.getByRole("button", { name: "Added for CO PT-4471" })).toBeFocused();
+  const coOnForm = summary.getByRole("button", { name: "On the form for CO PT-4471" });
+  await expect(coOnForm).toBeFocused();
   await expect
     .poll(() => announcements(page, "Added a CO license row with number PT-4471."))
+    .toBe(1);
+  // Adding it again (Enter on the focused aria-disabled button) adds nothing
+  // and says so.
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => announcements(page, "A CO license row with number PT-4471 is already on the form."))
     .toBe(1);
   await expect(
     summary.getByRole("button", { name: "Add license row for WY WY-0099" }),
   ).toBeVisible();
 
-  // The summary outlives a step change, and is not announced again.
+  // Removing the row on the Licenses step makes the offer available again;
+  // the summary outlives the step change and is not announced again.
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByRole("button", { name: "Add license" })).toBeVisible();
+  await page.getByRole("button", { name: "Remove license" }).click();
+  await expect(page.getByRole("button", { name: "Remove license" })).toHaveCount(0);
   await page.getByRole("button", { name: "Back" }).click();
-  await expect(
-    page.getByRole("region", { name: "From the NPI Registry" }).getByText(filledText),
-  ).toBeVisible();
+  await expect(summary.getByText(filledText, { exact: true })).toBeVisible();
   expect(await announcements(page, filledText)).toBe(1);
+  await summary.getByRole("button", { name: "Add license row for CO PT-4471" }).click();
+  await expect
+    .poll(() => announcements(page, "Added a CO license row with number PT-4471."))
+    .toBe(2);
 
   for (let step = 0; step < 3; step += 1) {
     await page.getByRole("button", { name: "Next" }).click();
   }
   await expect(page.getByText("CO · PT-4471", { exact: false })).toBeVisible();
+  await expect(page.getByText("CO · PT-1001", { exact: false })).toHaveCount(0);
   await expect(page.getByText("WY · WY-0099", { exact: false })).toHaveCount(0);
   await page.getByRole("button", { name: "Create provider" }).click();
   await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
@@ -579,7 +604,7 @@ test("MINT-110: roster form saves through a mismatch and an outage; pick A then 
   const filledB = "Filled from the NPI Registry: NPI, Credentials, CO license number.";
   const keptB =
     "Kept yours: Taxonomy code — registry has 2251X0800X (Physical Therapist, Orthopedic).";
-  const offerB = "The registry lists 1 license for a state with no license row.";
+  const offerB = "The registry lists 1 license that is not on the form.";
   await expect.poll(() => announcements(page, `${filledB} ${keptB} ${offerB}`)).toBe(1);
   expect(await announcements(page, filledA)).toBe(1);
   expect(await announcements(page, "Kept yours: Credentials")).toBe(0);
