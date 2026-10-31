@@ -78,4 +78,26 @@ describe("completeTaskStep under ActivityDateRules", () => {
     holder.rules = { zone: "Pacific/Auckland" };
     expect(await sentDate("extension")).not.toHaveProperty("p_completed_date");
   });
+
+  it("with a named zone on a database without the date argument, the retry drops the date and the RPC keeps the UTC day", async () => {
+    holder.rules = { zone: "Pacific/Auckland" };
+    // PostgREST's answer when only the old 5-argument function exists.
+    rpc.mockResolvedValueOnce({
+      data: null,
+      error: {
+        code: "PGRST202",
+        message:
+          "Could not find the function public.complete_sop_task_step(p_actor_id, p_completed_date, p_org_id, p_source, p_step_id, p_task_id) in the schema cache",
+        details: null,
+        hint: null,
+      },
+    });
+
+    await expect(completeTaskStep(context("panel"), "task-1", "step-1")).resolves.toMatchObject({
+      kind: "ok",
+    });
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc.mock.calls[0]?.[1]).toMatchObject({ p_completed_date: "2026-10-20" });
+    expect(rpc.mock.calls[1]?.[1]).not.toHaveProperty("p_completed_date");
+  });
 });
