@@ -299,7 +299,7 @@ export function compareNpiRegistryName(
   const [typedFirst, ...typedRest] = typedWords;
   const names = [
     { firstName: record.firstName, middleName: record.middleName, lastName: record.lastName },
-    ...record.otherNames.map((name) => ({ ...name, middleName: null })),
+    ...record.otherNames.map((name) => ({ ...name, middleName: name.middleName ?? null })),
   ];
   const matches = names.some((name) => {
     if (matchKey(name.lastName) !== last) return false;
@@ -371,14 +371,24 @@ export function npiRegistryErrorMessage(error: unknown): string {
     : NPI_REGISTRY_UNAVAILABLE_MESSAGE;
 }
 
-/** A lookup query (from useNpiRegistryLookup) as a lookup state. */
+/** A lookup query (from useNpiRegistryLookup) as a lookup state. A query that
+ * has no answer and is not fetching — disabled (no active organization) or
+ * paused (offline) — is "idle": not checked, which never blocks a save. */
 export function npiLookupStateOf(
   checkable: string | null,
-  query: { isError: boolean; error: unknown; data?: NpiRegistryLookupResult },
+  query: {
+    isError: boolean;
+    error: unknown;
+    data?: NpiRegistryLookupResult;
+    fetchStatus?: "fetching" | "paused" | "idle";
+  },
 ): NpiLookupState {
   if (checkable === null) return { status: "idle" };
   if (query.isError) return { status: "error", message: npiRegistryErrorMessage(query.error) };
-  return query.data ? { status: "done", record: query.data.record } : { status: "loading" };
+  if (query.data) return { status: "done", record: query.data.record };
+  return query.fetchStatus === undefined || query.fetchStatus === "fetching"
+    ? { status: "loading" }
+    : { status: "idle" };
 }
 
 /** The registry answer a policy can act on, or null when there is none: no

@@ -17,12 +17,12 @@ import {
 } from "@/components/providers/ProviderFormSections";
 import {
   validateAll,
-  validateCredentials,
-  validatePersonal,
+  validateProviderStep,
   type ProviderFormErrors,
   type ProviderFormState,
   type UpdateProviderField,
 } from "@/components/providers/providerFormShared";
+import type { NpiPickState } from "@/lib/npiRegistryFill";
 
 export {
   emptyProviderFormState,
@@ -37,16 +37,6 @@ const STEPS = [
   { id: 4, label: "Employment" },
   { id: 5, label: "Review" },
 ] as const;
-
-function validateStep(
-  step: number,
-  f: ProviderFormState,
-  registryBlock: string | null,
-): ProviderFormErrors {
-  if (step === 1) return validatePersonal(f);
-  if (step === 2) return validateCredentials(f, registryBlock);
-  return {};
-}
 
 export interface ProviderFormProps {
   initial: ProviderFormState;
@@ -78,13 +68,17 @@ export function ProviderForm({
     { firstName: form.firstName, lastName: form.lastName },
     useNpiRegistryPolicy(),
   );
+  // MINT-110: kept here, not in CredentialsSection, so a pick's summary and
+  // its trace outlive a step change.
+  const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
+  const [taxonomyTouched, setTaxonomyTouched] = useState(false);
 
   const update: UpdateProviderField = (key, value) => {
     setForm((p) => ({ ...p, [key]: value }));
   };
 
   const next = () => {
-    const e = validateStep(step, form, registryBlock);
+    const e = validateProviderStep(step, form, registryBlock);
     setErrors(e);
     if (Object.keys(e).length === 0) setStep((s) => Math.min(5, s + 1));
   };
@@ -130,7 +124,19 @@ export function ProviderForm({
       <div className="mt-6 rounded-md border border-border bg-card">
         <div className="p-6">
           {step === 1 ? <PersonalSection form={form} errors={errors} update={update} /> : null}
-          {step === 2 ? <CredentialsSection form={form} errors={errors} update={update} /> : null}
+          {step === 2 ? (
+            <CredentialsSection
+              form={form}
+              errors={errors}
+              update={update}
+              npi={{
+                npiPick,
+                onNpiPick: setNpiPick,
+                taxonomyTouched,
+                onTaxonomyTouched: () => setTaxonomyTouched(true),
+              }}
+            />
+          ) : null}
           {step === 3 ? <LicensesSection form={form} errors={errors} update={update} /> : null}
           {step === 4 ? <EmploymentSection form={form} errors={errors} update={update} /> : null}
           {step === 5 ? <ReviewStep form={form} jumpTo={jumpTo} /> : null}

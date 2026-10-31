@@ -76,7 +76,14 @@ import { AddTouchDialog, type TouchCaseCandidate } from "@/components/cases/AddT
 import { usePayers } from "@/hooks/useAdmin";
 import { useCanWrite } from "@/lib/permissions";
 import { isValidEmail } from "@/lib/contactValidation";
-import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi, stripNpiSeparators } from "@/lib/providerIdentity";
+import {
+  NPI_CHECK_DIGIT_MESSAGE,
+  NPI_FORMAT_MESSAGE,
+  isValidNpi,
+  stripNpiSeparators,
+} from "@/lib/providerIdentity";
+import { NpiRegistryCheckNote } from "@/components/providers/NpiRegistryAssist";
+import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiRegistry";
 import { hasValidLicenseDateOrder, LICENSE_DATE_ORDER_ERROR } from "@/lib/licenseDates";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -381,6 +388,20 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // MINT-110: the third NPI write path follows the same rule as Add Provider
+  // and the roster form — separators stripped, ten digits, the check digit,
+  // then the NPI Registry policy. Only a changed NPI is checked; a stored one
+  // is never re-checked (no backfill).
+  const npiPolicy = useNpiRegistryPolicy();
+  const npiDraft = stripNpiSeparators((draft.npi ?? "").trim());
+  const npiChanged = editing && npiDraft !== stripNpiSeparators((provider.npi ?? "").trim());
+  const npiNames = {
+    firstName: editing ? (draft.firstName ?? "") : provider.firstName,
+    lastName: editing ? (draft.lastName ?? "") : provider.lastName,
+  };
+  const npiRegistryBlock = useNpiRegistrySaveBlock(npiDraft, npiChanged, npiNames, npiPolicy);
+  const npiNoticeId = "identity-npi-registry-note";
+
   const dateDisplay = (v: string | null) => (v ? fmtDate(v) : "—");
   const groups: { title: string; cells: Cell[] }[] = [
     {
@@ -423,10 +444,12 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           mono: true,
           // MINT-110: "123-456-7890" and "123 456 7890" save as digits.
           normalize: stripNpiSeparators,
-          // Runs only when the NPI changed (see save) — MINT-7 check digit.
+          // Runs only when the NPI changed (see save) — MINT-7 check digit,
+          // then the NPI Registry policy's refusal, if any.
           validate: (v) => {
-            if (!/^\d{10}$/.test(v)) return "NPI is 10 digits.";
-            return isValidNpi(v) ? null : NPI_CHECK_DIGIT_MESSAGE;
+            if (!/^\d{10}$/.test(v)) return NPI_FORMAT_MESSAGE;
+            if (!isValidNpi(v)) return NPI_CHECK_DIGIT_MESSAGE;
+            return npiRegistryBlock;
           },
         },
         { label: "CAQH ID", key: "caqhId", value: provider.caqhId ?? null, mono: true },
@@ -628,6 +651,15 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
                       <Input
                         id={`identity-${c.key}`}
                         type={c.type === "date" ? "date" : "text"}
+                        aria-invalid={fieldErrors[c.key] ? true : undefined}
+                        aria-describedby={
+                          [
+                            c.key === "npi" ? npiNoticeId : null,
+                            fieldErrors[c.key] ? `identity-${c.key}-error` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" ") || undefined
+                        }
                         value={draft[c.key] ?? ""}
                         onChange={(e) => {
                           setDraft((d) => ({ ...d, [c.key]: e.target.value }));
@@ -637,9 +669,23 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
                       />
                     )}
                     {fieldErrors[c.key] ? (
-                      <p role="alert" className="text-[12px] text-[#B91C1C]">
+                      <p
+                        id={`identity-${c.key}-error`}
+                        role="alert"
+                        className="text-[12px] text-[#B91C1C]"
+                      >
                         {fieldErrors[c.key]}
                       </p>
+                    ) : null}
+                    {c.key === "npi" ? (
+                      <NpiRegistryCheckNote
+                        noticeId={npiNoticeId}
+                        npi={npiDraft}
+                        verify={npiChanged}
+                        firstName={npiNames.firstName}
+                        lastName={npiNames.lastName}
+                        policy={npiPolicy}
+                      />
                     ) : null}
                   </div>
                 );

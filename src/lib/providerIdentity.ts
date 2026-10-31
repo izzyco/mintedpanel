@@ -13,6 +13,9 @@ const DEA_RE = /^[A-Z][A-Z9]\d{7}$/i;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const NPI_CHECK_DIGIT_MESSAGE = "NPI check digit is invalid — re-check the number";
+/** Every form that takes a typed NPI says this when it is not ten digits once
+ * separators are stripped (Add Provider, the roster form, the record page). */
+export const NPI_FORMAT_MESSAGE = "NPI must be 10 digits";
 export const DEA_FORMAT_MESSAGE = "DEA must be a letter, then a letter or 9, then 7 digits";
 export const DEA_CHECK_DIGIT_MESSAGE = "DEA check digit is invalid — re-check the number";
 
@@ -38,9 +41,10 @@ export function npiCheckDigit(first9: string): number | null {
 
 // MINT-110: the separators staff paste from documents and spreadsheets — any
 // whitespace, the ASCII hyphen, the Unicode hyphens and dashes (U+2010–U+2015),
-// the minus sign (U+2212), the fullwidth hyphen (U+FF0D), and the invisible
-// zero-width characters (U+200B–U+200D, U+FEFF). Nothing else is removed.
-const NPI_SEPARATORS_RE = /[-\s\u2010-\u2015\u2212\uFF0D\u200B-\u200D\uFEFF]/g;
+// the minus sign (U+2212), the small and fullwidth hyphen-minus (U+FE63,
+// U+FF0D), the soft hyphen (U+00AD), and the invisible zero-width characters
+// and word joiner (U+200B–U+200D, U+2060, U+FEFF). Nothing else is removed.
+const NPI_SEPARATORS_RE = /[-\s\u00AD\u2010-\u2015\u2212\uFE63\uFF0D\u200B-\u200D\u2060\uFEFF]/g;
 
 /** A typed or imported NPI with its dashes and spaces removed, so
  * "123-456-7890" and "123 456 7890" both become "1234567890". Letters, dots and

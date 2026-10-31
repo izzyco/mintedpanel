@@ -1,7 +1,9 @@
 // MINT-110 — the registry help under an NPI field: what it checks, what it
 // says under each policy severity, that the result list is announced and
-// keyboard-reachable, and the summary a pick leaves. The hooks are mocked; the
-// route and the registry are not reached.
+// keyboard-reachable, the summary a pick leaves (with its "Add license row"
+// offers), and Add Provider's Credentials step under a blocking policy. The
+// hooks are mocked (the check composes the real pure rules over a mocked
+// lookup); the route and the registry are not reached.
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NpiRegistryRecord, NpiRegistrySearchResult } from "@/lib/npiRegistry";
@@ -13,14 +15,43 @@ const lookupResult = vi.hoisted(() => ({
     error?: unknown;
   },
 }));
+const policyInForce = vi.hoisted(() => ({ current: null as unknown }));
 
 vi.mock("@/hooks/useNpiRegistry", async () => {
   const policy = await import("@/lib/npiRegistryPolicy");
+  const rules = await import("@/lib/npiRegistry");
+  const useNpiRegistryLookup = vi.fn((npi: string | null) => {
+    void npi;
+    return lookupResult.current;
+  });
   return {
-    useNpiRegistryLookup: vi.fn(() => lookupResult.current),
+    useNpiRegistryLookup,
+    // The real composition, over the mocked lookup.
+    useNpiRegistryCheck: (
+      npi: string,
+      verify: boolean,
+      typed: { firstName: string; lastName: string },
+      inForce: import("@/lib/npiRegistryPolicy").NpiRegistryPolicy,
+    ) => {
+      const checkable = rules.npiToCheck(npi, verify);
+      const lookup = useNpiRegistryLookup(checkable) as Partial<
+        Parameters<typeof rules.npiLookupStateOf>[1]
+      >;
+      const state = rules.npiLookupStateOf(checkable, {
+        isError: lookup.isError ?? false,
+        error: lookup.error ?? null,
+        data: lookup.data,
+      });
+      return {
+        checkable,
+        state,
+        view: rules.npiVerificationView(state, typed, inForce),
+        block: rules.npiRegistrySaveBlock(state, typed, inForce),
+      };
+    },
     useNpiRegistrySearch: vi.fn(() => ({})),
     usePrimeNpiRegistryLookup: vi.fn(() => () => undefined),
-    useNpiRegistryPolicy: () => policy.DEFAULT_NPI_REGISTRY_POLICY,
+    useNpiRegistryPolicy: () => policyInForce.current ?? policy.DEFAULT_NPI_REGISTRY_POLICY,
   };
 });
 vi.mock("@/hooks/useLookups", () => ({
@@ -33,12 +64,13 @@ import { CredentialsSection } from "./ProviderFormSections";
 import { emptyProviderFormState } from "./providerFormShared";
 import {
   NpiRegistryAssist,
+  NpiRegistryCheckNote,
   NpiRegistryPickSummary,
   NpiRegistryResultList,
   NpiVerificationNotice,
 } from "./NpiRegistryAssist";
 import { NPI_REGISTRY_BLOCK_REASONS, npiSearchStatusText } from "@/lib/npiRegistry";
-import type { NpiFillSummary } from "@/lib/npiRegistryFill";
+import type { NpiFillSummary, NpiPickState } from "@/lib/npiRegistryFill";
 import {
   DEFAULT_NPI_REGISTRY_POLICY,
   NPI_REGISTRY_OUTCOMES,
@@ -46,7 +78,13 @@ import {
   type NpiRegistryOutcome,
 } from "@/lib/npiRegistryPolicy";
 
-const NO_FILL: NpiFillSummary = { filled: [], kept: [], details: [] };
+const NO_FILL: NpiFillSummary = {
+  filled: [],
+  cleared: [],
+  kept: [],
+  licenseOffers: [],
+  details: [],
+};
 
 const jane: NpiRegistryRecord = {
   npi: "1234567893",
@@ -73,7 +111,9 @@ function renderAssist(props: Partial<Parameters<typeof NpiRegistryAssist>[0]> = 
       firstName="Jane"
       lastName="Doe"
       verify
-      onPick={() => NO_FILL}
+      pick={null}
+      onPick={() => undefined}
+      onAddLicense={() => undefined}
       noticeId="npi-note"
       policy={DEFAULT_NPI_REGISTRY_POLICY}
       {...props}
@@ -83,6 +123,7 @@ function renderAssist(props: Partial<Parameters<typeof NpiRegistryAssist>[0]> = 
 
 beforeEach(() => {
   lookupResult.current = {};
+  policyInForce.current = null;
   lookupMock.mockClear();
 });
 
@@ -276,46 +317,119 @@ describe("NpiRegistryAssist search", () => {
 
 describe("NpiRegistryPickSummary", () => {
   const summary: NpiFillSummary = {
-    filled: ["NPI", "CO license"],
-    kept: [
-      { field: "Credentials", registryValue: "DPT" },
-      { field: "Taxonomy code", registryValue: "2251X0800X (Physical Therapist, Orthopedic)" },
+    filled: ["NPI", "CO license number"],
+    cleared: ["Taxonomy code"],
+    kept: [{ field: "Credentials", registryValue: "DPT" }],
+    licenseOffers: [
+      { state: "WY", number: "WY-0099", added: false },
+      { state: "MT", number: "MT-12", added: true },
     ],
     details: [
       { label: "Middle name", lines: ["M"] },
       { label: "Other identifiers", lines: ["MEDICAID CO-MCD-77 (CO)", "OTHER 55 (WY)"] },
     ],
   };
+  const text = (html: string) =>
+    html
+      .replace(/<[^>]+>/g, "|")
+      .replace(/\|+/g, "|")
+      .replace(/&#x27;/g, "'");
 
-  it("says what was filled and kept, then lists the registry data no field holds", () => {
-    const html = renderToStaticMarkup(<NpiRegistryPickSummary summary={summary} />);
-    const text = html.replace(/<[^>]+>/g, "|").replace(/\|+/g, "|");
-    expect(text).toBe(
+  it("says what was filled, cleared and kept, offers licenses, then lists the rest", () => {
+    const html = renderToStaticMarkup(
+      <NpiRegistryPickSummary summary={summary} onAddLicense={() => undefined} />,
+    );
+    expect(text(html)).toBe(
       "|From the NPI Registry" +
-        "|Filled from the NPI Registry: NPI, CO license." +
-        "|Kept yours: Credentials — registry has DPT; Taxonomy code — registry has 2251X0800X (Physical Therapist, Orthopedic)." +
+        "|Filled from the NPI Registry: NPI, CO license number." +
+        "|Cleared what the previous pick filled: Taxonomy code." +
+        "|Kept yours: Credentials — registry has DPT." +
+        "|The registry lists 2 licenses for states with no license row. " +
+        "|A license row counts toward the provider's states, and NPPES lists no expiration date — add one only if it applies." +
+        "|WY WY-0099|Add license row| for WY WY-0099" +
+        "|MT MT-12|Added| for MT MT-12" +
         "|Shown for reference; not saved:" +
         "|Middle name|M|Other identifiers|MEDICAID CO-MCD-77 (CO)|OTHER 55 (WY)|",
     );
     // A labelled region with a description list; never a live region, so the
-    // pick is announced once (by the assist), and focus is not moved to it.
+    // pick is announced once (by the check note), and focus is not moved to it.
     expect(html).toMatch(/^<section aria-labelledby="([^"]+)"[^>]*><p id="\1"/);
     expect(html).toContain("<dl");
     expect(html).not.toContain("aria-live");
     expect(html).not.toContain('role="status"');
     expect(html).not.toContain("tabindex");
+    // An added offer keeps its focusable button, marked aria-disabled.
+    expect(html.match(/<button[^>]*>/g)).toHaveLength(2);
+    expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>Added/);
+    expect(html).not.toMatch(/<button[^>]*disabled=""/);
   });
 
-  it("leaves out the kept line and the list when there is nothing for them", () => {
+  it("lists offers without buttons when the form cannot add them", () => {
+    const html = renderToStaticMarkup(<NpiRegistryPickSummary summary={summary} />);
+    expect(html).toContain("WY WY-0099");
+    expect(html).not.toContain("<button");
+  });
+
+  it("leaves out the cleared, kept, offer and detail parts when there is nothing for them", () => {
     const html = renderToStaticMarkup(<NpiRegistryPickSummary summary={NO_FILL} />);
     expect(html).toContain("Nothing blank to fill from the NPI Registry.");
     expect(html).not.toContain("Kept yours");
+    expect(html).not.toContain("Cleared");
+    expect(html).not.toContain("license row");
     expect(html).not.toContain("<dl");
   });
 
-  it("is not shown before a pick", () => {
+  it("is shown from the form's pick while the form holds the picked NPI", () => {
     lookupResult.current = { data: { record: jane } };
     expect(renderAssist()).not.toContain("From the NPI Registry");
+    const pick: NpiPickState = {
+      seq: 3,
+      npi: "1234567893",
+      trace: { credentials: null, taxonomyCode: null, licenseNumbers: [] },
+      summary: { ...NO_FILL, filled: ["Credentials"] },
+    };
+    const shown = renderAssist({ pick });
+    expect(shown).toContain("From the NPI Registry");
+    expect(shown).toContain("Filled from the NPI Registry: Credentials.");
+    // Mounting with an earlier pick (a step change) says nothing again.
+    expect(shown).toContain('<p role="status" aria-live="polite" class="sr-only"></p>');
+    expect(renderAssist({ pick, npi: "1902833742" })).not.toContain("From the NPI Registry");
+  });
+});
+
+describe("NpiRegistryCheckNote", () => {
+  it("renders the note and an empty polite region on mount, under the given policy", () => {
+    lookupResult.current = { data: { record: null } };
+    const html = renderToStaticMarkup(
+      <NpiRegistryCheckNote
+        noticeId="identity-npi-registry-note"
+        npi="1234567893"
+        verify
+        firstName="Jane"
+        lastName="Doe"
+        policy={resolveNpiRegistryPolicy(null, { severity: { notFound: "block" } })}
+      />,
+    );
+    expect(html).toMatch(/<div id="identity-npi-registry-note"[^>]*>.*text-destructive/);
+    expect(html.replace(/&#x27;/g, "'")).toContain(NPI_REGISTRY_BLOCK_REASONS.notFound);
+    expect(html).toContain('<p role="status" aria-live="polite" class="sr-only"></p>');
+  });
+
+  it("says nothing for an NPI it is not asked to check", () => {
+    const html = renderToStaticMarkup(
+      <NpiRegistryCheckNote
+        noticeId="n"
+        npi="1234567893"
+        verify={false}
+        firstName="Jane"
+        lastName="Doe"
+        policy={DEFAULT_NPI_REGISTRY_POLICY}
+      />,
+    );
+    expect(html).toBe(
+      '<div id="n" class="text-[12px]"></div><p role="status" aria-live="polite" class="sr-only"></p>',
+    );
+    expect(lookupMock).toHaveBeenCalledWith(null);
   });
 });
 
@@ -337,5 +451,39 @@ describe("Add Provider credentials step", () => {
     // dashes are stripped.
     expect(html).not.toContain('maxLength="10"');
     expect(html).toContain('maxLength="20"');
+  });
+
+  it("under a blocking policy, shows the note as an error and links the NPI error", () => {
+    policyInForce.current = resolveNpiRegistryPolicy(null, { severity: { notFound: "block" } });
+    lookupResult.current = { data: { record: null } };
+    const html = renderToStaticMarkup(
+      <CredentialsSection
+        form={{ ...emptyProviderFormState, firstName: "Jane", lastName: "Doe", npi: "1234567893" }}
+        errors={{ npi: NPI_REGISTRY_BLOCK_REASONS.notFound }}
+        update={() => undefined}
+      />,
+    ).replace(/&#x27;/g, "'");
+    const input = /<input[^>]*aria-describedby="([^"]+)"[^>]*>/.exec(html);
+    expect(input?.[0]).toContain('aria-invalid="true"');
+    const [noteId, errorId] = (input?.[1] ?? "").split(" ");
+    expect(html).toMatch(new RegExp(`<div id="${noteId}"[^>]*>.*text-destructive`));
+    expect(html).toContain(`<p id="${errorId}" class="mt-1 text-xs text-destructive">`);
+    expect(html).toContain(NPI_REGISTRY_BLOCK_REASONS.notFound);
+    expect(html).not.toContain("You can still save");
+  });
+
+  it("under the default policy, the same answer is a warning and no error is linked", () => {
+    lookupResult.current = { data: { record: null } };
+    const html = renderToStaticMarkup(
+      <CredentialsSection
+        form={{ ...emptyProviderFormState, firstName: "Jane", lastName: "Doe", npi: "1234567893" }}
+        errors={{}}
+        update={() => undefined}
+      />,
+    );
+    const input = /<input[^>]*aria-describedby="([^"]+)"[^>]*>/.exec(html);
+    expect(input?.[0]).not.toContain("aria-invalid");
+    expect(input?.[1].split(" ")).toHaveLength(1);
+    expect(html).toContain("You can still save this provider.");
   });
 });

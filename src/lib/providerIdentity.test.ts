@@ -64,6 +64,12 @@ describe("stripNpiSeparators (MINT-110)", () => {
     expect(stripNpiSeparators("123\u2212456\u00a07893")).toBe("1234567893");
   });
 
+  it("strips the soft hyphen, the word joiner and the small hyphen-minus", () => {
+    expect(stripNpiSeparators("123\u00ad456\u00ad7893")).toBe("1234567893");
+    expect(stripNpiSeparators("123\u2060456\u20607893")).toBe("1234567893");
+    expect(stripNpiSeparators("123\ufe63456\ufe637893")).toBe("1234567893");
+  });
+
   it("strips invisible zero-width characters and the fullwidth hyphen", () => {
     expect(stripNpiSeparators("\ufeff123\u200b456\u200c789\u200d3")).toBe("1234567893");
     expect(stripNpiSeparators("123\uff0d456\uff0d7893")).toBe("1234567893");

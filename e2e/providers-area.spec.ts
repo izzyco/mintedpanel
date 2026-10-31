@@ -10,11 +10,19 @@
 //           provider is flagged (not generatable) until assigned.
 //   TS-130  PHI sweep: the roster's list read carries no DOB/SSN/home-address
 //           columns; the record masks DOB at rest and SSN to last-4.
+//   MINT-110 The record's inline NPI edit is the third NPI write path: the
+//           same ten-digit rule and message, the NPI Registry note, and the
+//           policy's block (run here with "not found" set to block).
 // TS-128 (the CSV relationship fold + reference sheet) is covered at the scan
 // grain by importSections.test.ts and the staged pipeline by
 // roster-import.spec.ts — the commit relationship pass is pinned here at the
 // wire in TS-113's harness (write-through fact POST).
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
+import {
+  announcements,
+  blockNpiRegistryAnswers,
+  recordAnnouncements,
+} from "./fixtures/npiRegistry";
 
 const AUTH_KEY = "sb-example-auth-token";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -1040,4 +1048,87 @@ test("MINT-7: record inline edit checks only a changed NPI's check digit", async
     { phone: "252-555-0142" },
     { npi: "1234567893" },
   ]);
+});
+
+test("MINT-110: record inline NPI edit follows the NPI Registry check and policy", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const policy = await blockNpiRegistryAnswers(context, ["notFound"]);
+  const fixtures = baseFixtures();
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  // The registry, mocked at the browser: it lists only Brooke Ostrander.
+  const lookups: unknown[] = [];
+  await context.route(/\/api\/npi-registry\//, async (route) => {
+    const body = route.request().postDataJSON() as { npi?: string };
+    lookups.push(body);
+    const record =
+      body.npi === "1234567893"
+        ? {
+            npi: "1234567893",
+            enumerationType: "NPI-1",
+            firstName: "BROOKE",
+            middleName: null,
+            lastName: "OSTRANDER",
+            organizationName: null,
+            credential: "PT",
+            primaryTaxonomy: { code: "225100000X", description: "Physical Therapist" },
+            practiceCity: "GREENVILLE",
+            practiceState: "NC",
+            status: "active",
+            enumerationDate: "2015-03-02",
+            otherNames: [],
+          }
+        : null;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { record }, error: null, meta: null }),
+    });
+  });
+  await recordAnnouncements(context);
+  await seedAuth(context);
+  const providerPatches = () =>
+    requests.filter((request) => request.method === "PATCH" && request.path === "providers");
+
+  await page.goto("/providers/pr-brooke");
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+  expect(policy.patched()).toBe(true);
+  await page.getByRole("button", { name: "Edit details" }).click();
+  const npi = page.locator("#identity-npi");
+
+  // The same wording as Add Provider and the roster form.
+  await npi.fill("12345");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toHaveText("NPI must be 10 digits");
+  await expect(npi).toHaveAttribute("aria-invalid", "true");
+
+  // Not in the registry, and the policy blocks that: the note is an error,
+  // the save is refused with the reason, and nothing is written.
+  const reason = "Your organization saves only NPIs the NPI Registry lists.";
+  await npi.fill("123-456-7810");
+  await expect(page.getByText("Not found in the NPI Registry", { exact: true })).toHaveClass(
+    /text-destructive/,
+  );
+  await expect.poll(() => announcements(page, reason)).toBe(1);
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toHaveText(reason);
+  await expect(npi).toHaveAccessibleDescription(
+    new RegExp(`Not found in the NPI Registry.*${reason}`),
+  );
+  expect(providerPatches()).toHaveLength(0);
+
+  // A listed NPI with a matching name saves, as digits.
+  await npi.fill("123 456 7893");
+  await expect(page.getByText("Found in the NPI Registry", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(providerPatches().map((request) => request.body)).toEqual([{ npi: "1234567893" }]);
+  expect(lookups).toEqual([{ npi: "1234567810" }, { npi: "1234567893" }]);
 });

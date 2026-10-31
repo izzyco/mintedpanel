@@ -10,7 +10,10 @@ import {
   npiLookupStateOf,
   npiRegistrySaveBlock,
   npiToCheck,
+  npiVerificationView,
+  type NpiLookupState,
   type NpiRegistryLookupResult,
+  type NpiVerificationView,
   type NpiRegistryRecord,
   type NpiRegistrySearchInput,
 } from "@/lib/npiRegistry";
@@ -74,6 +77,36 @@ export function useNpiRegistryPolicy(): NpiRegistryPolicy {
   return RESOLVED_POLICY;
 }
 
+export interface NpiRegistryCheck {
+  /** The NPI being checked, or null (blank, malformed, or not to be checked). */
+  checkable: string | null;
+  state: NpiLookupState;
+  /** The note under the NPI field, or null when there is nothing to say. */
+  view: NpiVerificationView | null;
+  /** Why saving is refused under the policy, or null. */
+  block: string | null;
+}
+
+/** The registry check of one NPI field: its state, its note, and whether the
+ * policy refuses the save. Every caller with the same NPI shares one cached
+ * lookup, so the note, the save and the record page cost one registry call. */
+export function useNpiRegistryCheck(
+  npi: string,
+  verify: boolean,
+  typed: { firstName: string; lastName: string },
+  policy: NpiRegistryPolicy,
+): NpiRegistryCheck {
+  const checkable = npiToCheck(npi, verify);
+  const lookup = useNpiRegistryLookup(checkable);
+  const state = npiLookupStateOf(checkable, lookup);
+  return {
+    checkable,
+    state,
+    view: npiVerificationView(state, typed, policy),
+    block: npiRegistrySaveBlock(state, typed, policy),
+  };
+}
+
 /** Why a provider form must refuse to save under `policy`, or null. Reads the
  * same cached lookup the NPI field's note shows, so it adds no registry call. */
 export function useNpiRegistrySaveBlock(
@@ -82,7 +115,5 @@ export function useNpiRegistrySaveBlock(
   typed: { firstName: string; lastName: string },
   policy: NpiRegistryPolicy,
 ): string | null {
-  const checkable = npiToCheck(npi, verify);
-  const lookup = useNpiRegistryLookup(checkable);
-  return npiRegistrySaveBlock(npiLookupStateOf(checkable, lookup), typed, policy);
+  return useNpiRegistryCheck(npi, verify, typed, policy).block;
 }

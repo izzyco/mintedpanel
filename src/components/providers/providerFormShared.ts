@@ -1,8 +1,13 @@
 // Shared constants, types, and validation for the Add Provider stepper.
 // Record edit uses a separate inline Identity path (EditProviderForm retired).
-import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
+import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
 import { isKnownTaxonomyCode } from "@/lib/providerTaxonomy";
-import { isBlankField, planNpiRegistryFill, type NpiFillSummary } from "@/lib/npiRegistryFill";
+import {
+  isBlankField,
+  planNpiRegistryFill,
+  type NpiFillSummary,
+  type NpiPickTrace,
+} from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { DEFAULT_NPI_REGISTRY_POLICY, type NpiFillOnPick } from "@/lib/npiRegistryPolicy";
 
@@ -11,7 +16,10 @@ import { DEFAULT_NPI_REGISTRY_POLICY, type NpiFillOnPick } from "@/lib/npiRegist
 export { US_STATES } from "@/lib/usStates";
 
 export const SSN_LAST4_RE = /^\d{4}$/;
+/** The provider CSV import's NPI shape (importSections.ts). Add Provider
+ * itself now takes any ten digits with the check digit (NPI_DIGITS_RE). */
 export const NPI_RE = /^1\d{9}$/;
+export const NPI_DIGITS_RE = /^\d{10}$/;
 export const CAQH_RE = /^\d{8}$/;
 export const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
@@ -97,15 +105,18 @@ export function validatePersonal(f: ProviderFormState): ProviderFormErrors {
 }
 
 /** `registryBlock` is why the NPI Registry policy refuses this NPI
- * (useNpiRegistrySaveBlock), or null; the check digit is checked first. */
+ * (useNpiRegistrySaveBlock), or null. Required, so no call site can forget
+ * the policy; the shape and the check digit come first. */
 export function validateCredentials(
   f: ProviderFormState,
-  registryBlock: string | null = null,
+  registryBlock: string | null,
 ): ProviderFormErrors {
   const e: ProviderFormErrors = {};
-  // Blank stays allowed (incomplete onboarding); an entered NPI must pass the
-  // shape AND the CMS check digit (MINT-7).
-  if (f.npi && !NPI_RE.test(f.npi)) e.npi = "NPI must be 10 digits and start with 1";
+  // Blank stays allowed (incomplete onboarding); an entered NPI must be ten
+  // digits with the CMS check digit (MINT-7), the same rule as the roster
+  // form. No first-digit rule: the leading-1 check this replaced refused
+  // valid NPIs, and the type of an NPI is the registry's to say.
+  if (f.npi && !NPI_DIGITS_RE.test(f.npi)) e.npi = NPI_FORMAT_MESSAGE;
   else if (f.npi && !isValidNpi(f.npi)) e.npi = NPI_CHECK_DIGIT_MESSAGE;
   else if (f.npi && registryBlock) e.npi = registryBlock;
   if (!f.isNewGrad && f.caqhId && !CAQH_RE.test(f.caqhId)) e.caqhId = "CAQH must be 8 digits";
@@ -118,9 +129,20 @@ export function validateCredentials(
 
 export function validateAll(
   f: ProviderFormState,
-  registryBlock: string | null = null,
+  registryBlock: string | null,
 ): ProviderFormErrors {
   return { ...validatePersonal(f), ...validateCredentials(f, registryBlock) };
+}
+
+/** The errors that stop the stepper leaving `step`. */
+export function validateProviderStep(
+  step: number,
+  f: ProviderFormState,
+  registryBlock: string | null,
+): ProviderFormErrors {
+  if (step === 1) return validatePersonal(f);
+  if (step === 2) return validateCredentials(f, registryBlock);
+  return {};
 }
 
 /** A license row nobody has touched: every field still empty. */
@@ -128,37 +150,46 @@ export function isBlankLicenseRow(row: LicenseRow): boolean {
   return [row.state, row.number, row.type, row.issueDate, row.expirationDate].every(isBlankField);
 }
 
+/** What Add Provider remembers beside its form state about NPI Registry
+ * picks. Not in ProviderFormState: that maps one to one onto import columns
+ * (importSections.ts). */
+export interface ProviderNpiPickContext {
+  /** Staff chose the taxonomy; until then the preset is a default nobody
+   * chose, and a pick may replace it. */
+  taxonomyTouched: boolean;
+  /** What the last pick wrote, or null before the first pick. */
+  lastPick: NpiPickTrace | null;
+}
+
 /** MINT-110: a picked NPI Registry match applied to the Add Provider form.
- * The NPI is set; at "blank_fields" credentials, taxonomy and licenses fill
- * only when blank, and the default Physical Therapist taxonomy counts as a
- * value. */
+ * The NPI is set; at "blank_fields" credentials, the taxonomy and the number
+ * of a license row whose state matches fill when blank. Blank includes the
+ * untouched preset taxonomy and whatever the last pick wrote that staff left
+ * alone. No license row is added: other states come back as offers. */
 export function applyNpiRegistryPick(
   form: ProviderFormState,
   record: NpiRegistryRecord,
   fillOnPick: NpiFillOnPick = DEFAULT_NPI_REGISTRY_POLICY.fillOnPick,
-): { form: ProviderFormState; summary: NpiFillSummary } {
+  context: ProviderNpiPickContext = { taxonomyTouched: false, lastPick: null },
+): { form: ProviderFormState; summary: NpiFillSummary; trace: NpiPickTrace } {
   const plan = planNpiRegistryFill(
     record,
     {
       npi: form.npi,
       credentials: form.credentials,
       taxonomyCode: form.taxonomyCode,
-      licenses: form.licenses.map((row) => ({
-        state: row.state,
-        number: row.number,
-        blank: isBlankLicenseRow(row),
-      })),
+      taxonomyUntouched: !context.taxonomyTouched,
+      licenses: form.licenses.map((row) => ({ state: row.state, number: row.number })),
       // Add Provider saves a license row with any subset of its fields.
       licenseRowSaveable: true,
     },
     fillOnPick,
+    context.lastPick,
   );
-  const licenses = [...form.licenses];
-  for (const license of plan.licenses) {
-    const filled = { state: license.state, number: license.number };
-    if (license.rowIndex === null) licenses.push({ ...emptyLicenseRow(), ...filled });
-    else licenses[license.rowIndex] = { ...licenses[license.rowIndex], ...filled };
-  }
+  const licenses = form.licenses.map((row, index) => {
+    const change = plan.licenseNumbers.find((item) => item.rowIndex === index);
+    return change ? { ...row, number: change.number } : row;
+  });
   return {
     form: {
       ...form,
@@ -168,5 +199,19 @@ export function applyNpiRegistryPick(
       licenses,
     },
     summary: plan.summary,
+    trace: plan.trace,
   };
+}
+
+/** Staff added an offered registry license: it fills the untouched empty row
+ * when there is one, or a new row. Type and dates stay blank (NPPES has no
+ * expiration date). */
+export function addNpiLicenseOffer(
+  licenses: LicenseRow[],
+  offer: { state: string; number: string },
+): LicenseRow[] {
+  const filled = { state: offer.state, number: offer.number };
+  const emptyRow = licenses.findIndex(isBlankLicenseRow);
+  if (emptyRow < 0) return [...licenses, { ...emptyLicenseRow(), ...filled }];
+  return licenses.map((row, index) => (index === emptyRow ? { ...row, ...filled } : row));
 }
