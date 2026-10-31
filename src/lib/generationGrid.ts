@@ -38,8 +38,10 @@ export interface GenerationRules {
    * that a LIVE enrollment fact already covers. "enrolled" (default;
    * Sowmya, Oct 30, D30): it shows as enrolled and the confirm records it in
    * the run ledger with disposition `enrolled`; it never becomes a case.
-   * "blocked": it shows as blocked like any other blocked candidate, and
-   * the confirm leaves it out of the ledger. */
+   * "blocked": it restores the earlier LEDGER behaviour only: the confirm
+   * does not record it. It is still shown as blocked, with its reason, and
+   * counted in "N blocked", like any other blocked candidate; hiding it, as
+   * the grid did before MINT-97, would break "N of N accounted for". */
   factCoveredBlockedAs: FactCoveredBlockedBucket;
 }
 
