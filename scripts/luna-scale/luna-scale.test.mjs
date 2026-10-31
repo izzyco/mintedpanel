@@ -39,6 +39,8 @@ import {
   FUNNEL_STAGES,
   LUNA_TABLES,
   PROVIDER_SCENARIOS,
+  STATELESS_LOCATIONS,
+  UNGROUPED_LOCATIONS,
   buildLunaDataset,
   paramsDigest,
   planCounts,
@@ -87,36 +89,48 @@ function luhnValidNpi(npi) {
 const dayDiff = (from, to) =>
   Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 
-/** The Provider Onboarding funnel rules (MINT-81, onboardingFunnel.ts on the
- * RC-06 branch), restated from its header comment, plus the gap that put the
- * provider there. Inputs mirror getOnboardingFunnelInput's filters. */
-function classifyFunnel() {
+/** The Provider Onboarding funnel rules (MINT-81's onboardingFunnel.ts as
+ * reworked in #560, default rules), restated from its header comment, plus the
+ * gaps that put the provider there. Inputs mirror getOnboardingFunnelInput's
+ * filters: active, non-reference locations; memberships in active groups. */
+function classifyFunnel(source = tables, today = ANCHOR) {
+  const validState = (state) => typeof state === "string" && /^[A-Z]{2}$/.test(state);
   const licensesBy = new Map();
-  for (const row of tables.state_licenses) {
+  for (const row of source.state_licenses) {
     if (row.status !== null && row.status !== "active") continue;
     licensesBy.set(row.provider_id, [...(licensesBy.get(row.provider_id) ?? []), row]);
   }
-  const facilityState = new Map(
-    tables.facilities.filter((f) => f.is_active).map((f) => [f.id, f.state]),
+  const activeGroups = new Set(source.provider_groups.filter((g) => g.is_active).map((g) => g.id));
+  const facilityById = new Map(
+    source.facilities.filter((f) => f.is_active && !f.reference_only).map((f) => [f.id, f]),
   );
-  const workBy = new Map();
-  for (const row of tables.provider_facility_assignments) {
-    const state = facilityState.get(row.facility_id);
-    if (state)
-      workBy.set(row.provider_id, new Set([...(workBy.get(row.provider_id) ?? []), state]));
+  const locationsBy = new Map();
+  for (const row of source.provider_facility_assignments) {
+    const facility = facilityById.get(row.facility_id);
+    if (facility)
+      locationsBy.set(row.provider_id, [...(locationsBy.get(row.provider_id) ?? []), facility]);
   }
-  const withCases = new Set(tables.credential_cases.map((row) => row.provider_id));
+  const groupsBy = new Map();
+  for (const row of source.provider_group_assignments) {
+    if (!activeGroups.has(row.group_id) || (row.end_date && row.end_date < today)) continue;
+    groupsBy.set(
+      row.provider_id,
+      new Set([...(groupsBy.get(row.provider_id) ?? []), row.group_id]),
+    );
+  }
+  const withCases = new Set(source.credential_cases.map((row) => row.provider_id));
   const result = new Map();
-  for (const p of tables.providers) {
+  for (const p of source.providers) {
     if (p.status === "terminated" || p.reference_only || p.is_test_provider) continue;
     const gaps = [];
     if (withCases.has(p.id)) {
       result.set(p.id, { stage: "credentialing", gaps });
       continue;
     }
-    const licenses = (licensesBy.get(p.id) ?? []).filter((l) => /^[A-Z]{2}$/.test(l.state));
+    const licenses = (licensesBy.get(p.id) ?? []).filter((l) => validState(l.state));
     const licenseStates = new Set(licenses.map((l) => l.state));
-    const work = [...(workBy.get(p.id) ?? [])];
+    const locations = locationsBy.get(p.id) ?? [];
+    const work = [...new Set(locations.map((l) => l.state).filter(validState))];
     if (!p.npi) gaps.push("no_npi");
     if (!p.caqh_id) gaps.push("no_caqh");
     if (!p.date_of_birth) gaps.push("no_dob");
@@ -127,7 +141,9 @@ function classifyFunnel() {
       result.set(p.id, { stage: "profile_incomplete", gaps });
       continue;
     }
-    for (const state of work.length > 0 ? work : [...licenseStates]) {
+    // A stateless location holds, so with any location only the valid work
+    // states are judged; with none, every license on file.
+    for (const state of locations.length > 0 ? work : [...licenseStates]) {
       const best = licenses
         .filter((l) => l.state === state)
         .sort(
@@ -137,19 +153,48 @@ function classifyFunnel() {
         )[0];
       if (!best) continue;
       if (best.verified_status !== "verified") gaps.push("license_unverified");
-      if (!best.expiration_date || best.expiration_date < ANCHOR) gaps.push("license_expired");
+      if (!best.expiration_date || best.expiration_date < today) gaps.push("license_expired");
     }
     const attested = p.caqh_last_attested_date;
-    const age = attested ? dayDiff(attested, ANCHOR) : null;
+    const age = attested ? dayDiff(attested, today) : null;
     if (age === null || age < 0 || age > 120) gaps.push("caqh_stale");
     if (p.verification_state === "pending_verification") gaps.push("pending_verification");
-    result.set(p.id, {
-      stage: gaps.length > 0 ? "submitted" : "ready_for_credentialing",
-      gaps,
-    });
+    // Verified is not enough: Ready needs a group and a location in it.
+    const groups = groupsBy.get(p.id) ?? new Set();
+    const holds = [];
+    if (groups.size === 0 && locations.length === 0) holds.push("needs_group_and_location");
+    else if (groups.size === 0) holds.push("needs_group");
+    else if (locations.length === 0) holds.push("needs_location");
+    else if (!locations.some((l) => l.group_id && groups.has(l.group_id)))
+      for (const l of locations)
+        holds.push(l.group_id ? "location_other_group" : "location_no_group");
+    if (locations.some((l) => !validState(l.state))) holds.push("location_no_state");
+    if (gaps.length > 0) result.set(p.id, { stage: "submitted", gaps: [...gaps, ...holds] });
+    else if (holds.length > 0)
+      result.set(p.id, { stage: "verified_awaiting_assignment", gaps: holds });
+    else result.set(p.id, { stage: "ready_for_credentialing", gaps });
   }
   return result;
 }
+
+/** The one gap each scenario is built to show. */
+const SCENARIO_GAP = Object.freeze({
+  missing_npi: "no_npi",
+  missing_caqh: "no_caqh",
+  missing_dob: "no_dob",
+  missing_ssn_last4: "no_ssn_last4",
+  no_license: "no_license",
+  missing_work_state_license: "no_work_state_license",
+  license_unverified: "license_unverified",
+  license_expired: "license_expired",
+  caqh_stale: "caqh_stale",
+  pending_verification: "pending_verification",
+  no_group: "needs_group",
+  no_location: "needs_location",
+  location_other_group: "location_other_group",
+  location_no_group: "location_no_group",
+  location_no_state: "location_no_state",
+});
 
 function allRows() {
   return LUNA_TABLES.flatMap((table) => tables[table].map((row) => ({ table, row })));
@@ -184,9 +229,11 @@ test("default counts match the Luna-scale brief and every count is a parameter",
   assert.equal(counts.organizations, 1);
   assert.equal(counts.providers, 3500);
   assert.equal(counts.provider_groups, 50);
-  assert.equal(counts.facilities, 200);
+  // 200 under the groups, plus the funnel's edge-case locations.
+  assert.equal(counts.facilities, 200 + UNGROUPED_LOCATIONS + STATELESS_LOCATIONS);
+  assert.equal(tables.facilities.filter((row) => row.group_id && row.state).length, 200);
   assert.equal(counts.payers, 7);
-  assert.equal(new Set(tables.facilities.map((row) => row.state)).size, 25);
+  assert.equal(new Set(tables.facilities.map((row) => row.state).filter(Boolean)).size, 25);
   assert.ok(counts.credential_cases > 3 * 1000, "cases cross the 1,000-row cap several times");
   assert.equal(counts.status_configs, 22);
   assert.equal(tables.organizations[0].name, "Luna Demo (synthetic)");
@@ -197,15 +244,15 @@ test("default counts match the Luna-scale brief and every count is a parameter",
   );
   assert.equal(small.tables.providers.length, 1234);
   assert.equal(small.tables.provider_groups.length, 12);
-  assert.equal(small.tables.facilities.length, 40);
-  assert.equal(new Set(small.tables.facilities.map((row) => row.state)).size, 9);
+  assert.equal(small.tables.facilities.length, 40 + UNGROUPED_LOCATIONS + STATELESS_LOCATIONS);
+  assert.equal(new Set(small.tables.facilities.map((row) => row.state).filter(Boolean)).size, 9);
   assert.equal(small.tables.payers.length, 6);
   // Fewer groups than states still reaches every state.
   const wide = buildLunaDataset(
     { seed: "wide", providers: 300, groups: 5, locations: 30, states: 20, payers: 8 },
     { anchorDate: ANCHOR },
   );
-  assert.equal(new Set(wide.tables.facilities.map((row) => row.state)).size, 20);
+  assert.equal(new Set(wide.tables.facilities.map((row) => row.state).filter(Boolean)).size, 20);
 });
 
 test("parameter validation rejects counts the generator cannot honour", () => {
@@ -230,33 +277,137 @@ test("every Provider Onboarding funnel stage and gap has members, as generated",
     byStage[stage] += 1;
     list.forEach((gap) => gaps.add(gap));
   }
+  assert.deepEqual(FUNNEL_STAGES, [
+    "profile_incomplete",
+    "submitted",
+    "verified_awaiting_assignment",
+    "ready_for_credentialing",
+    "credentialing",
+  ]);
   for (const stage of FUNNEL_STAGES) assert.ok(byStage[stage] > 0, `${stage} has members`);
-  for (const gap of [
-    "no_npi",
-    "no_caqh",
-    "no_dob",
-    "no_ssn_last4",
-    "no_license",
-    "no_work_state_license",
-    "license_unverified",
-    "license_expired",
-    "caqh_stale",
-    "pending_verification",
-  ]) {
-    assert.ok(gaps.has(gap), `gap ${gap} occurs`);
-  }
-  // The independent classifier agrees with the scenario every provider was given.
+  for (const gap of Object.values(SCENARIO_GAP)) assert.ok(gaps.has(gap), `gap ${gap} occurs`);
+  // The independent classifier agrees with the scenario every provider was
+  // given, and each one shows exactly the gap it was built for.
   const stageOf = Object.fromEntries(PROVIDER_SCENARIOS.map(({ key, stage }) => [key, stage]));
   for (const [providerId, scenario] of dataset.providerScenario) {
     if (scenario === "terminated") {
       assert.equal(funnel.has(providerId), false);
       continue;
     }
-    assert.equal(funnel.get(providerId).stage, stageOf[scenario] ?? "credentialing", scenario);
+    const row = funnel.get(providerId);
+    assert.equal(row.stage, stageOf[scenario] ?? "credentialing", scenario);
+    assert.deepEqual(
+      [...new Set(row.gaps)],
+      SCENARIO_GAP[scenario] ? [SCENARIO_GAP[scenario]] : [],
+      scenario,
+    );
   }
   const summary = summarizeDataset(dataset);
-  assert.equal(summary.funnel.credentialing, byStage.credentialing);
-  assert.equal(summary.funnel.profile_incomplete, byStage.profile_incomplete);
+  for (const stage of FUNNEL_STAGES) assert.equal(summary.funnel[stage], byStage[stage], stage);
+  // A realistic share: every stage is a visible slice, credentialing the bulk.
+  const total = [...funnel.values()].length;
+  assert.ok(byStage.verified_awaiting_assignment / total > 0.04, "awaiting assignment > 4%");
+  assert.ok(byStage.credentialing / total > 0.5, "credentialing is the majority");
+});
+
+test("providers outside the assignment scenarios work only at clinics of their own group", () => {
+  const facilityById = new Map(tables.facilities.map((f) => [f.id, f]));
+  const groupOf = new Map(
+    tables.provider_group_assignments.map((a) => [a.provider_id, a.group_id]),
+  );
+  const locationsOf = new Map();
+  for (const a of tables.provider_facility_assignments)
+    locationsOf.set(a.provider_id, [
+      ...(locationsOf.get(a.provider_id) ?? []),
+      facilityById.get(a.facility_id),
+    ]);
+  const assignment = new Set(
+    PROVIDER_SCENARIOS.filter((s) => s.stage === "verified_awaiting_assignment").map((s) => s.key),
+  );
+  assert.equal(assignment.size, 5);
+  for (const p of tables.providers) {
+    const scenario = dataset.providerScenario.get(p.id);
+    if (assignment.has(scenario)) continue;
+    const locations = locationsOf.get(p.id) ?? [];
+    assert.ok(locations.length > 0, `${scenario} has a location`);
+    for (const location of locations) {
+      assert.equal(location.group_id, groupOf.get(p.id), `${scenario}: a clinic of their group`);
+      assert.match(location.state, /^[A-Z]{2}$/);
+    }
+    assert.equal(p.group_id, groupOf.get(p.id), "the frozen mirror matches the membership");
+  }
+  // The other side: each assignment scenario is missing exactly its piece.
+  for (const p of tables.providers) {
+    const scenario = dataset.providerScenario.get(p.id);
+    const locations = locationsOf.get(p.id) ?? [];
+    const group = groupOf.get(p.id);
+    if (scenario === "no_group") {
+      assert.equal(group, undefined);
+      assert.equal(p.group_id, null);
+      assert.ok(locations.length === 1 && locations[0].group_id);
+    } else if (scenario === "no_location") {
+      assert.ok(group);
+      assert.equal(locations.length, 0);
+    } else if (scenario === "location_other_group") {
+      assert.ok(group && locations.length === 1);
+      assert.notEqual(locations[0].group_id, group);
+      assert.ok(locations[0].group_id);
+    } else if (scenario === "location_no_group") {
+      assert.ok(group && locations.length === 1);
+      assert.equal(locations[0].group_id, null);
+    } else if (scenario === "location_no_state") {
+      assert.equal(locations.length, 2);
+      assert.ok(locations.every((l) => l.group_id === group));
+      assert.match(locations[0].state, /^[A-Z]{2}$/);
+      assert.equal(locations[1].state, null);
+    }
+  }
+});
+
+test("the edge-case locations serve only their scenario, never a case or a target", () => {
+  const noGroup = tables.facilities.filter((f) => f.group_id === null);
+  const noState = tables.facilities.filter((f) => f.state === null);
+  assert.equal(noGroup.length, UNGROUPED_LOCATIONS);
+  assert.equal(noState.length, STATELESS_LOCATIONS);
+  for (const f of noGroup) assert.match(f.name, /^Luna Demo Unassigned Clinic \d\d \(synthetic\)$/);
+  for (const f of noState) {
+    assert.match(f.name, /^Luna Demo New Clinic \d\d \(synthetic\)$/);
+    assert.ok(f.group_id && f.street === null && f.zip === null && f.effective_date === null);
+  }
+  const edge = new Map([
+    ...noGroup.map((f) => [f.id, "location_no_group"]),
+    ...noState.map((f) => [f.id, "location_no_state"]),
+  ]);
+  for (const a of tables.provider_facility_assignments) {
+    if (edge.has(a.facility_id))
+      assert.equal(dataset.providerScenario.get(a.provider_id), edge.get(a.facility_id));
+  }
+  for (const row of [...tables.credential_cases, ...tables.case_facilities])
+    assert.equal(edge.has(row.facility_id), false);
+  for (const row of tables.payer_network_targets) assert.match(row.state, /^[A-Z]{2}$/);
+  for (const row of tables.provider_groups)
+    assert.ok(row.states.every((state) => /^[A-Z]{2}$/.test(state)));
+  // Every edge location is used.
+  const used = new Set(tables.provider_facility_assignments.map((a) => a.facility_id));
+  for (const id of edge.keys()) assert.ok(used.has(id));
+});
+
+test("with one group there is no other group's clinic, and the other holds still occur", () => {
+  const one = buildLunaDataset(
+    { seed: "one-group", providers: 400, groups: 1, locations: 5, states: 3, payers: 2 },
+    { anchorDate: ANCHOR },
+  );
+  const scenarios = summarizeDataset(one).scenarios;
+  assert.equal(scenarios.location_other_group ?? 0, 0);
+  for (const key of ["no_group", "no_location", "location_no_group", "location_no_state"])
+    assert.ok(scenarios[key] > 0, key);
+  const funnel = classifyFunnel(one.tables);
+  for (const [providerId, scenario] of one.providerScenario) {
+    if (scenario === "terminated") continue;
+    const expected = PROVIDER_SCENARIOS.find((s) => s.key === scenario)?.stage ?? "credentialing";
+    assert.equal(funnel.get(providerId).stage, expected, scenario);
+  }
+  assert.equal(one.tables.facilities.filter((f) => f.state === null).length, 1);
 });
 
 test("NPIs pass the CMS check digit, use the documented synthetic prefixes and never repeat", () => {
@@ -374,7 +525,12 @@ test("relationships stay inside the org and match the case-key rules", () => {
     for (const row of tables[table]) assert.ok(cases.has(row.case_id), table);
   }
   for (const row of tables.provider_group_assignments) assert.ok(groups.has(row.group_id));
-  for (const row of tables.facilities) assert.ok(groups.has(row.group_id));
+  // Only the "no group" edge locations lack a group.
+  for (const row of tables.facilities) assert.ok(row.group_id === null || groups.has(row.group_id));
+  assert.equal(
+    tables.facilities.filter((row) => row.group_id === null).length,
+    UNGROUPED_LOCATIONS,
+  );
   // Every case's history starts with the system seed row and ends at its status.
   const historyByCase = new Map();
   for (const row of tables.case_status_history) {

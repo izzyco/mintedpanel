@@ -8,7 +8,7 @@ import { ids as uatIds, psqlEnvironment } from "../uat/uat-fixture.mjs";
 
 export { psqlEnvironment };
 
-export const LUNA_FIXTURE_VERSION = "2026-10-30.1";
+export const LUNA_FIXTURE_VERSION = "2026-10-31.1";
 export const LUNA_ORG_NAME = "Luna Demo (synthetic)";
 
 export const STAGING_PROJECT_REF = "vmznysvietfaddakkegt";

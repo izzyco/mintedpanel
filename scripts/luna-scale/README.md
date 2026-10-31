@@ -1,7 +1,7 @@
 # Luna-scale synthetic org: staging runbook (MINT-82 / RC-07)
 
 One synthetic organization, **Luna Demo (synthetic)**, at Luna scale: about 3,500
-providers in 50 groups, 200 locations and 25 states, with 7 payers and about 6,100
+providers in 50 groups, 200 locations and 25 states, with 7 payers and about 5,600
 credentialing cases. It exists so staging can exercise everything that breaks
 past PostgREST's 1,000-row cap (MINT-14). It is fully synthetic and fully
 reversible.
@@ -14,64 +14,85 @@ production project and the production cluster, whatever the environment says.
 `npm run seed:luna-scale -- --dry-run` prints the plan without connecting.
 Default parameters, anchored on the apply day:
 
-| Table                           |   Rows | Notes                                                  |
-| ------------------------------- | -----: | ------------------------------------------------------ |
-| `organizations`                 |      1 | upserted; never deleted (see Teardown)                 |
-| `status_configs`                |     22 | the canonical set `create_organization` seeds          |
-| `payers`                        |      7 | **org-scoped** (`org_id` = the Luna org), not global   |
-| `org_payer_assignments`         |      7 |                                                        |
-| `provider_groups`               |     50 | state LLCs, `00xxxxxxx` TINs                           |
-| `facilities`                    |    200 | every one of the 25 states has at least one            |
-| `payer_network_targets`         |    536 | group × state × payer covering that state              |
-| `providers`                     |  3,500 |                                                        |
-| `provider_group_assignments`    |  3,500 | one primary each                                       |
-| `provider_facility_assignments` |  4,188 | one primary each; 20% have a second location           |
-| `state_licenses`                |  3,877 |                                                        |
-| `credential_cases`              |  6,106 | one per (provider, group, payer, state)                |
-| `case_facilities`               |  6,316 | primary row for every case, plus later-added locations |
-| `tasks`                         |  6,106 | one per case                                           |
-| `touches`                       | 10,631 | touchpoints and notes                                  |
-| `case_status_history`           | 22,122 | full chain per case, from the system seed row          |
-| `enrollment_facts`              |  1,600 | approved, effective, not terminated                    |
-| `memberships`                   |  0 – n | only from `--member-email`                             |
-| `audit_log`                     |      1 | one receipt per apply (and one per teardown)           |
-| **total**                       | 68,770 | one transaction, about 16 MiB of SQL                   |
+| Table                           |   Rows | Notes                                                              |
+| ------------------------------- | -----: | ------------------------------------------------------------------ |
+| `organizations`                 |      1 | upserted; never deleted (see Teardown)                             |
+| `status_configs`                |     22 | the canonical set `create_organization` seeds                      |
+| `payers`                        |      7 | **org-scoped** (`org_id` = the Luna org), not global               |
+| `org_payer_assignments`         |      7 |                                                                    |
+| `provider_groups`               |     50 | state LLCs, `00xxxxxxx` TINs                                       |
+| `facilities`                    |    204 | 200 under the groups, covering all 25 states; 4 edge cases (below) |
+| `payer_network_targets`         |    536 | group × state × payer covering that state                          |
+| `providers`                     |  3,500 |                                                                    |
+| `provider_group_assignments`    |  3,465 | one primary each; the 35 "no group" providers have none            |
+| `provider_facility_assignments` |  4,094 | one primary each; 20% have a second location; 70 have none         |
+| `state_licenses`                |  3,854 |                                                                    |
+| `credential_cases`              |  5,610 | one per (provider, group, payer, state)                            |
+| `case_facilities`               |  5,798 | primary row for every case, plus later-added locations             |
+| `tasks`                         |  5,610 | one per case                                                       |
+| `touches`                       |  9,921 | touchpoints and notes                                              |
+| `case_status_history`           | 20,498 | full chain per case, from the system seed row                      |
+| `enrollment_facts`              |  1,467 | approved, effective, not terminated                                |
+| `memberships`                   |  0 – n | only from `--member-email`                                         |
+| `audit_log`                     |      1 | one receipt per apply (and one per teardown)                       |
+| **total**                       | 64,645 | one transaction, about 19 MiB of SQL                               |
 
 The organization insert also fires `roster_engine_seed_org_templates`, which adds
 three `roster_templates` rows. That table is append-only by trigger.
 
 The mix:
 
-- **Provider Onboarding funnel** (MINT-81's four stages):
+- **Provider Onboarding funnel** (MINT-81, with #560's stages and group rule).
+  Every stage it shows without intake data has members, and each provider in a
+  held stage shows exactly one kind of gap:
   - Profile incomplete, 420: 70 each with no NPI, no CAQH ID, no date of birth,
     no SSN last 4, no license, and no license for the state they work in.
   - Submitted, 348: 87 each with an unverified license, an expired
     license (status still `active`), CAQH attested more than 120 days ago, and a
     record pending verification.
-  - Ready for credentialing, 280.
-  - Credentialing, 2,417.
+  - Verified, awaiting assignment, 209: verified, held only by an assignment
+    gap.
+    - Needs a group, 35: they work at a group's clinic, but no membership is
+      recorded.
+    - Needs a location, 70: in a group, no clinic yet.
+    - "Location … is under …, not the provider's group", 52: their clinic
+      belongs to one group, their membership is in the next one.
+    - "Location … has no group", 35: they work at one of the 2 _Luna Demo
+      Unassigned Clinic_ locations, which belong to no group.
+    - "Location has no valid state on record", 17: they work at a clinic of
+      their group and at one of the 2 _Luna Demo New Clinic_ locations, which
+      groups 01 and 02 added before entering an address (no street, state,
+      ZIP or go-live date).
+  - Ready for credentialing, 280: every one works only at clinics of their own
+    group, as does every provider outside the five assignment scenarios.
+  - Credentialing, 2,208.
   - 35 terminated providers, which the funnel does not count.
+
+  The 4 edge-case locations are added on top of `--locations`. No case,
+  target or other provider uses them.
+
 - **Case status**:
-  - approved 2,127 (1,675 effective, 452 awaiting an effective date);
-  - submitted 977, not started 893, in review 831, in progress 589;
-  - denied 405, action required 284.
+  - approved 1,964 (1,550 effective, 414 awaiting an effective date);
+  - submitted 841, not started 792, in review 760, in progress 555;
+  - denied 421, action required 277.
 - **Billing Readiness change feed** (approval transitions, terminations,
   license expirations):
-  - last 7 days: 110, 3, 13;
-  - last 30 days: 407, 14, 51;
-  - last 90 days: 939, 47, 124.
+  - last 7 days: 114, 4, 9;
+  - last 30 days: 359, 16, 43;
+  - last 90 days: 861, 57, 123.
 
   There are no "location linked" events: the feed needs
   `case_facilities.created_by`, which references `auth.users`, so the seed
   leaves it null rather than invent an actor.
 
 - **Follow-ups** on open cases (`touches.next_follow_up_date` on the latest
-  touch): 897 overdue, 265 due today, 1,519 upcoming.
+  touch): 849 overdue, 250 due today, 1,334 upcoming.
 
 Every count is a flag: `--providers`, `--groups`, `--locations`, `--states`,
 `--payers`, and `--seed` (the PRNG seed). The ticket text says "one national
 group". The planning session asked for about 50 groups, so 50 is the default;
-`--groups 1` gives the single national group.
+`--groups 1` gives the single national group; it has no "under another group"
+providers, since there is no other group.
 
 ## What makes it safe
 
@@ -143,7 +164,7 @@ It is the pattern `scripts/uat/seed-staging-uat.mjs` already uses: pure SQL fed
 to `psql` with `ON_ERROR_STOP` and an identity guard. It is also better on every
 axis that matters here:
 
-- **Atomic.** About 69k rows over the REST API would be about 140 separate
+- **Atomic.** About 65k rows over the REST API would be about 130 separate
   500-row requests. One failure midway would leave a half-built org that needs
   its own cleanup.
 - **No caps.** The 1,000-row read cap and the request-body limits do not apply.
@@ -157,7 +178,7 @@ inserts only the rows whose id is missing (`WHERE NOT EXISTS`, with
 
 One cost remains: sequences never roll back. An apply that fails after the case
 insert, for example on the final count check, has still used one case number per
-case it tried to add, about 6,100 on a first apply. Case numbers stay unique; the
+case it tried to add, about 5,600 on a first apply. Case numbers stay unique; the
 range just has a gap.
 
 ## Prerequisites
@@ -202,8 +223,12 @@ Sign in as that user and switch to **Luna Demo (synthetic)**.
 - **Dates are relative to the apply day.** A re-apply does not move them. To
   refresh the 7/30/90-day windows and the follow-up buckets, tear down and
   apply again.
-- **Different counts or seed**: tear down first. The apply refuses to mix
-  parameter sets.
+- **Different counts, seed or fixture version**: tear down first. The apply
+  refuses to mix them. Fixture `2026-10-31.1` added the "Verified, awaiting
+  assignment" providers and the 4 edge-case locations, so a seed applied with
+  `2026-10-30.1` must be torn down before this one goes on.
+- **The prod-to-staging catalog sync** (`docs/ops/catalog-sync-prod-to-staging.md`)
+  is independent of this seed: run them in either order.
 
 ## Teardown
 
@@ -299,7 +324,7 @@ than a flag.
 - **Enrollment Explorer cells stay empty.** The Explorer reads payer products,
   group product targets and enrollment scopes from `private.*` ledgers. Those
   are append-only, so a seed could never remove them, and this seed does not
-  write them. On staging the Explorer shows the active cohort (about 2,400
+  write them. On staging the Explorer shows the active cohort (about 2,200
   providers, in 50-provider pages) with the "No payer products are configured"
   note.
 - **The Explorer's staff report checks `private.internal_staff`.** That manifest
@@ -337,6 +362,10 @@ See "Results" below for the latest numbers.
 > - **Repeats:** median of 3 runs, all three listed.
 > - **Patched column:** "main + #544" is a local, uncommitted patch of PR #544's
 >   `src/` changes onto `main`, applied to show which gaps it closes.
+> - **Fixture:** `2026-10-30.1` (3,465 providers on the roster, 6,106 cases).
+>   Fixture `2026-10-31.1` has the same roster size, 5,610 cases and 35
+>   providers with no group, so a rerun's counts differ; it has not been
+>   rerun. The spec now expects those 35 rows to show no group.
 
 **Completeness**:
 

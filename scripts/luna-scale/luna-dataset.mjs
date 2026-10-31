@@ -139,9 +139,20 @@ const STREETS = Object.freeze([
 const CITIES = Object.freeze(["Testville", "Sampleton", "Mockford", "Demoburg", "Fixtureport"]);
 
 // The Provider Onboarding funnel (MINT-81, src/lib/onboardingFunnel.ts on the
-// RC-06 branch) has four stages; the scenarios below put members in each and in
-// every gap the funnel names. Weights are fractions of --providers; every
-// scenario is guaranteed at least one provider when there are enough of them.
+// RC-06 branch, as reworked in #560) has five stages without intake data; the
+// scenarios below put members in each and in the gaps the funnel names.
+// Weights are fractions of --providers; every scenario is guaranteed at least
+// one provider when there are enough of them.
+//
+// Group and location (#560). A location counts toward Ready only when it is
+// under a group the provider is a current member of (facilities.group_id), so
+// every provider outside the assignment scenarios belongs to the group that
+// owns their locations. "Verified, awaiting assignment" holds verified
+// providers whose only gaps are assignment ones; the five scenarios cover each
+// reason the funnel gives.
+//
+// The assignment scenarios come after `terminated` on purpose: the slot
+// shuffle is positional, so the earlier scenarios keep the same providers.
 export const PROVIDER_SCENARIOS = Object.freeze([
   { key: "missing_npi", stage: "profile_incomplete", weight: 0.02 },
   { key: "missing_caqh", stage: "profile_incomplete", weight: 0.02 },
@@ -155,14 +166,37 @@ export const PROVIDER_SCENARIOS = Object.freeze([
   { key: "pending_verification", stage: "submitted", weight: 0.025 },
   { key: "ready", stage: "ready_for_credentialing", weight: 0.08 },
   { key: "terminated", stage: "terminated", weight: 0.01 },
+  // "Needs a group": works at one of a group's clinics, membership not recorded.
+  { key: "no_group", stage: "verified_awaiting_assignment", weight: 0.01 },
+  // "Needs a location": in a group, clinic not chosen yet.
+  { key: "no_location", stage: "verified_awaiting_assignment", weight: 0.02 },
+  // "Location … is under …, not the provider's group": works at another
+  // group's clinic. Needs at least two groups.
+  {
+    key: "location_other_group",
+    stage: "verified_awaiting_assignment",
+    weight: 0.015,
+    minGroups: 2,
+  },
+  // "Location … has no group": works at a clinic not linked to any group.
+  { key: "location_no_group", stage: "verified_awaiting_assignment", weight: 0.01 },
+  // "Location has no valid state on record": a second clinic of their group
+  // was added without an address.
+  { key: "location_no_state", stage: "verified_awaiting_assignment", weight: 0.005 },
   // credentialing takes the remainder.
 ]);
 export const FUNNEL_STAGES = Object.freeze([
   "profile_incomplete",
   "submitted",
+  "verified_awaiting_assignment",
   "ready_for_credentialing",
   "credentialing",
 ]);
+
+// Edge-case locations, added on top of --locations when their scenario has
+// members: clinics with no group, and clinics of a group with no address yet.
+export const UNGROUPED_LOCATIONS = 2;
+export const STATELESS_LOCATIONS = 2;
 
 export const CASE_STATUS_MIX = Object.freeze([
   ["approved", 0.34],
@@ -363,15 +397,24 @@ function at(day, hour, minute = 0) {
 
 const pad = (value, width) => String(value).padStart(width, "0");
 
-/** Exact per-scenario counts (largest remainder), at least one each once the
- * roster is big enough; credentialing takes the rest. */
-function allocateScenarios(total) {
-  const counts = PROVIDER_SCENARIOS.map(({ key, weight }) => [key, Math.floor(weight * total)]);
+/** Exact per-scenario counts (floored), at least one each once the roster is
+ * big enough; credentialing takes the rest. A scenario the parameters cannot
+ * build (another group's clinic with --groups 1) gets none. */
+function allocateScenarios(params) {
+  const total = params.providers;
+  const counts = PROVIDER_SCENARIOS.map(({ key, weight, minGroups = 1 }) => [
+    key,
+    params.groups >= minGroups ? Math.floor(weight * total) : 0,
+    params.groups >= minGroups,
+  ]);
   if (total >= PROVIDER_SCENARIOS.length * 2) {
-    for (const entry of counts) if (entry[1] === 0) entry[1] = 1;
+    for (const entry of counts) if (entry[1] === 0 && entry[2]) entry[1] = 1;
   }
   const assigned = counts.reduce((sum, [, count]) => sum + count, 0);
-  return [...counts, ["credentialing", Math.max(0, total - assigned)]];
+  return [
+    ...counts.map(([key, count]) => [key, count]),
+    ["credentialing", Math.max(0, total - assigned)],
+  ];
 }
 
 function payerCoversState(coverage, stateIndex, stateCount) {
@@ -544,6 +587,72 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
     });
   }
 
+  // Edge-case locations for the assignment scenarios, outside every group's
+  // own list: no target, case or second location ever lands on them.
+  const scenarioPlan = allocateScenarios(params);
+  const planned = new Map(scenarioPlan);
+  const ungroupedFacilities =
+    planned.get("location_no_group") > 0
+      ? Array.from({ length: UNGROUPED_LOCATIONS }, (_, index) => {
+          const n = index + 1;
+          return {
+            id: lunaUuid("facility", `no-group:${n}`),
+            serial: n,
+            groupIndex: null,
+            state: states[index % states.length].code,
+          };
+        })
+      : [];
+  const statelessFacilities =
+    planned.get("location_no_state") > 0
+      ? Array.from({ length: Math.min(STATELESS_LOCATIONS, groups.length) }, (_, index) => {
+          const n = index + 1;
+          return {
+            id: lunaUuid("facility", `no-state:${n}`),
+            serial: n,
+            groupIndex: index,
+            state: null,
+          };
+        })
+      : [];
+  for (const facility of ungroupedFacilities) {
+    const serial = pad(facility.serial, 2);
+    tables.facilities.push({
+      id: facility.id,
+      org_id: LUNA_ORG_ID,
+      // A clinic that was never linked to a group.
+      group_id: null,
+      name: `Luna Demo Unassigned Clinic ${serial} (synthetic)`,
+      street: `${900 + facility.serial} ${STREETS[facility.serial % STREETS.length]}`,
+      city: CITIES[facility.serial % CITIES.length],
+      state: facility.state,
+      zip: `000${serial}`,
+      phone: `(555) 555-01${pad(90 + facility.serial, 2)}`,
+      email: `unassigned.clinic${serial}@example.test`,
+      is_active: true,
+      effective_date: isoDay(anchor - 365),
+    });
+  }
+  for (const facility of statelessFacilities) {
+    const serial = pad(facility.serial, 2);
+    tables.facilities.push({
+      id: facility.id,
+      org_id: LUNA_ORG_ID,
+      group_id: groups[facility.groupIndex].id,
+      // Added to the group before its address was entered: no street, city,
+      // state or ZIP, and no go-live date yet.
+      name: `Luna Demo New Clinic ${serial} (synthetic)`,
+      street: null,
+      city: null,
+      state: null,
+      zip: null,
+      phone: `(555) 555-01${pad(95 + facility.serial, 2)}`,
+      email: `new.clinic${serial}@example.test`,
+      is_active: true,
+      effective_date: null,
+    });
+  }
+
   const payersByState = new Map(
     states.map((state) => [
       state.code,
@@ -566,7 +675,6 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
   }
 
   // Providers.
-  const scenarioPlan = allocateScenarios(params.providers);
   const scenarioSlots = stream("scenarios").shuffle(
     scenarioPlan.flatMap(([key, count]) => Array.from({ length: count }, () => key)),
   );
@@ -587,10 +695,43 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
     }
     usedNames.add(`${first} ${last}`);
     const discipline = providerRng.weighted(DISCIPLINES.map((d) => [d, d.weight]));
-    const primary = facilities[p % facilities.length];
-    const group = groups[primary.groupIndex];
+    let primary = facilities[p % facilities.length];
+    // The group they belong to (provider_group_assignments); null for none.
+    let group = groups[primary.groupIndex];
     const others = group.facilities.filter((facility) => facility.id !== primary.id);
     const second = others.length > 0 && providerRng.chance(0.2) ? providerRng.pick(others) : null;
+    // Where they are assigned to work (provider_facility_assignments), primary
+    // first. Everyone outside the assignment scenarios works only at clinics
+    // of their own group, which is what Ready needs. The draws above are made
+    // either way, so a scenario never changes another provider's name,
+    // discipline or clinics.
+    let locations = [primary, second].filter(Boolean);
+    switch (scenario) {
+      case "no_group":
+        group = null;
+        locations = [primary];
+        break;
+      case "no_location":
+        locations = [];
+        break;
+      case "location_other_group":
+        group = groups[(primary.groupIndex + 1) % groups.length];
+        locations = [primary];
+        break;
+      case "location_no_group":
+        locations = [ungroupedFacilities[serial % ungroupedFacilities.length]];
+        break;
+      case "location_no_state": {
+        const clinic = statelessFacilities[serial % statelessFacilities.length];
+        group = groups[clinic.groupIndex];
+        primary = group.facilities[0];
+        locations = [primary, clinic];
+        break;
+      }
+      default:
+        break;
+    }
+    const workStates = [...new Set(locations.map((facility) => facility.state).filter(Boolean))];
     providers.push({
       id: lunaUuid("provider", serial),
       serial,
@@ -600,8 +741,12 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
       discipline,
       group,
       primary,
-      second,
-      workStates: [...new Set([primary.state, second?.state].filter(Boolean))],
+      second: locations[1] ?? null,
+      locations,
+      workStates,
+      // With no location to work at yet, they hold the license for the state
+      // of the clinic they were hired for.
+      homeState: workStates[0] ?? primary.state,
     });
     providerScenario.set(lunaUuid("provider", serial), scenario);
   }
@@ -623,7 +768,8 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
     tables.providers.push({
       id,
       org_id: LUNA_ORG_ID,
-      group_id: provider.group.id,
+      // Frozen mirror of the primary group assignment.
+      group_id: provider.group?.id ?? null,
       first_name: provider.first,
       last_name: provider.last,
       credentials: discipline.credentials,
@@ -647,34 +793,33 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
       phone: `(555) 555-01${pad(serial % 100, 2)}`,
       home_street: `${10 + (serial % 900)} ${STREETS[serial % STREETS.length]}`,
       home_city: CITIES[serial % CITIES.length],
-      home_state: provider.primary.state,
+      home_state: provider.homeState,
       home_zip: `000${pad(serial % 100, 2)}`,
     });
 
-    tables.provider_group_assignments.push({
-      id: lunaUuid("provider-group", serial),
-      org_id: LUNA_ORG_ID,
-      provider_id: id,
-      group_id: provider.group.id,
-      is_primary: true,
-      start_date: isoDay(Math.min(startDay, anchor - 1)),
-    });
-    for (const [slot, facility] of [
-      ["primary", provider.primary],
-      ["second", provider.second],
-    ]) {
-      if (!facility) continue;
+    if (provider.group) {
+      tables.provider_group_assignments.push({
+        id: lunaUuid("provider-group", serial),
+        org_id: LUNA_ORG_ID,
+        provider_id: id,
+        group_id: provider.group.id,
+        is_primary: true,
+        start_date: isoDay(Math.min(startDay, anchor - 1)),
+      });
+    }
+    provider.locations.forEach((facility, index) => {
+      const slot = index === 0 ? "primary" : "second";
       tables.provider_facility_assignments.push({
         id: lunaUuid("provider-facility", `${serial}:${slot}`),
         org_id: LUNA_ORG_ID,
         provider_id: id,
         facility_id: facility.id,
-        is_primary: slot === "primary",
+        is_primary: index === 0,
         start_date: isoDay(Math.min(startDay, anchor - 1)),
       });
-    }
+    });
 
-    let licenseStates = provider.workStates;
+    let licenseStates = provider.workStates.length > 0 ? provider.workStates : [provider.homeState];
     if (scenario === "no_license") licenseStates = [];
     if (scenario === "missing_work_state_license") {
       licenseStates = [
@@ -1050,6 +1195,7 @@ export function summarizeDataset(dataset) {
   const funnel = {
     profile_incomplete: stage("profile_incomplete"),
     submitted: stage("submitted"),
+    verified_awaiting_assignment: stage("verified_awaiting_assignment"),
     ready_for_credentialing: stage("ready_for_credentialing"),
     credentialing: scenarios.credentialing ?? 0,
     terminated_excluded: scenarios.terminated ?? 0,
@@ -1101,6 +1247,11 @@ export function summarizeDataset(dataset) {
     approvedAwaitingEffective: approved.filter((row) => !row.confirmed_effective_date).length,
     feed,
     followUps,
-    states: new Set(tables.facilities.map((row) => row.state)).size,
+    states: new Set(tables.facilities.map((row) => row.state).filter(Boolean)).size,
+    locations: {
+      grouped: tables.facilities.filter((row) => row.group_id && row.state).length,
+      noGroup: tables.facilities.filter((row) => !row.group_id).length,
+      noState: tables.facilities.filter((row) => !row.state).length,
+    },
   };
 }

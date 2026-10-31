@@ -248,7 +248,10 @@ function explorerModel(tables: Tables, variant: ExplorerVariant) {
     });
   const filterChoices = {
     groups: tables.provider_groups.map((g) => ({ id: g.id, label: g.name })),
-    states: [...new Set(tables.facilities.map((f) => f.state as string))].sort(),
+    // The seed's "New Clinic" locations have no state yet.
+    states: [...new Set(tables.facilities.map((f) => f.state as string | null))]
+      .filter((state): state is string => state !== null)
+      .sort(),
     facilities: tables.facilities.map((f) => ({
       id: f.id,
       label: f.name,
@@ -473,16 +476,22 @@ test("provider roster: every provider and its groups, past 1,000", async ({ cont
   const shown = tables.providers.filter((p) => p.status !== "terminated");
   const licensed = new Set(tables.state_licenses.map((l) => l.provider_id));
   const expectedNoLicense = shown.filter((p) => !licensed.has(p.id)).length;
+  // The seed's "no group" scenario (the funnel's "Needs a group") has none.
+  const grouped = new Set(tables.provider_group_assignments.map((a) => a.provider_id));
+  const expectedNoGroup = shown.filter((p) => !grouped.has(p.id)).length;
   results.roster = {
     expectedRows: shown.length,
     renderedRows: settled.metric,
     rowsShowingNoGroup: noGroup,
-    expectedRowsShowingNoGroup: 0,
+    expectedRowsShowingNoGroup: expectedNoGroup,
     rowsShowingNoLicense: noLicense,
     expectedRowsShowingNoLicense: expectedNoLicense,
     cappedReads: store.cappedReads(),
     completedPagedReads: store.completedPagedReads(),
-    complete: settled.metric === shown.length && noGroup === 0 && noLicense === expectedNoLicense,
+    complete:
+      settled.metric === shown.length &&
+      noGroup === expectedNoGroup &&
+      noLicense === expectedNoLicense,
     settleMs: settled.ms,
   };
   save();
