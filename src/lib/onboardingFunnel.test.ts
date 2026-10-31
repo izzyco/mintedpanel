@@ -15,6 +15,7 @@ import {
   STATELESS_LOCATION_GAP,
   validateOnboardingFunnelConfig,
   validateOnboardingFunnelOrganizationOverride,
+  validateOnboardingFunnelPlatformOverride,
   visibleOnboardingFunnelStages,
   type OnboardingFunnelConfig,
   type OnboardingFunnelOrganizationOverride,
@@ -27,6 +28,7 @@ import {
   type OnboardingFunnelMembershipInput,
   type OnboardingFunnelProviderFacts,
   type OnboardingFunnelRules,
+  type OnboardingFunnelRulesOverride,
   type OnboardingFunnelStageConfig,
 } from "@/lib/onboardingFunnel";
 
@@ -1497,5 +1499,81 @@ describe("resolveOnboardingFunnelConfig", () => {
     expect(fallback.stages[2]).not.toBe(DEFAULT_ONBOARDING_FUNNEL_STAGES[2]);
     expect(DEFAULT_ONBOARDING_FUNNEL_STAGES[2].label).toBe("Submitted");
     expect(fallback.rules).not.toBe(DEFAULT_ONBOARDING_FUNNEL_RULES);
+  });
+});
+
+describe("stored keys that name built-in properties", () => {
+  // Review P2 (2558313a): "__proto__" and "__defineGetter__" crashed the
+  // organization validator, and "toString" and "constructor" passed as rules.
+  const MINTED = DEFAULT_ONBOARDING_FUNNEL_CONFIG;
+  const hostile = ["__proto__", "__defineGetter__", "toString", "constructor"];
+
+  for (const key of hostile) {
+    it(`reports "${key}" as an unknown rule in an organization's layer, and never crashes`, () => {
+      const org = JSON.parse(`{"rules": {"${key}": true}}`) as OnboardingFunnelOrganizationOverride;
+      expect(validateOnboardingFunnelOrganizationOverride(org, MINTED)).toEqual([
+        `"${key}" is not a funnel rule.`,
+      ]);
+      expect(resolveOnboardingFunnelConfig(null, org)).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
+    });
+
+    it(`reports "${key}" as an unknown rule in Minted's layer, and never crashes`, () => {
+      const platform = JSON.parse(
+        `{"rules": {"${key}": true}}`,
+      ) as OnboardingFunnelPlatformOverride;
+      expect(validateOnboardingFunnelPlatformOverride(platform)).toEqual([
+        `"${key}" is not a funnel rule.`,
+      ]);
+      expect(resolveOnboardingFunnelConfig(platform, null)).toEqual(
+        DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+      );
+      // A whole configuration carrying the key is refused too, and the
+      // funnel still runs on the default.
+      const full = JSON.parse(
+        JSON.stringify(DEFAULT_ONBOARDING_FUNNEL_CONFIG).replace(/}}$/, `,"${key}":true}}`),
+      ) as OnboardingFunnelConfig;
+      expect(Object.hasOwn(full.rules, key)).toBe(true);
+      expect(validateOnboardingFunnelConfig(full)).toEqual([`"${key}" is not a funnel rule.`]);
+      expect(buildOnboardingFunnelRows(input(), TODAY, full).map((r) => r.stage)).toEqual(
+        rowsOf(input()).map((r) => r.stage),
+      );
+    });
+  }
+
+  it("never reads a rule value from a prototype", () => {
+    const inherited = Object.create({
+      assignmentRequiredForReady: false,
+    }) as OnboardingFunnelRulesOverride;
+    expect(resolveOnboardingFunnelRules(null, inherited)).toEqual(DEFAULT);
+    expect(resolveOnboardingFunnelRules(inherited, null)).toEqual(DEFAULT);
+  });
+});
+
+describe("validateOnboardingFunnelPlatformOverride", () => {
+  it("checks Minted's rules and stage list", () => {
+    expect(validateOnboardingFunnelPlatformOverride(null)).toEqual([]);
+    expect(
+      validateOnboardingFunnelPlatformOverride({
+        stages: [...DEFAULT_ONBOARDING_FUNNEL_STAGES],
+        rules: { assignmentRequiredForReady: false },
+      }),
+    ).toEqual([]);
+    expect(
+      validateOnboardingFunnelPlatformOverride(
+        "abc" as unknown as OnboardingFunnelPlatformOverride,
+      ),
+    ).toEqual(["Minted's funnel settings must be an object."]);
+    expect(
+      validateOnboardingFunnelPlatformOverride({
+        rules: { statelessLocationHolds: "no" } as unknown as OnboardingFunnelRulesOverride,
+      }),
+    ).toEqual(['The rule "statelessLocationHolds" must be on or off.']);
+    expect(
+      validateOnboardingFunnelPlatformOverride({
+        stages: [
+          { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
+        ],
+      }),
+    ).toHaveLength(2);
   });
 });

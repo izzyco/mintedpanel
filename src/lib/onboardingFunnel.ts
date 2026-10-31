@@ -126,6 +126,32 @@ const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof OnboardingFunnelRules>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+// Stored settings are untrusted: every lookup by a key that came from them,
+// or into an object they came from, reads own properties only, so
+// "__proto__", "constructor" or "toString" are never mistaken for a rule.
+const own = (record: Record<string, unknown>, key: string): unknown =>
+  Object.hasOwn(record, key) ? record[key] : undefined;
+
+const isRuleKey = (key: string): key is keyof OnboardingFunnelRules =>
+  Object.hasOwn(RULE_CHECKS, key);
+
+const ruleValueError = (key: keyof OnboardingFunnelRules): string =>
+  key === "caseStatusesNotCountedAsCredentialing"
+    ? "Case statuses that do not count must be known case statuses."
+    : `The rule "${key}" must be on or off.`;
+
+/** Problems with a rules override (any subset of the rules; null inherits). */
+function ruleOverrideErrors(rules: unknown, owner: string): string[] {
+  if (rules == null) return [];
+  if (!isRecord(rules)) return [`${owner} rules must be an object.`];
+  const errors: string[] = [];
+  for (const [key, value] of Object.entries(rules)) {
+    if (!isRuleKey(key)) errors.push(`"${key}" is not a funnel rule.`);
+    else if (value != null && !RULE_CHECKS[key](value)) errors.push(ruleValueError(key));
+  }
+  return errors;
+}
+
 /** Field by field: the organization's value, else the platform's, else the
  * default. A stored value of the wrong shape is skipped like a missing one. */
 export function resolveOnboardingFunnelRules(
@@ -134,7 +160,7 @@ export function resolveOnboardingFunnelRules(
 ): OnboardingFunnelRules {
   const pick = <K extends keyof OnboardingFunnelRules>(key: K): OnboardingFunnelRules[K] => {
     for (const override of [organization, platform]) {
-      const value: unknown = isRecord(override) ? override[key] : undefined;
+      const value: unknown = isRecord(override) ? own(override, key) : undefined;
       if (value != null && RULE_CHECKS[key](value)) return value as OnboardingFunnelRules[K];
     }
     return DEFAULT_ONBOARDING_FUNNEL_RULES[key];
@@ -518,12 +544,10 @@ export function validateOnboardingFunnelConfig(config: OnboardingFunnelConfig): 
   const rules: Record<string, unknown> =
     isRecord(config) && isRecord(config.rules) ? config.rules : {};
   for (const key of RULE_KEYS) {
-    if (!RULE_CHECKS[key](rules[key]))
-      errors.push(
-        key === "caseStatusesNotCountedAsCredentialing"
-          ? "Case statuses that do not count must be known case statuses."
-          : `The rule "${key}" must be on or off.`,
-      );
+    if (!RULE_CHECKS[key](own(rules, key))) errors.push(ruleValueError(key));
+  }
+  for (const key of Object.keys(rules)) {
+    if (!isRuleKey(key)) errors.push(`"${key}" is not a funnel rule.`);
   }
   if (errors.length > 0) return errors;
 
@@ -582,6 +606,30 @@ export function effectiveOnboardingFunnelConfig(
   return { stages: stages.map(copyStage), rules };
 }
 
+/** Plain-language problems with Minted's platform layer; empty when it can
+ * go live. Its rules may be any subset (the rest inherit the default); its
+ * stage list, when given, must validate under those rules. */
+export function validateOnboardingFunnelPlatformOverride(
+  platform: OnboardingFunnelPlatformOverride | null | undefined,
+): string[] {
+  if (platform == null) return [];
+  if (!isRecord(platform)) return ["Minted's funnel settings must be an object."];
+  const rules = own(platform, "rules");
+  const errors = ruleOverrideErrors(rules, "Minted's");
+  const stages = own(platform, "stages");
+  if (stages != null)
+    errors.push(
+      ...validateOnboardingFunnelConfig({
+        stages: stages as ReadonlyArray<OnboardingFunnelStageConfig>,
+        rules: resolveOnboardingFunnelRules(
+          rules as OnboardingFunnelRulesOverride | null | undefined,
+          null,
+        ),
+      }),
+    );
+  return errors;
+}
+
 const STAGE_TEXT_FIELDS = new Set(["label", "description"]);
 
 /** Plain-language problems with an organization's layer; empty when it can
@@ -596,12 +644,12 @@ export function validateOnboardingFunnelOrganizationOverride(
   if (organization == null) return [];
   if (!isRecord(organization)) return ["An organization's funnel settings must be an object."];
   const errors: string[] = [];
-  if (organization.stages != null)
+  if (own(organization, "stages") != null)
     errors.push(
       "An organization cannot change the stage list: Minted sets the stages, their order and their gates. Change labels and descriptions instead.",
     );
 
-  const text: unknown = organization.stageText;
+  const text: unknown = own(organization, "stageText");
   const labels = new Map(stages.map((stage) => [stage.key, stage.label.trim()]));
   if (text != null && !isRecord(text))
     errors.push("Stage labels and descriptions must be given per stage key.");
@@ -617,8 +665,10 @@ export function validateOnboardingFunnelOrganizationOverride(
       }
       if (Object.keys(entry).some((field) => !STAGE_TEXT_FIELDS.has(field)))
         errors.push(`"${key}": only the label and the description can change.`);
-      if (entry.label != null) {
-        const label = typeof entry.label === "string" ? entry.label.trim() : "";
+      const ownLabel = own(entry, "label");
+      const ownDescription = own(entry, "description");
+      if (ownLabel != null) {
+        const label = typeof ownLabel === "string" ? ownLabel.trim() : "";
         // No swapping: another stage's own label would say the wrong thing.
         const taken = stages.find(
           (stage) => stage.key !== key && stage.label.trim().toLowerCase() === label.toLowerCase(),
@@ -629,8 +679,8 @@ export function validateOnboardingFunnelOrganizationOverride(
         else if (taken) errors.push(`"${key}": "${label}" is Minted's label for "${taken.key}".`);
         else labels.set(key, label);
       }
-      if (entry.description != null) {
-        const description = typeof entry.description === "string" ? entry.description.trim() : "";
+      if (ownDescription != null) {
+        const description = typeof ownDescription === "string" ? ownDescription.trim() : "";
         if (!description) errors.push(`"${key}": the description cannot be empty.`);
         else if (description.length > MAX_DESCRIPTION)
           errors.push(`"${key}": keep the description to ${MAX_DESCRIPTION} characters.`);
@@ -643,26 +693,15 @@ export function validateOnboardingFunnelOrganizationOverride(
     }
   }
 
-  const rules: unknown = organization.rules;
-  if (rules != null && !isRecord(rules)) errors.push("The organization's rules must be an object.");
-  else if (isRecord(rules)) {
-    for (const [key, value] of Object.entries(rules)) {
-      if (!(key in RULE_CHECKS)) errors.push(`"${key}" is not a funnel rule.`);
-      else if (value != null && !RULE_CHECKS[key as keyof OnboardingFunnelRules](value))
-        errors.push(
-          key === "caseStatusesNotCountedAsCredentialing"
-            ? "Case statuses that do not count must be known case statuses."
-            : `The rule "${key}" must be on or off.`,
-        );
-    }
-  }
+  const rules = own(organization, "rules");
+  errors.push(...ruleOverrideErrors(rules, "The organization's"));
   // Defence in depth: the rules this layer would put in force must still
   // work with Minted's list. (Minted's list is checked under every value a
   // gate reads, so this holds for a valid list.)
   if (errors.length === 0) {
     const merged = resolveOnboardingFunnelRules(
       minted.rules,
-      organization.rules as OnboardingFunnelRulesOverride | null | undefined,
+      rules as OnboardingFunnelRulesOverride | null | undefined,
     );
     for (const problem of validateOnboardingFunnelConfig({ stages, rules: merged }))
       errors.push(`With this organization's rules, Minted's stages fail: ${problem}`);
@@ -1070,7 +1109,8 @@ export function onboardingFunnelStageCounts(
   const counts: Record<OnboardingFunnelStageKey, number> = Object.fromEntries(
     stages.map((stage) => [stage.key, 0]),
   );
-  for (const row of rows) counts[row.stage] = (counts[row.stage] ?? 0) + 1;
+  for (const row of rows)
+    counts[row.stage] = (Object.hasOwn(counts, row.stage) ? counts[row.stage] : 0) + 1;
   return counts;
 }
 
