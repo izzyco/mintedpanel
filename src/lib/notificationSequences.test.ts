@@ -1,21 +1,28 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  BOUNCE_ESCALATION_OFF,
+  COORDINATORS_ONLY_NOTE,
+  DEFAULT_NOTIFICATION_POLICY_RULES,
   IANA_TIME_ZONE_PATTERN,
   LAST_RESORT_TIME_ZONE,
   NOTIFICATION_LIMITS,
   PURPOSE_RULES,
   addCcRecipient,
   addStep,
+  bounceCcNote,
   bounceEscalationRecipients,
   buildSavePayload,
   ccRecipientLabel,
+  defaultStepsCcNote,
   describeCcList,
   describeOffsets,
   describeSendTime,
   describeStep,
+  draftBounceEscalationStep,
   draftFromSequence,
   draftsEqual,
+  isBounceEscalationStep,
   isIanaTimeZone,
   moveCcRecipient,
   moveStep,
@@ -24,6 +31,7 @@ import {
   reconcileWithServer,
   removeCcRecipient,
   removeStep,
+  resolveNotificationPolicyRules,
   resolveNotificationSequence,
   saveErrorMessage,
   scheduleSequenceSends,
@@ -33,6 +41,7 @@ import {
   toggleStopCondition,
   updateStep,
   validateDraft,
+  validateNotificationPolicyRules,
   type NotificationSequenceConfig,
   type NotificationSequenceDefaultConfig,
   type SequenceDraft,
@@ -50,6 +59,8 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   stopConditions: [...ALL_STOPS],
   targetDaysToReady: 14,
   compressTowardStartDate: false,
+  bounceEscalationStep: 1,
+  digestCcAllowed: null,
   sendHour: null,
   sendTimeZone: null,
   createdAt: "",
@@ -76,6 +87,8 @@ const DIGEST_DEFAULT: NotificationSequenceDefaultConfig = {
   stopConditions: null,
   targetDaysToReady: null,
   compressTowardStartDate: null,
+  bounceEscalationStep: null,
+  digestCcAllowed: false,
   sendHour: 8,
   sendTimeZone: "America/Chicago",
   createdAt: "",
@@ -102,6 +115,7 @@ function intake(): OwnStepsDraft {
     enabled: false,
     stopConditions: [...ALL_STOPS],
     targetDaysToReady: 14,
+    bounceEscalationStep: null,
     steps: stepsFromDefault(INTAKE_DEFAULT),
   };
 }
@@ -112,6 +126,7 @@ function digest(): OwnStepsDraft {
     enabled: false,
     stopConditions: null,
     targetDaysToReady: null,
+    bounceEscalationStep: null,
     steps: stepsFromDefault(DIGEST_DEFAULT),
   };
 }
@@ -134,6 +149,7 @@ function orgRow(over: Partial<NotificationSequenceConfig> = {}): NotificationSeq
     enabled: true,
     stopConditions: null,
     targetDaysToReady: null,
+    bounceEscalationStep: null,
     compressTowardStartDate: null,
     sendHour: null,
     sendTimeZone: null,
@@ -172,6 +188,7 @@ describe("starter and Minted's default steps", () => {
       enabled: false,
       stopConditions: null,
       targetDaysToReady: null,
+      bounceEscalationStep: null,
       steps: null,
     });
     expect(validateDraft("intake_reminder", starterDraft())).toEqual([]);
@@ -622,8 +639,10 @@ describe("round trip", () => {
     expect(own(draft).map((s) => s.offsetDays)).toEqual([1, 5]);
     expect(draft.stopConditions).toEqual(["submitted"]);
     expect(draft.targetDaysToReady).toBe(10);
-    // The platform-managed override is not in the draft: the card cannot send it.
+    // The platform-managed override is not in the draft: the card cannot send
+    // it. The bounce escalation step is the org's own, so it is.
     expect(Object.keys(draft).sort()).toEqual([
+      "bounceEscalationStep",
       "enabled",
       "steps",
       "stopConditions",
@@ -693,6 +712,8 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
       ],
       stopConditions: [...ALL_STOPS],
       targetDaysToReady: 14,
+      bounceEscalationStep: 1,
+      ccAllowed: true,
       compressTowardStartDate: false,
       sendHour: null,
       sendTimeZone: null,
@@ -700,6 +721,7 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
         steps: true,
         stopConditions: true,
         targetDaysToReady: true,
+        bounceEscalationStep: true,
         compressTowardStartDate: true,
         sendHour: false,
         sendTimeZone: false,
@@ -895,7 +917,7 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
 
   it("feeds the bounce rule: Minted's default steps escalate to no one", () => {
     const effective = resolveNotificationSequence("intake_reminder", undefined, INTAKE_DEFAULT);
-    expect(bounceEscalationRecipients("intake_reminder", effective.steps, 1)).toEqual([]);
+    expect(bounceEscalationRecipients(effective, 1)).toEqual([]);
   });
 });
 
@@ -979,21 +1001,26 @@ describe("bounce rule (decision 4)", () => {
     { position: 1, ccRecipients: [{ kind: "user" as const, userId: USER_A }] },
     { position: 2, ccRecipients: [{ kind: "role" as const, role: "admin" as const }] },
   ];
+  const intakeAt = (bounceEscalationStep: number | null) => ({
+    purpose: "intake_reminder" as const,
+    bounceEscalationStep,
+    steps,
+  });
 
   it("escalates a step-1 intake bounce to step 1's cc list, in order", () => {
-    expect(bounceEscalationRecipients("intake_reminder", steps, 1)).toEqual([
-      { kind: "user", userId: USER_A },
-    ]);
+    expect(bounceEscalationRecipients(intakeAt(1), 1)).toEqual([{ kind: "user", userId: USER_A }]);
   });
 
   it("does not escalate a later bounce, or any digest bounce", () => {
-    expect(bounceEscalationRecipients("intake_reminder", steps, 2)).toEqual([]);
-    expect(bounceEscalationRecipients("followup_digest", steps, 1)).toEqual([]);
+    expect(bounceEscalationRecipients(intakeAt(1), 2)).toEqual([]);
+    expect(
+      bounceEscalationRecipients({ purpose: "followup_digest", bounceEscalationStep: 1, steps }, 1),
+    ).toEqual([]);
   });
 
   it("reaches no one when step 1 cc's no one", () => {
     expect(
-      bounceEscalationRecipients("intake_reminder", [{ position: 1, ccRecipients: [] }], 1),
+      bounceEscalationRecipients({ ...intakeAt(1), steps: [{ position: 1, ccRecipients: [] }] }, 1),
     ).toEqual([]);
   });
 });
@@ -1256,5 +1283,362 @@ describe("conflict status", () => {
     expect(saveErrorMessage("", "PT409")).toMatch(/Someone else saved/);
     expect(saveErrorMessage("anything", "PT409")).toMatch(/Someone else saved/);
     expect(saveErrorMessage("anything", "23514")).toMatch(/Couldn't save/);
+  });
+});
+
+/* ------------- Policy settings (policy as configuration, MINT-113) ------------- */
+
+const CC_A = [{ kind: "user" as const, userId: USER_A }];
+const CC_ADMINS = [{ kind: "role" as const, role: "admin" as const }];
+
+/** An intake org row with its own three steps, each cc'ing someone. */
+function intakeWithCc(over: Partial<NotificationSequenceConfig> = {}) {
+  return orgRow({
+    steps: [
+      orgStep(1, 2, { ccRecipients: CC_A }),
+      orgStep(2, 4, { templateKey: "intake_reminder_second", ccRecipients: CC_ADMINS }),
+      orgStep(3, 7, { templateKey: "intake_reminder_final", ccRecipients: [] }),
+    ],
+    ...over,
+  });
+}
+
+/** A digest org row whose one step cc's all admins. */
+function digestWithCc() {
+  return orgRow({
+    purpose: "followup_digest",
+    steps: [orgStep(1, 0, { templateKey: "followup_digest_daily", ccRecipients: CC_ADMINS })],
+  });
+}
+
+describe("notification policy rules: decided defaults", () => {
+  it("are the Oct 30 bounce rule and D59's coordinators-only digest, frozen", () => {
+    expect(DEFAULT_NOTIFICATION_POLICY_RULES).toEqual({
+      bounceEscalationStep: 1,
+      digestCcAllowed: false,
+    });
+    expect(Object.isFrozen(DEFAULT_NOTIFICATION_POLICY_RULES)).toBe(true);
+    expect(BOUNCE_ESCALATION_OFF).toBe(0);
+  });
+
+  it("match the seeded defaults in the migration", () => {
+    const migration = readFileSync(
+      "supabase/migrations/20261031051500_notification_sequences.sql",
+      "utf8",
+    );
+    expect(migration).toMatch(
+      /\(purpose, stop_conditions, target_days_to_ready, compress_toward_start_date,\s+bounce_escalation_step\)[\s\S]*?14, false, 1\)/,
+    );
+    expect(migration).toMatch(
+      /\(purpose, send_hour, send_time_zone, digest_cc_allowed\)\s+VALUES \('followup_digest', 8, 'America\/Chicago', false\)/,
+    );
+  });
+
+  it("accept a bounce step of 0 (off) to the most steps a sequence has, whole numbers only", () => {
+    for (const ok of [0, 1, 2, NOTIFICATION_LIMITS.maxSteps]) {
+      expect(isBounceEscalationStep(ok)).toBe(true);
+    }
+    for (const bad of [-1, NOTIFICATION_LIMITS.maxSteps + 1, 1.5, "1", null, undefined, true]) {
+      expect(isBounceEscalationStep(bad)).toBe(false);
+    }
+  });
+});
+
+describe("resolveNotificationPolicyRules: org over platform over default, field by field", () => {
+  it("gives the decided defaults with no layers", () => {
+    expect(resolveNotificationPolicyRules()).toEqual(DEFAULT_NOTIFICATION_POLICY_RULES);
+    expect(resolveNotificationPolicyRules(null, null)).toEqual(DEFAULT_NOTIFICATION_POLICY_RULES);
+  });
+
+  it("takes the platform over the default, and the org over the platform", () => {
+    expect(
+      resolveNotificationPolicyRules({ bounceEscalationStep: 2, digestCcAllowed: true }),
+    ).toEqual({ bounceEscalationStep: 2, digestCcAllowed: true });
+    expect(
+      resolveNotificationPolicyRules({ bounceEscalationStep: 2 }, { bounceEscalationStep: 3 }),
+    ).toEqual({ bounceEscalationStep: 3, digestCcAllowed: false });
+    expect(
+      resolveNotificationPolicyRules({ bounceEscalationStep: 2 }, { bounceEscalationStep: 0 }),
+    ).toMatchObject({ bounceEscalationStep: BOUNCE_ESCALATION_OFF });
+  });
+
+  it("inherits on null or undefined, field by field", () => {
+    expect(
+      resolveNotificationPolicyRules(
+        { bounceEscalationStep: 2, digestCcAllowed: null },
+        { bounceEscalationStep: null },
+      ),
+    ).toEqual({ bounceEscalationStep: 2, digestCcAllowed: false });
+    expect(resolveNotificationPolicyRules({ bounceEscalationStep: undefined }, {})).toEqual(
+      DEFAULT_NOTIFICATION_POLICY_RULES,
+    );
+  });
+
+  it("skips a value of the wrong shape like a missing one", () => {
+    const junk = { bounceEscalationStep: 11, digestCcAllowed: "yes" } as never;
+    expect(resolveNotificationPolicyRules(junk)).toEqual(DEFAULT_NOTIFICATION_POLICY_RULES);
+    expect(
+      resolveNotificationPolicyRules({ bounceEscalationStep: 2 }, {
+        bounceEscalationStep: 1.5,
+      } as never),
+    ).toMatchObject({ bounceEscalationStep: 2 });
+  });
+
+  it("never lets an org relax the digest's audience: that is Minted's alone", () => {
+    expect(resolveNotificationPolicyRules(null, { digestCcAllowed: true })).toMatchObject({
+      digestCcAllowed: false,
+    });
+    expect(
+      resolveNotificationPolicyRules({ digestCcAllowed: true }, { digestCcAllowed: false }),
+    ).toMatchObject({ digestCcAllowed: true });
+  });
+});
+
+describe("validateNotificationPolicyRules", () => {
+  it("passes valid layers, and null as inherit", () => {
+    expect(
+      validateNotificationPolicyRules({ bounceEscalationStep: 1, digestCcAllowed: false }),
+    ).toEqual([]);
+    expect(validateNotificationPolicyRules({ bounceEscalationStep: 0 })).toEqual([]);
+    expect(
+      validateNotificationPolicyRules({ bounceEscalationStep: null, digestCcAllowed: null }),
+    ).toEqual([]);
+    expect(validateNotificationPolicyRules({ bounceEscalationStep: 3 }, "organization")).toEqual(
+      [],
+    );
+  });
+
+  it("names every invalid or unknown value in plain language", () => {
+    expect(validateNotificationPolicyRules({ bounceEscalationStep: 11 })).toEqual([
+      "The bounce escalation step must be a step from 1 to 10, or 0 for no escalation.",
+    ]);
+    expect(validateNotificationPolicyRules({ bounceEscalationStep: "1" })).toHaveLength(1);
+    expect(validateNotificationPolicyRules({ digestCcAllowed: "yes" })).toEqual([
+      "Whether the daily digest may cc anyone must be on or off.",
+    ]);
+    expect(validateNotificationPolicyRules({ ccEveryone: true })).toEqual([
+      '"ccEveryone" is not a notification policy setting.',
+    ]);
+    expect(validateNotificationPolicyRules(null)).toEqual([
+      "The notification policy settings must be a set of named values.",
+    ]);
+    expect(validateNotificationPolicyRules([1])).toHaveLength(1);
+  });
+
+  it("refuses digestCcAllowed from an organization", () => {
+    expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "organization")).toEqual([
+      "Only Minted decides whether the daily digest may cc anyone.",
+    ]);
+    expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "platform")).toEqual([]);
+  });
+});
+
+describe("bounce escalation step (Oct 30 decision, now a setting)", () => {
+  it("defaults to step 1 from Minted's default, marked inherited", () => {
+    const effective = resolveNotificationSequence(
+      "intake_reminder",
+      intakeWithCc(),
+      INTAKE_DEFAULT,
+    );
+    expect(effective.bounceEscalationStep).toBe(1);
+    expect(effective.inherited.bounceEscalationStep).toBe(true);
+    expect(bounceEscalationRecipients(effective, 1)).toEqual(CC_A);
+    expect(bounceEscalationRecipients(effective, 2)).toEqual([]);
+  });
+
+  it("takes the org's own step: a step-2 bounce escalates to step 2's cc list only", () => {
+    const effective = resolveNotificationSequence(
+      "intake_reminder",
+      intakeWithCc({ bounceEscalationStep: 2 }),
+      INTAKE_DEFAULT,
+    );
+    expect([effective.bounceEscalationStep, effective.inherited.bounceEscalationStep]).toEqual([
+      2,
+      false,
+    ]);
+    expect(bounceEscalationRecipients(effective, 2)).toEqual(CC_ADMINS);
+    expect(bounceEscalationRecipients(effective, 1)).toEqual([]);
+    expect(bounceEscalationRecipients(effective, 3)).toEqual([]);
+  });
+
+  it("escalates nothing when switched off (0)", () => {
+    const effective = resolveNotificationSequence(
+      "intake_reminder",
+      intakeWithCc({ bounceEscalationStep: BOUNCE_ESCALATION_OFF }),
+      INTAKE_DEFAULT,
+    );
+    expect(effective.bounceEscalationStep).toBe(0);
+    expect(effective.inherited.bounceEscalationStep).toBe(false);
+    for (const position of [0, 1, 2, 3]) {
+      expect(bounceEscalationRecipients(effective, position)).toEqual([]);
+    }
+  });
+
+  it("follows a changed Minted default when the org has none of its own", () => {
+    const effective = resolveNotificationSequence("intake_reminder", intakeWithCc(), {
+      ...INTAKE_DEFAULT,
+      bounceEscalationStep: 2,
+    });
+    expect(bounceEscalationRecipients(effective, 2)).toEqual(CC_ADMINS);
+    expect(effective.inherited.bounceEscalationStep).toBe(true);
+  });
+
+  it("escalates to no one when the step does not exist in the sequence", () => {
+    const effective = resolveNotificationSequence(
+      "intake_reminder",
+      orgRow({ bounceEscalationStep: 5, steps: [orgStep(1, 2, { ccRecipients: CC_A })] }),
+      INTAKE_DEFAULT,
+    );
+    expect(effective.bounceEscalationStep).toBe(5);
+    expect(bounceEscalationRecipients(effective, 5)).toEqual([]);
+  });
+
+  it("ignores a stored value of the wrong shape, and a default missing one, for the decided step 1", () => {
+    const junk = resolveNotificationSequence(
+      "intake_reminder",
+      intakeWithCc({ bounceEscalationStep: 11 }),
+      INTAKE_DEFAULT,
+    );
+    expect([junk.bounceEscalationStep, junk.inherited.bounceEscalationStep]).toEqual([1, true]);
+    const bare = resolveNotificationSequence("intake_reminder", intakeWithCc(), {
+      ...INTAKE_DEFAULT,
+      bounceEscalationStep: null,
+    });
+    expect(bare.bounceEscalationStep).toBe(DEFAULT_NOTIFICATION_POLICY_RULES.bounceEscalationStep);
+  });
+
+  it("gives the digest no bounce rule at all", () => {
+    const effective = resolveNotificationSequence(
+      "followup_digest",
+      orgRow({ purpose: "followup_digest", bounceEscalationStep: 1 }),
+      DIGEST_DEFAULT,
+    );
+    expect(effective.bounceEscalationStep).toBeNull();
+    expect(effective.inherited.bounceEscalationStep).toBe(false);
+  });
+
+  it("is what a draft would save: its own, else Minted's, else step 1", () => {
+    expect(draftBounceEscalationStep(starterDraft(), INTAKE_DEFAULT)).toBe(1);
+    expect(draftBounceEscalationStep(starterDraft(), { bounceEscalationStep: 3 })).toBe(3);
+    expect(draftBounceEscalationStep({ bounceEscalationStep: 0 }, INTAKE_DEFAULT)).toBe(0);
+    expect(draftBounceEscalationStep(starterDraft(), { bounceEscalationStep: null })).toBe(1);
+  });
+
+  it("round-trips through the draft and the payload, sent only when the org set it", () => {
+    const draft = draftFromSequence(intakeWithCc({ bounceEscalationStep: 2 }));
+    expect(draft.bounceEscalationStep).toBe(2);
+    expect(buildSavePayload("intake_reminder", draft, 1)).toMatchObject({
+      bounce_escalation_step: 2,
+    });
+    const off = { ...draft, bounceEscalationStep: BOUNCE_ESCALATION_OFF };
+    expect(buildSavePayload("intake_reminder", off, 1)).toMatchObject({
+      bounce_escalation_step: 0,
+    });
+    // Left to Minted's default, the key is not sent (the RPC reads it as null).
+    const inheriting = buildSavePayload("intake_reminder", intake(), null);
+    expect("bounce_escalation_step" in inheriting).toBe(false);
+    // A changed step is an edit; the same step is not.
+    expect(draftsEqual(draft, off)).toBe(false);
+    expect(draftsEqual(draft, draftFromSequence(intakeWithCc({ bounceEscalationStep: 2 })))).toBe(
+      true,
+    );
+  });
+
+  it("validates the draft's step, and refuses one on the digest", () => {
+    expect(
+      messages(validateDraft("intake_reminder", { ...intake(), bounceEscalationStep: 11 })),
+    ).toEqual([
+      "Choose which step's bounce is escalated (step 1 to 10), turn it off, or use Minted's default.",
+    ]);
+    expect(validateDraft("intake_reminder", { ...intake(), bounceEscalationStep: 0 })).toEqual([]);
+    expect(
+      messages(validateDraft("followup_digest", { ...digest(), bounceEscalationStep: 1 })),
+    ).toEqual(["The daily digest has no bounce rule."]);
+    expect(() =>
+      buildSavePayload("followup_digest", { ...digest(), bounceEscalationStep: 1 }, null),
+    ).toThrow(/no bounce rule/);
+  });
+
+  it("builds the card's notes from the step, unchanged at the default", () => {
+    expect(bounceCcNote(1)).toBe(
+      "If step 1 bounces, the people cc'd here are told. Add a member or a role so a bounce reaches someone.",
+    );
+    expect(bounceCcNote(3)).toMatch(/^If step 3 bounces,/);
+    expect(defaultStepsCcNote(1)).toBe(
+      "Minted's default steps cc no one, so a bounce on step 1 reaches no one. Customize the steps to cc a member or a role.",
+    );
+    expect(defaultStepsCcNote(2)).toContain("a bounce on step 2 reaches no one");
+    expect(defaultStepsCcNote(BOUNCE_ESCALATION_OFF)).toBe(
+      "Minted's default steps cc no one. Customize the steps to cc a member or a role.",
+    );
+  });
+});
+
+describe("digest audience (D59, now Minted's setting digest_cc_allowed)", () => {
+  it("strips a digest cc and says coordinators only by default", () => {
+    const effective = resolveNotificationSequence(
+      "followup_digest",
+      digestWithCc(),
+      DIGEST_DEFAULT,
+    );
+    expect(effective.ccAllowed).toBe(false);
+    expect(effective.steps[0].ccRecipients).toEqual([]);
+    expect(COORDINATORS_ONLY_NOTE).toBe("Goes to each coordinator only. No one is cc'd.");
+  });
+
+  it("passes the digest's cc list on once Minted allows it", () => {
+    const allowed = { ...DIGEST_DEFAULT, digestCcAllowed: true };
+    const effective = resolveNotificationSequence("followup_digest", digestWithCc(), allowed);
+    expect(effective.ccAllowed).toBe(true);
+    expect(effective.steps[0].ccRecipients).toEqual(CC_ADMINS);
+  });
+
+  it("treats a missing or malformed setting as the decided off", () => {
+    for (const digestCcAllowed of [null, "true" as never]) {
+      const effective = resolveNotificationSequence("followup_digest", digestWithCc(), {
+        ...DIGEST_DEFAULT,
+        digestCcAllowed,
+      });
+      expect([effective.ccAllowed, effective.steps[0].ccRecipients]).toEqual([false, []]);
+    }
+  });
+
+  it("always lets intake steps cc, whatever the digest setting", () => {
+    const effective = resolveNotificationSequence("intake_reminder", intakeWithCc(), {
+      ...INTAKE_DEFAULT,
+      digestCcAllowed: false,
+    });
+    expect(effective.ccAllowed).toBe(true);
+    expect(effective.steps[0].ccRecipients).toEqual(CC_A);
+  });
+
+  it("validates and builds a digest cc only when the caller says Minted allows it", () => {
+    const withCc = updateStep(digest(), 0, { ccRecipients: CC_ADMINS });
+    expect(messages(validateDraft("followup_digest", withCc))).toEqual([
+      "The daily digest goes to coordinators only, so it has no cc list.",
+    ]);
+    expect(validateDraft("followup_digest", withCc, { digestCcAllowed: false })).toHaveLength(1);
+    expect(validateDraft("followup_digest", withCc, { digestCcAllowed: true })).toEqual([]);
+    expect(
+      buildSavePayload("followup_digest", withCc, null, { digestCcAllowed: true }).steps?.[0]
+        .cc_recipients,
+    ).toEqual([{ kind: "role", role: "admin" }]);
+  });
+});
+
+describe("draftsEqual", () => {
+  it("compares content, not key order, and reads a missing bounce step as unset", () => {
+    const a = intake();
+    const reordered: SequenceDraft = {
+      steps: a.steps,
+      bounceEscalationStep: null,
+      targetDaysToReady: a.targetDaysToReady,
+      stopConditions: a.stopConditions,
+      enabled: a.enabled,
+    };
+    expect(draftsEqual(a, reordered)).toBe(true);
+    const legacy = { ...a } as Partial<SequenceDraft>;
+    delete legacy.bounceEscalationStep;
+    expect(draftsEqual(a, legacy as SequenceDraft)).toBe(true);
   });
 });

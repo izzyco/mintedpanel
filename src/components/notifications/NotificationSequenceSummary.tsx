@@ -5,6 +5,7 @@
 // the org's own values, and Minted's default, marked as such, wherever the
 // org left one unset.
 import {
+  COORDINATORS_ONLY_NOTE,
   PLATFORM_DEFAULT_LABEL,
   PURPOSE_RULES,
   STOP_CONDITION_LABELS,
@@ -44,7 +45,7 @@ export function NotificationSequenceSummary({
         {effective.steps.map((step) => (
           <li key={step.position} className="rounded-md border border-[var(--mp-border)] px-3 py-2">
             <div className="font-medium">{describeStep(config.purpose, step)}</div>
-            {rules.hasCcList ? (
+            {effective.ccAllowed ? (
               <div className="text-[12px] text-muted-foreground">
                 Cc: {describeCcList(step.ccRecipients, members, membersLoaded)}
               </div>
@@ -85,10 +86,8 @@ export function NotificationSequenceSummary({
         </dl>
       ) : null}
       {rules.hasSendTime && sendTime ? <p>{`Sent around ${sendTime}. Minted sets this.`}</p> : null}
-      {!rules.hasCcList ? (
-        <p className="text-[12px] text-muted-foreground">
-          Goes to each coordinator only. No one is cc'd.
-        </p>
+      {!effective.ccAllowed ? (
+        <p className="text-[12px] text-muted-foreground">{COORDINATORS_ONLY_NOTE}</p>
       ) : null}
     </div>
   );

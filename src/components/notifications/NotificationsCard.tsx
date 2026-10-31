@@ -33,6 +33,7 @@ import {
   draftFromSequence,
   draftsEqual,
   reconcileWithServer,
+  resolveNotificationPolicyRules,
   starterDraft,
   validateDraft,
   type CcMemberOption,
@@ -115,13 +116,20 @@ function AdminSequence({
     );
   }
 
-  const issues = validateDraft(purpose, draft, { memberUserIds });
+  // Minted's digest_cc_allowed decides whether a digest step may cc anyone.
+  const options = {
+    memberUserIds,
+    digestCcAllowed: resolveNotificationPolicyRules({
+      digestCcAllowed: platformDefault.digestCcAllowed,
+    }).digestCcAllowed,
+  };
+  const issues = validateDraft(purpose, draft, options);
   const dirty = base ? !draftsEqual(draft, draftFromSequence(base)) : true;
 
   const handleSave = () => {
     // The revision the draft started from: if another admin has saved since,
     // the RPC answers with the conflict instead of overwriting their change.
-    const payload = buildSavePayload(purpose, draft, base?.revision ?? null, { memberUserIds });
+    const payload = buildSavePayload(purpose, draft, base?.revision ?? null, options);
     save.mutate(
       { purpose, payload },
       {

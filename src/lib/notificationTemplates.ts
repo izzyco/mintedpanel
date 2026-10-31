@@ -23,10 +23,15 @@
 // cc'd copies are always emailed, whatever the step's channel: staff have not
 // consented to texts, and the SMS consent table covers providers only.
 //
-// THE DIGEST HAS NO CC LIST (MINT-107 answer, Oct 30). The follow-up digest
-// goes to coordinators only; nobody cc'd gets anything from it. Its templates
-// therefore render no cc copy (`ccFields` empty), `catalogViolations` checks
-// that, and the database refuses a digest step with a cc list.
+// THE DIGEST HAS NO CC LIST (MINT-107 answer, Oct 30; D59). The follow-up
+// digest goes to coordinators only; nobody cc'd gets anything from it. Its
+// templates therefore render no cc copy (`ccFields` empty), and
+// `catalogViolations` checks that. Whether a digest step may even store a cc
+// list is Minted's setting `digest_cc_allowed` (off), which the database and
+// resolveNotificationSequence apply (src/lib/notificationSequences.ts,
+// NotificationPolicyRules; Mission Control MINT-113). Turning it on is not
+// enough for anyone cc'd to receive a digest: that needs a digest cc copy
+// here and a sender that sends it, neither of which exists.
 import type { NotificationChannel, NotificationPurpose } from "@/types";
 
 /** The purposes whose steps carry a cc list. The digest has none. */
@@ -166,12 +171,15 @@ export const NOTIFICATION_TEMPLATES: readonly NotificationTemplateEntry[] = [
     selectable: true,
   },
   {
-    // Decision 4: a bounce on step 1 escalates to step 1's cc list. This is
-    // the message those people get. It is never a step's own message.
+    // Decision 4: a bounce on the escalating step (bounce_escalation_step,
+    // step 1 by default; NotificationPolicyRules) escalates to that step's cc
+    // list. This is the message those people get. It is never a step's own
+    // message.
     key: "intake_reminder_bounce_notice",
     purpose: "intake_reminder",
     label: "Bounce notice",
-    description: "Tells the people cc'd on step 1 that the first reminder could not be delivered.",
+    description:
+      "Tells the people cc'd on the escalating step that its reminder could not be delivered.",
     channels: ["email"],
     recipientFields: INTAKE_CC_FIELDS,
     ccFields: INTAKE_CC_FIELDS,
@@ -195,7 +203,7 @@ export const NOTIFICATION_TEMPLATES: readonly NotificationTemplateEntry[] = [
   },
 ];
 
-/** The key of the bounce notice sent to step 1's cc list. */
+/** The key of the bounce notice sent to the escalating step's cc list. */
 export const INTAKE_BOUNCE_NOTICE_TEMPLATE = "intake_reminder_bounce_notice";
 
 export function getNotificationTemplate(key: string): NotificationTemplateEntry | null {

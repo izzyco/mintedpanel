@@ -17,6 +17,15 @@
 // only Minted sets them, on the default or as an org override, never an org
 // admin.
 //
+// Two policy decisions are settings too, not code (NotificationPolicyRules,
+// resolved by resolveNotificationPolicyRules; Mission Control edits them,
+// MINT-113):
+//   * Which intake step's bounce escalates to that step's cc list
+//     (bounce_escalation_step): step 1 (Oct 30), or 0 for none. Org-owned, like
+//     the cc lists themselves: an org row overrides Minted's default.
+//   * Whether the digest's step may carry a cc list (digest_cc_allowed): no,
+//     coordinators only (D59). Minted's alone, on the digest default.
+//
 // Nothing here sends anything. The consumers (the daily follow-up digest, and
 // intake reminders once the intake back end lands) resolve the effective
 // sequence and call `scheduleSequenceSends` and `bounceEscalationRecipients`
@@ -32,8 +41,9 @@
 //
 // The database enforces the same bounds (migration 20261031051500): offsets 0
 // to 90, at most 10 steps, offsets strictly increasing, the digest at most one
-// step and no cc, cc lists of at most 20 users or roles, target 1 to 90 days,
-// send hour 0 to 23 in an IANA zone. Rules that
+// step and no cc unless Minted allows it, cc lists of at most 20 users or
+// roles, target 1 to 90 days, send hour 0 to 23 in an IANA zone, bounce
+// escalation step 0 to 10. Rules that
 // a later PR may relax without a migration (the digest offset fixed at 0,
 // intake offsets from day 1) are enforced here and in the card only.
 //
@@ -146,9 +156,14 @@ export interface PurposeRules {
   minOffsetDays: number;
   /** When set, every step uses this offset and the card shows no input. */
   fixedOffsetDays: number | null;
-  /** Stop conditions, target days and start-date compression. */
+  /** Stop conditions, target days, the bounce escalation step and start-date compression. */
   hasIntakeSettings: boolean;
-  /** Steps carry an ordered cc list. False for the digest (coordinators only). */
+  /**
+   * The card edits an ordered cc list on each step, and the purpose's
+   * templates render a cc copy. False for the digest: whether its step may
+   * carry a cc list at all is Minted's setting (digest_cc_allowed, off:
+   * coordinators only), resolved as EffectiveNotificationSequence.ccAllowed.
+   */
   hasCcList: boolean;
   /** Admins can replace Minted's default steps with their own on the card. */
   stepsEditable: boolean;
@@ -182,7 +197,9 @@ export const PURPOSE_RULES: Record<NotificationPurpose, PurposeRules> = {
     // it one; 0 keeps the shared step shape. Relaxing this needs no migration.
     fixedOffsetDays: 0,
     hasIntakeSettings: false,
-    // Coordinators only (answer 2).
+    // Coordinators only (answer 2, D59): the card offers no digest cc list.
+    // The rule itself is Minted's setting digest_cc_allowed (see
+    // NotificationPolicyRules).
     hasCcList: purposeHasCcList("followup_digest"),
     // One email, one message, no cc: nothing for an org to change but on/off.
     stepsEditable: false,
@@ -193,6 +210,155 @@ export const PURPOSE_RULES: Record<NotificationPurpose, PurposeRules> = {
 
 /** How the card names the platform layer. */
 export const PLATFORM_DEFAULT_LABEL = "Minted's default";
+
+/* ----------------------------- Policy settings ----------------------------- */
+
+/**
+ * Two decided policies kept as settings, not code. Minted's default rows
+ * carry them (migration 20261031051500 seeds these same values) and Mission
+ * Control will edit them there (MINT-113). An org's own row may override the
+ * bounce escalation step, never digest_cc_allowed. The values below are the
+ * decided defaults, and what a reader falls back to when a stored value is
+ * missing or of the wrong shape.
+ */
+export interface NotificationPolicyRules {
+  /**
+   * Intake: the one step whose bounce is escalated, to that step's own cc
+   * list, in its order, with the bounce notice. Default 1 (Oct 30: "a bounce
+   * escalates on email 1", only to step 1's cc list).
+   * BOUNCE_ESCALATION_OFF (0): no bounce escalates. A step number the
+   * sequence does not have escalates to no one.
+   */
+  bounceEscalationStep: number;
+  /**
+   * Digest: whether its step may carry a cc list. Default false (D59: the
+   * digest goes to coordinators only; nobody cc'd receives anything).
+   * Minted's alone: an org-level value is ignored. Turning it on lets an org
+   * keep a cc list on its digest step; nothing renders or sends a cc copy of
+   * the digest yet (its template has no cc copy, and the MINT-108 sender
+   * writes to coordinators only).
+   */
+  digestCcAllowed: boolean;
+}
+
+/** bounceEscalationStep: no bounce escalates. */
+export const BOUNCE_ESCALATION_OFF = 0;
+
+/** The decided defaults (Oct 30 and D59). */
+export const DEFAULT_NOTIFICATION_POLICY_RULES: Readonly<NotificationPolicyRules> = Object.freeze({
+  bounceEscalationStep: 1,
+  digestCcAllowed: false,
+});
+
+/** A platform or organization layer. A null or missing field inherits. */
+export type NotificationPolicyRulesOverride = {
+  readonly [K in keyof NotificationPolicyRules]?: NotificationPolicyRules[K] | null;
+};
+
+/** 0 (no escalation) or a step position, 1 to the most steps a sequence has. */
+export function isBounceEscalationStep(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= BOUNCE_ESCALATION_OFF &&
+    value <= NOTIFICATION_LIMITS.maxSteps
+  );
+}
+
+const POLICY_CHECKS: { [K in keyof NotificationPolicyRules]: (value: unknown) => boolean } = {
+  bounceEscalationStep: isBounceEscalationStep,
+  digestCcAllowed: (value) => typeof value === "boolean",
+};
+
+/** The rules an org's own row may set. digest_cc_allowed is Minted's alone. */
+const ORG_POLICY_KEYS: ReadonlySet<keyof NotificationPolicyRules> = new Set([
+  "bounceEscalationStep",
+]);
+
+/**
+ * Field by field: the organization's value (the bounce step only), else the
+ * platform's (Minted's default row), else DEFAULT_NOTIFICATION_POLICY_RULES.
+ * null or undefined inherits; a value of the wrong shape is skipped like a
+ * missing one.
+ */
+export function resolveNotificationPolicyRules(
+  platform?: NotificationPolicyRulesOverride | null,
+  organization?: NotificationPolicyRulesOverride | null,
+): NotificationPolicyRules {
+  const pick = <K extends keyof NotificationPolicyRules>(key: K): NotificationPolicyRules[K] => {
+    const layers = ORG_POLICY_KEYS.has(key) ? [organization, platform] : [platform];
+    for (const layer of layers) {
+      const value: unknown = layer?.[key];
+      if (value != null && POLICY_CHECKS[key](value)) return value as NotificationPolicyRules[K];
+    }
+    return DEFAULT_NOTIFICATION_POLICY_RULES[key];
+  };
+  return {
+    bounceEscalationStep: pick("bounceEscalationStep"),
+    digestCcAllowed: pick("digestCcAllowed"),
+  };
+}
+
+/**
+ * Plain-language problems with one layer's policy settings; empty when it can
+ * go live. null leaves a rule to the layer below. An organization layer may
+ * not set digestCcAllowed.
+ */
+export function validateNotificationPolicyRules(
+  rules: unknown,
+  layer: "platform" | "organization" = "platform",
+): string[] {
+  if (rules == null || typeof rules !== "object" || Array.isArray(rules)) {
+    return ["The notification policy settings must be a set of named values."];
+  }
+  const record = rules as Record<string, unknown>;
+  const errors: string[] = [];
+  for (const key of Object.keys(record)) {
+    if (!(key in POLICY_CHECKS)) errors.push(`"${key}" is not a notification policy setting.`);
+  }
+  const step = record.bounceEscalationStep;
+  if (step != null && !isBounceEscalationStep(step)) {
+    errors.push(
+      `The bounce escalation step must be a step from 1 to ${NOTIFICATION_LIMITS.maxSteps}, or 0 for no escalation.`,
+    );
+  }
+  const cc = record.digestCcAllowed;
+  if (cc != null) {
+    if (typeof cc !== "boolean") {
+      errors.push("Whether the daily digest may cc anyone must be on or off.");
+    } else if (layer === "organization") {
+      errors.push("Only Minted decides whether the daily digest may cc anyone.");
+    }
+  }
+  return errors;
+}
+
+/** Whether a purpose's steps may carry a cc list under these rules. */
+export function purposeAllowsCc(
+  purpose: NotificationPurpose,
+  rules: Pick<NotificationPolicyRules, "digestCcAllowed">,
+): boolean {
+  return (
+    PURPOSE_RULES[purpose].hasCcList || (purpose === "followup_digest" && rules.digestCcAllowed)
+  );
+}
+
+/** The card's note on the escalating step's empty cc list. */
+export function bounceCcNote(stepNumber: number): string {
+  return `If step ${stepNumber} bounces, the people cc'd here are told. Add a member or a role so a bounce reaches someone.`;
+}
+
+/** The card's note under Minted's default intake steps, which cc no one. */
+export function defaultStepsCcNote(bounceEscalationStep: number): string {
+  const lead = `${PLATFORM_DEFAULT_LABEL} steps cc no one`;
+  const fix = "Customize the steps to cc a member or a role.";
+  return bounceEscalationStep === BOUNCE_ESCALATION_OFF
+    ? `${lead}. ${fix}`
+    : `${lead}, so a bounce on step ${bounceEscalationStep} reaches no one. ${fix}`;
+}
+
+/** The card's note on a purpose whose steps may not carry a cc list. */
+export const COORDINATORS_ONLY_NOTE = "Goes to each coordinator only. No one is cc'd.";
 
 /* ---------------------------------- Drafts --------------------------------- */
 
@@ -216,6 +382,12 @@ export interface SequenceDraft {
   stopConditions: NotificationStopCondition[] | null;
   /** Intake only. null: Minted's default (the input is blank). */
   targetDaysToReady: number | null;
+  /**
+   * Intake only: the step whose bounce escalates (NotificationPolicyRules);
+   * 0 for none. null: Minted's default. The card has no control for it yet;
+   * it carries a saved value through a save unchanged.
+   */
+  bounceEscalationStep: number | null;
   /** null: Minted's default steps. Otherwise the org's own, never empty. */
   steps: StepDraft[] | null;
 }
@@ -236,7 +408,13 @@ export interface NotificationSequenceDefaultConfig extends NotificationSequenceD
  * the sequence on, and any setting can be changed before saving.
  */
 export function starterDraft(): SequenceDraft {
-  return { enabled: false, stopConditions: null, targetDaysToReady: null, steps: null };
+  return {
+    enabled: false,
+    stopConditions: null,
+    targetDaysToReady: null,
+    bounceEscalationStep: null,
+    steps: null,
+  };
 }
 
 export function draftFromSequence(config: NotificationSequenceConfig): SequenceDraft {
@@ -244,6 +422,7 @@ export function draftFromSequence(config: NotificationSequenceConfig): SequenceD
     enabled: config.enabled,
     stopConditions: config.stopConditions ? [...config.stopConditions] : null,
     targetDaysToReady: config.targetDaysToReady,
+    bounceEscalationStep: config.bounceEscalationStep ?? null,
     steps:
       config.steps.length === 0
         ? null
@@ -270,8 +449,25 @@ export function stepsFromDefault(platformDefault: NotificationSequenceDefaultCon
     }));
 }
 
+/** A draft in one key order, so equal drafts compare equal however they were built. */
+function canonicalDraft(draft: SequenceDraft): string {
+  return JSON.stringify({
+    enabled: draft.enabled,
+    stopConditions: draft.stopConditions,
+    targetDaysToReady: draft.targetDaysToReady,
+    bounceEscalationStep: draft.bounceEscalationStep ?? null,
+    steps:
+      draft.steps?.map((step) => ({
+        offsetDays: step.offsetDays,
+        channel: step.channel,
+        templateKey: step.templateKey,
+        ccRecipients: step.ccRecipients,
+      })) ?? null,
+  });
+}
+
 export function draftsEqual(a: SequenceDraft, b: SequenceDraft): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return canonicalDraft(a) === canonicalDraft(b);
 }
 
 /* ------------------------------ Draft editing ------------------------------ */
@@ -411,7 +607,8 @@ export type SequenceIssueField =
   | "templateKey"
   | "ccRecipients"
   | "stopConditions"
-  | "targetDaysToReady";
+  | "targetDaysToReady"
+  | "bounceEscalationStep";
 
 export interface SequenceIssue {
   field: SequenceIssueField;
@@ -423,6 +620,17 @@ export interface SequenceIssue {
 export interface ValidateOptions {
   /** The org's member user ids; when given, a cc'd user outside it is an issue. */
   memberUserIds?: ReadonlySet<string>;
+  /**
+   * Minted's digest_cc_allowed (NotificationPolicyRules), when the caller has
+   * it. Default: the decided value, false (coordinators only).
+   */
+  digestCcAllowed?: boolean;
+}
+
+function draftAllowsCc(purpose: NotificationPurpose, options: ValidateOptions): boolean {
+  return purposeAllowsCc(purpose, {
+    digestCcAllowed: options.digestCcAllowed ?? DEFAULT_NOTIFICATION_POLICY_RULES.digestCcAllowed,
+  });
 }
 
 function isWholeNumber(value: number | null): value is number {
@@ -436,6 +644,7 @@ export function validateDraft(
   options: ValidateOptions = {},
 ): SequenceIssue[] {
   const rules = PURPOSE_RULES[purpose];
+  const ccAllowed = draftAllowsCc(purpose, options);
   const issues: SequenceIssue[] = [];
   const add = (field: SequenceIssueField, stepIndex: number | null, message: string) =>
     issues.push({ field, stepIndex, message });
@@ -488,7 +697,7 @@ export function validateDraft(
       );
     }
 
-    if (!rules.hasCcList && step.ccRecipients.length > 0) {
+    if (!ccAllowed && step.ccRecipients.length > 0) {
       add(
         "ccRecipients",
         index,
@@ -547,12 +756,23 @@ export function validateDraft(
         `Enter a target between ${NOTIFICATION_LIMITS.minTargetDays} and ${NOTIFICATION_LIMITS.maxTargetDays} days, or leave it blank for Minted's default.`,
       );
     }
+    const bounce = draft.bounceEscalationStep;
+    if (bounce != null && !isBounceEscalationStep(bounce)) {
+      add(
+        "bounceEscalationStep",
+        null,
+        `Choose which step's bounce is escalated (step 1 to ${NOTIFICATION_LIMITS.maxSteps}), turn it off, or use Minted's default.`,
+      );
+    }
   } else {
     if (draft.stopConditions != null) {
       add("stopConditions", null, "The daily digest has no stop conditions.");
     }
     if (draft.targetDaysToReady != null) {
       add("targetDaysToReady", null, "The daily digest has no target.");
+    }
+    if (draft.bounceEscalationStep != null) {
+      add("bounceEscalationStep", null, "The daily digest has no bounce rule.");
     }
   }
 
@@ -582,6 +802,12 @@ export interface SaveSequencePayload {
   stop_conditions: NotificationStopCondition[] | null;
   /** Intake only; null for Minted's default and always null for the digest. */
   target_days_to_ready: number | null;
+  /**
+   * Intake only: the org's own bounce escalation step (0: none). Absent for
+   * Minted's default and for the digest: the RPC reads a missing key as null,
+   * like every other optional setting.
+   */
+  bounce_escalation_step?: number;
   /** The revision the editor loaded; null when no row existed yet. */
   expected_revision: number | null;
   /** null: Minted's default steps. */
@@ -610,19 +836,22 @@ export function buildSavePayload(
     throw new Error(`Invalid notification sequence: ${issues[0].message}`);
   }
   const rules = PURPOSE_RULES[purpose];
+  const ccAllowed = draftAllowsCc(purpose, options);
   const stops = draft.stopConditions;
+  const bounce = rules.hasIntakeSettings ? draft.bounceEscalationStep : null;
   return {
     enabled: draft.enabled,
     stop_conditions:
       rules.hasIntakeSettings && stops ? STOP_CONDITIONS.filter((c) => stops.includes(c)) : null,
     target_days_to_ready: rules.hasIntakeSettings ? draft.targetDaysToReady : null,
+    ...(bounce != null ? { bounce_escalation_step: bounce } : {}),
     expected_revision: expectedRevision,
     steps:
       draft.steps?.map((step) => ({
         offset_days: step.offsetDays as number,
         channel: step.channel,
         template_key: step.templateKey,
-        cc_recipients: rules.hasCcList ? step.ccRecipients.map(ccRecipientToPayload) : [],
+        cc_recipients: ccAllowed ? step.ccRecipients.map(ccRecipientToPayload) : [],
       })) ?? null,
   };
 }
@@ -741,7 +970,7 @@ export interface EffectiveStep {
   offsetDays: number;
   channel: NotificationChannel;
   templateKey: string;
-  /** Always empty for the digest, and for Minted's default steps. */
+  /** Empty for Minted's default steps, and for the digest unless Minted allows a cc list. */
   ccRecipients: NotificationCcRecipient[];
 }
 
@@ -750,6 +979,7 @@ export type InheritableSetting =
   | "steps"
   | "stopConditions"
   | "targetDaysToReady"
+  | "bounceEscalationStep"
   | "compressTowardStartDate"
   | "sendHour"
   | "sendTimeZone";
@@ -768,6 +998,18 @@ export interface EffectiveNotificationSequence {
   stopConditions: NotificationStopCondition[];
   /** Intake; null for the digest. */
   targetDaysToReady: number | null;
+  /**
+   * Intake: the step whose bounce escalates to its own cc list
+   * (bounceEscalationRecipients); BOUNCE_ESCALATION_OFF for none. null for
+   * the digest, which has no bounce rule.
+   */
+  bounceEscalationStep: number | null;
+  /**
+   * Whether the steps may carry a cc list: always for intake; for the digest,
+   * Minted's digest_cc_allowed (off: coordinators only), which no org row
+   * can change.
+   */
+  ccAllowed: boolean;
   /** Intake; false for the digest. */
   compressTowardStartDate: boolean;
   /** Digest: the local hour (0 to 23); null for intake. */
@@ -810,8 +1052,10 @@ function resolveTimeZone(
  * org with no steps of its own takes the default steps, which cc no one.
  * `enabled` comes from the org's row alone, so a default cannot switch an
  * org on. The digest's zone is always usable (see resolveTimeZone): an org
- * zone this runtime cannot use reads as inherited. Throws when the rows are
- * for a different purpose.
+ * zone this runtime cannot use reads as inherited. The policy settings
+ * resolve through resolveNotificationPolicyRules: the bounce step from the
+ * org's row over Minted's default, digest_cc_allowed from Minted's default
+ * alone. Throws when the rows are for a different purpose.
  */
 export function resolveNotificationSequence(
   purpose: NotificationPurpose,
@@ -822,14 +1066,23 @@ export function resolveNotificationSequence(
     throw new RangeError(`Notification settings are not for ${purpose}`);
   }
   const rules = PURPOSE_RULES[purpose];
+  const policy = resolveNotificationPolicyRules(
+    {
+      bounceEscalationStep: platformDefault.bounceEscalationStep,
+      digestCcAllowed: platformDefault.digestCcAllowed,
+    },
+    { bounceEscalationStep: org?.bounceEscalationStep },
+  );
+  const ccAllowed = purposeAllowsCc(purpose, policy);
   const ownSteps = org != null && org.steps.length > 0;
   const steps: EffectiveStep[] = (ownSteps ? sortedByPosition(org.steps) : []).map((step) => ({
     position: step.position,
     offsetDays: step.offsetDays,
     channel: step.channel,
     templateKey: step.templateKey,
-    // The database refuses a digest cc; never pass one on regardless.
-    ccRecipients: rules.hasCcList ? step.ccRecipients.map((r) => ({ ...r })) : [],
+    // The database refuses a digest cc unless Minted allows one; never pass
+    // one on regardless.
+    ccRecipients: ccAllowed ? step.ccRecipients.map((r) => ({ ...r })) : [],
   }));
   if (!ownSteps) {
     for (const step of sortedByPosition(platformDefault.steps)) {
@@ -854,6 +1107,9 @@ export function resolveNotificationSequence(
   const [compress, compressInherited] = intake
     ? inherit(org?.compressTowardStartDate, platformDefault.compressTowardStartDate)
     : none;
+  const [bounceEscalationStep, bounceInherited]: [number | null, boolean] = intake
+    ? [policy.bounceEscalationStep, !isBounceEscalationStep(org?.bounceEscalationStep)]
+    : none;
   const timed = rules.hasSendTime;
   const [sendHour, hourInherited] = timed ? inherit(org?.sendHour, platformDefault.sendHour) : none;
   const [sendTimeZone, zoneInherited] = timed
@@ -866,6 +1122,8 @@ export function resolveNotificationSequence(
     steps,
     stopConditions: stopConditions ? STOP_CONDITIONS.filter((c) => stopConditions.includes(c)) : [],
     targetDaysToReady,
+    bounceEscalationStep,
+    ccAllowed,
     compressTowardStartDate: compress ?? false,
     sendHour,
     sendTimeZone,
@@ -873,6 +1131,7 @@ export function resolveNotificationSequence(
       steps: !ownSteps,
       stopConditions: stopsInherited,
       targetDaysToReady: targetInherited,
+      bounceEscalationStep: bounceInherited,
       compressTowardStartDate: compressInherited,
       sendHour: hourInherited,
       sendTimeZone: zoneInherited,
@@ -971,21 +1230,45 @@ export function describeSendTime(hour: number | null, zone: string | null): stri
 /* ------------------------------ Bounce rule -------------------------------- */
 
 /**
- * Decision 4: when step 1 of an intake reminder bounces, the people cc'd on
- * step 1 are told (with the bounce notice template), in their saved order. No
- * other bounce escalates, and the digest has no bounce rule. An empty cc list
- * means a bounce reaches no one, which the card warns about. Pass the
- * effective steps (resolveNotificationSequence): Minted's default steps cc no
- * one.
+ * Decision 4, as a setting: when the escalating step of an intake reminder
+ * (bounceEscalationStep, step 1 by default) bounces, the people cc'd on that
+ * step are told (with the bounce notice template), in their saved order. No
+ * other bounce escalates; with escalation off (0) none does; and the digest
+ * has no bounce rule. An empty cc list means a bounce reaches no one, which
+ * the card warns about. Pass the effective sequence
+ * (resolveNotificationSequence): Minted's default steps cc no one.
  */
 export function bounceEscalationRecipients(
-  purpose: NotificationPurpose,
-  steps: ReadonlyArray<{ position: number; ccRecipients: readonly NotificationCcRecipient[] }>,
+  sequence: Pick<EffectiveNotificationSequence, "purpose" | "bounceEscalationStep"> & {
+    steps: ReadonlyArray<{ position: number; ccRecipients: readonly NotificationCcRecipient[] }>;
+  },
   bouncedPosition: number,
 ): NotificationCcRecipient[] {
-  if (purpose !== "intake_reminder" || bouncedPosition !== 1) return [];
-  const first = steps.find((step) => step.position === 1);
-  return first ? [...first.ccRecipients] : [];
+  const escalating = sequence.bounceEscalationStep;
+  if (
+    sequence.purpose !== "intake_reminder" ||
+    escalating == null ||
+    escalating === BOUNCE_ESCALATION_OFF ||
+    bouncedPosition !== escalating
+  ) {
+    return [];
+  }
+  const step = sequence.steps.find((s) => s.position === escalating);
+  return step ? [...step.ccRecipients] : [];
+}
+
+/**
+ * The bounce escalation step an intake draft would save: its own, else
+ * Minted's default, else the decided step 1. The card's bounce notes read it.
+ */
+export function draftBounceEscalationStep(
+  draft: Pick<SequenceDraft, "bounceEscalationStep">,
+  platformDefault: Pick<NotificationSequenceDefault, "bounceEscalationStep">,
+): number {
+  return resolveNotificationPolicyRules(
+    { bounceEscalationStep: platformDefault.bounceEscalationStep },
+    { bounceEscalationStep: draft.bounceEscalationStep },
+  ).bounceEscalationStep;
 }
 
 /* ------------------------- Start-date cadence rule ------------------------- */

@@ -18,6 +18,7 @@ import {
   CC_ROLE_LABELS,
   NOTIFICATION_LIMITS,
   addCcRecipient,
+  bounceCcNote,
   ccRecipientLabel,
   moveCcRecipient,
   parseRecipientKey,
@@ -40,7 +41,7 @@ export function NotificationCcRecipients({
   members: ReadonlyMap<string, CcMemberOption>;
   /** False while the member list is loading or failed: no "Former member" yet. */
   membersLoaded?: boolean;
-  /** True on intake step 1, where a bounce escalates to this list. */
+  /** True on the intake step whose bounce escalates to this list (bounceEscalationStep). */
   bounceNote: boolean;
   onChange: (step: StepDraft) => void;
 }) {
@@ -56,7 +57,7 @@ export function NotificationCcRecipients({
           <p>No one is cc'd on this step.</p>
           <p className="text-[12px]">
             {bounceNote
-              ? "If step 1 bounces, the people cc'd here are told. Add a member or a role so a bounce reaches someone."
+              ? bounceCcNote(stepNumber)
               : "Add a member or a role to copy them on this step."}
           </p>
         </div>
