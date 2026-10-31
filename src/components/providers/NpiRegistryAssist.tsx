@@ -8,33 +8,36 @@
 //   2. Search: look up individuals by the form's first and last name (plus an
 //      optional state) and let staff pick one. Picking sets the NPI and, under
 //      the default policy, fills the form's blank fields the registry can
-//      supply (the form decides, via src/lib/npiRegistryFill.ts); a field with
-//      a value is never replaced.
-//      What was filled, what was kept, and the registry data no field holds
-//      are shown under the search and announced once.
-// Used by Add Provider (ProviderFormSections) and the roster form. Composition
-// of stock primitives, logged in DESIGN-DEBT.md.
+//      supply (the form decides, via src/lib/npiRegistryFill.ts); a value of
+//      staff's is never replaced, and a second pick replaces the first pick's
+//      data. What was filled, cleared and kept, the licenses staff may add,
+//      and the registry data no field holds are shown under the search and
+//      announced once. The form owns the pick, so it outlives a step change.
+// Used by Add Provider (ProviderFormSections) and the roster form; the check
+// note alone (NpiRegistryCheckNote) is also on the provider record's inline
+// edit. Composition of stock primitives, logged in DESIGN-DEBT.md.
 import { Fragment, useId, useRef, useState, type KeyboardEvent } from "react";
 import { CircleAlert, CircleCheck, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StateSelect } from "@/components/StateSelect";
 import {
-  useNpiRegistryLookup,
+  useNpiRegistryCheck,
   useNpiRegistrySearch,
   usePrimeNpiRegistryLookup,
 } from "@/hooks/useNpiRegistry";
 import {
   npiFillAnnouncement,
+  npiFillClearedText,
   npiFillFilledText,
   npiFillKeptText,
+  npiFillOffersText,
   type NpiFillSummary,
+  type NpiLicenseOffer,
+  type NpiPickState,
 } from "@/lib/npiRegistryFill";
 import {
-  npiLookupStateOf,
   npiRegistryErrorMessage,
   npiSearchStatusText,
-  npiToCheck,
-  npiVerificationView,
   registryDisplayName,
   validateNpiRegistrySearch,
   type NpiRegistryRecord,
@@ -158,11 +161,92 @@ export function NpiRegistryResultList({
   );
 }
 
-/** What the last pick did, and the registry data no field on the form holds.
- * Not a live region: NpiRegistryAssist announces a pick once, politely. */
-export function NpiRegistryPickSummary({ summary }: { summary: NpiFillSummary }) {
+/** Something said once through the check note's polite live region: a pick
+ * (with the check it causes) or a license staff added. A new `key` is a new
+ * thing to say. */
+export interface NpiAnnouncement {
+  key: string;
+  text: string;
+  /** Say the check's note after it (a pick changes the NPI). */
+  withCheck: boolean;
+}
+
+export interface NpiRegistryCheckNoteProps {
+  /** The note's id; the NPI input names it in aria-describedby. */
+  noticeId: string;
+  /** The NPI with separators stripped. */
+  npi: string;
+  /** False while an edit form still holds the stored NPI: an unchanged NPI is
+   * not re-checked (the same rule as the MINT-7 check digit). */
+  verify: boolean;
+  firstName: string;
+  lastName: string;
+  /** The resolved NPI Registry policy (useNpiRegistryPolicy). */
+  policy: NpiRegistryPolicy;
+  announcement?: NpiAnnouncement | null;
+}
+
+/** The registry check of an NPI field: the note under it, and a polite live
+ * region that speaks when the result changes, when a name edit makes a
+ * blocking answer start or stop blocking, and when `announcement` is new —
+ * never on a keystroke that changes neither. Updated during render from the
+ * previous key, so no effect is needed. */
+export function NpiRegistryCheckNote({
+  noticeId,
+  npi,
+  verify,
+  firstName,
+  lastName,
+  policy,
+  announcement = null,
+}: NpiRegistryCheckNoteProps) {
+  const { checkable, state, view } = useNpiRegistryCheck(
+    npi,
+    verify,
+    { firstName, lastName },
+    policy,
+  );
+  const blocked = view?.tone === "block";
+  const checkKey =
+    checkable === null ? "idle" : `${checkable}:${state.status}:${blocked ? "block" : "note"}`;
+  const eventKey = announcement?.key ?? null;
+  const [announced, setAnnounced] = useState({ checkKey, eventKey, text: "" });
+  if (announced.checkKey !== checkKey || announced.eventKey !== eventKey) {
+    const checkChanged = announced.checkKey !== checkKey;
+    const isNew = announcement !== null && announced.eventKey !== announcement.key;
+    const viewText = view ? [view.title, view.detail].filter(Boolean).join(". ") : null;
+    const text = isNew
+      ? [announcement.text, announcement.withCheck || checkChanged ? viewText : null]
+      : checkChanged
+        ? [viewText]
+        : [announced.text];
+    setAnnounced({ checkKey, eventKey, text: text.filter(Boolean).join(" ") });
+  }
+  return (
+    <>
+      <NpiVerificationNotice id={noticeId} view={view} />
+      <p role="status" aria-live="polite" className="sr-only">
+        {announced.text}
+      </p>
+    </>
+  );
+}
+
+/** What the last pick did, the licenses staff may add, and the registry data
+ * no field on the form holds. Not a live region: the check note announces a
+ * pick and an added license once, politely. */
+export function NpiRegistryPickSummary({
+  summary,
+  onAddLicense,
+}: {
+  summary: NpiFillSummary;
+  /** Staff add an offered license; without it the offers are listed only. */
+  onAddLicense?: (offer: NpiLicenseOffer) => void;
+}) {
   const titleId = useId();
+  const cleared = npiFillClearedText(summary);
   const kept = npiFillKeptText(summary);
+  const offers = npiFillOffersText(summary);
   return (
     <section
       aria-labelledby={titleId}
@@ -172,7 +256,47 @@ export function NpiRegistryPickSummary({ summary }: { summary: NpiFillSummary })
         From the NPI Registry
       </p>
       <p>{npiFillFilledText(summary)}</p>
+      {cleared ? <p>{cleared}</p> : null}
       {kept ? <p>{kept}</p> : null}
+      {offers ? (
+        <>
+          <p>
+            {offers}{" "}
+            <span className="text-muted-foreground">
+              A license row counts toward the provider&apos;s states, and NPPES lists no expiration
+              date — add one only if it applies.
+            </span>
+          </p>
+          <ul className="space-y-1">
+            {summary.licenseOffers.map((offer) => (
+              <li key={`${offer.state}|${offer.number}`} className="flex items-center gap-2">
+                <span className="font-mono">
+                  {offer.state} {offer.number}
+                </span>
+                {onAddLicense ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className={cn("h-7 px-2 text-[12px]", offer.added && "opacity-60")}
+                    // aria-disabled, not disabled: focus stays on the button.
+                    aria-disabled={offer.added || undefined}
+                    onClick={() => {
+                      if (!offer.added) onAddLicense(offer);
+                    }}
+                  >
+                    {offer.added ? "Added" : "Add license row"}
+                    <span className="sr-only">
+                      {" "}
+                      for {offer.state} {offer.number}
+                    </span>
+                  </Button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
       {summary.details.length > 0 ? (
         <>
           <p className="text-muted-foreground">Shown for reference; not saved:</p>
@@ -204,9 +328,14 @@ export interface NpiRegistryAssistProps {
   /** False while an edit form still holds the stored NPI: an unchanged NPI is
    * not re-checked (the same rule as the MINT-7 check digit). */
   verify: boolean;
-  /** Apply a picked match: set the NPI, fill what the policy's fillOnPick
-   * allows (never a field with a value), and say what was filled and kept. */
-  onPick: (record: NpiRegistryRecord) => NpiFillSummary;
+  /** The form's last pick, or null. The form keeps it so it outlives a step
+   * change and so the next pick can replace what this one wrote. */
+  pick: NpiPickState | null;
+  /** Apply a picked match (set the NPI, fill what the policy's fillOnPick
+   * allows, never a value of staff's) and remember it as the form's pick. */
+  onPick: (record: NpiRegistryRecord) => void;
+  /** Staff add a license the pick offered. */
+  onAddLicense: (offer: NpiLicenseOffer) => void;
   /** The verification note's id; the NPI input names it in aria-describedby. */
   noticeId: string;
   /** The resolved NPI Registry policy (useNpiRegistryPolicy): which answers
@@ -219,7 +348,9 @@ export function NpiRegistryAssist({
   firstName,
   lastName,
   verify,
+  pick,
   onPick,
+  onAddLicense,
   noticeId,
   policy,
 }: NpiRegistryAssistProps) {
@@ -227,35 +358,22 @@ export function NpiRegistryAssist({
   const searchButton = useRef<HTMLButtonElement>(null);
   const [state, setState] = useState("");
   const [submitted, setSubmitted] = useState<NpiRegistrySearchInput | null>(null);
-  // The last pick. `seq` tells a new pick from a re-render.
-  const [picked, setPicked] = useState<{
-    seq: number;
-    npi: string;
-    summary: NpiFillSummary;
-  } | null>(null);
 
-  const checkable = npiToCheck(npi, verify);
-  const lookup = useNpiRegistryLookup(checkable);
-  const lookupState = npiLookupStateOf(checkable, lookup);
-  const view = npiVerificationView(lookupState, { firstName, lastName }, policy);
-
-  // Announce the check only when its result changes (a new NPI, or loading →
-  // found / not found / unavailable) — never on a name keystroke, even though
-  // the note itself follows the typed name. A pick is announced once, in the
-  // same message as the check it causes, so neither is lost to the other.
-  // Updated during render from the previous key, so no effect is needed.
-  const announceKey = checkable === null ? "idle" : `${checkable}:${lookupState.status}`;
-  const pickSeq = picked?.seq ?? 0;
-  const [announced, setAnnounced] = useState({ key: announceKey, pickSeq, text: "" });
-  if (announced.key !== announceKey || announced.pickSeq !== pickSeq) {
-    const pickText =
-      picked && announced.pickSeq !== pickSeq ? npiFillAnnouncement(picked.summary) : null;
-    const viewText = view ? [view.title, view.detail].filter(Boolean).join(". ") : null;
-    setAnnounced({
-      key: announceKey,
-      pickSeq,
-      text: [pickText, viewText].filter(Boolean).join(" "),
-    });
+  // What to say once: a new pick (seen as a new `seq`), or a license staff
+  // added. Mounting with an earlier pick says nothing.
+  const pickSeq = pick?.seq ?? 0;
+  const [seenPickSeq, setSeenPickSeq] = useState(pickSeq);
+  const [announcement, setAnnouncement] = useState<NpiAnnouncement | null>(null);
+  const [addCount, setAddCount] = useState(0);
+  if (seenPickSeq !== pickSeq) {
+    setSeenPickSeq(pickSeq);
+    if (pick) {
+      setAnnouncement({
+        key: `pick:${pickSeq}`,
+        text: npiFillAnnouncement(pick.summary),
+        withCheck: true,
+      });
+    }
   }
 
   const search = useNpiRegistrySearch(submitted);
@@ -290,20 +408,35 @@ export function NpiRegistryAssist({
     setSubmitted(next);
   };
 
-  const pick = (record: NpiRegistryRecord) => {
+  const pickRecord = (record: NpiRegistryRecord) => {
     primeLookup(record);
-    const summary = onPick(record);
-    setPicked((previous) => ({ seq: (previous?.seq ?? 0) + 1, npi: record.npi, summary }));
+    onPick(record);
     setSubmitted(null);
     searchButton.current?.focus();
   };
 
+  const addLicense = (offer: NpiLicenseOffer) => {
+    onAddLicense(offer);
+    const next = addCount + 1;
+    setAddCount(next);
+    setAnnouncement({
+      key: `add:${next}`,
+      text: `Added a ${offer.state} license row with number ${offer.number}.`,
+      withCheck: false,
+    });
+  };
+
   return (
     <div className="mt-2 space-y-2">
-      <NpiVerificationNotice id={noticeId} view={view} />
-      <p role="status" aria-live="polite" className="sr-only">
-        {announced.text}
-      </p>
+      <NpiRegistryCheckNote
+        noticeId={noticeId}
+        npi={npi}
+        verify={verify}
+        firstName={firstName}
+        lastName={lastName}
+        policy={policy}
+        announcement={announcement}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor={stateId} className="sr-only">
           NPI Registry search state
@@ -334,10 +467,12 @@ export function NpiRegistryAssist({
         {npiSearchStatusText(searchState, policy.fillOnPick)}
       </p>
       {searchState.status === "done" ? (
-        <NpiRegistryResultList results={searchState.result.results} onPick={pick} />
+        <NpiRegistryResultList results={searchState.result.results} onPick={pickRecord} />
       ) : null}
       {/* Shown while the form still holds the picked NPI. */}
-      {picked && picked.npi === npi ? <NpiRegistryPickSummary summary={picked.summary} /> : null}
+      {pick && pick.npi === npi ? (
+        <NpiRegistryPickSummary summary={pick.summary} onAddLicense={addLicense} />
+      ) : null}
     </div>
   );
 }

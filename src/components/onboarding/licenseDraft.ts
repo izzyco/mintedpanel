@@ -1,7 +1,6 @@
 // License editor draft model (E1.3). Non-component module so the editor
 // file exports only components (react-refresh rule).
 import type { PsvStatus } from "@/lib/licensePsv";
-import type { NpiFillLicense } from "@/lib/npiRegistryFill";
 import type { LicenseInput } from "@/services/providers";
 
 export interface LicenseDraft {
@@ -64,17 +63,15 @@ export function isBlankLicenseDraft(draft: LicenseDraft): boolean {
   );
 }
 
-/** MINT-110: the licenses an NPI Registry pick places — into the blank row
- * named, or a new row with the editor's defaults. Other rows are untouched. */
-export function placeRegistryLicenses(
+/** MINT-110: staff added a registry license offered after an NPI Registry
+ * pick. It fills the untouched empty row when there is one, or a new row with
+ * the editor's defaults; dates stay blank (NPPES has no expiration date). */
+export function addRegistryLicenseDraft(
   drafts: LicenseDraft[],
-  licenses: NpiFillLicense[],
+  offer: { state: string; number: string },
 ): LicenseDraft[] {
-  const next = [...drafts];
-  for (const license of licenses) {
-    const filled = { state: license.state, licenseNumber: license.number };
-    if (license.rowIndex === null) next.push({ ...EMPTY_LICENSE_DRAFT, ...filled });
-    else next[license.rowIndex] = { ...next[license.rowIndex], ...filled };
-  }
-  return next;
+  const filled = { state: offer.state, licenseNumber: offer.number };
+  const emptyRow = drafts.findIndex(isBlankLicenseDraft);
+  if (emptyRow < 0) return [...drafts, { ...EMPTY_LICENSE_DRAFT, ...filled }];
+  return drafts.map((draft, index) => (index === emptyRow ? { ...draft, ...filled } : draft));
 }

@@ -19,6 +19,7 @@ import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import {
   US_STATES,
+  addNpiLicenseOffer,
   applyNpiRegistryPick,
   emptyLicenseRow,
   type LicenseRow,
@@ -29,6 +30,7 @@ import {
 import { stripNpiSeparators } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { PROVIDER_GENDER_OPTIONS, PROVIDER_GENDER_UNSET_VALUE } from "@/lib/providerGender";
+import { markNpiLicenseOfferAdded, type NpiPickState } from "@/lib/npiRegistryFill";
 
 interface SectionProps {
   form: ProviderFormState;
@@ -105,9 +107,32 @@ export function PersonalSection({ form, errors, update }: SectionProps) {
   );
 }
 
-export function CredentialsSection({ form, errors, update }: SectionProps) {
+/** What the stepper keeps for the NPI Registry across steps (CredentialsSection
+ * unmounts on every step change). */
+export interface CredentialsNpiProps {
+  npiPick: NpiPickState | null;
+  onNpiPick: (pick: NpiPickState) => void;
+  /** Staff chose a taxonomy: the preset is no longer a default nobody chose. */
+  taxonomyTouched: boolean;
+  onTaxonomyTouched: () => void;
+}
+
+const NO_NPI_PICK: CredentialsNpiProps = {
+  npiPick: null,
+  onNpiPick: () => undefined,
+  taxonomyTouched: false,
+  onTaxonomyTouched: () => undefined,
+};
+
+export function CredentialsSection({
+  form,
+  errors,
+  update,
+  npi = NO_NPI_PICK,
+}: SectionProps & { npi?: CredentialsNpiProps }) {
   const npiNoticeId = useId();
   const npiPolicy = useNpiRegistryPolicy();
+  const { npiPick, onNpiPick, taxonomyTouched, onTaxonomyTouched } = npi;
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <Field label="NPI" error={errors.npi}>
@@ -125,15 +150,28 @@ export function CredentialsSection({ form, errors, update }: SectionProps) {
           firstName={form.firstName}
           lastName={form.lastName}
           verify
+          pick={npiPick}
           onPick={(record) => {
             // Credentials (Personal) and licenses (Licenses) live on other
             // steps; the summary under the search names what changed.
-            const next = applyNpiRegistryPick(form, record, npiPolicy.fillOnPick);
+            const next = applyNpiRegistryPick(form, record, npiPolicy.fillOnPick, {
+              taxonomyTouched,
+              lastPick: npiPick?.trace ?? null,
+            });
             update("npi", next.form.npi);
             update("credentials", next.form.credentials);
             update("taxonomyCode", next.form.taxonomyCode);
             update("licenses", next.form.licenses);
-            return next.summary;
+            onNpiPick({
+              seq: (npiPick?.seq ?? 0) + 1,
+              npi: record.npi,
+              trace: next.trace,
+              summary: next.summary,
+            });
+          }}
+          onAddLicense={(offer) => {
+            update("licenses", addNpiLicenseOffer(form.licenses, offer));
+            if (npiPick) onNpiPick(markNpiLicenseOfferAdded(npiPick, offer));
           }}
           noticeId={npiNoticeId}
           policy={npiPolicy}
@@ -174,7 +212,10 @@ export function CredentialsSection({ form, errors, update }: SectionProps) {
       >
         <Select
           value={form.taxonomyCode || undefined}
-          onValueChange={(v) => update("taxonomyCode", v)}
+          onValueChange={(v) => {
+            update("taxonomyCode", v);
+            onTaxonomyTouched();
+          }}
         >
           <SelectTrigger aria-label="Taxonomy code">
             <SelectValue placeholder="Select taxonomy" />

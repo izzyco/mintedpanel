@@ -490,4 +490,32 @@ describe("the NPI Registry policy at save", () => {
       }),
     ).toEqual({ status: "error", message: NPI_REGISTRY_UNAVAILABLE_MESSAGE });
   });
+
+  it("reads a disabled or paused lookup as not checked, which never blocks", () => {
+    // No active organization (the query is disabled) or offline (paused):
+    // no answer is coming, so the check is idle, not loading forever.
+    for (const fetchStatus of ["idle", "paused"] as const) {
+      const state = npiLookupStateOf("1234567893", { isError: false, error: null, fetchStatus });
+      expect(state).toEqual({ status: "idle" });
+      expect(npiRegistrySaveBlock(state, typed, strict)).toBeNull();
+    }
+    expect(
+      npiLookupStateOf("1234567893", { isError: false, error: null, fetchStatus: "fetching" }),
+    ).toEqual({ status: "loading" });
+  });
+});
+
+describe("compareNpiRegistryName with other names", () => {
+  it("counts a former name's middle name", () => {
+    const record: NpiRegistryRecord = {
+      ...jane,
+      otherNames: [{ firstName: "JANE", middleName: "QUINN", lastName: "SMITH", type: "Former" }],
+    };
+    expect(compareNpiRegistryName({ firstName: "Jane Q", lastName: "Smith" }, record)).toBe(
+      "match",
+    );
+    expect(compareNpiRegistryName({ firstName: "Jane R", lastName: "Smith" }, record)).toBe(
+      "mismatch",
+    );
+  });
 });

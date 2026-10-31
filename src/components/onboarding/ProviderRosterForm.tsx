@@ -30,10 +30,9 @@ import { GroupAssignmentPicker } from "@/components/onboarding/GroupAssignmentPi
 import { LicenseListEditor } from "@/components/onboarding/LicenseListEditor";
 import {
   EMPTY_LICENSE_DRAFT,
-  isBlankLicenseDraft,
+  addRegistryLicenseDraft,
   licenseDraftToValues,
   licenseDraftsEqual,
-  placeRegistryLicenses,
   type LicenseDraft,
 } from "@/components/onboarding/licenseDraft";
 import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
@@ -45,10 +44,10 @@ import { StateSelect } from "@/components/StateSelect";
 import { ENROLLMENT_GUARD_TEXT } from "@/components/providers/EnrollmentsPanel";
 import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
 import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiRegistry";
-import { rosterNpiError } from "@/components/onboarding/rosterNpi";
+import { applyRosterNpiPick, rosterNpiError } from "@/components/onboarding/rosterNpi";
 import { identityFieldChanged, stripNpiSeparators } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
-import { planNpiRegistryFill, type NpiFillSummary } from "@/lib/npiRegistryFill";
+import { markNpiLicenseOfferAdded, type NpiPickState } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import {
@@ -68,9 +67,13 @@ interface RosterFormErrors {
   assignments?: string;
 }
 
-function FieldError({ message }: { message?: string }) {
+function FieldError({ id, message }: { id?: string; message?: string }) {
   if (!message) return null;
-  return <p className="mt-1 text-[12px] text-[#B91C1C]">{message}</p>;
+  return (
+    <p id={id} className="mt-1 text-[12px] text-[#B91C1C]">
+      {message}
+    </p>
+  );
 }
 
 interface RosterFormState {
@@ -222,33 +225,27 @@ function FormBody({
     npiPolicy,
   );
 
-  // MINT-110: a picked registry match sets the NPI and, under the policy's
-  // "blank_fields", fills only blank fields; a saved license row is never
-  // blank, so it is never altered.
-  const pickFromRegistry = (record: NpiRegistryRecord): NpiFillSummary => {
-    const plan = planNpiRegistryFill(
+  // MINT-110: the last NPI Registry pick (its summary, and what it wrote so a
+  // second pick can replace it). Picking never adds a license row; staff add
+  // an offered one from the summary.
+  const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
+  const npiErrorId = useId();
+  const pickFromRegistry = (record: NpiRegistryRecord) => {
+    const next = applyRosterNpiPick(
+      { npi: form.npi, credentials: form.credentials, taxonomyCode: form.taxonomyCode },
+      licenses,
       record,
-      {
-        npi: form.npi,
-        credentials: form.credentials,
-        taxonomyCode: form.taxonomyCode,
-        licenses: licenses.map((draft) => ({
-          state: draft.state,
-          number: draft.licenseNumber,
-          blank: isBlankLicenseDraft(draft),
-        })),
-        // A row needs only its state to save; the expiration date is optional.
-        licenseRowSaveable: true,
-      },
       npiPolicy.fillOnPick,
+      npiPick?.trace ?? null,
     );
-    set({
-      npi: plan.npi,
-      ...(plan.credentials !== null ? { credentials: plan.credentials } : {}),
-      ...(plan.taxonomyCode !== null ? { taxonomyCode: plan.taxonomyCode } : {}),
+    set(next.patch);
+    setLicenses(next.licenses);
+    setNpiPick({
+      seq: (npiPick?.seq ?? 0) + 1,
+      npi: record.npi,
+      trace: next.trace,
+      summary: next.summary,
     });
-    if (plan.licenses.length > 0) setLicenses(placeRegistryLicenses(licenses, plan.licenses));
-    return plan.summary;
   };
 
   const reload = async () => {
@@ -521,11 +518,12 @@ function FormBody({
                 id="prov-npi"
                 value={form.npi}
                 onChange={(e) => set({ npi: e.target.value })}
-                aria-describedby={npiNoticeId}
+                aria-describedby={errors.npi ? `${npiNoticeId} ${npiErrorId}` : npiNoticeId}
+                aria-invalid={errors.npi ? true : undefined}
                 inputMode="numeric"
                 className="h-9"
               />
-              <FieldError message={errors.npi} />
+              <FieldError id={npiErrorId} message={errors.npi} />
             </div>
             <div>
               <Label htmlFor="prov-taxonomy" className="text-[12px]">
@@ -577,7 +575,12 @@ function FormBody({
             firstName={form.firstName}
             lastName={form.lastName}
             verify={npiChanged}
+            pick={npiPick}
             onPick={pickFromRegistry}
+            onAddLicense={(offer) => {
+              setLicenses((rows) => addRegistryLicenseDraft(rows, offer));
+              setNpiPick((pick) => (pick ? markNpiLicenseOfferAdded(pick, offer) : pick));
+            }}
             noticeId={npiNoticeId}
             policy={npiPolicy}
           />

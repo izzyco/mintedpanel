@@ -27,14 +27,26 @@ export function Field({
   const generatedId = useId();
   let controlId = generatedId;
   let rendered: ReactNode = children;
+  const errorId = `${generatedId}-error`;
 
+  // A single control gets the label's id, and while there is an error,
+  // aria-invalid plus the error's id in its aria-describedby (after any
+  // description it already names, such as the NPI Registry note).
   if (isValidElement(children)) {
-    const child = children as ReactElement<{ id?: string }>;
-    if (child.props.id) {
-      controlId = child.props.id;
-    } else {
-      rendered = cloneElement(child, { id: generatedId });
-    }
+    const child = children as ReactElement<{
+      id?: string;
+      "aria-describedby"?: string;
+      "aria-invalid"?: boolean;
+    }>;
+    if (child.props.id) controlId = child.props.id;
+    const describedBy = [child.props["aria-describedby"], error ? errorId : null]
+      .filter(Boolean)
+      .join(" ");
+    rendered = cloneElement(child, {
+      id: controlId,
+      ...(describedBy ? { "aria-describedby": describedBy } : {}),
+      ...(error ? { "aria-invalid": true } : {}),
+    });
   }
 
   return (
@@ -42,7 +54,11 @@ export function Field({
       <FieldLabel htmlFor={controlId}>{label}</FieldLabel>
       {rendered}
       {helper ? <p className="mt-1 text-xs text-muted-foreground">{helper}</p> : null}
-      {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+      {error ? (
+        <p id={errorId} className="mt-1 text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

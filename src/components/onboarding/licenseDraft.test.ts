@@ -1,10 +1,11 @@
-// MINT-110 — the roster form's license rows under an NPI Registry pick: only
-// an untouched row may be filled, and a new row takes the editor's defaults.
+// MINT-110 — the roster form's license rows when staff add a license an NPI
+// Registry pick offered: only an untouched row is filled, and a new row takes
+// the editor's defaults.
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_LICENSE_DRAFT,
+  addRegistryLicenseDraft,
   isBlankLicenseDraft,
-  placeRegistryLicenses,
   type LicenseDraft,
 } from "./licenseDraft";
 
@@ -37,16 +38,15 @@ describe("isBlankLicenseDraft", () => {
   });
 });
 
-describe("placeRegistryLicenses", () => {
-  it("fills the named blank row and appends the rest with the editor's defaults", () => {
+describe("addRegistryLicenseDraft", () => {
+  it("fills the untouched empty row, or adds one with the editor's defaults", () => {
     const rows = [saved, { ...EMPTY_LICENSE_DRAFT }];
-    const next = placeRegistryLicenses(rows, [
-      { state: "CO", number: "PT-4471", rowIndex: 1 },
-      { state: "WY", number: "WY-0099", rowIndex: null },
-    ]);
+    const next = addRegistryLicenseDraft(rows, { state: "WY", number: "WY-0099" });
     expect(next[0]).toBe(saved);
-    expect(next[1]).toEqual({ ...EMPTY_LICENSE_DRAFT, state: "CO", licenseNumber: "PT-4471" });
-    expect(next[2]).toEqual({ ...EMPTY_LICENSE_DRAFT, state: "WY", licenseNumber: "WY-0099" });
+    expect(next[1]).toEqual({ ...EMPTY_LICENSE_DRAFT, state: "WY", licenseNumber: "WY-0099" });
+    expect(next).toHaveLength(2);
+    const again = addRegistryLicenseDraft(next, { state: "CO", number: "PT-4471" });
+    expect(again[2]).toEqual({ ...EMPTY_LICENSE_DRAFT, state: "CO", licenseNumber: "PT-4471" });
     expect(rows).toHaveLength(2);
   });
 });
