@@ -36,13 +36,18 @@ import {
 } from "@/components/onboarding/licenseDraft";
 import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
 import { useStateLicensesByProvider } from "@/hooks/useLookups";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import { useCreateProviderWithDetails, useUpdateProviderWithLicenses } from "@/hooks/useProviders";
 import { useCreateEnrollmentFact } from "@/hooks/useEnrollmentFacts";
 import { usePayers } from "@/hooks/useAdmin";
 import { StateSelect } from "@/components/StateSelect";
 import { ENROLLMENT_GUARD_TEXT } from "@/components/providers/EnrollmentsPanel";
 import { normalizeNpi } from "@/lib/providerGroup";
-import { NPI_CHECK_DIGIT_MESSAGE, identityFieldChanged, isValidNpi } from "@/lib/providerIdentity";
+import {
+  NPI_CHECK_DIGIT_MESSAGE,
+  identityFieldNeedsCheck,
+  isValidNpi,
+} from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import {
@@ -193,6 +198,7 @@ function FormBody({
   >([]);
   const payersQ = usePayers();
   const createFact = useCreateEnrollmentFact();
+  const identityRules = useIdentityValidationRules();
 
   const createMut = useCreateProviderWithDetails();
   const updateMut = useUpdateProviderWithLicenses(provider?.id ?? "");
@@ -218,18 +224,19 @@ function FormBody({
     const next: RosterFormErrors = {};
     if (!form.firstName.trim()) next.firstName = "First name is required";
     if (!form.lastName.trim()) next.lastName = "Last name is required";
-    // MINT-7: an entered or changed NPI must pass the CMS check digit; an
-    // unchanged stored NPI is not re-validated, so legacy data never blocks
-    // an unrelated edit.
+    // MINT-7: an entered or changed NPI must pass the CMS check digit. By
+    // default an unchanged stored NPI is not re-checked, so legacy data never
+    // blocks an unrelated edit (recheckStoredOnEdit, MINT-129).
     const npiDigits = normalizeNpi(form.npi);
-    const npiChanged = identityFieldChanged(
+    const npiChecked = identityFieldNeedsCheck(
       form.npi,
       provider ? initialForm.npi : undefined,
+      identityRules,
       normalizeNpi,
     );
     if (!form.npi.trim()) next.npi = "Type 1 NPI is required";
-    else if (npiChanged && npiDigits.length !== 10) next.npi = "NPI must be 10 digits";
-    else if (npiChanged && !isValidNpi(npiDigits)) next.npi = NPI_CHECK_DIGIT_MESSAGE;
+    else if (npiChecked && npiDigits.length !== 10) next.npi = "NPI must be 10 digits";
+    else if (npiChecked && !isValidNpi(npiDigits)) next.npi = NPI_CHECK_DIGIT_MESSAGE;
     if (form.ssnLast4.trim() && !/^\d{4}$/.test(form.ssnLast4.trim()))
       next.ssnLast4 = "Enter the LAST 4 digits only";
     const assignmentError = validateGroupAssignments(assignments);

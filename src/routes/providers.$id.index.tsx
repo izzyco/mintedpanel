@@ -74,6 +74,7 @@ import { useCases, useCaseDenialEntries, useDenialReasonCodes } from "@/hooks/us
 import { useEnrollmentReadiness } from "@/hooks/useEnrollmentReadiness";
 import { AddTouchDialog, type TouchCaseCandidate } from "@/components/cases/AddTouchDialog";
 import { usePayers } from "@/hooks/useAdmin";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import { useCanWrite } from "@/lib/permissions";
 import { isValidEmail } from "@/lib/contactValidation";
 import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
@@ -367,6 +368,9 @@ interface FieldDef {
   masked?: boolean;
   mono?: boolean;
   display?: (value: string | null) => string;
+  /** Validate the stored value on save even when unchanged
+   * (IdentityValidationRules.recheckStoredOnEdit). */
+  recheckStored?: boolean;
 }
 type Cell = FieldDef | { ssn: true };
 
@@ -374,6 +378,7 @@ const CELL_LABEL = "text-[12px] font-semibold uppercase tracking-[0.05em] text-[
 
 function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite: boolean }) {
   const update = useUpdateProvider(provider.id);
+  const identityRules = useIdentityValidationRules();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -419,11 +424,13 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           key: "npi",
           value: provider.npi ?? null,
           mono: true,
-          // Runs only when the NPI changed (see save) — MINT-7 check digit.
+          // Runs when the NPI changed, or always under recheckStoredOnEdit
+          // (see save) — MINT-7 check digit.
           validate: (v) => {
             if (!/^\d{10}$/.test(v)) return "NPI is 10 digits.";
             return isValidNpi(v) ? null : NPI_CHECK_DIGIT_MESSAGE;
           },
+          recheckStored: identityRules.recheckStoredOnEdit,
         },
         { label: "CAQH ID", key: "caqhId", value: provider.caqhId ?? null, mono: true },
         { label: "Specialty", key: "specialty", value: provider.specialty ?? null },
@@ -479,9 +486,10 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       const draftValue = draft[f.key] ?? "";
       const v = f.type === "gender" ? draftValue : draftValue.trim();
       // Validate only fields the user actually changed — a legacy invalid
-      // value in an untouched field must not block an unrelated edit.
+      // value in an untouched field must not block an unrelated edit — unless
+      // the field is re-checked when stored (MINT-129).
       const changed = (v === "" ? null : v) !== (f.value ?? null);
-      if (changed && v !== "" && f.validate) {
+      if ((changed || f.recheckStored) && v !== "" && f.validate) {
         const message = f.validate(v);
         if (message) errors[f.key] = message;
       }

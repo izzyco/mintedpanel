@@ -1,5 +1,10 @@
 import { matchGroupLocator } from "@/lib/groupLocator";
-import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
+import {
+  DEFAULT_IDENTITY_VALIDATION_RULES,
+  NPI_CHECK_DIGIT_MESSAGE,
+  isValidNpi,
+  type IdentityValidationRules,
+} from "@/lib/providerIdentity";
 
 // E3.1 — the pure five-part dedupe / conflict-review / commit-plan core
 // (TE-3/TE-4). NO I/O: the service layer batch-reads the org's existing data
@@ -88,6 +93,9 @@ export interface DedupeInputs {
   groupAssignments: GroupAssignmentPair[];
   facilityAssignments: FacilityAssignmentPair[];
   licenses: DedupeLicenseRecord[];
+  /** The identity validation rules in force (MINT-129). Omitted means the
+   * defaults: only a new identity is checked against the NPI check digit. */
+  identityRules?: IdentityValidationRules;
 }
 
 export interface LicenseDraft {
@@ -185,6 +193,10 @@ export const ALREADY_EXISTS_REASON = "already exists";
 export const MISSING_NPI_MATCH_REASON =
   "Missing NPI — matches an existing provider by name; review manually (never merged automatically)";
 export const MISSING_NPI_REASON = "Missing NPI — flagged for manual review";
+/** Only under IdentityValidationRules.recheckStoredOnEdit: the row matches an
+ * existing provider whose stored NPI fails the CMS check digit. */
+export const STORED_NPI_CHECK_DIGIT_REASON =
+  "NPI check digit is invalid — it is this provider's stored NPI, so correct it on their record and in the file";
 
 const norm = (v: string | null | undefined): string =>
   (v ?? "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -337,6 +349,7 @@ function pushNote(notes: string[], note: string | null): void {
  * per-provider dispositions. Identity is resolved across the whole batch
  * before folding; row order decides only the valid fold anchors. */
 export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
+  const rules = inputs.identityRules ?? DEFAULT_IDENTITY_VALIDATION_RULES;
   const byNpi = new Map<string, DedupeProviderRecord[]>();
   for (const p of inputs.providers) {
     const npi = p.npi?.trim();
@@ -510,6 +523,17 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
 
     const existing = providerByIncomingNpi.get(npi);
     if (existing?.npi?.trim()) {
+      // Off by default: a row matched by NPI is not re-checked (MINT-129).
+      if (rules.recheckStoredOnEdit && !isValidNpi(npi)) {
+        ordered.push({
+          kind: "blocked",
+          line: row.line,
+          column: "npi",
+          displayName,
+          reason: STORED_NPI_CHECK_DIGIT_REASON,
+        });
+        continue;
+      }
       // ---- Existing provider (matched by NPI): fold into ONE entry. ----
       let entry = matchedByProvider.get(existing.id);
       if (!entry) {
@@ -609,10 +633,11 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
       continue;
     }
 
-    // MINT-7: the CMS check digit binds only a NEW identity — a new provider,
-    // or an NPI filled onto an existing provider with none. A row matched by
-    // NPI (above) keeps today's behavior, so re-importing a provider whose
-    // stored NPI predates the check never newly blocks.
+    // MINT-7: the CMS check digit binds a NEW identity — a new provider, or
+    // an NPI filled onto an existing provider with none — under every rule.
+    // By default a row matched by NPI (above) keeps today's behavior, so
+    // re-importing a provider whose stored NPI predates the check never newly
+    // blocks.
     if (!isValidNpi(npi)) {
       ordered.push({
         kind: "blocked",
