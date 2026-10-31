@@ -179,7 +179,11 @@ describe("ImportNpiVerifier", () => {
     expect(h.calls).toHaveLength(3);
     expect(end.phase).toBe("done");
     expect([...end.results.values()]).toEqual(
-      Array(5).fill({ status: "not_checked", reason: "rate_limited" }),
+      Array(5).fill({
+        status: "not_checked",
+        reason: "rate_limited",
+        message: "Too many NPI Registry checks right now. Reload the review to check again",
+      }),
     );
   });
 
@@ -197,6 +201,10 @@ describe("ImportNpiVerifier", () => {
       (outcome) => outcome.status === "not_checked" && outcome.reason === "unavailable",
     );
     expect(unavailable).toHaveLength(30);
+    // The forms' words for a failed call (npiRegistryErrorMessage).
+    expect(new Set(unavailable.map((outcome) => "message" in outcome && outcome.message))).toEqual(
+      new Set(["NPI Registry is unavailable"]),
+    );
   });
 
   it("keeps going after a single outage when the registry comes back", async () => {
@@ -239,7 +247,11 @@ describe("ImportNpiVerifier", () => {
     const end = await settle(verifier);
     expect(h.calls.map((call) => call.npis)).toEqual([[a, b, c], [c]]);
     expect(end.results.get(a)).toEqual({ status: "checked", record: null });
-    expect(end.results.get(b)).toEqual({ status: "not_checked", reason: "unavailable" });
+    expect(end.results.get(b)).toEqual({
+      status: "not_checked",
+      reason: "unavailable",
+      message: "NPI Registry is unavailable",
+    });
     expect(end.results.get(c)).toEqual({ status: "checked", record: recordFor(c) });
   });
 
@@ -248,7 +260,10 @@ describe("ImportNpiVerifier", () => {
     const all = items(12);
     const known = new Map([
       [all[0].npi, { status: "checked" as const, record: null }],
-      [all[1].npi, { status: "not_checked" as const, reason: "stopped" as const }],
+      [
+        all[1].npi,
+        { status: "not_checked" as const, reason: "stopped" as const, message: "Stopped" },
+      ],
     ]);
     const verifier = new ImportNpiVerifier(all, h.deps, { known });
     verifier.start();
@@ -285,7 +300,11 @@ describe("ImportNpiVerifier", () => {
     const end = verifier.getSnapshot();
     // The bar stays at what was checked; the rest say "stopped".
     expect(end).toMatchObject({ phase: "stopped", total: 30, done: 10, checked: 10 });
-    expect(end.results.get(fakeNpi(11))).toEqual({ status: "not_checked", reason: "stopped" });
+    expect(end.results.get(fakeNpi(11))).toEqual({
+      status: "not_checked",
+      reason: "stopped",
+      message: "The checks were stopped",
+    });
     // A late answer for the aborted batch changes nothing.
     (release as (() => void) | null)?.();
     await new Promise((resolve) => setTimeout(resolve, 20));

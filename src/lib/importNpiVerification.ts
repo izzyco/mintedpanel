@@ -4,56 +4,49 @@
 // time left, and the progress words. No I/O; ImportNpiVerifier
 // (src/lib/importNpiVerifier.ts) does the scheduling.
 //
-// Policy is injected, never hard-wired: `scope` picks the rows (default
+// Policy comes from the NPI Registry policy (src/lib/npiRegistryPolicy.ts),
+// passed in by the caller: `importVerifyScope` picks the rows (default
 // "new_providers": only rows the import would CREATE as a new provider, after
-// the five-part dedupe) and `severityFor(kind)` says whether each registry
-// outcome warns or blocks (default: every outcome warns, so nothing changes
-// on the review screen except the notes). These are the parameters the
-// resolved NPI Registry policy (src/lib/npiRegistryPolicy.ts, MINT-110 PR 1)
-// will supply. Hard rules stay hard: the check digit still decides what is
-// sent, and "not checked" (an outage, the rate limit, Stop) is a fact that
-// never blocks. Results live in memory only; nothing is stored per row.
+// the five-part dedupe), and `severity` grades each registry answer through
+// the helpers the provider forms use (npiLookupOutcome, npiRegistrySaveBlock,
+// npiVerificationView), so an import row and a form agree on the outcome, its
+// words and what it does. By default every answer warns and the review is
+// unchanged except for the notes; a "block" holds the row back with a plain
+// reason. Hard rules stay hard: the check digit still decides what is sent,
+// and "not checked" (an outage, the rate limit, Stop) is a fact that never
+// blocks. Results live in memory only; nothing is stored per row.
 import {
+  type BlockedDisposition,
   type ImportRowDisposition,
   type StagedImportRow,
-  type BlockedDisposition,
 } from "@/lib/importDedupe";
 import { isValidNpi, stripNpiSeparators } from "@/lib/providerIdentity";
 import {
-  compareNpiRegistryName,
+  npiLookupOutcome,
+  npiRegistrySaveBlock,
   npiVerificationView,
+  type NpiLookupState,
   type NpiRegistryRecord,
   type NpiVerificationView,
 } from "@/lib/npiRegistry";
+import {
+  DEFAULT_NPI_REGISTRY_POLICY,
+  NPI_REGISTRY_OUTCOMES,
+  type NpiImportVerifyScope,
+  type NpiRegistryOutcome,
+  type NpiRegistryPolicy,
+} from "@/lib/npiRegistryPolicy";
 
-/** Which rows an import checks. The decided default is "new_providers". */
-export type ImportNpiVerifyScope = "new_providers" | "all_rows";
-export const DEFAULT_IMPORT_NPI_SCOPE: ImportNpiVerifyScope = "new_providers";
+/** A row's stable result kind: a registry outcome the policy grades
+ * (organizationNumber, notFound, nameMismatch, inactive), "found" (listed,
+ * active, the name matches), "notChecked" (an outage, the rate limit or Stop;
+ * never configurable, never a block) or "pending" (not checked yet). */
+export type ImportNpiResultKind = "found" | NpiRegistryOutcome | "notChecked" | "pending";
 
-/** The registry outcomes a policy can grade. */
-export type NpiRegistryOutcomeKind =
-  "organizationNumber" | "notFound" | "nameMismatch" | "inactive";
-export type NpiRegistrySeverity = "warn" | "block";
-export type NpiRegistrySeverityFor = (kind: NpiRegistryOutcomeKind) => NpiRegistrySeverity;
-/** The decided default: every outcome is a warning. */
-export const DEFAULT_NPI_SEVERITY_FOR: NpiRegistrySeverityFor = () => "warn";
-
-export const NPI_REGISTRY_OUTCOME_KINDS: readonly NpiRegistryOutcomeKind[] = [
-  "organizationNumber",
-  "notFound",
-  "nameMismatch",
-  "inactive",
-];
-
-/** Whether a policy blocks on any outcome. */
-export function npiPolicyCanBlock(severityFor: NpiRegistrySeverityFor): boolean {
-  return NPI_REGISTRY_OUTCOME_KINDS.some((kind) => severityFor(kind) === "block");
+/** Whether a policy can block on any registry answer. */
+export function npiPolicyCanBlock(policy: NpiRegistryPolicy): boolean {
+  return NPI_REGISTRY_OUTCOMES.some((outcome) => policy.severity[outcome] === "block");
 }
-
-/** A row's stable result kind. "found": in the registry, active, name matches.
- * "notChecked": an outage, the rate limit or Stop — never configurable, never
- * a block. "pending": not checked yet. */
-export type ImportNpiResultKind = "found" | NpiRegistryOutcomeKind | "notChecked" | "pending";
 
 export interface ImportNpiCheckItem {
   /** Separators stripped; passes the CMS check digit. */
@@ -69,9 +62,15 @@ export interface ImportNpiCheckItem {
 
 export type ImportNpiNotCheckedReason = "unavailable" | "rate_limited" | "stopped";
 
+/** A row's check. "not_checked" carries the words staff see: for an outage,
+ * npiRegistryErrorMessage of the failure, the same as the forms. */
 export type ImportNpiOutcome =
   | { status: "checked"; record: NpiRegistryRecord | null }
-  | { status: "not_checked"; reason: ImportNpiNotCheckedReason };
+  | { status: "not_checked"; reason: ImportNpiNotCheckedReason; message: string };
+
+export const IMPORT_NPI_RATE_LIMITED_MESSAGE =
+  "Too many NPI Registry checks right now. Reload the review to check again";
+export const IMPORT_NPI_STOPPED_MESSAGE = "The checks were stopped";
 
 /** idle: not started. running: checking. done: every row has an outcome
  * (some may be "not checked" after an outage). stopped: staff stopped it, or
@@ -96,17 +95,17 @@ function field(row: StagedImportRow | undefined, key: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-/** The rows to check, one per NPI. "new_providers" takes the creates;
- * "all_rows" adds the rows that update or match an existing provider (their
- * NPI and names come from the staged row). Blocked rows are never checked —
- * they already cannot import. The check digit is applied again here so a
- * failing number is never sent upstream. */
+/** The rows to check, one per NPI. "new_providers" (the default) takes the
+ * creates; "all_rows" adds the rows that update or match an existing provider
+ * (their NPI and names come from the staged row). Blocked rows are never
+ * checked — they already cannot import. The check digit is applied again here
+ * so a failing number is never sent upstream. */
 export function selectImportNpiChecks(
   dispositions: readonly ImportRowDisposition[] | null | undefined,
-  options: { scope?: ImportNpiVerifyScope; rows?: readonly StagedImportRow[] | null } = {},
+  options: { scope?: NpiImportVerifyScope; rows?: readonly StagedImportRow[] | null } = {},
 ): ImportNpiCheckItem[] {
   if (!dispositions) return [];
-  const scope = options.scope ?? DEFAULT_IMPORT_NPI_SCOPE;
+  const scope = options.scope ?? DEFAULT_NPI_REGISTRY_POLICY.importVerifyScope;
   const rowsByLine = new Map((options.rows ?? []).map((row) => [row.line, row]));
   const seen = new Set<string>();
   const items: ImportNpiCheckItem[] = [];
@@ -148,96 +147,65 @@ export function importNpiChecksKey(items: readonly ImportNpiCheckItem[]): string
     .join("\n");
 }
 
-/** Every graded outcome that applies to a registry answer, most serious first
- * (the order the provider forms check in). An organization number is only
- * that; an individual's NPI can be both inactive and under another name. */
-export function registryOutcomeKinds(
-  record: NpiRegistryRecord | null,
-  typed: { firstName: string; lastName: string },
-): NpiRegistryOutcomeKind[] {
-  if (!record) return ["notFound"];
-  if (record.enumerationType === "NPI-2") return ["organizationNumber"];
-  const kinds: NpiRegistryOutcomeKind[] = [];
-  if (record.status !== "active") kinds.push("inactive");
-  if (compareNpiRegistryName(typed, record) === "mismatch") kinds.push("nameMismatch");
-  return kinds;
-}
-
-const BLOCK_REASONS: Record<NpiRegistryOutcomeKind, string> = {
-  organizationNumber: "the NPI belongs to an organization in the NPI Registry",
-  notFound: "the NPI is not in the NPI Registry",
-  nameMismatch: "the name differs from the NPI Registry",
-  inactive: "the NPI Registry lists this NPI as inactive",
-};
-
-const NOT_CHECKED_TITLES: Record<ImportNpiNotCheckedReason, string> = {
-  unavailable: "Not checked — NPI Registry is unavailable",
-  rate_limited: "Not checked — too many NPI Registry checks",
-  stopped: "Not checked — the checks were stopped",
-};
-
 export interface ImportNpiRowResult {
   kind: ImportNpiResultKind;
-  /** Every graded outcome that applies (empty unless the registry answered). */
-  outcomes: NpiRegistryOutcomeKind[];
-  /** "block" when any applicable outcome's severity is block. */
+  /** "block" when the policy's severity for the outcome is block. */
   severity: "ok" | "warn" | "block";
   note: NpiVerificationView;
   /** The plain reason the review shows for a blocked row; null otherwise. */
   blockReason: string | null;
 }
 
-/** One row's result. Checked rows read exactly as the provider forms do
- * (npiVerificationView), except that "not found" drops the form's "You can
- * still save" line; the import says once that a warning never stops a row. */
+/** One row's result, graded like a provider form under the same policy: the
+ * outcome is npiLookupOutcome, a block is npiRegistrySaveBlock, and the note
+ * is npiVerificationView — except that an unblocked "not found" drops the
+ * form's "You can still save" line (the import says once that a warning never
+ * stops a row). A row not checked is never blocked, whatever the policy. */
 export function importNpiRowResult(
   outcome: ImportNpiOutcome | undefined,
   typed: { firstName: string; lastName: string },
   phase: ImportNpiPhase,
-  severityFor: NpiRegistrySeverityFor = DEFAULT_NPI_SEVERITY_FOR,
+  policy: NpiRegistryPolicy = DEFAULT_NPI_REGISTRY_POLICY,
 ): ImportNpiRowResult {
   if (!outcome) {
     const finished = phase === "done" || phase === "stopped";
     return {
       kind: finished ? "notChecked" : "pending",
-      outcomes: [],
       severity: "ok",
       note: { tone: "neutral", title: finished ? "Not checked" : "Not checked yet", detail: null },
       blockReason: null,
     };
   }
   if (outcome.status === "not_checked") {
+    const stopped = outcome.reason === "stopped";
     return {
       kind: "notChecked",
-      outcomes: [],
-      severity: outcome.reason === "stopped" ? "ok" : "warn",
+      severity: stopped ? "ok" : "warn",
       note: {
-        tone: outcome.reason === "stopped" ? "neutral" : "warn",
-        title: NOT_CHECKED_TITLES[outcome.reason],
-        detail: null,
+        tone: stopped ? "neutral" : "warn",
+        title: "Not checked",
+        detail: `${outcome.message}.`,
       },
       blockReason: null,
     };
   }
-  const outcomes = registryOutcomeKinds(outcome.record, typed);
-  const view = npiVerificationView({ status: "done", record: outcome.record }, typed) ?? {
+  const state: NpiLookupState = { status: "done", record: outcome.record };
+  const registryOutcome = npiLookupOutcome(state, typed);
+  const saveBlock = npiRegistrySaveBlock(state, typed, policy);
+  const view = npiVerificationView(state, typed, policy) ?? {
     tone: "neutral" as const,
     title: "Not checked",
     detail: null,
   };
   const note =
-    outcome.record === null
+    outcome.record === null && !saveBlock
       ? { ...view, detail: "Re-check the number; deactivated NPIs are not listed." }
       : view;
-  const blocking = outcomes.find((kind) => severityFor(kind) === "block") ?? null;
   return {
-    kind: outcomes[0] ?? "found",
-    outcomes,
-    severity: blocking ? "block" : outcomes.length > 0 ? "warn" : "ok",
+    kind: registryOutcome ?? "found",
+    severity: saveBlock ? "block" : registryOutcome ? "warn" : "ok",
     note,
-    blockReason: blocking
-      ? `Not imported — ${BLOCK_REASONS[blocking]}. Correct the row and re-import.`
-      : null,
+    blockReason: saveBlock ? `${view.title}. ${saveBlock}` : null,
   };
 }
 

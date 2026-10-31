@@ -24,7 +24,10 @@ import {
   TokenBucket,
   type NpiRegistryBatchResult,
 } from "@/lib/npiRegistryBatch";
+import { NPI_REGISTRY_UNAVAILABLE_MESSAGE, npiRegistryErrorMessage } from "@/lib/npiRegistry";
 import {
+  IMPORT_NPI_RATE_LIMITED_MESSAGE,
+  IMPORT_NPI_STOPPED_MESSAGE,
   estimateRemainingMs,
   type ImportNpiCheckItem,
   type ImportNpiNotCheckedReason,
@@ -196,15 +199,24 @@ export class ImportNpiVerifier {
     for (const listener of [...this.listeners]) listener();
   }
 
-  private markRemaining(reason: ImportNpiNotCheckedReason): void {
+  private markRemaining(reason: ImportNpiNotCheckedReason, message?: string): void {
+    const words =
+      message ??
+      (reason === "stopped"
+        ? IMPORT_NPI_STOPPED_MESSAGE
+        : reason === "rate_limited"
+          ? IMPORT_NPI_RATE_LIMITED_MESSAGE
+          : NPI_REGISTRY_UNAVAILABLE_MESSAGE);
     for (const npi of this.queue) {
-      if (!this.results.has(npi)) this.results.set(npi, { status: "not_checked", reason });
+      if (!this.results.has(npi)) {
+        this.results.set(npi, { status: "not_checked", reason, message: words });
+      }
     }
     this.queue = [];
   }
 
-  private finish(reason: ImportNpiNotCheckedReason | null): void {
-    if (reason) this.markRemaining(reason);
+  private finish(reason: ImportNpiNotCheckedReason | null, message?: string): void {
+    if (reason) this.markRemaining(reason, message);
     this.phase = "done";
     this.emit();
   }
@@ -246,17 +258,20 @@ export class ImportNpiVerifier {
           resumeAfterRetry = true;
           continue;
         }
+        // The same words the provider forms use for a failed call.
+        const message = npiRegistryErrorMessage(error);
         if (status !== null && FATAL_STATUSES.has(status)) {
-          this.finish("unavailable");
+          this.finish("unavailable", message);
           return;
         }
         // An outage: this batch is not checked.
-        for (const npi of batch)
-          this.results.set(npi, { status: "not_checked", reason: "unavailable" });
+        for (const npi of batch) {
+          this.results.set(npi, { status: "not_checked", reason: "unavailable", message });
+        }
         this.queue = this.queue.slice(batch.length);
         outages += 1;
         if (outages >= this.maxOutages) {
-          this.finish("unavailable");
+          this.finish("unavailable", message);
           return;
         }
         this.emit();
@@ -276,7 +291,11 @@ export class ImportNpiVerifier {
           this.results.set(npi, { status: "checked", record: result.record });
           checkedAny = true;
         } else {
-          this.results.set(npi, { status: "not_checked", reason: "unavailable" });
+          this.results.set(npi, {
+            status: "not_checked",
+            reason: "unavailable",
+            message: NPI_REGISTRY_UNAVAILABLE_MESSAGE,
+          });
         }
       }
       // Deferred NPIs cost nothing on the server; ask for them first next.

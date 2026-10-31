@@ -656,7 +656,7 @@ test("MINT-119: Stop ends the checks, rows left say so, and the import can still
   const lastRow = page.getByRole("row").filter({
     has: page.getByRole("cell", { name: PROVIDERS[99].npi, exact: true }),
   });
-  await expect(lastRow).toContainText("Not checked — the checks were stopped");
+  await expect(lastRow).toContainText("Not checked The checks were stopped.");
 
   await page.getByRole("button", { name: "Commit Changes", exact: true }).click();
   await page.getByRole("button", { name: "Yes, commit changes", exact: true }).click();

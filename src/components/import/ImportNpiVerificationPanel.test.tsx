@@ -80,7 +80,11 @@ describe("ImportNpiVerificationPanel", () => {
     const results = new Map<string, ImportNpiOutcome>(
       Array.from({ length: 5 }, (_, i) => [
         `n${i}`,
-        { status: "not_checked", reason: "unavailable" } as const,
+        {
+          status: "not_checked",
+          reason: "unavailable",
+          message: "NPI Registry is unavailable",
+        } as const,
       ]),
     );
     const html = render(snapshot({ phase: "done", done: 100, checked: 95, results }));

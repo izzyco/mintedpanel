@@ -15,7 +15,8 @@
 // (ImportNpiVerificationPanel). With the default severities every outcome is a
 // note on its row; an outcome set to "block" moves that row to Blocked rows
 // with a plain reason, so it is not committed. Commit and Cancel stop the
-// checks. Scope and severities are injected (the NPI Registry policy).
+// checks. Scope and severities come from the NPI Registry policy
+// (useNpiRegistryPolicy; `npiPolicy` overrides it in tests).
 import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -40,6 +41,7 @@ import {
 import { ImportRunStatePill } from "@/components/import/ImportRunPanel";
 import { useCancelImportRun, useCommitImportRun, useImportPreview } from "@/hooks/useImportRuns";
 import { useImportNpiVerification } from "@/hooks/useImportNpiVerification";
+import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
 import { useIsAdmin } from "@/lib/permissions";
 import { downloadCsv } from "@/lib/csv";
 import { errorReportCsvRows } from "@/lib/rosterImport";
@@ -53,16 +55,13 @@ import {
   type UpdateDisposition,
 } from "@/lib/importDedupe";
 import {
-  DEFAULT_IMPORT_NPI_SCOPE,
-  DEFAULT_NPI_SEVERITY_FOR,
   applyImportNpiBlocks,
   importNpiRowResult,
   npiPolicyCanBlock,
   selectImportNpiChecks,
   type ImportNpiRowResult,
-  type ImportNpiVerifyScope,
-  type NpiRegistrySeverityFor,
 } from "@/lib/importNpiVerification";
+import type { NpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
 import type { ImportRun } from "@/types";
 
 function MetricCard({
@@ -233,15 +232,16 @@ function downloadErrorReport(run: ImportRun) {
 
 export function ImportPreviewContent({
   runId,
-  npiScope = DEFAULT_IMPORT_NPI_SCOPE,
-  npiSeverityFor = DEFAULT_NPI_SEVERITY_FOR,
+  npiPolicy,
 }: {
   runId: string;
-  /** Which rows the NPI Registry check covers (policy; default new providers). */
-  npiScope?: ImportNpiVerifyScope;
-  /** Warn or block per registry outcome (policy; default warn for all). */
-  npiSeverityFor?: NpiRegistrySeverityFor;
+  /** The NPI Registry policy to apply; defaults to the active organization's
+   * (useNpiRegistryPolicy). */
+  npiPolicy?: NpiRegistryPolicy;
 }) {
+  const resolvedPolicy = useNpiRegistryPolicy();
+  const policy = npiPolicy ?? resolvedPolicy;
+  const npiScope = policy.importVerifyScope;
   const preview = useImportPreview(runId);
   const isAdmin = useIsAdmin();
   const commit = useCommitImportRun();
@@ -267,7 +267,7 @@ export function ImportPreviewContent({
     const counts = { notes: 0, blocked: 0 };
     for (const item of npiChecks) {
       const outcome = npiSnapshot.results.get(item.npi);
-      const result = importNpiRowResult(outcome, item, npiSnapshot.phase, npiSeverityFor);
+      const result = importNpiRowResult(outcome, item, npiSnapshot.phase, policy);
       byLine.set(item.line, result);
       if (result.blockReason && item.disposition !== "skip") {
         blockReasonByLine.set(item.line, result.blockReason);
@@ -277,7 +277,7 @@ export function ImportPreviewContent({
       }
     }
     return { byLine, blockReasonByLine, counts };
-  }, [npiChecks, npiSnapshot, npiSeverityFor]);
+  }, [npiChecks, npiSnapshot, policy]);
 
   // A "block" outcome holds its row back; with the default policy this is the
   // dedupe's own list, unchanged.
@@ -535,7 +535,7 @@ export function ImportPreviewContent({
                 {npiSnapshot.phase === "running" ? (
                   <span className="text-[12px] text-muted-foreground">
                     NPI Registry checks are still running; committing stops them
-                    {npiPolicyCanBlock(npiSeverityFor)
+                    {npiPolicyCanBlock(policy)
                       ? ", and rows not yet checked are committed unchecked"
                       : ""}
                     .

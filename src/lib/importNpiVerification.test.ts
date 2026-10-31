@@ -12,10 +12,7 @@ import {
   type StagedImportRow,
 } from "./importDedupe";
 import {
-  DEFAULT_IMPORT_NPI_SCOPE,
-  DEFAULT_NPI_SEVERITY_FOR,
   ETA_MIN_DONE,
-  NPI_REGISTRY_OUTCOME_KINDS,
   applyImportNpiBlocks,
   estimateRemainingMs,
   formatTimeRemaining,
@@ -24,15 +21,18 @@ import {
   importNpiRowResult,
   importNpiStatusText,
   npiPolicyCanBlock,
-  registryOutcomeKinds,
   selectImportNpiChecks,
   type ImportNpiCheckItem,
   type ImportNpiOutcome,
   type ImportNpiSnapshot,
-  type NpiRegistryOutcomeKind,
-  type NpiRegistrySeverityFor,
 } from "./importNpiVerification";
-import type { NpiRegistryRecord } from "./npiRegistry";
+import { NPI_REGISTRY_BLOCK_REASONS, type NpiRegistryRecord } from "./npiRegistry";
+import {
+  DEFAULT_NPI_REGISTRY_POLICY,
+  NPI_REGISTRY_OUTCOMES,
+  resolveNpiRegistryPolicy,
+  type NpiRegistryOutcome,
+} from "./npiRegistryPolicy";
 import { npiCheckDigit } from "./providerIdentity";
 
 function fakeNpi(n: number): string {
@@ -138,7 +138,7 @@ describe("selectImportNpiChecks", () => {
       ["blocked", 7],
       ["update", 8],
     ]);
-    expect(DEFAULT_IMPORT_NPI_SCOPE).toBe("new_providers");
+    expect(DEFAULT_NPI_REGISTRY_POLICY.importVerifyScope).toBe("new_providers");
     const expected = [
       { npi: NEW_NPI, line: 2, firstName: "Avery", lastName: "Quill", disposition: "create" },
     ];
@@ -148,7 +148,12 @@ describe("selectImportNpiChecks", () => {
 
   it('with scope "all_rows" also checks rows that match or update an existing provider', () => {
     const { rows, dispositions } = mixedImport();
-    expect(selectImportNpiChecks(dispositions, { scope: "all_rows", rows })).toEqual([
+    expect(
+      selectImportNpiChecks(dispositions, {
+        scope: resolveNpiRegistryPolicy(null, { importVerifyScope: "all_rows" }).importVerifyScope,
+        rows,
+      }),
+    ).toEqual([
       { npi: NEW_NPI, line: 2, firstName: "Avery", lastName: "Quill", disposition: "create" },
       { npi: EXISTING_NPI, line: 4, firstName: "Blake", lastName: "Orr", disposition: "skip" },
       { npi: FILL_NPI, line: 5, firstName: "Casey", lastName: "Vale", disposition: "update" },
@@ -191,11 +196,20 @@ describe("importNpiRowResult", () => {
     status: "checked",
     record: r,
   });
+  const blockOnly = (outcome: NpiRegistryOutcome) =>
+    resolveNpiRegistryPolicy(null, { severity: { [outcome]: "block" } });
+  const blockAll = resolveNpiRegistryPolicy({
+    severity: {
+      organizationNumber: "block",
+      notFound: "block",
+      nameMismatch: "block",
+      inactive: "block",
+    },
+  });
 
   it("gives every answer a stable kind and the forms' wording, all warnings by default", () => {
     expect(importNpiRowResult(checked(record()), typed, "running")).toEqual({
       kind: "found",
-      outcomes: [],
       severity: "ok",
       note: {
         tone: "ok",
@@ -206,7 +220,6 @@ describe("importNpiRowResult", () => {
     });
     expect(importNpiRowResult(checked(record({ firstName: "MORGAN" })), typed, "done")).toEqual({
       kind: "nameMismatch",
-      outcomes: ["nameMismatch"],
       severity: "warn",
       note: {
         tone: "warn",
@@ -225,7 +238,6 @@ describe("importNpiRowResult", () => {
     // An organization (NPI-2) number warns; it never blocks by default.
     expect(importNpiRowResult(checked(ORG_RECORD), typed, "done")).toEqual({
       kind: "organizationNumber",
-      outcomes: ["organizationNumber"],
       severity: "warn",
       note: {
         tone: "warn",
@@ -244,74 +256,69 @@ describe("importNpiRowResult", () => {
         detail: "Re-check the number; deactivated NPIs are not listed.",
       },
     });
+    // The explicit default policy is the same as passing none.
+    expect(importNpiRowResult(checked(null), typed, "done", DEFAULT_NPI_REGISTRY_POLICY)).toEqual(
+      importNpiRowResult(checked(null), typed, "done"),
+    );
   });
 
-  it("lists every outcome that applies: inactive and under another name", () => {
-    expect(registryOutcomeKinds(record({ status: "inactive", lastName: "ROE" }), typed)).toEqual([
-      "inactive",
-      "nameMismatch",
-    ]);
-    expect(registryOutcomeKinds(null, typed)).toEqual(["notFound"]);
-    expect(registryOutcomeKinds(record(), typed)).toEqual([]);
+  it("grades like the forms: one outcome per answer, in the forms' order", () => {
+    // Inactive and under another name: the forms grade it inactive.
+    const both = record({ status: "inactive", lastName: "ROE" });
+    expect(importNpiRowResult(checked(both), typed, "done").kind).toBe("inactive");
+    expect(
+      importNpiRowResult(checked(both), typed, "done", blockOnly("nameMismatch")),
+    ).toMatchObject({ kind: "inactive", severity: "warn", blockReason: null });
   });
 
-  it("blocks with a plain reason when a policy sets that outcome to block", () => {
-    const blockNameMismatch: NpiRegistrySeverityFor = (kind) =>
-      kind === "nameMismatch" ? "block" : "warn";
+  it("blocks with a plain reason when the policy sets that outcome to block", () => {
     expect(
       importNpiRowResult(
         checked(record({ firstName: "MORGAN" })),
         typed,
         "done",
-        blockNameMismatch,
+        blockOnly("nameMismatch"),
       ),
     ).toMatchObject({
       kind: "nameMismatch",
       severity: "block",
+      note: { tone: "block", title: "Found in the NPI Registry, but the name differs" },
       blockReason:
-        "Not imported — the name differs from the NPI Registry. Correct the row and re-import.",
+        "Found in the NPI Registry, but the name differs. Your organization saves an NPI only when the name matches the NPI Registry.",
     });
-    // A second outcome that blocks still blocks the row when the first warns.
-    expect(
-      importNpiRowResult(
-        checked(record({ status: "inactive", firstName: "MORGAN" })),
-        typed,
-        "done",
-        blockNameMismatch,
-      ),
-    ).toMatchObject({ kind: "inactive", severity: "block" });
     // Other outcomes keep warning.
-    expect(importNpiRowResult(checked(ORG_RECORD), typed, "done", blockNameMismatch)).toMatchObject(
-      { severity: "warn", blockReason: null },
-    );
-    const reasons = Object.fromEntries(
-      NPI_REGISTRY_OUTCOME_KINDS.map((kind) => {
-        const r =
-          kind === "organizationNumber"
-            ? ORG_RECORD
-            : kind === "notFound"
-              ? null
-              : kind === "inactive"
-                ? record({ status: "inactive" })
-                : record({ firstName: "MORGAN" });
-        return [kind, importNpiRowResult(checked(r), typed, "done", () => "block").blockReason];
-      }),
-    ) as Record<NpiRegistryOutcomeKind, string>;
-    expect(reasons).toEqual({
-      organizationNumber:
-        "Not imported — the NPI belongs to an organization in the NPI Registry. Correct the row and re-import.",
-      notFound: "Not imported — the NPI is not in the NPI Registry. Correct the row and re-import.",
-      nameMismatch:
-        "Not imported — the name differs from the NPI Registry. Correct the row and re-import.",
-      inactive:
-        "Not imported — the NPI Registry lists this NPI as inactive. Correct the row and re-import.",
+    expect(
+      importNpiRowResult(checked(ORG_RECORD), typed, "done", blockOnly("nameMismatch")),
+    ).toMatchObject({ severity: "warn", blockReason: null });
+    const recordFor: Record<NpiRegistryOutcome, NpiRegistryRecord | null> = {
+      organizationNumber: ORG_RECORD,
+      notFound: null,
+      inactive: record({ status: "inactive" }),
+      nameMismatch: record({ firstName: "MORGAN" }),
+    };
+    for (const outcome of NPI_REGISTRY_OUTCOMES) {
+      const result = importNpiRowResult(checked(recordFor[outcome]), typed, "done", blockAll);
+      expect(result.kind).toBe(outcome);
+      expect(result.severity).toBe("block");
+      expect(result.blockReason).toBe(
+        `${result.note.title}. ${NPI_REGISTRY_BLOCK_REASONS[outcome]}`,
+      );
+    }
+    // A match is never blocked.
+    expect(importNpiRowResult(checked(record()), typed, "done", blockAll)).toMatchObject({
+      kind: "found",
+      blockReason: null,
     });
   });
 
   it("never blocks a row that was not checked, whatever the policy", () => {
-    const blockAll: NpiRegistrySeverityFor = () => "block";
     for (const reason of ["unavailable", "rate_limited", "stopped"] as const) {
-      const result = importNpiRowResult({ status: "not_checked", reason }, typed, "done", blockAll);
+      const result = importNpiRowResult(
+        { status: "not_checked", reason, message: "NPI Registry is unavailable" },
+        typed,
+        "done",
+        blockAll,
+      );
       expect(result.kind).toBe("notChecked");
       expect(result.blockReason).toBeNull();
       expect(result.severity).not.toBe("block");
@@ -326,20 +333,24 @@ describe("importNpiRowResult", () => {
       note: { title: "Not checked" },
     });
     expect(
-      importNpiRowResult({ status: "not_checked", reason: "unavailable" }, typed, "done").note,
-    ).toEqual({ tone: "warn", title: "Not checked — NPI Registry is unavailable", detail: null });
+      importNpiRowResult(
+        { status: "not_checked", reason: "unavailable", message: "NPI Registry is unavailable" },
+        typed,
+        "done",
+      ).note,
+    ).toEqual({ tone: "warn", title: "Not checked", detail: "NPI Registry is unavailable." });
     expect(
-      importNpiRowResult({ status: "not_checked", reason: "rate_limited" }, typed, "done").note
-        .title,
-    ).toBe("Not checked — too many NPI Registry checks");
-    expect(
-      importNpiRowResult({ status: "not_checked", reason: "stopped" }, typed, "stopped").note,
-    ).toEqual({ tone: "neutral", title: "Not checked — the checks were stopped", detail: null });
+      importNpiRowResult(
+        { status: "not_checked", reason: "stopped", message: "The checks were stopped" },
+        typed,
+        "stopped",
+      ).note,
+    ).toEqual({ tone: "neutral", title: "Not checked", detail: "The checks were stopped." });
   });
 
   it("knows whether a policy can block at all", () => {
-    expect(npiPolicyCanBlock(DEFAULT_NPI_SEVERITY_FOR)).toBe(false);
-    expect(npiPolicyCanBlock((kind) => (kind === "inactive" ? "block" : "warn"))).toBe(true);
+    expect(npiPolicyCanBlock(DEFAULT_NPI_REGISTRY_POLICY)).toBe(false);
+    expect(npiPolicyCanBlock(blockOnly("inactive"))).toBe(true);
   });
 });
 
@@ -351,8 +362,7 @@ describe("applyImportNpiBlocks", () => {
 
   it("holds a blocked new provider back: every source line blocked, the counts reconcile, nothing committed", () => {
     const { dispositions } = mixedImport();
-    const reason =
-      "Not imported — the NPI is not in the NPI Registry. Correct the row and re-import.";
+    const reason = `Not found in the NPI Registry. ${NPI_REGISTRY_BLOCK_REASONS.notFound}`;
     const reviewed = applyImportNpiBlocks(dispositions, new Map([[2, reason]]));
     expect(reviewed.filter((d) => d.kind === "create")).toHaveLength(0);
     expect(reviewed.filter((d) => d.kind === "blocked" && d.reason === reason)).toEqual([
@@ -376,8 +386,7 @@ describe("applyImportNpiBlocks", () => {
 
   it('with scope "all_rows" a blocked update is held back too; a skip writes nothing and stays a skip', () => {
     const { dispositions } = mixedImport();
-    const reason =
-      "Not imported — the name differs from the NPI Registry. Correct the row and re-import.";
+    const reason = `Found in the NPI Registry, but the name differs. ${NPI_REGISTRY_BLOCK_REASONS.nameMismatch}`;
     const reviewed = applyImportNpiBlocks(
       dispositions,
       new Map([
@@ -474,8 +483,14 @@ describe("progress words", () => {
       importNpiStatusText(snapshot({ phase: "done", done: 100, checked: 100 }), counts(3, 2)),
     ).toBe("Finished — 100 of 100 checked, 3 with notes, 2 blocked.");
     const results = new Map<string, ImportNpiOutcome>([
-      ["a", { status: "not_checked", reason: "unavailable" }],
-      ["b", { status: "not_checked", reason: "unavailable" }],
+      [
+        "a",
+        { status: "not_checked", reason: "unavailable", message: "NPI Registry is unavailable" },
+      ],
+      [
+        "b",
+        { status: "not_checked", reason: "unavailable", message: "NPI Registry is unavailable" },
+      ],
     ]);
     expect(
       importNpiStatusText(snapshot({ phase: "done", done: 100, checked: 98, results }), counts(1)),

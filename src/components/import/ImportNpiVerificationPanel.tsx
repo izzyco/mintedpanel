@@ -11,7 +11,7 @@
 // Stop button itself had focus as it went away (it leaves when the checks
 // end), so focus lands on the status line instead of the page body.
 import { useEffect, useId, useRef } from "react";
-import { CircleCheck, TriangleAlert } from "lucide-react";
+import { CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   formatTimeRemaining,
@@ -19,9 +19,9 @@ import {
   importNpiStatusText,
   type ImportNpiCounts,
   type ImportNpiSnapshot,
-  type ImportNpiVerifyScope,
 } from "@/lib/importNpiVerification";
 import type { NpiVerificationView } from "@/lib/npiRegistry";
+import type { NpiImportVerifyScope } from "@/lib/npiRegistryPolicy";
 import { cn } from "@/lib/utils";
 
 export function ImportNpiVerificationPanel({
@@ -33,7 +33,7 @@ export function ImportNpiVerificationPanel({
   snapshot: ImportNpiSnapshot;
   /** Checked rows with a warning, and rows a block holds back. */
   counts: ImportNpiCounts;
-  scope: ImportNpiVerifyScope;
+  scope: NpiImportVerifyScope;
   onStop: () => void;
 }) {
   const headingId = useId();
@@ -116,7 +116,8 @@ export function ImportNpiVerificationPanel({
   );
 }
 
-/** A new provider row's registry note: a tone icon, the title, and detail. */
+/** A row's registry note: a tone icon (the same tones as the provider forms'
+ * note, "block" included), the title, and detail. */
 export function ImportNpiNoteCell({ note }: { note: NpiVerificationView }) {
   return (
     <div className="flex items-start gap-1.5 text-[12px]">
@@ -130,15 +131,19 @@ export function ImportNpiNoteCell({ note }: { note: NpiVerificationView }) {
           aria-hidden="true"
           className="mt-px h-4 w-4 shrink-0 text-[var(--mp-warn-ink)]"
         />
+      ) : note.tone === "block" ? (
+        <CircleAlert aria-hidden="true" className="mt-px h-4 w-4 shrink-0 text-destructive" />
       ) : null}
       <p>
         <span
           className={cn(
             note.tone === "warn"
               ? "font-medium text-[var(--mp-warn-ink)]"
-              : note.tone === "ok"
-                ? "font-medium text-foreground"
-                : "text-muted-foreground",
+              : note.tone === "block"
+                ? "font-medium text-destructive"
+                : note.tone === "ok"
+                  ? "font-medium text-foreground"
+                  : "text-muted-foreground",
           )}
         >
           {note.title}

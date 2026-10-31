@@ -7,12 +7,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dedupeImportRows, type StagedImportRow } from "@/lib/importDedupe";
 import type { ImportNpiOutcome, ImportNpiSnapshot } from "@/lib/importNpiVerification";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
+import {
+  DEFAULT_NPI_REGISTRY_POLICY,
+  resolveNpiRegistryPolicy,
+  type NpiRegistryPolicy,
+} from "@/lib/npiRegistryPolicy";
 import { npiCheckDigit } from "@/lib/providerIdentity";
 
 const state = vi.hoisted(() => ({
   preview: {} as Record<string, unknown>,
   snapshot: null as unknown,
   admin: true,
+  policy: null as unknown,
 }));
 
 vi.mock("@/hooks/useImportRuns", () => ({
@@ -29,6 +35,10 @@ vi.mock("@/hooks/useLookups", () => ({
   useProviderGroups: () => ({ data: [] }),
 }));
 vi.mock("@/lib/permissions", () => ({ useIsAdmin: () => state.admin }));
+// The active organization's NPI Registry policy (MINT-110 PR 1's hook).
+vi.mock("@/hooks/useNpiRegistry", () => ({
+  useNpiRegistryPolicy: () => state.policy,
+}));
 vi.mock("@/hooks/useImportNpiVerification", () => ({
   useImportNpiVerification: vi.fn(() => ({ snapshot: state.snapshot, stop: vi.fn() })),
 }));
@@ -121,6 +131,7 @@ function metric(html: string, label: string): string {
 
 beforeEach(() => {
   state.admin = true;
+  state.policy = DEFAULT_NPI_REGISTRY_POLICY;
   state.preview = {
     run: {
       id: "run-1",
@@ -163,8 +174,9 @@ describe("ImportPreviewContent with NPI Registry checks", () => {
     expect(enabled).toBe(true);
   });
 
-  it('hands it every row with an NPI when the scope is "all_rows"', () => {
-    renderToStaticMarkup(<ImportPreviewContent runId="run-1" npiScope="all_rows" />);
+  it('hands it every row with an NPI when the policy\'s scope is "all_rows"', () => {
+    state.policy = resolveNpiRegistryPolicy(null, { importVerifyScope: "all_rows" });
+    renderToStaticMarkup(<ImportPreviewContent runId="run-1" />);
     const [items] = vi.mocked(useImportNpiVerification).mock.calls[0];
     expect(items.map((item) => [item.npi, item.disposition])).toEqual([
       [NEW_A, "create"],
@@ -188,17 +200,21 @@ describe("ImportPreviewContent with NPI Registry checks", () => {
     expect(html).toContain('role="progressbar"');
   });
 
-  it("a block severity holds that row back as a blocked row", () => {
-    const html = renderToStaticMarkup(
-      <ImportPreviewContent
-        runId="run-1"
-        npiSeverityFor={(kind) => (kind === "organizationNumber" ? "block" : "warn")}
-      />,
-    );
+  it("a block severity in the organization's policy holds that row back as a blocked row", () => {
+    state.policy = resolveNpiRegistryPolicy(null, { severity: { organizationNumber: "block" } });
+    const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" />);
     expect(metric(html, "New providers to create")).toBe("1");
     expect(metric(html, "Rows with blocked errors")).toBe("1");
     expect(html).toContain("Blocked rows (1)");
     expect(html).toContain("Finished — 2 of 2 checked, 0 with notes, 1 blocked.");
     expect(html).toContain("Counts reconcile with the 3 staged rows.");
+  });
+
+  it("an injected policy wins over the hook's", () => {
+    const blockOrg: NpiRegistryPolicy = resolveNpiRegistryPolicy({
+      severity: { organizationNumber: "block" },
+    });
+    const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" npiPolicy={blockOrg} />);
+    expect(metric(html, "Rows with blocked errors")).toBe("1");
   });
 });
