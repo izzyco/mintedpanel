@@ -41,6 +41,11 @@ vi.mock("@/services/extensionViewPrefs", () => ({
   getQuickCardCatalog: vi.fn(),
   putExtensionViewPrefs: vi.fn(),
 }));
+// Pass-through spy: every route test still resolves the real limit (5).
+vi.mock("./caseSearchLimit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./caseSearchLimit")>();
+  return { ...actual, resolveCaseSearchLimit: vi.fn(actual.resolveCaseSearchLimit) };
+});
 
 import {
   listEffectivePortalMapResolutions,
@@ -61,6 +66,7 @@ import { recordSubmissionTouch } from "@/services/submissionTouches";
 import { listUserOrgMemberships } from "@/services/orgMemberships";
 import { getNextBestAction } from "@/services/nextBestAction";
 import { completeTaskStep } from "@/services/taskSteps";
+import { resolveCaseSearchLimit } from "./caseSearchLimit";
 import {
   getExtensionViewPrefs,
   getQuickCardCatalog,
@@ -1460,6 +1466,14 @@ describe("provider cases handler", () => {
     );
     // providerId path is untouched by a q-only request.
     expect(listCasesMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves the ?q= limit for the request's organization (MINT-112 per-org override)", async () => {
+    searchCasesMock.mockResolvedValue({ rows: [], total: 0, truncated: false });
+    const request = ctx();
+    const b = await body(await handleListProviderCases(url("?q=a"), request));
+    expect(vi.mocked(resolveCaseSearchLimit)).toHaveBeenCalledWith(request.db, "org-1");
+    expect(b.meta).toEqual({ total: 0, truncated: false, limit: 5 });
   });
 
   it("says a capped ?q= answer is truncated, with the total of every match and the limit", async () => {

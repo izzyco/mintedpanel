@@ -722,7 +722,8 @@ export async function handleBatchLearnPortalFieldMaps(
 //                       search: org-scoped, matching payer name / provider
 //                       name / tracking id / case number (C-<n>), ids +
 //                       display fields only. At most meta.limit rows (the
-//                       platform-admin case-search limit, default 5, from
+//                       case-search limit for the request's organization:
+//                       its own setting, else the platform's, else 5, from
 //                       caseSearchLimit.ts); meta.total counts every match
 //                       and meta.truncated says whether `data` holds all of
 //                       them.
@@ -740,7 +741,7 @@ export async function handleListProviderCases(url: URL, ctx: AuthContext): Promi
     return ok(rows, { total: rows.length });
   }
   if (q != null) {
-    const limit = await resolveCaseSearchLimit(ctx.db);
+    const limit = await resolveCaseSearchLimit(ctx.db, ctx.orgId);
     const result = await searchOrgCases({ db: ctx.db, orgId: ctx.orgId }, q, limit);
     return ok(result.rows, { total: result.total, truncated: result.truncated, limit });
   }
