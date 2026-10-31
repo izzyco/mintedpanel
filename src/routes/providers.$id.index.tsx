@@ -424,12 +424,13 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           key: "npi",
           value: provider.npi ?? null,
           mono: true,
-          // Runs when the NPI changed, or always under recheckStoredOnEdit
-          // (see save) — MINT-7 check digit.
+          // Runs only when the NPI changed (see save) — MINT-7 check digit.
           validate: (v) => {
             if (!/^\d{10}$/.test(v)) return "NPI is 10 digits.";
             return isValidNpi(v) ? null : NPI_CHECK_DIGIT_MESSAGE;
           },
+          // Off by default; under recheckStoredOnEdit (MINT-129) an unchanged
+          // stored NPI is checked on save too.
           recheckStored: identityRules.recheckStoredOnEdit,
         },
         { label: "CAQH ID", key: "caqhId", value: provider.caqhId ?? null, mono: true },
@@ -486,8 +487,7 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       const draftValue = draft[f.key] ?? "";
       const v = f.type === "gender" ? draftValue : draftValue.trim();
       // Validate only fields the user actually changed — a legacy invalid
-      // value in an untouched field must not block an unrelated edit — unless
-      // the field is re-checked when stored (MINT-129).
+      // value in an untouched field must not block an unrelated edit.
       const changed = (v === "" ? null : v) !== (f.value ?? null);
       if ((changed || f.recheckStored) && v !== "" && f.validate) {
         const message = f.validate(v);
