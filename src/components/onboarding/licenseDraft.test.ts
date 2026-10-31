@@ -50,7 +50,8 @@ describe("addRegistryLicenseDraft", () => {
       ...EMPTY_LICENSE_DRAFT,
       state: "WY",
       licenseNumber: "WY-0099",
-      npiOrigin: ADDED,
+      // It filled the empty row: the next pick may give that row back.
+      npiOrigin: { ...ADDED, replacedEmpty: true },
     });
     expect(next.licenses).toHaveLength(2);
     const again = addRegistryLicenseDraft(next.licenses, { state: "CO", number: "PT-4471" });

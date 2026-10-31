@@ -352,7 +352,7 @@ describe("NpiRegistryPickSummary", () => {
         "|Filled from the NPI Registry: NPI, CO license number." +
         "|Cleared from the previous pick: Taxonomy code." +
         "|Kept yours: Credentials — registry has DPT." +
-        "|Added from the previous pick — remove if it doesn't apply: NM NM-7." +
+        "|From the previous pick — remove if it doesn't apply: NM NM-7." +
         "|The registry lists 2 licenses that are not on the form. " +
         "|A license row counts toward the provider's states, and NPPES lists no expiration date — add one only if it applies." +
         "|WY WY-0099|Add license row| for WY WY-0099" +

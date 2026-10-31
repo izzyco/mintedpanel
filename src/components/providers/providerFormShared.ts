@@ -208,11 +208,12 @@ export function applyNpiRegistryPick(
       npi: plan.npi,
       credentials: plan.credentials ?? form.credentials,
       taxonomyCode: plan.taxonomyCode ?? form.taxonomyCode,
-      licenses: applyNpiLicenseRows(form.licenses, plan, (row, number, origin) => ({
-        ...row,
-        number,
-        npiOrigin: origin,
-      })),
+      licenses: applyNpiLicenseRows(
+        form.licenses,
+        plan,
+        (row, number, origin) => ({ ...row, number, npiOrigin: origin }),
+        emptyLicenseRow,
+      ),
     },
     summary: plan.summary,
     trace: plan.trace,
@@ -230,16 +231,21 @@ export function addNpiLicenseOffer(
 ): { licenses: LicenseRow[]; existing: number | null } {
   const target = npiOfferTarget(licenses, offer, (row) => row, isBlankLicenseRow);
   if ("existing" in target) return { licenses, existing: target.existing };
-  const filled: Partial<LicenseRow> = {
-    state: offer.state,
-    number: offer.number,
-    npiOrigin: { kind: "added", touched: false },
-  };
+  const filled = { state: offer.state, number: offer.number };
   if ("append" in target) {
-    return { licenses: [...licenses, { ...emptyLicenseRow(), ...filled }], existing: null };
+    const added: LicenseRow = {
+      ...emptyLicenseRow(),
+      ...filled,
+      npiOrigin: { kind: "added", touched: false },
+    };
+    return { licenses: [...licenses, added], existing: null };
   }
+  // Filling the empty row: taking it back later leaves the empty row again.
+  const origin: NpiRowOrigin = { kind: "added", touched: false, replacedEmpty: true };
   return {
-    licenses: licenses.map((row, index) => (index === target.fill ? { ...row, ...filled } : row)),
+    licenses: licenses.map((row, index) =>
+      index === target.fill ? { ...row, ...filled, npiOrigin: origin } : row,
+    ),
     existing: null,
   };
 }

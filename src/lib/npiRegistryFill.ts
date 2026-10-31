@@ -40,6 +40,9 @@ export interface NpiRowOrigin {
    * the number into a row that had none. */
   kind: "added" | "number";
   touched: boolean;
+  /** An added row that filled the form's untouched empty row: taking it back
+   * leaves that empty row, as before the add. */
+  replacedEmpty?: boolean;
 }
 
 export interface NpiFillLicenseRow {
@@ -114,8 +117,10 @@ export interface NpiFillSummary {
   cleared: string[];
   /** Fields that held a different value of staff's and were kept. */
   kept: NpiFillKept[];
-  /** Rows staff added from the previous pick's offers and then edited, which
-   * this match does not list: theirs to remove if they don't apply. */
+  /** Licenses the previous pick put on the form that this match does not
+   * list and that stay: rows added from its offers that staff then edited,
+   * and numbers it filled into rows staff have since verified or failed.
+   * Theirs to remove if they don't apply. */
   staleRows: string[];
   /** Licenses the form has no row for, for staff to add. */
   licenseOffers: NpiLicenseOffer[];
@@ -134,6 +139,9 @@ export interface NpiFillPlan {
   /** Rows to remove: untouched rows added from the previous pick's offers
    * that this match does not list. Apply after licenseRows. */
   removeRows: number[];
+  /** Rows to return to the form's empty row: like removeRows, for an added
+   * row that had filled the form's untouched empty row. */
+  resetRows: number[];
   /** What this pick wrote; pass it to the next pick. */
   trace: NpiPickTrace;
   summary: NpiFillSummary;
@@ -289,17 +297,24 @@ export function planNpiRegistryFill(
       : form.taxonomyCode;
   const rows = form.licenses.map((row) => {
     const untouched = row.origin !== null && !row.origin.touched;
+    const pickNumber = untouched && row.origin?.kind === "number";
+    // A number the last pick wrote on a row staff have since verified or
+    // failed is not taken back — the verification is about that number — but
+    // it is the last pick's: listed, and this match's license offered.
+    const lockedPickNumber = pickNumber && row.numberLocked;
     return {
       state: stateKey(row.state),
       // A number the last pick wrote, untouched, is blank again.
-      number: untouched && row.origin?.kind === "number" ? "" : row.number,
+      number: pickNumber && !row.numberLocked ? "" : row.number,
       // An untouched row added from the last pick's offer goes, unless this
       // match lists the same license.
       removable: untouched && row.origin?.kind === "added",
-      // An added row staff edited is theirs; listed if this match drops it.
-      staleAdded: row.origin?.kind === "added" && row.origin.touched,
+      replacedEmpty: untouched && row.origin?.kind === "added" && row.origin.replacedEmpty === true,
+      // The last pick's license that stays: listed if this match drops it.
+      stale: (row.origin?.kind === "added" && row.origin.touched) || lockedPickNumber,
+      lockedPickNumber,
       // A reverted number has no origin until this pick fills it again; an
-      // edited row is staff's from now on.
+      // edited (or since verified) row is staff's from now on.
       origin: untouched && row.origin?.kind === "added" ? row.origin : null,
       numberLocked: row.numberLocked,
       filledHere: false,
@@ -370,7 +385,7 @@ export function planNpiRegistryFill(
     if (holding !== undefined) {
       // Already on the form; an added row this match also lists stays.
       rows[holding].removable = false;
-      rows[holding].staleAdded = false;
+      rows[holding].stale = false;
       continue;
     }
     const blankRow = inState.find(
@@ -384,7 +399,11 @@ export function planNpiRegistryFill(
     }
     // A number staff entered in that state is kept and named.
     const staffNumber = inState.some(
-      (i) => !rows[i].removable && !rows[i].filledHere && !isBlankField(rows[i].number),
+      (i) =>
+        !rows[i].removable &&
+        !rows[i].filledHere &&
+        !rows[i].lockedPickNumber &&
+        !isBlankField(rows[i].number),
     );
     if (staffNumber) {
       kept.push({ field: licenseFieldLabel(license.state), registryValue: license.number });
@@ -400,15 +419,16 @@ export function planNpiRegistryFill(
 
   const licenseRows: NpiFillPlan["licenseRows"] = [];
   const removeRows: number[] = [];
+  const resetRows: number[] = [];
   rows.forEach((row, rowIndex) => {
     const before = form.licenses[rowIndex];
     const label = before.state.trim().toUpperCase();
     if (row.removable) {
-      removeRows.push(rowIndex);
+      (row.replacedEmpty ? resetRows : removeRows).push(rowIndex);
       cleared.push(licenseRowFieldLabel(label));
       return;
     }
-    if (row.staleAdded) staleRows.push(`${label} ${before.number}`.trim());
+    if (row.stale) staleRows.push(`${label} ${before.number}`.trim());
     const originChanged =
       (row.origin?.kind ?? null) !== (before.origin?.kind ?? null) ||
       (row.origin?.touched ?? null) !== (before.origin?.touched ?? null);
@@ -480,21 +500,24 @@ export function planNpiRegistryFill(
     taxonomyCode: taxonomyChanged ? taxonomy : null,
     licenseRows,
     removeRows,
+    resetRows,
     trace,
     summary: { filled, cleared, kept, staleRows, licenseOffers: offers, details },
   };
 }
 
 /** A plan's license-row changes applied to a form's rows: numbers and origins
- * set, then the removed rows dropped. `set` writes one row of the form's
- * shape. */
+ * set, removed rows dropped, reset rows returned to `empty()`. `set` writes
+ * one row of the form's shape. */
 export function applyNpiLicenseRows<Row>(
   rows: Row[],
-  plan: Pick<NpiFillPlan, "licenseRows" | "removeRows">,
+  plan: Pick<NpiFillPlan, "licenseRows" | "removeRows" | "resetRows">,
   set: (row: Row, number: string, origin: NpiRowOrigin | null) => Row,
+  empty: () => Row,
 ): Row[] {
   return rows.flatMap((row, index) => {
     if (plan.removeRows.includes(index)) return [];
+    if (plan.resetRows.includes(index)) return [empty()];
     const change = plan.licenseRows.find((item) => item.rowIndex === index);
     return [change ? set(row, change.number, change.origin) : row];
   });
@@ -552,10 +575,10 @@ export function npiFillKeptText(summary: NpiFillSummary): string | null {
   return `Kept yours: ${items.join("; ")}.`;
 }
 
-/** "Added from the previous pick — remove if it doesn't apply: CO PT-1111." */
+/** "From the previous pick — remove if it doesn't apply: CO PT-1111." */
 export function npiFillStaleText(summary: NpiFillSummary): string | null {
   return summary.staleRows.length > 0
-    ? `Added from the previous pick — remove if it doesn't apply: ${summary.staleRows.join(", ")}.`
+    ? `From the previous pick — remove if it doesn't apply: ${summary.staleRows.join(", ")}.`
     : null;
 }
 

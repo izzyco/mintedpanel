@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { NPI_CHECK_DIGIT_MESSAGE } from "@/lib/providerIdentity";
-import { EMPTY_LICENSE_DRAFT, type LicenseDraft } from "./licenseDraft";
+import { EMPTY_LICENSE_DRAFT, addRegistryLicenseDraft, type LicenseDraft } from "./licenseDraft";
 import { applyRosterNpiPick, rosterNpiError } from "./rosterNpi";
 
 const BLOCK = "Your organization saves only NPIs the NPI Registry lists.";
@@ -149,6 +149,50 @@ describe("applyRosterNpiPick", () => {
     );
     expect(second.licenses).toEqual([{ ...savedCo, npiOrigin: null }]);
     expect(second.summary.cleared).toContain("CO license number");
+  });
+
+  it("keeps a number the first pick filled once staff mark the row Failed, and offers B's", () => {
+    const first = applyRosterNpiPick(fields, [savedCo], denver, "blank_fields", FRESH);
+    expect(first.licenses[0]).toMatchObject({ licenseNumber: "PT-1111" });
+    // Staff mark the license Failed in the editor (a status change, not the
+    // number): the row's verification is now recorded.
+    const failed = [{ ...first.licenses[0], verifiedStatus: "failed" as const }];
+    const second = applyRosterNpiPick(
+      { ...fields, ...first.patch },
+      failed,
+      boulder,
+      "blank_fields",
+      {
+        ...FRESH,
+        lastPick: first.trace,
+      },
+    );
+    expect(second.licenses).toEqual([
+      { ...savedCo, licenseNumber: "PT-1111", verifiedStatus: "failed", npiOrigin: null },
+    ]);
+    expect(second.summary.staleRows).toEqual(["CO PT-1111"]);
+    expect(second.summary.licenseOffers).toContainEqual({
+      state: "CO",
+      number: "PT-4471",
+      added: false,
+    });
+  });
+
+  it("roster create: pick A, add its offer into the empty row, pick B — the empty row is back", () => {
+    const start = [{ ...EMPTY_LICENSE_DRAFT }];
+    const first = applyRosterNpiPick(fields, start, denver, "blank_fields", FRESH);
+    expect(first.summary.licenseOffers).toEqual([{ state: "CO", number: "PT-1111", added: false }]);
+    const added = addRegistryLicenseDraft(first.licenses, first.summary.licenseOffers[0]);
+    expect(added.licenses).toHaveLength(1);
+    const second = applyRosterNpiPick(
+      { ...fields, ...first.patch },
+      added.licenses,
+      boulder,
+      "blank_fields",
+      { ...FRESH, lastPick: first.trace },
+    );
+    expect(second.licenses).toEqual([EMPTY_LICENSE_DRAFT]);
+    expect(second.summary.cleared).toContain("CO license row");
   });
 
   it("sets only the NPI under npi_only", () => {

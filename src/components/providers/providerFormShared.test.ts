@@ -211,14 +211,21 @@ describe("Add Provider NPI Registry pick", () => {
     expect(first.summary.licenseOffers).toEqual([{ state: "CO", number: "PT-1111", added: false }]);
     const added = addNpiLicenseOffer(first.form.licenses, first.summary.licenseOffers[0]);
     const afterAdd = { ...first.form, licenses: added.licenses };
+    // It filled the form's empty starting row.
     expect(afterAdd.licenses).toEqual([
-      { ...emptyLicenseRow(), state: "CO", number: "PT-1111", npiOrigin: ADDED },
+      {
+        ...emptyLicenseRow(),
+        state: "CO",
+        number: "PT-1111",
+        npiOrigin: { ...ADDED, replacedEmpty: true },
+      },
     ]);
     const context = { ...FRESH, lastPick: first.trace };
 
-    // B has a CO license: A's row goes, B's is offered.
+    // B has a CO license: A's row goes — back to the empty starting row, as
+    // before the add — and B's is offered.
     const second = applyNpiRegistryPick(afterAdd, boulderJane, "blank_fields", context);
-    expect(second.form.licenses).toEqual([]);
+    expect(second.form.licenses).toEqual([emptyLicenseRow()]);
     expect(second.summary.cleared).toContain("CO license row");
     expect(second.summary.licenseOffers).toContainEqual({
       state: "CO",
@@ -229,7 +236,7 @@ describe("Add Provider NPI Registry pick", () => {
     // B has no CO license: A's row still goes.
     const wyOnly = { ...boulderJane, taxonomies: boulderJane.taxonomies?.slice(1) };
     const third = applyNpiRegistryPick(afterAdd, wyOnly, "blank_fields", context);
-    expect(third.form.licenses).toEqual([]);
+    expect(third.form.licenses).toEqual([emptyLicenseRow()]);
     expect(third.summary.cleared).toContain("CO license row");
   });
 
@@ -287,7 +294,14 @@ describe("Add Provider licenses staff add from a pick", () => {
   it("fills the untouched empty row, else adds one; never touches a row with data", () => {
     const empty = [emptyLicenseRow()];
     expect(addNpiLicenseOffer(empty, { state: "WY", number: "WY-0099" })).toEqual({
-      licenses: [{ ...emptyLicenseRow(), state: "WY", number: "WY-0099", npiOrigin: ADDED }],
+      licenses: [
+        {
+          ...emptyLicenseRow(),
+          state: "WY",
+          number: "WY-0099",
+          npiOrigin: { ...ADDED, replacedEmpty: true },
+        },
+      ],
       existing: null,
     });
     const typed = [{ ...emptyLicenseRow(), type: "compact" as const }];

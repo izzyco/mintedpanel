@@ -140,11 +140,12 @@ function applied(form: NpiFillForm, next: ReturnType<typeof planNpiRegistryFill>
     credentials: next.credentials ?? form.credentials,
     credentialsTouched: next.trace.credentials ? false : form.credentialsTouched,
     taxonomyCode: next.taxonomyCode ?? form.taxonomyCode,
-    licenses: applyNpiLicenseRows(form.licenses, next, (r, number, origin) => ({
-      ...r,
-      number,
-      origin,
-    })),
+    licenses: applyNpiLicenseRows(
+      form.licenses,
+      next,
+      (r, number, origin) => ({ ...r, number, origin }),
+      () => row(""),
+    ),
   };
 }
 
@@ -561,10 +562,62 @@ describe("planNpiRegistryFill — rows added from the previous pick's offers", (
     expect(next.removeRows).toEqual([]);
     expect(next.summary.staleRows).toEqual(["CO PT-1111"]);
     expect(npiFillAnnouncement(next.summary)).toContain(
-      "Added from the previous pick — remove if it doesn't apply: CO PT-1111.",
+      "From the previous pick — remove if it doesn't apply: CO PT-1111.",
     );
     // From now on the row is staff's.
     expect(applied(edited, next).licenses[0].origin).toBeNull();
+  });
+});
+
+describe("planNpiRegistryFill — after staff verify or fail a row a pick filled", () => {
+  it("keeps the number, lists it as the previous pick's, and offers the new match's license", () => {
+    const start = blankForm({ licenses: [row("CO")] });
+    const first = plan(denver, start);
+    const afterFirst = applied(start, first);
+    expect(afterFirst.licenses[0]).toEqual(
+      row("CO", "PT-1111", { kind: "number", touched: false }),
+    );
+    // Staff mark the row Failed (or Verified): its verification is recorded.
+    const failed: NpiFillForm = {
+      ...afterFirst,
+      licenses: [{ ...afterFirst.licenses[0], numberLocked: true }],
+    };
+    const second = plan(record(), failed, "blank_fields", first.trace);
+    // Never a verified or failed row with no number.
+    expect(applied(failed, second).licenses).toEqual([row("CO", "PT-1111", null, true)]);
+    expect(second.summary.cleared).not.toContain("CO license number");
+    expect(second.summary.staleRows).toEqual(["CO PT-1111"]);
+    expect(second.summary.kept).toEqual([]);
+    expect(second.summary.licenseOffers).toContainEqual({
+      state: "CO",
+      number: "PT-4471",
+      added: false,
+    });
+  });
+
+  it("says nothing more when the new match lists the same license", () => {
+    const start = blankForm({ licenses: [row("CO")] });
+    const first = plan(denver, start);
+    const failed = {
+      ...applied(start, first),
+      licenses: [row("CO", "PT-1111", { kind: "number", touched: false }, true)],
+    };
+    const again = plan(denver, failed, "blank_fields", first.trace);
+    expect(again.summary.staleRows).toEqual([]);
+    expect(again.summary.licenseOffers).toEqual([]);
+  });
+});
+
+describe("planNpiRegistryFill — an added row that filled the empty starting row", () => {
+  it("comes back as that empty row when the next pick takes it back", () => {
+    const afterAdd = blankForm({
+      licenses: [row("CO", "PT-1111", { kind: "added", touched: false, replacedEmpty: true })],
+    });
+    const next = plan(record(), afterAdd, "blank_fields", null);
+    expect(next.resetRows).toEqual([0]);
+    expect(next.removeRows).toEqual([]);
+    expect(applied(afterAdd, next).licenses).toEqual([row("")]);
+    expect(next.summary.cleared).toEqual(["CO license row"]);
   });
 });
 

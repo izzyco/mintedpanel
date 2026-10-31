@@ -1,7 +1,7 @@
 // The roster form's Type 1 NPI rule and its NPI Registry pick (MINT-7,
 // MINT-110). Non-component module so the form file exports only components
 // (react-refresh rule).
-import type { LicenseDraft } from "@/components/onboarding/licenseDraft";
+import { EMPTY_LICENSE_DRAFT, type LicenseDraft } from "@/components/onboarding/licenseDraft";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import {
   applyNpiLicenseRows,
@@ -93,11 +93,12 @@ export function applyRosterNpiPick(
   if (plan.taxonomyCode !== null) patch.taxonomyCode = plan.taxonomyCode;
   return {
     patch,
-    licenses: applyNpiLicenseRows(licenses, plan, (draft, number, origin) => ({
-      ...draft,
-      licenseNumber: number,
-      npiOrigin: origin,
-    })),
+    licenses: applyNpiLicenseRows(
+      licenses,
+      plan,
+      (draft, number, origin) => ({ ...draft, licenseNumber: number, npiOrigin: origin }),
+      () => ({ ...EMPTY_LICENSE_DRAFT }),
+    ),
     trace: plan.trace,
     summary: plan.summary,
   };
