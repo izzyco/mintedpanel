@@ -107,7 +107,10 @@ export function BillingChangeFeed({ readiness }: { readiness: BillingReadinessDa
     const results = new Map<string, BillingAssessment | null>();
     if (!readiness.data) return results;
     for (const event of shownRows) {
-      results.set(event.id, assessFeedEvent(readiness.data.snapshot, event, readiness.data.asOf));
+      results.set(
+        event.id,
+        assessFeedEvent(readiness.data.snapshot, event, readiness.data.asOf, readiness.data.rules),
+      );
     }
     return results;
   }, [readiness.data, shownRows]);
@@ -148,7 +151,7 @@ export function BillingChangeFeed({ readiness }: { readiness: BillingReadinessDa
         return;
       }
       const currentFeed = filterBillingFeed(fresh.feed, requestedFilters, fresh.asOf);
-      const csv = buildNewlyBillableDigestCsv(fresh.snapshot, currentFeed, fresh.asOf);
+      const csv = buildNewlyBillableDigestCsv(fresh.snapshot, currentFeed, fresh.asOf, fresh.rules);
       if (!isCurrentBillingReadinessDate(fresh.asOf)) {
         setDownloadError(
           "A complete current read was not available. Retry after the source data loads.",
@@ -178,7 +181,7 @@ export function BillingChangeFeed({ readiness }: { readiness: BillingReadinessDa
     }
     downloadCsvText(
       "credentialing-changes.csv",
-      buildChangeFeedCsv(data.snapshot, rows, data.asOf),
+      buildChangeFeedCsv(data.snapshot, rows, data.asOf, data.rules),
     );
   }
 

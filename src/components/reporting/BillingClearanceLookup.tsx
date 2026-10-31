@@ -175,7 +175,7 @@ function ProviderPayerStatus({
   const [openKey, setOpenKey] = useState("");
   const provider = data.snapshot.providers.find((row) => row.id === providerId);
   const rows = useMemo(
-    () => providerPayerStatuses(data.snapshot, providerId, data.asOf),
+    () => providerPayerStatuses(data.snapshot, providerId, data.asOf, data.rules),
     [data, providerId],
   );
   const open = rows.find((row) => row.key === openKey) ?? null;
@@ -273,7 +273,7 @@ export function BillingClearanceLookup({ data }: { data: BillingReadinessQueryDa
   const search = useMemo(
     () =>
       data
-        ? searchBillingProviders(data.snapshot, deferredQuery, data.asOf)
+        ? searchBillingProviders(data.snapshot, deferredQuery, data.asOf, data.rules)
         : { matches: [], total: 0 },
     [data, deferredQuery],
   );
