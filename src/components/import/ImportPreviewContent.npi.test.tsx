@@ -9,6 +9,7 @@ import type { ImportNpiOutcome, ImportNpiSnapshot } from "@/lib/importNpiVerific
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import {
   DEFAULT_NPI_REGISTRY_POLICY,
+  NPI_REGISTRY_CHECKS,
   resolveNpiRegistryPolicy,
   type NpiRegistryPolicy,
 } from "@/lib/npiRegistryPolicy";
@@ -39,8 +40,15 @@ vi.mock("@/lib/permissions", () => ({ useIsAdmin: () => state.admin }));
 vi.mock("@/hooks/useNpiRegistry", () => ({
   useNpiRegistryPolicy: () => state.policy,
 }));
+vi.mock("@/hooks/useImportNpiAdvisoryCapture", () => ({
+  useCaptureImportNpiAdvisories: () => vi.fn(),
+}));
 vi.mock("@/hooks/useImportNpiVerification", () => ({
-  useImportNpiVerification: vi.fn(() => ({ snapshot: state.snapshot, stop: vi.fn() })),
+  useImportNpiVerification: vi.fn(() => ({
+    snapshot: state.snapshot,
+    stop: vi.fn(),
+    read: () => state.snapshot,
+  })),
 }));
 
 import { useImportNpiVerification } from "@/hooks/useImportNpiVerification";
@@ -229,21 +237,24 @@ describe("ImportPreviewContent with NPI Registry checks", () => {
     expect(html).toContain('role="progressbar"');
   });
 
-  it("a block severity in the organization's policy holds that row back as a blocked row", () => {
-    state.policy = resolveNpiRegistryPolicy(null, { severity: { organizationNumber: "block" } });
+  it("never holds a row back: with every check kept for Mission Control the counts are the same, and no note shows", () => {
+    state.policy = resolveNpiRegistryPolicy(null, {
+      display: Object.fromEntries(NPI_REGISTRY_CHECKS.map((check) => [check, "backend_only"])),
+    });
     const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" />);
-    expect(metric(html, "New providers to create")).toBe("1");
-    expect(metric(html, "Rows with blocked errors")).toBe("1");
-    expect(html).toContain("Blocked rows (1)");
-    expect(html).toContain("Finished — 2 of 2 checked, 0 with notes, 1 blocked.");
+    expect(metric(html, "New providers to create")).toBe("2");
+    expect(metric(html, "Rows with blocked errors")).toBe("0");
+    expect(html).not.toContain("Blocked rows");
+    expect(html).toContain("Finished — 2 of 2 checked, 0 with notes.");
     expect(html).toContain("Counts reconcile with the 3 staged rows.");
   });
 
   it("an injected policy wins over the hook's", () => {
-    const blockOrg: NpiRegistryPolicy = resolveNpiRegistryPolicy({
-      severity: { organizationNumber: "block" },
+    const hidden: NpiRegistryPolicy = resolveNpiRegistryPolicy({
+      display: { organizationNumber: "backend_only" },
     });
-    const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" npiPolicy={blockOrg} />);
-    expect(metric(html, "Rows with blocked errors")).toBe("1");
+    const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" npiPolicy={hidden} />);
+    expect(html).toContain("Finished — 2 of 2 checked, 0 with notes.");
+    expect(metric(html, "New providers to create")).toBe("2");
   });
 });

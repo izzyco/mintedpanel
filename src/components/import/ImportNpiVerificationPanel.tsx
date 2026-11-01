@@ -11,7 +11,7 @@
 // Stop button itself had focus as it went away (it leaves when the checks
 // end), so focus lands on the status line instead of the page body.
 import { useEffect, useId, useRef } from "react";
-import { CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
+import { CircleCheck, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   formatTimeRemaining,
@@ -29,15 +29,12 @@ export function ImportNpiVerificationPanel({
   snapshot,
   counts,
   scope,
-  canBlock,
   onStop,
 }: {
   snapshot: ImportNpiSnapshot;
-  /** Checked rows with a warning, and rows a block holds back. */
+  /** Checked rows that list an advisory. */
   counts: ImportNpiCounts;
   scope: NpiImportVerifyScope;
-  /** The NPI Registry policy blocks on some answer (npiPolicyCanBlock). */
-  canBlock: boolean;
   onStop: () => void;
 }) {
   const headingId = useId();
@@ -110,9 +107,7 @@ export function ImportNpiVerificationPanel({
         {scope === "all_rows"
           ? "Every row with an NPI. Notes are under New providers, Updates and Skipped."
           : "New providers only. Each row's note is under New providers."}{" "}
-        {canBlock
-          ? "A note never stops a row; a row your NPI policy blocks is listed under Blocked rows with the reason."
-          : "A note never stops a row: every row can still be committed."}
+        A note never stops a row: every row is committed, and committing never waits for the checks.
       </p>
       <p role="status" aria-live="polite" className="sr-only">
         {importNpiAnnouncement(snapshot, counts)}
@@ -121,40 +116,34 @@ export function ImportNpiVerificationPanel({
   );
 }
 
-/** A row's registry note: a tone icon (the same tones as the provider forms'
- * note, "block" included), the title, and detail. */
-export function ImportNpiNoteCell({ note }: { note: NpiVerificationView }) {
+/** A row's registry notes: each a quiet, one-line note (an advisory's title,
+ * "Found in the NPI Registry" for a full match, or "Not checked"). Nothing to
+ * confirm and nothing to type; an empty list renders nothing. */
+export function ImportNpiNotes({ notes }: { notes: readonly NpiVerificationView[] }) {
+  if (notes.length === 0) return null;
   return (
-    <div className="flex items-start gap-1.5 text-[12px]">
-      {note.tone === "ok" ? (
-        <CircleCheck
-          aria-hidden="true"
-          className="mt-px h-4 w-4 shrink-0 text-[var(--mp-ok-ink)]"
-        />
-      ) : note.tone === "warn" ? (
-        <TriangleAlert
-          aria-hidden="true"
-          className="mt-px h-4 w-4 shrink-0 text-[var(--mp-warn-ink)]"
-        />
-      ) : note.tone === "block" ? (
-        <CircleAlert aria-hidden="true" className="mt-px h-4 w-4 shrink-0 text-destructive" />
-      ) : null}
-      <p>
-        <span
-          className={cn(
-            note.tone === "warn"
-              ? "font-medium text-[var(--mp-warn-ink)]"
-              : note.tone === "block"
-                ? "font-medium text-destructive"
-                : note.tone === "ok"
-                  ? "font-medium text-foreground"
-                  : "text-muted-foreground",
-          )}
-        >
-          {note.title}
-        </span>
-        {note.detail ? <span className="text-muted-foreground"> {note.detail}</span> : null}
-      </p>
-    </div>
+    <ul className="space-y-0.5 text-[12px]">
+      {notes.map((note, index) => (
+        <li key={index} className="flex items-start gap-1.5">
+          {note.tone === "ok" ? (
+            <CircleCheck
+              aria-hidden="true"
+              className="mt-px h-3.5 w-3.5 shrink-0 text-[var(--mp-ok-ink)]"
+            />
+          ) : note.tone === "warn" ? (
+            <TriangleAlert
+              aria-hidden="true"
+              className="mt-px h-3.5 w-3.5 shrink-0 text-[var(--mp-warn-ink)]"
+            />
+          ) : null}
+          <span
+            className={cn(note.tone === "neutral" ? "text-muted-foreground" : "text-foreground")}
+          >
+            {note.title}
+            {note.detail ? <span className="text-muted-foreground"> {note.detail}</span> : null}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

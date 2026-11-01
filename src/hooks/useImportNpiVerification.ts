@@ -38,6 +38,9 @@ export interface ImportNpiVerification {
   snapshot: ImportNpiSnapshot;
   /** Stop the checks now (Stop, Cancel Import, Commit). */
   stop: () => void;
+  /** The latest snapshot right now — after stop() too, before a re-render
+   * (what Commit captures). */
+  read: () => ImportNpiSnapshot;
 }
 
 export function useImportNpiVerification(
@@ -69,5 +72,9 @@ export function useImportNpiVerification(
     verifier ? verifier.getSnapshot : () => fallback,
   );
   const stop = useCallback(() => session.stop(), [session]);
-  return { snapshot: verifier ? snapshot : { ...snapshot, total: items.length }, stop };
+  const read = useCallback(
+    () => session.current?.getSnapshot() ?? idleSnapshot(itemsRef.current.length),
+    [session],
+  );
+  return { snapshot: verifier ? snapshot : { ...snapshot, total: items.length }, stop, read };
 }

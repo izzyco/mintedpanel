@@ -35,12 +35,13 @@ import {
 } from "@/components/ui/table";
 import { BatchAssignPanel } from "@/components/import/BatchAssignPanel";
 import {
-  ImportNpiNoteCell,
+  ImportNpiNotes,
   ImportNpiVerificationPanel,
 } from "@/components/import/ImportNpiVerificationPanel";
 import { ImportRunStatePill } from "@/components/import/ImportRunPanel";
 import { useCancelImportRun, useCommitImportRun, useImportPreview } from "@/hooks/useImportRuns";
 import { useImportNpiVerification } from "@/hooks/useImportNpiVerification";
+import { useCaptureImportNpiAdvisories } from "@/hooks/useImportNpiAdvisoryCapture";
 import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
 import { useIsAdmin } from "@/lib/permissions";
 import { downloadCsv } from "@/lib/csv";
@@ -55,9 +56,9 @@ import {
   type UpdateDisposition,
 } from "@/lib/importDedupe";
 import {
-  applyImportNpiBlocks,
+  importCommitProviderIds,
+  importNpiCaptureAdvisories,
   importNpiCommitWarning,
-  npiPolicyCanBlock,
   selectImportNpiChecks,
   summarizeImportNpiRows,
   type ImportNpiRowResult,
@@ -193,9 +194,9 @@ function UpdateRow({
           ))}
         </ul>
       ) : null}
-      {npiResult ? (
+      {npiResult && npiResult.notes.length > 0 ? (
         <div className="mt-2">
-          <ImportNpiNoteCell note={npiResult.note} />
+          <ImportNpiNotes notes={npiResult.notes} />
         </div>
       ) : null}
     </div>
@@ -272,17 +273,11 @@ export function ImportPreviewContent({
     () => summarizeImportNpiRows(npiChecks, npiSnapshot, policy),
     [npiChecks, npiSnapshot, policy],
   );
-  const npiCanBlock = npiPolicyCanBlock(policy);
+  const captureNpiAdvisories = useCaptureImportNpiAdvisories();
 
-  // A "block" outcome holds its row back; with the default policy this is the
-  // dedupe's own list, unchanged.
-  const dispositions = useMemo(
-    () =>
-      preview.dispositions
-        ? applyImportNpiBlocks(preview.dispositions, npi.blockReasonByLine)
-        : null,
-    [preview.dispositions, npi.blockReasonByLine],
-  );
+  // A registry answer never holds a row back (A30, A39): the review shows and
+  // commits exactly the dedupe's dispositions.
+  const dispositions = preview.dispositions;
 
   const summary = useMemo(
     () =>
@@ -339,8 +334,10 @@ export function ImportPreviewContent({
 
   const runCommit = () => {
     if (!dispositions) return;
-    // Committing before the registry checks finish is allowed; it stops them.
+    // Commit never waits for the registry checks (A39): it stops them, and
+    // rows not checked go in marked "not checked".
     npiVerification.stop();
+    const npiAtCommit = npiVerification.read();
     const plan = buildCommitPlan(dispositions, resolutions);
     commit.mutate(
       { runId: run.id, plan },
@@ -351,6 +348,17 @@ export function ImportPreviewContent({
             toast.info("This run was already committed.");
             return;
           }
+          // Every committed row's advisories go to the capture seam, facts
+          // only, in the background; it never reaches this commit.
+          captureNpiAdvisories(
+            importNpiCaptureAdvisories({
+              items: npiChecks,
+              snapshot: npiAtCommit,
+              policy,
+              importRunId: run.id,
+              providerIdByLine: importCommitProviderIds(plan, result),
+            }),
+          );
           // E6.4 F6.4.6 — the unified relationship summary: what the commit
           // resolved across providers, groups, facilities, and enrollments.
           const rel = result.relationships;
@@ -371,11 +379,7 @@ export function ImportPreviewContent({
   const canReview = run.state === "ready_for_review";
   const showNpiChecks = canReview && isAdmin && npiChecks.length > 0;
   const commitWarning = showNpiChecks
-    ? importNpiCommitWarning({
-        phase: npiSnapshot.phase,
-        unchecked: npi.unchecked,
-        canBlock: npiCanBlock,
-      })
+    ? importNpiCommitWarning({ phase: npiSnapshot.phase, unchecked: npi.unchecked })
     : null;
 
   return (
@@ -407,7 +411,6 @@ export function ImportPreviewContent({
           snapshot={npiSnapshot}
           counts={npi.counts}
           scope={npiScope}
-          canBlock={npiCanBlock}
           onStop={npiVerification.stop}
         />
       ) : null}
@@ -428,7 +431,7 @@ export function ImportPreviewContent({
             <TableBody>
               {creates.map((d) => {
                 if (d.kind !== "create") return null;
-                const note = npi.byLine.get(d.line)?.note;
+                const notes = npi.byLine.get(d.line)?.notes ?? [];
                 return (
                   <TableRow key={`c-${d.line}`}>
                     <TableCell className="text-[13px] font-medium">{d.displayName}</TableCell>
@@ -437,7 +440,9 @@ export function ImportPreviewContent({
                     <TableCell className="text-[13px]">{d.facilityIds.length}</TableCell>
                     <TableCell className="text-[13px]">{d.licenses.length}</TableCell>
                     {showNpiChecks ? (
-                      <TableCell>{note ? <ImportNpiNoteCell note={note} /> : null}</TableCell>
+                      <TableCell>
+                        <ImportNpiNotes notes={notes} />
+                      </TableCell>
                     ) : null}
                   </TableRow>
                 );
@@ -471,9 +476,6 @@ export function ImportPreviewContent({
               committed. For identity conflicts, correct the source or existing provider data and
               re-import. Resolve field conflicts above; scan errors are detailed in the downloadable
               report.
-              {npiCanBlock && npi.counts.blocked > 0
-                ? " Rows your NPI policy blocks (an NPI Registry answer it does not accept) are not committed either; the reason is on each row."
-                : null}
             </p>
             {blocked.length > 0 ? (
               <Table>
@@ -520,8 +522,15 @@ export function ImportPreviewContent({
               d.kind === "skip" ? (
                 <li key={`s-${d.line}`} className="text-muted-foreground">
                   {d.displayName} — {d.reason}
-                  {showNpiChecks && npi.byLine.get(d.line) ? (
-                    <> · NPI Registry: {npi.byLine.get(d.line)?.note.title}</>
+                  {showNpiChecks && (npi.byLine.get(d.line)?.notes.length ?? 0) > 0 ? (
+                    <>
+                      {" "}
+                      · NPI Registry:{" "}
+                      {npi.byLine
+                        .get(d.line)
+                        ?.notes.map((note) => note.title)
+                        .join("; ")}
+                    </>
                   ) : null}
                 </li>
               ) : null,

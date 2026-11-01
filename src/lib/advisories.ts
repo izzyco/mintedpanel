@@ -41,7 +41,15 @@ export interface Advisory {
   /** One sentence for Mission Control: why it matters. No values. */
   whyItMatters: string;
   /** Facts only: never a value, a name or registry data. */
-  context: { confirmed: boolean };
+  context: AdvisoryContext;
+}
+
+/** Facts about the advisory. `importRunId` and `line` (MINT-110 PR 2) say
+ * which roster import and source row it came from, when it came from one. */
+export interface AdvisoryContext {
+  confirmed: boolean;
+  importRunId?: string;
+  line?: number;
 }
 
 /** An advisory reduced to the captured shape: whatever else a form's view
@@ -56,7 +64,13 @@ export function toCapturedAdvisory(advisory: Advisory): Advisory {
     },
     display: advisory.display,
     whyItMatters: advisory.whyItMatters,
-    context: { confirmed: advisory.context.confirmed },
+    context: {
+      confirmed: advisory.context.confirmed,
+      ...(advisory.context.importRunId !== undefined
+        ? { importRunId: advisory.context.importRunId }
+        : {}),
+      ...(advisory.context.line !== undefined ? { line: advisory.context.line } : {}),
+    },
   };
 }
 

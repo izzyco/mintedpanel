@@ -27,6 +27,8 @@ function items(count: number): ImportNpiCheckItem[] {
     line: i + 2,
     firstName: `Synth${i}`,
     lastName: "Tester",
+    credentials: "",
+    taxonomyCode: "",
     disposition: "create" as const,
   }));
 }
@@ -363,7 +365,7 @@ describe("ImportNpiVerifier edges (review findings)", () => {
     const lines: string[] = [];
     verifier.subscribe(() => {
       const snap = verifier.getSnapshot();
-      if (snap.phase === "running") lines.push(importNpiStatusText(snap, { notes: 0, blocked: 0 }));
+      if (snap.phase === "running") lines.push(importNpiStatusText(snap, { notes: 0 }));
     });
     verifier.start();
     await settle(verifier);

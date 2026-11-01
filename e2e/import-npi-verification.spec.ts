@@ -17,6 +17,9 @@
 //      status line (not the page body), and Commit still works.
 //   4. Leaving the review mid-check aborts the request in flight and no
 //      further lookups are sent.
+//   5. A39: Commit never waits for the checks: while one is still in flight,
+//      the confirm step says how many go in not checked, the commit goes
+//      through with every row, and the check in flight is aborted.
 import {
   test,
   expect,
@@ -305,6 +308,8 @@ function stagedFixtures(): Record<string, Record<string, unknown>[]> {
 
 interface WireLog {
   commitCalls: number;
+  /** The last commit plan's row counts and its error-report text. */
+  lastPlan?: { creates: number; blocked: number; blockedText: string };
 }
 
 function makeHandler(fixtures: Record<string, Record<string, unknown>[]>, wire: WireLog) {
@@ -348,7 +353,12 @@ function makeHandler(fixtures: Record<string, Record<string, unknown>[]>, wire: 
       wire.commitCalls += 1;
       const body = JSON.parse(req.postData() ?? "{}") as {
         p_run_id: string;
-        p_plan: { creates?: unknown[] };
+        p_plan: { creates?: unknown[]; blocked_entries?: unknown[] };
+      };
+      wire.lastPlan = {
+        creates: (body.p_plan.creates ?? []).length,
+        blocked: (body.p_plan.blocked_entries ?? []).length,
+        blockedText: JSON.stringify(body.p_plan.blocked_entries ?? []),
       };
       const run = fixtures.import_runs.find((r) => r.id === body.p_run_id);
       const created = (body.p_plan.creates ?? []).map(() => `imp-prov-${seq++}`);
@@ -443,13 +453,23 @@ interface BatchCall {
 
 /** Answers each NPI from RECORDS. `holdFrom` (1-based) leaves that call and
  * later ones unanswered, so a test can cancel while a request is in flight. */
+// Requests a test left unanswered on purpose. Each test's end aborts any the
+// page has not already given up on, so nothing is left pending in the worker.
+const held: Route[] = [];
+test.afterEach(async () => {
+  for (const route of held.splice(0)) await route.abort().catch(() => undefined);
+});
+
 async function mockBatchRoute(context: BrowserContext, opts: { holdFrom?: number } = {}) {
   const calls: BatchCall[] = [];
   await context.route(/\/api\/npi-registry\/verify-batch/, async (route) => {
     const req = route.request();
     const body = req.postDataJSON() as Record<string, unknown>;
     calls.push({ body, authorization: req.headers()["authorization"] });
-    if (opts.holdFrom !== undefined && calls.length >= opts.holdFrom) return;
+    if (opts.holdFrom !== undefined && calls.length >= opts.holdFrom) {
+      held.push(route);
+      return;
+    }
     const npis = (body.npis as string[]) ?? [];
     await route.fulfill({
       status: 200,
@@ -572,22 +592,38 @@ test("MINT-119: a 100-row upload checks new providers' NPIs with progress, time 
   await page.getByRole("button", { name: "New providers (100)", exact: true }).click();
   const rowFor = (p: SynthProvider) =>
     page.getByRole("row").filter({ has: page.getByRole("cell", { name: p.npi, exact: true }) });
-  await expect(rowFor(PROVIDERS[ORG_INDEX])).toContainText("This NPI belongs to an organization");
-  await expect(rowFor(PROVIDERS[NOT_FOUND_INDEX])).toContainText("Not found in the NPI Registry");
-  await expect(rowFor(PROVIDERS[NAME_DIFFERS_INDEX])).toContainText(
-    "Found in the NPI Registry, but the name differs",
-  );
-  await expect(rowFor(PROVIDERS[0])).toContainText("Found in the NPI Registry");
+  // Each advisory shows on its row as one quiet line; nothing to confirm.
+  const note = (p: SynthProvider, text: string) =>
+    rowFor(p)
+      .getByRole("listitem")
+      .filter({ hasText: new RegExp(`^${text}$`) });
+  await expect(note(PROVIDERS[ORG_INDEX], "This NPI belongs to an organization")).toBeVisible();
+  await expect(note(PROVIDERS[NOT_FOUND_INDEX], "Not found in the NPI Registry")).toBeVisible();
+  await expect(
+    note(PROVIDERS[NAME_DIFFERS_INDEX], "Found in the NPI Registry, but the name differs"),
+  ).toBeVisible();
+  await expect(rowFor(PROVIDERS[ORG_INDEX]).getByRole("button")).toHaveCount(0);
+  // "Found" only where the registry fully matched: 97 rows, never the other three.
+  await expect(note(PROVIDERS[0], "Found in the NPI Registry")).toBeVisible();
+  for (const index of [ORG_INDEX, NOT_FOUND_INDEX, NAME_DIFFERS_INDEX]) {
+    await expect(note(PROVIDERS[index], "Found in the NPI Registry")).toHaveCount(0);
+  }
+  await expect(
+    page.getByRole("listitem").filter({ hasText: /^Found in the NPI Registry$/ }),
+  ).toHaveCount(97);
 
-  // Warnings only: all 100 still go in, nothing is blocked.
-  await expect(page.getByText("Rows with blocked errors")).toBeVisible();
+  // Every row commits, whatever the registry said; nothing is blocked, and the
+  // error report carries no registry data.
   await expect(page.getByRole("button", { name: /^Blocked rows/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Commit Changes", exact: true }).click();
+  // Everything was checked: nothing to warn about.
+  await expect(page.getByText(/go in not checked/)).toHaveCount(0);
   await page.getByRole("button", { name: "Yes, commit changes", exact: true }).click();
   await expect(page.getByText("100 providers created · 0 updated", { exact: true })).toBeVisible({
     timeout: 20000,
   });
   expect(wire.commitCalls).toBe(1);
+  expect(wire.lastPlan).toEqual({ creates: 100, blocked: 0, blockedText: "[]" });
   expect(calls).toHaveLength(10);
 });
 
@@ -660,8 +696,13 @@ test("MINT-119: Stop ends the checks, rows left say so, and the import can still
     has: page.getByRole("cell", { name: PROVIDERS[99].npi, exact: true }),
   });
   await expect(lastRow).toContainText("Not checked The checks were stopped.");
+  await expect(lastRow.getByText("Found in the NPI Registry", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Commit Changes", exact: true }).click();
+  // The confirm step says how many go in not checked; nothing to type.
+  await expect(
+    page.getByText("80 rows go in not checked against the NPI Registry.", { exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Yes, commit changes", exact: true }).click();
   await expect(page.getByText("100 providers created · 0 updated", { exact: true })).toBeVisible({
     timeout: 20000,
@@ -697,4 +738,46 @@ test("MINT-119: leaving the review mid-check aborts the lookup in flight and sen
   expect(calls).toHaveLength(3);
   // Nothing about the run changed: leaving is not cancelling.
   expect(fixtures.import_runs[0].state).toBe("ready_for_review");
+});
+
+test("A39: Commit never waits for the checks — it stops them and every row goes in", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = stagedFixtures();
+  const wire: WireLog = { commitCalls: 0 };
+  await context.route(/\/(rest|auth)\/v1\//, makeHandler(fixtures, wire));
+  // The third request never answers: it is still in flight at Commit.
+  const calls = await mockBatchRoute(context, { holdFrom: 3 });
+  const failed: string[] = [];
+  page.on("requestfailed", (request) => {
+    if (request.url().includes("/api/npi-registry/verify-batch")) failed.push(request.url());
+  });
+  await seedAuth(context);
+  await page.clock.install();
+
+  await openStagedReview(page);
+  await expectChecked(page, 20);
+  await page.clock.fastForward(11_000);
+  await expect.poll(() => calls.length).toBe(3);
+
+  await page.getByRole("button", { name: "Commit Changes", exact: true }).click();
+  await expect(
+    page.getByText(
+      "NPI Registry checks are still running; committing stops them, and 80 rows go in not checked.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Yes, commit changes", exact: true }).click();
+  // The commit goes through while the held check never answered.
+  await expect(page.getByText("100 providers created · 0 updated", { exact: true })).toBeVisible({
+    timeout: 20000,
+  });
+  expect(wire.commitCalls).toBe(1);
+  expect(wire.lastPlan).toEqual({ creates: 100, blocked: 0, blockedText: "[]" });
+  // Committing stopped the checks: the one in flight was aborted, none followed.
+  await expect.poll(() => failed.length).toBe(1);
+  for (let i = 0; i < 4; i += 1) await page.clock.fastForward(11_000);
+  expect(calls).toHaveLength(3);
 });

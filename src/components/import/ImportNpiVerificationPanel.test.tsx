@@ -4,7 +4,7 @@
 // states, and one polite live region. Rendered statically; no network.
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ImportNpiNoteCell, ImportNpiVerificationPanel } from "./ImportNpiVerificationPanel";
+import { ImportNpiNotes, ImportNpiVerificationPanel } from "./ImportNpiVerificationPanel";
 import type { ImportNpiOutcome, ImportNpiSnapshot } from "@/lib/importNpiVerification";
 
 function snapshot(over: Partial<ImportNpiSnapshot>): ImportNpiSnapshot {
@@ -19,18 +19,12 @@ function snapshot(over: Partial<ImportNpiSnapshot>): ImportNpiSnapshot {
   };
 }
 
-function render(
-  snap: ImportNpiSnapshot,
-  counts = { notes: 0, blocked: 0 },
-  scope = "new_providers",
-  canBlock = false,
-) {
+function render(snap: ImportNpiSnapshot, counts = { notes: 0 }, scope = "new_providers") {
   return renderToStaticMarkup(
     <ImportNpiVerificationPanel
       snapshot={snap}
       counts={counts}
       scope={scope as "new_providers" | "all_rows"}
-      canBlock={canBlock}
       onStop={vi.fn()}
     />,
   );
@@ -64,10 +58,7 @@ describe("ImportNpiVerificationPanel", () => {
 
   it("offers Stop while running, and not once the checks end", () => {
     expect(render(snapshot({ done: 10 }))).toContain(">Stop checks</button>");
-    const done = render(snapshot({ phase: "done", done: 100, checked: 100 }), {
-      notes: 4,
-      blocked: 0,
-    });
+    const done = render(snapshot({ phase: "done", done: 100, checked: 100 }), { notes: 4 });
     expect(done).not.toContain("Stop checks");
     expect(done).toContain("Finished — 100 of 100 checked, 4 with notes.");
     expect(progressbar(done)).toContain('aria-valuenow="100"');
@@ -119,14 +110,11 @@ describe("ImportNpiVerificationPanel", () => {
     expect(html).toContain("<span>20 of 40 done, 10 not checked</span>");
   });
 
-  it("mentions blocking only when the NPI policy can block", () => {
-    expect(render(snapshot({}))).toContain(
-      "A note never stops a row: every row can still be committed.",
-    );
-    expect(render(snapshot({}))).not.toContain("NPI policy blocks");
-    expect(render(snapshot({}), { notes: 0, blocked: 0 }, "new_providers", true)).toContain(
-      "a row your NPI policy blocks is listed under Blocked rows with the reason",
-    );
+  it("says a note never stops a row and committing never waits — no blocking copy", () => {
+    const html = render(snapshot({}));
+    expect(html).toContain("A note never stops a row: every row is committed");
+    expect(html).toContain("committing never waits for the");
+    expect(html).not.toMatch(/block/i);
   });
 
   it("gives the status line a visible focus style, since focus can land there", () => {
@@ -136,31 +124,46 @@ describe("ImportNpiVerificationPanel", () => {
 
   it("names its scope and that a note never stops a row", () => {
     expect(render(snapshot({}))).toContain("New providers only.");
-    expect(render(snapshot({}), { notes: 0, blocked: 0 }, "all_rows")).toContain(
-      "Every row with an NPI.",
-    );
+    expect(render(snapshot({}), { notes: 0 }, "all_rows")).toContain("Every row with an NPI.");
     expect(render(snapshot({}))).toContain("A note never stops a row");
   });
 });
 
-describe("ImportNpiNoteCell", () => {
-  it("renders the note's title and detail with a tone icon", () => {
-    const warn = renderToStaticMarkup(
-      <ImportNpiNoteCell
-        note={{
-          tone: "warn",
-          title: "This NPI belongs to an organization",
-          detail: "The registry lists QUILL THERAPY LLC.",
-        }}
+describe("ImportNpiNotes", () => {
+  it("renders each note as one quiet line, in order, with a tone icon", () => {
+    const html = renderToStaticMarkup(
+      <ImportNpiNotes
+        notes={[
+          { tone: "warn", title: "This NPI belongs to an organization", detail: null },
+          { tone: "warn", title: "Credentials OT — the registry has PT", detail: null },
+        ]}
       />,
     );
-    expect(warn).toContain("This NPI belongs to an organization");
-    expect(warn).toContain("The registry lists QUILL THERAPY LLC.");
-    expect(warn).toContain("--mp-warn-ink");
-    const pending = renderToStaticMarkup(
-      <ImportNpiNoteCell note={{ tone: "neutral", title: "Not checked yet", detail: null }} />,
+    expect(html.match(/<li /g)).toHaveLength(2);
+    expect(html.indexOf("This NPI belongs to an organization")).toBeLessThan(
+      html.indexOf("Credentials OT — the registry has PT"),
     );
-    expect(pending).toContain("Not checked yet");
-    expect(pending).not.toContain("<svg");
+    expect(html).toContain("--mp-warn-ink");
+    // Nothing to confirm, nothing to type.
+    expect(html).not.toMatch(/<button|<input/);
+  });
+
+  it("renders a full match, a not-checked row and nothing at all", () => {
+    expect(
+      renderToStaticMarkup(
+        <ImportNpiNotes
+          notes={[{ tone: "ok", title: "Found in the NPI Registry", detail: null }]}
+        />,
+      ),
+    ).toContain("--mp-ok-ink");
+    const notChecked = renderToStaticMarkup(
+      <ImportNpiNotes
+        notes={[{ tone: "neutral", title: "Not checked", detail: "The checks were stopped." }]}
+      />,
+    );
+    expect(notChecked).toContain("Not checked");
+    expect(notChecked).toContain("The checks were stopped.");
+    expect(notChecked).not.toContain("<svg");
+    expect(renderToStaticMarkup(<ImportNpiNotes notes={[]} />)).toBe("");
   });
 });
