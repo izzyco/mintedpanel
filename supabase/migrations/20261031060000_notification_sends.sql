@@ -36,9 +36,10 @@
 -- sends for the slot are settled: every planned send is sent, already sent,
 -- given up, or left claimed because it may have been delivered, so a later
 -- run has nothing to do for it. The hourly digest reads it to skip an org that
--- has had its digest for the local date; an org whose run failed, or that has
--- a send a later attempt may retry, gets no row, so the next hourly run
--- catches it up the same local day.
+-- has had its open scheduled send (the slot: the local date, or `date:2` for
+-- a twice-a-day digest's second send); an org whose run failed, or that has a
+-- send a later attempt may retry, gets no row, so the next hourly run catches
+-- it up while that send's window is open.
 --
 -- No PHI, ever: ids, the slot, timestamps, the provider's message id (a
 -- token, CHECK-limited to a short safe alphabet) and an error code from a
@@ -117,7 +118,7 @@ COMMENT ON TABLE public.notification_sends IS
 COMMENT ON COLUMN public.notification_sends.job IS
   'The registered job name that sent it, e.g. followup-digest.';
 COMMENT ON COLUMN public.notification_sends.slot IS
-  'What a send is once-only for, within (job, org, recipient). For followup-digest, the org''s local date the digest is for (YYYY-MM-DD). Not the job_runs run key, which for the digest is the UTC hour.';
+  'What a send is once-only for, within (job, org, recipient). For followup-digest, the scheduled send: the org''s local date the digest is for (YYYY-MM-DD), or YYYY-MM-DD:2 for a twice-a-day digest''s second send. Not the job_runs run key, which for the digest is the UTC hour.';
 COMMENT ON COLUMN public.notification_sends.recipient_user_id IS
   'The org member the message went to (an actor id, not a foreign key). Never an address.';
 COMMENT ON COLUMN public.notification_sends.outcome IS
@@ -153,7 +154,7 @@ GRANT SELECT ON TABLE public.notification_org_slots TO service_role;
 COMMENT ON TABLE public.notification_org_slots IS
   'Which orgs have had a scheduled notification job''s sends for a slot settled (MINT-108): one row per (job, org_id, slot). For followup-digest the slot is the org''s local date, and a row means that day''s digest is done, so a later hourly run skips the org. No row after a failed or retryable run, so the next hourly run catches it up. Ids, the slot and a timestamp only, never PHI. service_role only; written by complete_notification_org_slot.';
 COMMENT ON COLUMN public.notification_org_slots.slot IS
-  'The slot settled. For followup-digest, the org''s local date (YYYY-MM-DD), the same slot its notification_sends rows carry.';
+  'The slot settled. For followup-digest, the scheduled send (YYYY-MM-DD, or YYYY-MM-DD:2 for a twice-a-day second send), the same slot its notification_sends rows carry.';
 COMMENT ON COLUMN public.notification_org_slots.completed_at IS
   'When the job recorded the slot settled.';
 

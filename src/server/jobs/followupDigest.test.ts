@@ -1658,3 +1658,218 @@ describe("followup-digest: FollowUpDigestRules per org (policy as configuration,
     expect(result.unassigned_follow_ups).toBe(1);
   });
 });
+
+describe("followup-digest: daily, weekly or twice a day (A8)", () => {
+  const JANE_TO = "jane@example.test";
+  const OMAR_TO = "omar@example.test";
+  const orgA = () =>
+    fake.tables.notification_sequences.find(
+      (r) => r.org_id === ORG_A && r.purpose === "followup_digest",
+    ) as FakeRow;
+  const slotsOf = (userId: string) =>
+    fake.sends.filter((r) => r.recipient_user_id === userId).map((r) => [r.slot, r.outcome]);
+  const timesTo = (to: string) => sent.filter((input) => input.to === to).map((i) => i.at);
+  const settle = (promise: Promise<unknown>) => promise.catch(() => null);
+
+  it("sends a weekly digest only on its day, Monday in the org's zone, and lists nothing ahead (A14)", async () => {
+    fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "weekly" } }).tables);
+    // Saturday Oct 31, 8 am Central: org B (daily) is due; org A is not.
+    expect(await runFollowUpDigest(ctx(), deps())).toEqual(
+      counts({ orgs_enabled: 2, orgs_due: 1, orgs_not_due: 1, orgs_completed: 1, digests_sent: 1 }),
+    );
+    // Every hour to Tuesday 1 am Central.
+    for (const at of hours("2026-10-31T14:00:00Z", 66)) {
+      await runFollowUpDigest(ctx(at), deps());
+    }
+    const weekly = sent
+      .filter((input) => input.to !== "bill@example.test")
+      .map((input) => [input.to, input.at, input.data.digestDate]);
+    expect(weekly.sort()).toEqual([
+      [JANE_TO, "2026-11-02T14:00:00.000Z", "2026-11-02"],
+      [OMAR_TO, "2026-11-02T14:00:00.000Z", "2026-11-02"],
+    ]);
+    expect(timesTo("bill@example.test")).toEqual([
+      "2026-10-31T13:00:00.000Z",
+      "2026-11-01T14:00:00.000Z",
+      "2026-11-02T14:00:00.000Z",
+    ]);
+    expect(slotsOf(JANE)).toEqual([["2026-11-02", "sent"]]);
+    // Jane's Nov 4 follow-up is due that week, but not listed: never ahead.
+    const jane = sent.find((input) => input.to === JANE_TO)?.data;
+    expect(jane?.followUps.rows.map((r) => [r.dueDate, r.status])).toEqual([
+      ["2026-10-28", "overdue"],
+    ]);
+  });
+
+  it("finds a weekly digest's day on the org's wall clock: Sunday evening UTC is Monday in Tokyo", async () => {
+    fake = createFollowUpDigestFakeDb(
+      world({ a: { ...sendTime(8, "Asia/Tokyo"), digest_frequency: "weekly" } }).tables,
+    );
+    // Sunday Nov 1, 14:00 UTC is 11 pm Sunday in Tokyo; 22:59 UTC is 7:59 am Monday.
+    for (const at of ["2026-11-01T14:00:00Z", "2026-11-01T22:59:00Z"]) {
+      await runFollowUpDigest(ctx(new Date(at)), deps());
+    }
+    expect(timesTo(JANE_TO)).toEqual([]);
+    // 23:00 UTC Sunday is 8 am Monday in Tokyo.
+    await runFollowUpDigest(ctx(new Date("2026-11-01T23:00:00Z")), deps());
+    expect(sent.filter((input) => input.to === JANE_TO).map((i) => i.data.digestDate)).toEqual([
+      "2026-11-02",
+    ]);
+    expect(slotsOf(OMAR)).toEqual([["2026-11-02", "sent"]]);
+  });
+
+  it("sends twice a day at 8 am and 2 pm, each its own slot, the second repeating what is still due", async () => {
+    fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "twice_daily" } }).tables);
+    // Every hour of Oct 31 in Chicago (CDT).
+    for (const at of hours("2026-10-31T05:00:00Z", 24)) {
+      await runFollowUpDigest(ctx(at), deps());
+    }
+    for (const to of [JANE_TO, OMAR_TO]) {
+      expect(timesTo(to)).toEqual(["2026-10-31T13:00:00.000Z", "2026-10-31T19:00:00.000Z"]);
+    }
+    expect(timesTo("bill@example.test")).toEqual(["2026-10-31T13:00:00.000Z"]);
+    expect(slotsOf(JANE)).toEqual([
+      ["2026-10-31", "sent"],
+      ["2026-10-31:2", "sent"],
+    ]);
+    expect(completions()).toEqual(
+      [
+        [JOB, ORG_A, "2026-10-31"],
+        [JOB, ORG_A, "2026-10-31:2"],
+        [JOB, ORG_B, "2026-10-31"],
+      ].sort(),
+    );
+    const [morning, afternoon] = sent.filter((input) => input.to === JANE_TO);
+    expect(afternoon.data).toEqual(morning.data);
+    expect(afternoon.data.digestDate).toBe(TODAY);
+  });
+
+  it("does not make a twice-a-day first send after the second hour: one email, the second", async () => {
+    fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "twice_daily" } }).tables);
+    // Nothing ran until 2 pm Central.
+    expect(await runFollowUpDigest(ctx(new Date("2026-10-31T19:00:00Z")), deps())).toEqual(
+      BASELINE,
+    );
+    expect(timesTo(JANE_TO)).toEqual(["2026-10-31T19:00:00.000Z"]);
+    expect(slotsOf(JANE)).toEqual([["2026-10-31:2", "sent"]]);
+    expect(completions()).toEqual(
+      [
+        [JOB, ORG_A, "2026-10-31:2"],
+        [JOB, ORG_B, "2026-10-31"],
+      ].sort(),
+    );
+  });
+
+  it("catches up and retries each scheduled send on its own: three rejections spend only that send's tries", async () => {
+    fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "twice_daily" } }).tables);
+    const send = mailer((input) =>
+      input.to === JANE_TO
+        ? new EmailError("provider_rejected", "SendGrid rejected the send (400)", 400)
+        : null,
+    );
+    // 8 am to 2 pm Central: three tries for the first send, then exhausted.
+    for (const at of hours("2026-10-31T13:00:00Z", 7)) {
+      await settle(runFollowUpDigest(ctx(at), deps({ send })));
+    }
+    const janeTries = send.mock.calls.filter(([input]) => input.to === JANE_TO);
+    expect(janeTries).toHaveLength(4);
+    expect(slotsOf(JANE)).toEqual([
+      ["2026-10-31", "failed"],
+      ["2026-10-31", "failed"],
+      ["2026-10-31", "failed"],
+      ["2026-10-31:2", "failed"],
+    ]);
+    // Omar got both, once each.
+    expect(timesTo(OMAR_TO)).toEqual(["2026-10-31T13:00:00.000Z", "2026-10-31T19:00:00.000Z"]);
+  });
+
+  it("DST ends (Nov 1, 2026): twice a day stays at 8 am and 2 pm Central both days", async () => {
+    fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "twice_daily" } }).tables);
+    // Local midnight Oct 31 (CDT) to 10 pm Nov 1 (CST).
+    for (const at of hours("2026-10-31T05:00:00Z", 48)) {
+      await runFollowUpDigest(ctx(at), deps());
+    }
+    expect(timesTo(JANE_TO)).toEqual([
+      "2026-10-31T13:00:00.000Z",
+      "2026-10-31T19:00:00.000Z",
+      "2026-11-01T14:00:00.000Z",
+      "2026-11-01T20:00:00.000Z",
+    ]);
+    expect(slotsOf(JANE).map(([slot]) => slot)).toEqual([
+      "2026-10-31",
+      "2026-10-31:2",
+      "2026-11-01",
+      "2026-11-01:2",
+    ]);
+  });
+
+  it("DST starts (Mar 14, 2027): a second hour that does not exist goes at the next hour, once", async () => {
+    fake = createFollowUpDigestFakeDb(
+      world({ a: { ...sendTime(1, "America/Chicago", 2), digest_frequency: "twice_daily" } })
+        .tables,
+    );
+    // Local midnight (06:00 UTC, CST) to 5 am CDT; 1:59 am CST is followed by 3 am CDT.
+    for (const at of hours("2027-03-14T06:00:00Z", 6)) {
+      await runFollowUpDigest(ctx(at), deps());
+    }
+    expect(timesTo(JANE_TO)).toEqual(["2027-03-14T07:00:00.000Z", "2027-03-14T08:00:00.000Z"]);
+    expect(slotsOf(JANE).map(([slot]) => slot)).toEqual(["2027-03-14", "2027-03-14:2"]);
+  });
+
+  it("repeats no send when the frequency changes during the day", async () => {
+    expect(await runFollowUpDigest(ctx(), deps())).toEqual(BASELINE);
+    // Daily to twice a day after the 8 am send: the 2 pm send goes too.
+    orgA().digest_frequency = "twice_daily";
+    const afternoon = await runFollowUpDigest(ctx(new Date("2026-10-31T19:00:00Z")), deps());
+    expect(afternoon).toEqual(
+      counts({
+        orgs_enabled: 2,
+        orgs_due: 2,
+        orgs_already_completed: 1,
+        orgs_completed: 1,
+        digests_sent: 2,
+        unassigned_follow_ups: 1,
+      }),
+    );
+    // Back to daily: the day's one send was made.
+    orgA().digest_frequency = "daily";
+    expect(await runFollowUpDigest(ctx(new Date("2026-10-31T20:00:00Z")), deps())).toEqual(ALREADY);
+    // Weekly on a Saturday: not its day.
+    orgA().digest_frequency = "weekly";
+    expect(await runFollowUpDigest(ctx(new Date("2026-10-31T21:00:00Z")), deps())).toEqual(
+      counts({ orgs_enabled: 2, orgs_due: 1, orgs_not_due: 1, orgs_already_completed: 1 }),
+    );
+    expect(timesTo(JANE_TO)).toEqual(["2026-10-31T13:00:00.000Z", "2026-10-31T19:00:00.000Z"]);
+  });
+
+  it("checks the cut-off against the second hour for twice a day: falls back, counts, logs once per send", async () => {
+    const event = "[jobs:followup-digest] org_rules_cut_off_not_after_send_hour";
+    const lines = () => logged().split(event).length - 1;
+    fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "twice_daily" } }).tables);
+    // Noon is after org B's 8 am but not after org A's 2 pm second send.
+    const rules = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 12 });
+    expect(await runFollowUpDigest(ctx(), deps({ rules }))).toEqual({
+      ...BASELINE,
+      orgs_rules_fallback: 1,
+    });
+    expect(lines()).toBe(1);
+    await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps({ rules }));
+    expect(lines()).toBe(1);
+    const afternoon = await runFollowUpDigest(
+      ctx(new Date("2026-10-31T19:00:00Z")),
+      deps({ rules }),
+    );
+    expect(afternoon).toEqual(
+      counts({
+        orgs_enabled: 2,
+        orgs_due: 1,
+        orgs_past_catch_up: 1,
+        orgs_rules_fallback: 1,
+        orgs_completed: 1,
+        digests_sent: 2,
+        unassigned_follow_ups: 1,
+      }),
+    );
+    expect(lines()).toBe(2);
+  });
+});

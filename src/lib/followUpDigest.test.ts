@@ -7,7 +7,10 @@ import {
   MAX_DIGEST_SECTION_ROWS,
   UNASSIGNED_FOLLOW_UP_MODES,
   digestSlot,
+  digestSlotKey,
   dueFollowUps,
+  isoWeekday,
+  lastDigestSendHour,
   planFollowUpDigests,
   catchUpRuleProblem,
   resolveFollowUpDigestRules,
@@ -16,6 +19,8 @@ import {
   zonedDateHour,
   type DigestCase,
   type DigestMember,
+  type DigestSlot,
+  type DigestSlotState,
   type DigestTouchpoint,
   type FollowUpDigestPlanInput,
 } from "./followUpDigest";
@@ -83,6 +88,16 @@ function plan(overrides: Partial<FollowUpDigestPlanInput>) {
 const CHICAGO = { sendHour: 8, sendTimeZone: "America/Chicago" };
 const at = (iso: string) => new Date(iso);
 
+/** A once-a-day slot (daily, or weekly on its day): its one send, keyed by the local date. */
+function once(
+  state: DigestSlotState,
+  localDate: string,
+  localHour: number,
+  sendHour = 8,
+): DigestSlot {
+  return { due: state === "due", state, localDate, localHour, send: 1, sendHour, slot: localDate };
+}
+
 describe("zonedDateHour: the org's wall clock", () => {
   it("reads the local date and hour in the zone, not the server's or UTC's", () => {
     // 04:30 UTC on Nov 1 is still Oct 31 in Chicago (CDT, UTC-5) and already
@@ -132,45 +147,27 @@ describe("zonedDateHour: the org's wall clock", () => {
 describe("digestSlot: the hour gate", () => {
   it("is not due before the send hour, and due at it and every hour after, the same local date", () => {
     // Oct 31 is CDT (UTC-5): 8 am Central is 13:00 UTC.
-    expect(digestSlot(CHICAGO, at("2026-10-31T12:59:59Z"))).toEqual({
-      due: false,
-      localDate: "2026-10-31",
-      localHour: 7,
-    });
-    expect(digestSlot(CHICAGO, at("2026-10-31T13:00:00Z"))).toEqual({
-      due: true,
-      localDate: "2026-10-31",
-      localHour: 8,
-    });
+    expect(digestSlot(CHICAGO, at("2026-10-31T12:59:59Z"))).toEqual(
+      once("not_yet", "2026-10-31", 7),
+    );
+    expect(digestSlot(CHICAGO, at("2026-10-31T13:00:00Z"))).toEqual(once("due", "2026-10-31", 8));
     // A run missed at 8 catches up at 9, and as late as 11 pm, same date.
     expect(digestSlot(CHICAGO, at("2026-10-31T14:00:00Z"))).toMatchObject({
       due: true,
       localDate: "2026-10-31",
     });
-    expect(digestSlot(CHICAGO, at("2026-11-01T04:59:00Z"))).toEqual({
-      due: true,
-      localDate: "2026-10-31",
-      localHour: 23,
-    });
+    expect(digestSlot(CHICAGO, at("2026-11-01T04:59:00Z"))).toEqual(once("due", "2026-10-31", 23));
     // Local midnight starts the next date, not yet due.
-    expect(digestSlot(CHICAGO, at("2026-11-01T05:00:00Z"))).toEqual({
-      due: false,
-      localDate: "2026-11-01",
-      localHour: 0,
-    });
+    expect(digestSlot(CHICAGO, at("2026-11-01T05:00:00Z"))).toEqual(
+      once("not_yet", "2026-11-01", 0),
+    );
   });
 
   it("follows the zone across DST ending: 8 am Central is 13:00 UTC on Oct 31, 14:00 UTC on Nov 1", () => {
-    expect(digestSlot(CHICAGO, at("2026-11-01T13:00:00Z"))).toEqual({
-      due: false,
-      localDate: "2026-11-01",
-      localHour: 7,
-    });
-    expect(digestSlot(CHICAGO, at("2026-11-01T14:00:00Z"))).toEqual({
-      due: true,
-      localDate: "2026-11-01",
-      localHour: 8,
-    });
+    expect(digestSlot(CHICAGO, at("2026-11-01T13:00:00Z"))).toEqual(
+      once("not_yet", "2026-11-01", 7),
+    );
+    expect(digestSlot(CHICAGO, at("2026-11-01T14:00:00Z"))).toEqual(once("due", "2026-11-01", 8));
     // A 1 am send hour is due in both 1 am hours, for the same local date.
     const oneAm = { sendHour: 1, sendTimeZone: "America/Chicago" };
     expect(digestSlot(oneAm, at("2026-11-01T06:00:00Z"))).toMatchObject({
@@ -195,25 +192,17 @@ describe("digestSlot: the hour gate", () => {
       due: false,
       localHour: 1,
     });
-    expect(digestSlot(twoAm, at("2027-03-14T08:00:00Z"))).toEqual({
-      due: true,
-      localDate: "2027-03-14",
-      localHour: 3,
-    });
+    expect(digestSlot(twoAm, at("2027-03-14T08:00:00Z"))).toEqual(once("due", "2027-03-14", 3, 2));
   });
 
   it("uses whichever hour and zone it is given (an org override or Minted's default)", () => {
     const now = at("2026-10-31T15:30:00Z");
-    expect(digestSlot({ sendHour: 8, sendTimeZone: "America/Los_Angeles" }, now)).toEqual({
-      due: true,
-      localDate: "2026-10-31",
-      localHour: 8,
-    });
-    expect(digestSlot({ sendHour: 11, sendTimeZone: "America/New_York" }, now)).toEqual({
-      due: true,
-      localDate: "2026-10-31",
-      localHour: 11,
-    });
+    expect(digestSlot({ sendHour: 8, sendTimeZone: "America/Los_Angeles" }, now)).toEqual(
+      once("due", "2026-10-31", 8),
+    );
+    expect(digestSlot({ sendHour: 11, sendTimeZone: "America/New_York" }, now)).toEqual(
+      once("due", "2026-10-31", 11, 11),
+    );
     expect(digestSlot({ sendHour: 12, sendTimeZone: "America/New_York" }, now)).toMatchObject({
       due: false,
     });
@@ -597,23 +586,19 @@ describe("digestSlot with the catch-up rule", () => {
       );
     }
     expect(digestSlot(CHICAGO, at("2026-11-01T04:59:00Z"), DEFAULT_FOLLOW_UP_DIGEST_RULES)).toEqual(
-      { due: true, localDate: "2026-10-31", localHour: 23 },
+      once("due", "2026-10-31", 23),
     );
   });
 
   it("stops catching up at a cut-off hour, on the same local date", () => {
     const noon = { catchUpUntilLocalHour: 12 };
     // 11 am Central (16:00 UTC, CDT) is still due; noon is not.
-    expect(digestSlot(CHICAGO, at("2026-10-31T16:59:00Z"), noon)).toEqual({
-      due: true,
-      localDate: "2026-10-31",
-      localHour: 11,
-    });
-    expect(digestSlot(CHICAGO, at("2026-10-31T17:00:00Z"), noon)).toEqual({
-      due: false,
-      localDate: "2026-10-31",
-      localHour: 12,
-    });
+    expect(digestSlot(CHICAGO, at("2026-10-31T16:59:00Z"), noon)).toEqual(
+      once("due", "2026-10-31", 11),
+    );
+    expect(digestSlot(CHICAGO, at("2026-10-31T17:00:00Z"), noon)).toEqual(
+      once("past_catch_up", "2026-10-31", 12),
+    );
     // Never before the send hour, cut-off or not.
     expect(digestSlot(CHICAGO, at("2026-10-31T12:00:00Z"), noon)).toMatchObject({ due: false });
   });
@@ -640,16 +625,12 @@ describe("catch-up cut-off edges (review)", () => {
     const twoAm = { sendHour: 2, sendTimeZone: "America/Chicago" };
     const cutAtThree = { catchUpUntilLocalHour: 3 };
     // Mar 14 2027: 1:59 am CST, then 3:00 am CDT.
-    expect(digestSlot(twoAm, at("2027-03-14T07:07:00Z"), cutAtThree)).toEqual({
-      due: false,
-      localDate: "2027-03-14",
-      localHour: 1,
-    });
-    expect(digestSlot(twoAm, at("2027-03-14T08:07:00Z"), cutAtThree)).toEqual({
-      due: true,
-      localDate: "2027-03-14",
-      localHour: 3,
-    });
+    expect(digestSlot(twoAm, at("2027-03-14T07:07:00Z"), cutAtThree)).toEqual(
+      once("not_yet", "2027-03-14", 1, 2),
+    );
+    expect(digestSlot(twoAm, at("2027-03-14T08:07:00Z"), cutAtThree)).toEqual(
+      once("due", "2027-03-14", 3, 2),
+    );
     expect(digestSlot(twoAm, at("2027-03-14T09:07:00Z"), cutAtThree)).toMatchObject({
       due: false,
       localHour: 4,
@@ -659,6 +640,228 @@ describe("catch-up cut-off edges (review)", () => {
       due: false,
       localHour: 3,
     });
+  });
+});
+
+const WEEKLY = { ...CHICAGO, digestFrequency: "weekly" as const, digestWeekday: 1 };
+const TWICE = { ...CHICAGO, digestFrequency: "twice_daily" as const, secondSendHour: 14 };
+
+/** The ledger's slot alphabet (notification_sends_slot_check). */
+const SLOT_RE = /^[0-9A-Za-z:_-]{1,64}$/;
+
+describe("digestSlot: daily, weekly or twice a day (A8)", () => {
+  it("treats daily, a missing frequency and an unknown one alike: one send from the send hour", () => {
+    for (const iso of ["2026-10-31T12:00:00Z", "2026-10-31T13:00:00Z", "2026-11-01T04:59:00Z"]) {
+      const plain = digestSlot(CHICAGO, at(iso));
+      expect(digestSlot({ ...CHICAGO, digestFrequency: "daily" }, at(iso))).toEqual(plain);
+      expect(digestSlot({ ...CHICAGO, digestFrequency: null }, at(iso))).toEqual(plain);
+      expect(
+        digestSlot({ ...CHICAGO, digestFrequency: "hourly" as unknown as "daily" }, at(iso)),
+      ).toEqual(plain);
+    }
+  });
+
+  it("sends weekly only on Monday by default, from the send hour to local midnight", () => {
+    // Nov 2 2026 is a Monday; DST has ended, so 8 am Central is 14:00 UTC.
+    expect(digestSlot(WEEKLY, at("2026-11-02T13:59:00Z"))).toEqual(
+      once("not_yet", "2026-11-02", 7),
+    );
+    expect(digestSlot(WEEKLY, at("2026-11-02T14:00:00Z"))).toEqual(once("due", "2026-11-02", 8));
+    expect(digestSlot(WEEKLY, at("2026-11-03T05:59:00Z"))).toEqual(once("due", "2026-11-02", 23));
+    // Tuesday, and every other day, is not its day, whatever the hour.
+    expect(digestSlot(WEEKLY, at("2026-11-03T06:00:00Z"))).toEqual(
+      once("not_today", "2026-11-03", 0),
+    );
+    for (let day = 3; day <= 8; day += 1) {
+      const now = new Date(Date.UTC(2026, 10, day, 15));
+      expect(digestSlot(WEEKLY, now)?.state).toBe("not_today");
+    }
+    // Minted's day stands in for a missing or unknown one.
+    expect(digestSlot({ ...WEEKLY, digestWeekday: null }, at("2026-11-02T14:00:00Z"))?.due).toBe(
+      true,
+    );
+    expect(digestSlot({ ...WEEKLY, digestWeekday: 9 }, at("2026-11-02T14:00:00Z"))?.due).toBe(true);
+  });
+
+  it("reads the weekday off the org's own wall clock, not UTC's", () => {
+    // Sunday 23:00 UTC is already Monday 8 am in Tokyo.
+    const tokyo = { ...WEEKLY, sendTimeZone: "Asia/Tokyo" };
+    expect(digestSlot(tokyo, at("2026-11-01T23:00:00Z"))).toEqual(once("due", "2026-11-02", 8));
+    // Monday 14:00 UTC is 11 pm Monday in Tokyo: still its day.
+    expect(digestSlot(tokyo, at("2026-11-02T14:00:00Z"))?.due).toBe(true);
+    // Monday 15:00 UTC is Tuesday in Tokyo.
+    expect(digestSlot(tokyo, at("2026-11-02T15:00:00Z"))?.state).toBe("not_today");
+    // And Monday 03:00 UTC is still Sunday evening in Chicago.
+    expect(digestSlot(WEEKLY, at("2026-11-02T03:00:00Z"))).toEqual(
+      once("not_today", "2026-11-01", 21),
+    );
+  });
+
+  it("goes on Minted's chosen day: Friday (5), Sunday (7)", () => {
+    expect(digestSlot({ ...WEEKLY, digestWeekday: 5 }, at("2026-11-06T14:00:00Z"))?.due).toBe(true);
+    expect(digestSlot({ ...WEEKLY, digestWeekday: 5 }, at("2026-11-02T14:00:00Z"))?.state).toBe(
+      "not_today",
+    );
+    // Sunday Nov 1 2026, the day DST ends: 8 am CST is 14:00 UTC.
+    expect(digestSlot({ ...WEEKLY, digestWeekday: 7 }, at("2026-11-01T14:00:00Z"))?.due).toBe(true);
+  });
+
+  it("sends twice a day: the first from the send hour until the second hour, the second until midnight", () => {
+    const first = (localHour: number, localDate = "2026-10-31") => ({
+      due: true,
+      state: "due",
+      localDate,
+      localHour,
+      send: 1,
+      sendHour: 8,
+      slot: localDate,
+    });
+    const second = (localHour: number, localDate = "2026-10-31") => ({
+      due: true,
+      state: "due",
+      localDate,
+      localHour,
+      send: 2,
+      sendHour: 14,
+      slot: `${localDate}:2`,
+    });
+    // Oct 31 is CDT: 8 am is 13:00 UTC, 2 pm is 19:00 UTC.
+    expect(digestSlot(TWICE, at("2026-10-31T12:59:00Z"))).toEqual(once("not_yet", "2026-10-31", 7));
+    expect(digestSlot(TWICE, at("2026-10-31T13:00:00Z"))).toEqual(first(8));
+    expect(digestSlot(TWICE, at("2026-10-31T18:59:00Z"))).toEqual(first(13));
+    expect(digestSlot(TWICE, at("2026-10-31T19:00:00Z"))).toEqual(second(14));
+    expect(digestSlot(TWICE, at("2026-11-01T04:59:00Z"))).toEqual(second(23));
+    // Local midnight starts the next date's first send.
+    expect(digestSlot(TWICE, at("2026-11-01T05:00:00Z"))).toEqual(once("not_yet", "2026-11-01", 0));
+    for (const iso of ["2026-10-31T13:00:00Z", "2026-10-31T19:00:00Z"]) {
+      expect(digestSlot(TWICE, at(iso))?.slot).toMatch(SLOT_RE);
+    }
+  });
+
+  it("sends once a day when twice a day has no usable second hour", () => {
+    for (const secondSendHour of [null, 8, 6, 24]) {
+      expect(digestSlot({ ...TWICE, secondSendHour }, at("2026-10-31T19:00:00Z"))).toEqual(
+        once("due", "2026-10-31", 14),
+      );
+    }
+  });
+
+  it("keeps twice a day's two sends across DST ending, the repeated hour on one slot", () => {
+    // Nov 1 2026 in Chicago: 1 am CDT (06:00 UTC), then 1 am CST (07:00 UTC).
+    const atOne = { ...TWICE, sendHour: 1, secondSendHour: 2 };
+    expect(digestSlot(atOne, at("2026-11-01T06:00:00Z"))?.slot).toBe("2026-11-01");
+    expect(digestSlot(atOne, at("2026-11-01T07:00:00Z"))?.slot).toBe("2026-11-01");
+    // 2 am CST is 08:00 UTC.
+    expect(digestSlot(atOne, at("2026-11-01T08:00:00Z"))?.slot).toBe("2026-11-01:2");
+    // 8 am and 2 pm CST: 14:00 and 20:00 UTC.
+    expect(digestSlot(TWICE, at("2026-11-01T14:00:00Z"))?.slot).toBe("2026-11-01");
+    expect(digestSlot(TWICE, at("2026-11-01T19:59:00Z"))?.slot).toBe("2026-11-01");
+    expect(digestSlot(TWICE, at("2026-11-01T20:00:00Z"))?.slot).toBe("2026-11-01:2");
+  });
+
+  it("across DST starting, a skipped hour is caught by the next: one send each, or only the second", () => {
+    // Mar 14 2027 in Chicago: 1:59 am CST (07:59 UTC), then 3:00 am CDT (08:00 UTC).
+    const skippedSecond = { ...TWICE, sendHour: 1, secondSendHour: 2 };
+    expect(digestSlot(skippedSecond, at("2027-03-14T07:00:00Z"))?.slot).toBe("2027-03-14");
+    expect(digestSlot(skippedSecond, at("2027-03-14T08:00:00Z"))).toMatchObject({
+      due: true,
+      localHour: 3,
+      send: 2,
+      slot: "2027-03-14:2",
+    });
+    // When the skipped hour is the first send's and the second comes right
+    // after, the day keeps one send: the second, which lists the same.
+    const skippedFirst = { ...TWICE, sendHour: 2, secondSendHour: 3 };
+    expect(digestSlot(skippedFirst, at("2027-03-14T07:00:00Z"))?.state).toBe("not_yet");
+    expect(digestSlot(skippedFirst, at("2027-03-14T08:00:00Z"))).toMatchObject({
+      due: true,
+      send: 2,
+      slot: "2027-03-14:2",
+    });
+    // A skipped first hour with room before the second: it goes at 3 am.
+    const roomy = { ...TWICE, sendHour: 2, secondSendHour: 14 };
+    expect(digestSlot(roomy, at("2027-03-14T08:00:00Z"))).toMatchObject({
+      due: true,
+      send: 1,
+      slot: "2027-03-14",
+    });
+  });
+
+  it("applies the catch-up cut-off to the day's last send only", () => {
+    const sixPm = { catchUpUntilLocalHour: 18 };
+    // 1 pm: the first send is open; the cut-off does not touch it.
+    expect(digestSlot(TWICE, at("2026-10-31T18:00:00Z"), sixPm)).toMatchObject({
+      due: true,
+      send: 1,
+    });
+    // 5 pm: the second is open; 6 pm: past the cut-off.
+    expect(digestSlot(TWICE, at("2026-10-31T22:00:00Z"), sixPm)).toMatchObject({
+      due: true,
+      send: 2,
+    });
+    expect(digestSlot(TWICE, at("2026-10-31T23:00:00Z"), sixPm)).toMatchObject({
+      due: false,
+      state: "past_catch_up",
+      send: 2,
+      slot: "2026-10-31:2",
+    });
+    // A weekly digest past the cut-off on its day.
+    expect(digestSlot(WEEKLY, at("2026-11-03T00:00:00Z"), sixPm)?.state).toBe("past_catch_up");
+  });
+});
+
+describe("the schedule's helpers", () => {
+  it("names the day's last send hour: the second hour for twice a day", () => {
+    expect(lastDigestSendHour(CHICAGO)).toBe(8);
+    expect(lastDigestSendHour(WEEKLY)).toBe(8);
+    expect(lastDigestSendHour(TWICE)).toBe(14);
+    expect(lastDigestSendHour({ ...TWICE, secondSendHour: null })).toBe(8);
+    expect(lastDigestSendHour({ ...CHICAGO, secondSendHour: 14 })).toBe(8);
+    expect(lastDigestSendHour({ sendHour: null, sendTimeZone: null })).toBeNull();
+  });
+
+  it("reads ISO weekdays and keys the second send apart", () => {
+    expect(["2026-11-01", "2026-11-02", "2026-11-06"].map(isoWeekday)).toEqual([7, 1, 5]);
+    expect(() => isoWeekday("2026-02-30")).toThrow(RangeError);
+    expect(digestSlotKey("2026-10-31", 1)).toBe("2026-10-31");
+    expect(digestSlotKey("2026-10-31", 2)).toBe("2026-10-31:2");
+    expect(digestSlotKey("2026-10-31", 2)).toMatch(SLOT_RE);
+  });
+
+  it("refuses a cut-off at or before the second hour for twice a day, in plain language", () => {
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 14 }, lastDigestSendHour(TWICE))).toBe(
+      "cut_off_not_after_send_hour",
+    );
+    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 15 }, lastDigestSendHour(TWICE))).toBeNull();
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 12 }, TWICE)).toEqual([
+      "The catch-up cut-off (12:00) must be after the second send hour (14:00), or the second digest never goes out.",
+    ]);
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 15 }, TWICE)).toEqual([]);
+    // A daily or weekly org's second hour plays no part.
+    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 12 }, WEEKLY)).toEqual([]);
+    expect(
+      validateFollowUpDigestRules(
+        { catchUpUntilLocalHour: 12 },
+        { ...CHICAGO, secondSendHour: 14 },
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("never look ahead (A14)", () => {
+  it("lists no upcoming follow-up for any frequency: the plan has no horizon to set", () => {
+    const soon = kase({ assignedTo: JANE });
+    const result = plan({
+      cases: [soon],
+      touchpoints: [touch(soon.id, "2026-10-30", "2026-11-01")],
+    });
+    expect(result.digests).toEqual([]);
+    expect(result.suppressed).toBe(1);
+    // No rule or input can widen it.
+    expect(Object.keys(DEFAULT_FOLLOW_UP_DIGEST_RULES).sort()).toEqual([
+      "catchUpUntilLocalHour",
+      "unassignedFollowUps",
+    ]);
   });
 });
 

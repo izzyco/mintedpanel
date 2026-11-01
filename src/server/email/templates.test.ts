@@ -36,7 +36,7 @@ describe("intake_code", () => {
   });
 });
 
-// MINT-108: the daily follow-up digest, one coordinator's own rows.
+// MINT-108: the follow-up digest, one coordinator's own rows.
 describe("followup_digest_daily", () => {
   const row = (overrides: Partial<FollowUpDigestRow> = {}): FollowUpDigestRow => ({
     caseNumber: 1071,

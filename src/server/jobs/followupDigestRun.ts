@@ -1,4 +1,4 @@
-// The daily coordinator follow-up digest (MINT-108): the run behind
+// The coordinator follow-up digest (MINT-108): the run behind
 // GET /api/jobs/followup-digest (./followupDigest.ts), called every hour by
 // the GitHub Actions tick, plus a daily Vercel cron as a backup.
 //
@@ -6,14 +6,18 @@
 //   1. Discovery, the one cross-org read: every org whose followup_digest
 //      sequence is on, with its own steps, and Minted's default
 //      (listEnabledNotificationSequences). resolveNotificationSequence gives
-//      each org's effective sequence: its send hour, time zone and step.
+//      each org's effective sequence: its frequency (daily, weekly or twice a
+//      day, A8), send hour, time zone, second send hour, weekday and step.
 //   2. The hour gate (digestSlot, src/lib/followUpDigest.ts): an org is due
-//      when its local hour is at or after its send hour and before its
-//      catch-up cut-off (FollowUpDigestRules; local midnight by default). Its
-//      local date is the digest's "today" and its slot. An org not due is
-//      counted and nothing of it is read.
-//   3. Once per local date: a due org that already has a completion row for
-//      (job, org, local date) in notification_org_slots is skipped.
+//      while one of its scheduled sends is open: from that send's hour until
+//      the next send's hour, or for the day's last send until the catch-up
+//      cut-off (FollowUpDigestRules; local midnight by default, D77). A
+//      weekly digest is scheduled only on its weekday, in the org's zone.
+//      The local date is the digest's "today"; the scheduled send's slot is
+//      that date, or `date:2` for twice a day's second send. An org not due
+//      is counted and nothing of it is read.
+//   3. Once per scheduled send: a due org that already has a completion row
+//      for (job, org, slot) in notification_org_slots is skipped.
 //   4. The step's template_key must pass the consumer contract
 //      (templateSendProblem) and have a body here, or the org is skipped and
 //      counted. Nothing is sent for it.
@@ -22,22 +26,23 @@
 //      digests (planFollowUpDigests): one per coordinator with something due.
 //      Unassigned follow-ups go to no one and are counted (the rules'
 //      count_only, the one mode until MINT-127).
-//   6. For each digest, claim (job, local date, org, recipient) in
+//   6. For each digest, claim (job, slot, org, recipient) in
 //      notification_sends, send followup_digest_daily through sendEmail, and
 //      record the send sent or failed.
 //   7. When nothing is left that a later run could retry, and no other
-//      attempt holds a recent claim for the org, record the org's local date
-//      complete, so later hourly runs that day skip it.
+//      attempt holds a recent claim for the org, record the org's slot
+//      complete, so later hourly runs skip that scheduled send.
 //
 // Failure semantics. One recipient's failed send, one org's failed read, or
 // a send whose ledger row could not be finished never stops the rest: every
 // other digest still goes out. An org with a failed read or a retryable send
-// gets no completion row, so the next hourly run catches it up the same local
-// day; the claims keep that run from resending what already went. If
+// gets no completion row, so the next hourly run catches it up while the
+// send's window is open; the claims keep that run from resending what
+// already went. If
 // anything failed, the run then throws FollowUpDigestIncompleteError, so
 // job_runs records the hour failed. Only a definite rejection (a SendGrid 4xx
 // other than 408, invalid input, misconfiguration) is retried, at most three
-// times per recipient per local date: a network error, a timeout, a SendGrid
+// times per recipient per scheduled send: a network error, a timeout, a SendGrid
 // 5xx or 408 (its edge may have accepted the message) or an unexplained error
 // may have been delivered, so that send stays claimed and is never resent. A
 // claim another attempt took under NOTIFICATION_SEND_RECENT_MINUTES ago is
@@ -49,16 +54,21 @@
 // rejection is not retried that day. There is still no duplicate. Missing configuration (the SendGrid
 // env, or an APP_BASE_URL that is not a bare origin) throws before any send.
 // A template problem is one org's setting: it is counted every run until
-// fixed, logged once per org per local date (in its first due hour), and
+// fixed, logged once per org per scheduled send (in its first due hour), and
 // does not fail the run.
 //
-// Edges, by design. A send hour of 23 is due in one hourly tick only (the
-// next is the next local date), so it gets one attempt a day; Minted should
-// keep send hours at 21 or earlier. A zone change can move an org's local
-// date: westward across the date line (Honolulu to Tokyo, say) a local date
-// can be skipped; eastward the org can get a digest for an earlier date a few
-// hours after the last. A failed run's counts are lost: the MINT-106 runner
-// records `{}` on failure (a follow-up there, not here).
+// Edges, by design (D78). A day's last send at 23:00 is due in one hourly
+// tick only (the next is the next local date), so it gets one attempt; a
+// send hour can be 22 at the latest since A10 (its second hour must be
+// later), so only a twice-a-day second hour of 23 meets this. A twice-a-day
+// first send still unmade at the second hour is not made: the second carries
+// the same list. A zone change can move an org's local date: westward across
+// the date line (Honolulu to Tokyo, say) a local date can be skipped;
+// eastward the org can get a digest for an earlier date a few hours after the
+// last. A frequency change takes effect at the next run: the day's sends made
+// so far keep their slots, so none is repeated. A failed run's counts are
+// lost: the MINT-106 runner records `{}` on failure (a follow-up there, not
+// here).
 //
 // Logging: ctx.log.error only, with closed snake_case events. Nothing here
 // logs an address, a name, a case, a date or a count.
@@ -67,6 +77,7 @@ import type { Database } from "@/integrations/supabase/types";
 import {
   catchUpRuleProblem,
   digestSlot,
+  lastDigestSendHour,
   planFollowUpDigests,
   resolveFollowUpDigestRules,
   type FollowUpDigestRules,
@@ -299,17 +310,20 @@ async function deliver(
   return "unrecorded";
 }
 
-/** A due org: its effective sequence, its rules, and the local date and hour of the run. */
+/** A due org: its effective sequence, its rules, the local date and hour of
+ *  the run, and the scheduled send that is open (its hour and slot). */
 interface DueOrg {
   orgId: string;
   sequence: EffectiveNotificationSequence;
   rules: FollowUpDigestRules;
   localDate: string;
   localHour: number;
+  sendHour: number;
+  slot: string;
 }
 
 function orgSlot(org: DueOrg): NotificationOrgSlotKey {
-  return { job: FOLLOWUP_DIGEST_JOB_NAME, orgId: org.orgId, slot: org.localDate };
+  return { job: FOLLOWUP_DIGEST_JOB_NAME, orgId: org.orgId, slot: org.slot };
 }
 
 async function runOrg(
@@ -323,11 +337,11 @@ async function runOrg(
   const problem = digestStepProblem(org.sequence.steps);
   if (problem) {
     counts.orgs_skipped_template += 1;
-    // Counted every run; logged once per local date, in the first due hour.
-    // So the line is missing for a date whose due-hour tick was skipped or
-    // delayed, or when the org was switched on after its send hour; the
-    // counts still show the skip.
-    if (org.localHour === org.sequence.sendHour) {
+    // Counted every run; logged once per scheduled send, in its first due
+    // hour. So the line is missing for a send whose due-hour tick was
+    // skipped or delayed, or when the org was switched on after that hour;
+    // the counts still show the skip.
+    if (org.localHour === org.sendHour) {
       ctx.log.error(`org_skipped_${problem}`, new FollowUpDigestTemplateError());
     }
     return;
@@ -415,30 +429,29 @@ export async function runFollowUpDigest(
     if (!sequence.enabled) continue;
     counts.orgs_enabled += 1;
     let rules = deps.rules(row.orgId);
-    // A cut-off at or before the send hour would mean "never sent": run with
-    // the default (until local midnight) and count it, like a template skip.
-    const rulesProblem = catchUpRuleProblem(rules, sequence.sendHour);
+    // A cut-off at or before the day's last send hour would mean that send
+    // is never made: run with the default (until local midnight) and count
+    // it, like a template skip.
+    const rulesProblem = catchUpRuleProblem(rules, lastDigestSendHour(sequence));
     if (rulesProblem) {
       counts.orgs_rules_fallback += 1;
       rules = { ...rules, catchUpUntilLocalHour: null };
     }
     const slot = digestSlot(sequence, ctx.now, rules);
-    // Logged once per local date, in the first due hour (as a template skip).
-    if (rulesProblem && slot && slot.localHour === sequence.sendHour) {
+    // Logged once per scheduled send, in its first due hour (as a template skip).
+    if (rulesProblem && slot?.due && slot.localHour === slot.sendHour) {
       ctx.log.error(`org_rules_${rulesProblem}`, new FollowUpDigestRulesError());
     }
     if (!slot) {
       // Unreachable through data since #561 (see FollowUpDigestSendTimeError),
-      // so it is logged every run rather than once a day.
+      // so it is logged every run rather than once per scheduled send.
       counts.orgs_skipped_send_time += 1;
       ctx.log.error("org_skipped_send_time", new FollowUpDigestSendTimeError());
+    } else if (slot.state === "past_catch_up") {
+      counts.orgs_past_catch_up += 1;
     } else if (!slot.due) {
-      // Not due at or after the send hour means past the catch-up cut-off.
-      if (sequence.sendHour != null && slot.localHour >= sequence.sendHour) {
-        counts.orgs_past_catch_up += 1;
-      } else {
-        counts.orgs_not_due += 1;
-      }
+      // Before the day's first send hour, or a weekly digest's other days.
+      counts.orgs_not_due += 1;
     } else {
       counts.orgs_due += 1;
       due.push({
@@ -447,6 +460,8 @@ export async function runFollowUpDigest(
         rules,
         localDate: slot.localDate,
         localHour: slot.localHour,
+        sendHour: slot.sendHour,
+        slot: slot.slot,
       });
     }
   }

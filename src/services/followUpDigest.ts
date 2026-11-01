@@ -1,4 +1,4 @@
-// MINT-108 — the per-org reads behind the daily follow-up digest job
+// MINT-108 — the per-org reads behind the follow-up digest job
 // (src/server/jobs/followupDigestRun.ts).
 //
 // Server-only surface, like ./orgMemberships.ts: there is no browser-default

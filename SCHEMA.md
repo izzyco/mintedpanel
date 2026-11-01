@@ -829,14 +829,16 @@ records in `notification_org_slots` when an org's sends for a slot are
 settled. The first user is the follow-up digest (`GET
 /api/jobs/followup-digest`, `src/server/jobs/followupDigestRun.ts`), which
 is called hourly (a GitHub Actions schedule, plus a daily Vercel cron as a
-backup); its slot is each org's **local date**, not its `job_runs` run key
-(the UTC hour). Until the migration is applied the digest cannot check a slot
+backup); its slot is each scheduled send's: the org's **local date**, or
+`YYYY-MM-DD:2` for a twice-a-day digest's second send (A8), not its
+`job_runs` run key (the UTC hour). Until the migration is applied the digest cannot check a slot
 or claim a send, so it sends nothing and its run is recorded failed.
 
 ### notification_sends
 
 `id`, `job` (the `job_runs` pattern), `slot` (what the send is once-only for:
-for the digest, the org's local date `YYYY-MM-DD`; CHECK
+for the digest, the org's local date `YYYY-MM-DD`, or `YYYY-MM-DD:2` for the
+second send of a twice-a-day digest; CHECK
 `^[0-9A-Za-z:_-]{1,64}$`), `org_id` (FK to `organizations`, ON DELETE
 CASCADE), `recipient_user_id` (the member it went to; an actor id, not a
 foreign key), `outcome` (`claimed | sent | failed`), `claimed_at`,
@@ -847,8 +849,7 @@ foreign key), `outcome` (`claimed | sent | failed`), `claimed_at`,
 that prove nothing was accepted). The partial unique index `notification_sends_one_live_send` on
 `(job, slot, org_id, recipient_user_id) WHERE outcome IN ('claimed', 'sent')`
 is the once-per-slot guarantee: a rerun, a later hourly run, a changed send
-hour or a changed time zone cannot send a second digest for the same local
-date. Only a definite rejection is `failed`, and a later attempt may claim
+hour, time zone or frequency cannot repeat a scheduled send. Only a definite rejection is `failed`, and a later attempt may claim
 again, up to three failed rows per key. A send that may have been delivered (a
 network error or timeout, a SendGrid 5xx or 408, an unexplained error, a
 function that died mid-send) stays `claimed` and is never resent: SendGrid has
@@ -863,8 +864,10 @@ once an org's sends for the slot are settled: every planned send is sent,
 already sent, given up after three rejections, or left claimed by a finished
 attempt because it may have been delivered. A claim another attempt took under
 15 minutes ago keeps the slot open for that attempt. The hourly digest skips an org that has a row for its
-local date. An org whose run failed, or that has a send a later attempt may
-retry, gets no row, so the next hourly run catches it up the same local day.
+open scheduled send's slot. An org whose run failed, or that has a send a
+later attempt may retry, gets no row, so the next hourly run catches it up
+while that send's window is open (until the next send's hour, or the
+catch-up cut-off, local midnight by default).
 Insert-only. No PHI. RLS on with no policies; service_role has SELECT and
 nothing else.
 

@@ -1,32 +1,46 @@
-// MINT-108 — the daily coordinator follow-up digest: the pure rules. The job
-// that reads the rows and sends the emails is src/server/jobs/followupDigestRun.ts;
+// MINT-108 — the coordinator follow-up digest: the pure rules. The job that
+// reads the rows and sends the emails is src/server/jobs/followupDigestRun.ts;
 // the email body is `followup_digest_daily` in src/server/email/templates.ts,
 // which renders FollowUpDigestEmailData below.
 //
-// What is listed. Open cases only (OPEN_CASE_STATUSES). A case's follow-up is
-// the carry-forward reducer's active follow-up over its touchpoints
-// (resolveActiveFollowUp), and its status is followUpStatus against `today`.
-// Overdue and due-today follow-ups are listed; upcoming ones are not.
+// What is listed. Open cases only (OPEN_CASE_STATUSES; A15, Oct 31: a
+// per-status flag may come later). A case's follow-up is the carry-forward
+// reducer's active follow-up over its touchpoints (resolveActiveFollowUp),
+// and its status is followUpStatus against `today`. Overdue and due-today
+// follow-ups are listed. Never anything ahead (A14, Oct 31): an upcoming
+// follow-up is not listed, whatever the frequency, so a weekly digest lists
+// what is overdue or due on its own day. A coordinator with nothing listed
+// gets nothing (A16, Oct 31).
 //
 // When it goes out, and what "today" is (digestSlot). The job is called
-// every hour. An org's digest is due once the wall clock in its effective time zone
-// reaches its effective send hour (both platform-managed, resolved by
-// resolveNotificationSequence). "At or after" the hour, so a missed or failed
-// run catches up later the same local day; never before it. "Today" is the
-// org's local date at the run, and that date is the digest's slot: the
-// per-recipient send claim and the org's completion record both key on it,
-// so a rerun, a changed hour or a changed zone cannot send a second digest
-// for the same local date. The hour is read off the zone's wall clock at the
-// run's instant, so a repeated hour (DST ends) stays the same local date, and
-// a skipped hour (DST starts) is caught by "at or after". Catch-up runs until
-// local midnight (FollowUpDigestRules.catchUpUntilLocalHour, D77). No clock
-// read here: `now` is passed in.
+// every hour. How often an org's digest goes out is its effective frequency
+// (A8, Oct 31; resolveNotificationSequence: the org's choice, else Minted's
+// default, daily):
+//   * daily: once, from the send hour;
+//   * weekly: once, from the send hour, on the weekly weekday (Monday by
+//     default) in the org's zone;
+//   * twice a day: from the send hour, and again from the second send hour
+//     (2 pm by default), both in the org's zone.
+// The send hour, zone, second send hour and weekday are platform-managed.
+// Each scheduled send is due from its hour ("at or after", so a missed or
+// failed run catches up later; never before it) until the next send's hour,
+// or for the day's last send until the catch-up cut-off
+// (FollowUpDigestRules.catchUpUntilLocalHour; local midnight by default,
+// D77). A twice-a-day first send not made by the second hour is not made
+// that day: the second carries the same list. "Today" is the org's local date
+// at the run. Each scheduled send has its own slot: the local date, and
+// `YYYY-MM-DD:2` for twice a day's second send. The per-recipient send claim
+// and the org's completion record key on it, so a rerun, a changed hour or a
+// changed zone cannot send a scheduled send twice. The hour is read off the
+// zone's wall clock at the run's instant, so a repeated hour (DST ends) stays
+// the same local date, and a skipped hour (DST starts) is caught by "at or
+// after". No clock read here: `now` is passed in.
 //
-// Two edges follow from keying on the local date. A send hour of 23 is due in
-// one hourly call only, so it gets one attempt a day (keep it at 21 or
-// earlier). And a zone change moves the local date with it: moving an org
-// west across the date line (Honolulu to Tokyo) can skip a date, and moving
-// it east can send a digest for an earlier date hours after the last.
+// Two edges follow from keying on the local date (D78, accepted). A day's
+// last send at 23:00 is due in one hourly call only, so it gets one attempt.
+// And a zone change moves the local date with it: moving an org west across
+// the date line (Honolulu to Tokyo) can skip a date, and moving it east can
+// send a digest for an earlier date hours after the last.
 //
 // No at-risk flag (Sowmya, Oct 30). `payers.avg_decision_days` has no writer
 // yet, so a flag built on it would rarely fire and could not be trusted. It
@@ -56,7 +70,13 @@
 // inputs below.
 import { isCaseStatus, isOpenCaseStatus } from "./caseStatus";
 import { followUpStatus, resolveActiveFollowUp, type FollowUpTouch } from "./followUps";
-import { isIanaTimeZone } from "./notificationSequences";
+import {
+  DEFAULT_NOTIFICATION_POLICY_RULES,
+  isDigestFrequency,
+  isIanaTimeZone,
+  isIsoWeekday,
+} from "./notificationSequences";
+import type { DigestFrequency } from "@/types";
 
 /** The longest list one digest shows; the rest are counted as "more". */
 export const MAX_DIGEST_SECTION_ROWS = 100;
@@ -82,14 +102,17 @@ export interface FollowUpDigestRules {
   /** Unassigned follow-ups. Default "count_only" (Oct 31). */
   unassignedFollowUps: UnassignedFollowUpMode;
   /**
-   * How late in the org's local day a missed digest still goes out. null
-   * (default, D77: as built): until local midnight, so every hourly run from
-   * the send hour through the 23:00 hour catches up. A whole hour H from 1 to
-   * 23: only runs whose local hour is before H, so a digest not sent by H:00
-   * is not sent for that date. When DST start skips the send hour, the first
-   * hour after it stands in for it, whatever the cut-off. An H at or before
-   * the send hour would mean the digest is never due: it is invalid
-   * (catchUpRuleProblem), and the job falls back to midnight and counts it.
+   * How late in the org's local day the day's last scheduled send still goes
+   * out when it was missed. null (default, D77: as built): until local
+   * midnight, so every hourly run from that send's hour through the 23:00
+   * hour catches up. A whole hour H from 1 to 23: only runs whose local hour
+   * is before H, so a send not made by H:00 is not made for that date. When
+   * DST start skips the send's hour, the first hour after it stands in for
+   * it, whatever the cut-off. An H at or before the day's last send hour (the
+   * send hour, or for twice a day the second send hour) would mean that send
+   * is never due: it is invalid (catchUpRuleProblem), and the job falls back
+   * to midnight and counts it. A twice-a-day first send's window always ends
+   * at the second send hour.
    */
   catchUpUntilLocalHour: number | null;
 }
@@ -146,26 +169,32 @@ export function resolveFollowUpDigestRules(
   };
 }
 
-/** Why resolved rules cannot be applied to an org with this send hour, or null. */
+/** Why resolved rules cannot be applied to an org with this schedule, or null. */
 export type CatchUpRuleProblem = "cut_off_not_after_send_hour";
 
+/**
+ * Pass the hour of the day's last scheduled send (lastDigestSendHour): the
+ * send hour, or for twice a day the second send hour.
+ */
 export function catchUpRuleProblem(
   rules: Pick<FollowUpDigestRules, "catchUpUntilLocalHour">,
-  sendHour: number | null,
+  lastSendHour: number | null,
 ): CatchUpRuleProblem | null {
   const cutOff = rules.catchUpUntilLocalHour;
-  if (cutOff == null || cutOff >= CATCH_UP_UNTIL_MIDNIGHT || sendHour == null) return null;
-  return cutOff <= sendHour ? "cut_off_not_after_send_hour" : null;
+  if (cutOff == null || cutOff >= CATCH_UP_UNTIL_MIDNIGHT || lastSendHour == null) return null;
+  return cutOff <= lastSendHour ? "cut_off_not_after_send_hour" : null;
 }
 
 /**
  * Plain-language problems with an override (or resolved rules); empty when it
- * can go live. null leaves a rule to the layer below. Pass the org's send
- * hour to also check that the cut-off leaves the digest a due hour.
+ * can go live. null leaves a rule to the layer below. Pass the org's
+ * effective schedule (its send hour, and for twice a day its frequency and
+ * second send hour) to also check that the cut-off leaves every scheduled
+ * send a due hour.
  */
 export function validateFollowUpDigestRules(
   rules: unknown,
-  context: { sendHour?: number | null } = {},
+  context: Partial<DigestSchedule> = {},
 ): string[] {
   if (rules == null || typeof rules !== "object" || Array.isArray(rules)) {
     return ["The follow-up digest rules must be a set of named values."];
@@ -184,13 +213,15 @@ export function validateFollowUpDigestRules(
     errors.push(
       "The catch-up cut-off must be a whole hour from 1 to 23, or 24 (or none) for local midnight.",
     );
-  } else if (
-    isCatchUpHour(cutOff) &&
-    catchUpRuleProblem({ catchUpUntilLocalHour: cutOff }, context.sendHour ?? null)
-  ) {
-    errors.push(
-      `The catch-up cut-off (${cutOff}:00) must be after the send hour (${context.sendHour}:00), or the digest never goes out.`,
-    );
+  } else if (isCatchUpHour(cutOff)) {
+    const last = lastDigestSendHour(context);
+    if (catchUpRuleProblem({ catchUpUntilLocalHour: cutOff }, last)) {
+      errors.push(
+        last === context.sendHour
+          ? `The catch-up cut-off (${cutOff}:00) must be after the send hour (${last}:00), or the digest never goes out.`
+          : `The catch-up cut-off (${cutOff}:00) must be after the second send hour (${last}:00), or the second digest never goes out.`,
+      );
+    }
   }
   return errors;
 }
@@ -325,31 +356,108 @@ export function zonedDateHour(now: Date, timeZone: string): ZonedDateHour {
   return { date, hour };
 }
 
-export interface DigestSlot {
-  /** True once the local hour is at or after the send hour. */
-  due: boolean;
-  /** The org's local date: the digest's "today" and its once-a-day slot. */
-  localDate: string;
-  localHour: number;
+/**
+ * An org's effective digest schedule (resolveNotificationSequence). A missing
+ * or unknown frequency is daily; a missing or unknown weekday is Monday (the
+ * decided defaults, DEFAULT_NOTIFICATION_POLICY_RULES); a twice-a-day second
+ * hour that is missing or not later than the send hour leaves one send a day.
+ */
+export interface DigestSchedule {
+  sendHour: number | null;
+  sendTimeZone: string | null;
+  digestFrequency?: DigestFrequency | null;
+  digestWeekday?: number | null;
+  secondSendHour?: number | null;
+}
+
+function isWholeHour(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 23;
+}
+
+function frequencyOf(schedule: DigestSchedule): DigestFrequency {
+  return isDigestFrequency(schedule.digestFrequency)
+    ? schedule.digestFrequency
+    : DEFAULT_NOTIFICATION_POLICY_RULES.digestFrequency;
+}
+
+/** The hours of the day's scheduled sends, in order: one, or two for twice a day. */
+function sendHours(schedule: DigestSchedule & { sendHour: number }): number[] {
+  const second = schedule.secondSendHour;
+  return frequencyOf(schedule) === "twice_daily" &&
+    isWholeHour(second) &&
+    second > schedule.sendHour
+    ? [schedule.sendHour, second]
+    : [schedule.sendHour];
 }
 
 /**
- * Whether an org's digest is due at `now`, and for which local date. Pass the
- * effective send time (resolveNotificationSequence) and the resolved rules
- * (resolveFollowUpDigestRules; default DEFAULT_FOLLOW_UP_DIGEST_RULES): due
- * from the send hour until the catch-up cut-off, local midnight by default.
- * Null when the send time is unusable: no hour, an hour outside 0 to 23, or a
- * zone this runtime cannot format in.
+ * The hour of the day's last scheduled send: the second send hour for twice
+ * a day, else the send hour. The catch-up cut-off must be after it
+ * (catchUpRuleProblem). Null when the send hour is unusable.
+ */
+export function lastDigestSendHour(schedule: Partial<DigestSchedule>): number | null {
+  if (!isWholeHour(schedule.sendHour)) return null;
+  const hours = sendHours({ sendTimeZone: null, ...schedule, sendHour: schedule.sendHour });
+  return hours[hours.length - 1];
+}
+
+/** The ISO weekday (1 = Monday to 7 = Sunday) of a YYYY-MM-DD date. */
+export function isoWeekday(iso: string): number {
+  requireDay(iso);
+  const [y, m, d] = iso.split("-").map(Number);
+  const day = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return day === 0 ? 7 : day;
+}
+
+/** The slot of a scheduled send: the local date, or `date:2` for twice a day's second. */
+export function digestSlotKey(localDate: string, send: 1 | 2): string {
+  return send === 1 ? localDate : `${localDate}:2`;
+}
+
+/**
+ * Where an org's digest stands at a run:
+ *   due            one of the day's scheduled sends is open;
+ *   not_yet        before the day's first send hour;
+ *   not_today      a weekly digest, on another weekday in the org's zone;
+ *   past_catch_up  after the catch-up cut-off, the day's last send unmade.
+ */
+export type DigestSlotState = "due" | "not_yet" | "not_today" | "past_catch_up";
+
+export interface DigestSlot {
+  /** True while one of the day's scheduled sends is open (state "due"). */
+  due: boolean;
+  state: DigestSlotState;
+  /** The org's local date: the digest's "today". */
+  localDate: string;
+  localHour: number;
+  /**
+   * Which of the day's sends this is: the open one when due, the last one
+   * past the cut-off, else the first. 2 only for twice a day.
+   */
+  send: 1 | 2;
+  /** That send's hour: its first due hour, where once-per-send logging happens. */
+  sendHour: number;
+  /** That send's key for the claims and the completion row (digestSlotKey). */
+  slot: string;
+}
+
+/**
+ * Whether an org's digest is due at `now`, which scheduled send, and for which
+ * local date. Pass the effective schedule (resolveNotificationSequence) and
+ * the resolved rules (resolveFollowUpDigestRules; default
+ * DEFAULT_FOLLOW_UP_DIGEST_RULES). A weekly digest is scheduled only on its
+ * weekday in the org's zone. Each scheduled send is due from its hour until
+ * the next send's hour, and the day's last until the catch-up cut-off, local
+ * midnight by default. Null when the send time is unusable: no hour, an hour
+ * outside 0 to 23, or a zone this runtime cannot format in.
  */
 export function digestSlot(
-  sendTime: { sendHour: number | null; sendTimeZone: string | null },
+  schedule: DigestSchedule,
   now: Date,
   rules: Pick<FollowUpDigestRules, "catchUpUntilLocalHour"> = DEFAULT_FOLLOW_UP_DIGEST_RULES,
 ): DigestSlot | null {
-  const { sendHour, sendTimeZone } = sendTime;
-  if (sendHour === null || !Number.isInteger(sendHour) || sendHour < 0 || sendHour > 23) {
-    return null;
-  }
+  const { sendHour, sendTimeZone } = schedule;
+  if (!isWholeHour(sendHour)) return null;
   if (!sendTimeZone || !isIanaTimeZone(sendTimeZone)) return null;
   let local: ZonedDateHour;
   try {
@@ -357,25 +465,53 @@ export function digestSlot(
   } catch {
     return null;
   }
+  const hours = sendHours({ ...schedule, sendHour });
+  const at = (state: DigestSlotState, index: number): DigestSlot => {
+    const send = index === 0 ? 1 : 2;
+    return {
+      due: state === "due",
+      state,
+      localDate: local.date,
+      localHour: local.hour,
+      send,
+      sendHour: hours[index],
+      slot: digestSlotKey(local.date, send),
+    };
+  };
+
+  if (frequencyOf(schedule) === "weekly") {
+    const weekday = isIsoWeekday(schedule.digestWeekday)
+      ? schedule.digestWeekday
+      : DEFAULT_NOTIFICATION_POLICY_RULES.digestWeekday;
+    if (isoWeekday(local.date) !== weekday) return at("not_today", 0);
+  }
+
+  // The send whose window holds this hour: the last one at or before it. Its
+  // window ends at the next send's hour, which is after this hour by choice.
+  let index = -1;
+  hours.forEach((hour, i) => {
+    if (local.hour >= hour) index = i;
+  });
+  if (index < 0) return at("not_yet", 0);
+  if (index < hours.length - 1) return at("due", index);
+
+  // The day's last send: due until the catch-up cut-off.
+  const hour = hours[index];
   const cutOff = rules.catchUpUntilLocalHour;
   let beforeCutOff = cutOff == null || local.hour < cutOff;
-  if (!beforeCutOff && local.hour > sendHour) {
-    // DST start can skip the send hour (2 am on Mar 14 2027 in Chicago). The
-    // first hour after it then stands in for it, so a cut-off just after the
-    // send hour still leaves that one attempt. On any other day the hour
-    // before this one is at or after the send hour.
+  if (!beforeCutOff && local.hour > hour) {
+    // DST start can skip the send's hour (2 am on Mar 14 2027 in Chicago).
+    // The first hour after it then stands in for it, so a cut-off just after
+    // that hour still leaves that one attempt. On any other day the hour
+    // before this one is at or after the send's hour.
     try {
       const hourBefore = zonedDateHour(new Date(now.getTime() - 3_600_000), sendTimeZone);
-      if (hourBefore.date === local.date && hourBefore.hour < sendHour) beforeCutOff = true;
+      if (hourBefore.date === local.date && hourBefore.hour < hour) beforeCutOff = true;
     } catch {
       // The zone formatted a moment ago; leave the cut-off as it is.
     }
   }
-  return {
-    due: local.hour >= sendHour && beforeCutOff,
-    localDate: local.date,
-    localHour: local.hour,
-  };
+  return at(beforeCutOff ? "due" : "past_catch_up", index);
 }
 
 /* -------------------------------- What is listed ------------------------------ */

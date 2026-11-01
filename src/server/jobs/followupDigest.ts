@@ -1,12 +1,13 @@
-// The daily coordinator follow-up digest job (MINT-108): its registry entry.
+// The coordinator follow-up digest job (MINT-108): its registry entry.
 //
-// Mechanism (Sowmya, Oct 30: the send hour is per org, set by Minted).
-// GET /api/jobs/followup-digest is called every hour, and each call sends to
-// every org whose digest is on and whose local hour, in its effective time
-// zone, is at or after its effective send hour, unless that org has already
-// had its digest for that local date. "At or after" lets a missed or failed
-// call catch up later the same local day; nothing goes out before the hour.
-// See ./followupDigestRun.ts.
+// Mechanism (Sowmya, Oct 30: the send hour is per org, set by Minted; Oct
+// 31, A8: daily, weekly or twice a day). GET /api/jobs/followup-digest is
+// called every hour, and each call sends to every org whose digest is on and
+// one of whose scheduled sends is open: its local hour, in its effective time
+// zone, is at or after that send's hour (the send hour, or for twice a day
+// the second send hour; a weekly digest only on its weekday), unless that
+// org has already had that send. "At or after" lets a missed or failed call
+// catch up later; nothing goes out before the hour. See ./followupDigestRun.ts.
 //
 // Who calls it. Production is on Vercel's Hobby plan, which allows a cron at
 // most once a day per entry and fails a deploy with a more frequent one. So:
@@ -16,7 +17,8 @@
 //   * vercel.json keeps one daily backup at 18:00 UTC, when every US zone's
 //     8 am has passed (8 am in Hawaii). It only ever catches up: GitHub runs
 //     schedules on the default branch only, and may delay or skip them under
-//     load.
+//     load. It does not reach a twice-a-day second send at 2 pm in a US zone
+//     (19:00 UTC or later), which relies on the hourly tick.
 // crons.test.ts pins both.
 //
 // Two keys, on purpose:
@@ -25,8 +27,10 @@
 //     and the tick in hour 18, say) is skipped, and a failed run is retried
 //     by the next call in that hour.
 //   * The send slot (notification_sends, notification_org_slots) is the
-//     org's local date. Each coordinator gets at most one digest per org per
-//     local date, whatever the hour, the zone or the number of calls.
+//     scheduled send's: the org's local date, or `YYYY-MM-DD:2` for a
+//     twice-a-day digest's second send. Each coordinator gets each scheduled
+//     send at most once per org, whatever the hour, the zone, the frequency
+//     or the number of calls.
 //
 // The work lives in ./followupDigestRun.ts and is imported when the job runs,
 // so the registry, the cron route and their tests stay free of the Supabase
@@ -46,19 +50,21 @@ export function utcHourKey(now: Date): string {
 export const FOLLOWUP_DIGEST_COUNT_KEYS = [
   /** Orgs whose digest is on. */
   "orgs_enabled",
-  /** Of those, orgs whose local hour is at or after their send hour. */
+  /** Of those, orgs with a scheduled send open (at or after its hour). */
   "orgs_due",
-  /** Orgs whose local hour is still before their send hour: nothing read. */
+  /** Orgs before their day's first send hour, or a weekly digest on another
+   *  day: nothing read. */
   "orgs_not_due",
   /** Orgs past their catch-up cut-off for the local date (FollowUpDigestRules):
    *  nothing read. Always 0 with the default (until local midnight). */
   "orgs_past_catch_up",
-  /** Orgs whose catch-up cut-off is at or before their send hour (it would
-   *  never send): run with the default, until local midnight, and counted. */
+  /** Orgs whose catch-up cut-off is at or before their day's last send hour
+   *  (that send would never go): run with the default, until local midnight,
+   *  and counted. */
   "orgs_rules_fallback",
-  /** Due orgs that already had their digest for their local date. */
+  /** Due orgs that already had their open scheduled send. */
   "orgs_already_completed",
-  /** Orgs whose digest for their local date was settled on this attempt. */
+  /** Orgs whose open scheduled send was settled on this attempt. */
   "orgs_completed",
   /** Orgs skipped because their effective send hour or time zone is unusable. */
   "orgs_skipped_send_time",
@@ -71,7 +77,7 @@ export const FOLLOWUP_DIGEST_COUNT_KEYS = [
   "orgs_completion_unrecorded",
   /** Emails the provider accepted on this attempt. */
   "digests_sent",
-  /** Coordinators an earlier attempt already sent to for the local date. */
+  /** Coordinators an earlier attempt already sent to for the scheduled send. */
   "digests_already_sent",
   /** Coordinators with nothing overdue or due today: no email. */
   "digests_suppressed",
@@ -86,7 +92,7 @@ export const FOLLOWUP_DIGEST_COUNT_KEYS = [
   /** Sends that may have been delivered (network error, timeout, a SendGrid
    *  5xx or 408, an unexplained error): left claimed, never resent. */
   "sends_uncertain",
-  /** Coordinators whose send already failed three times for the local date. */
+  /** Coordinators whose send already failed three times for the scheduled send. */
   "sends_exhausted",
   /** Coordinators another attempt claimed recently and may still be sending
    *  to: left to it, and the org's date stays open. */
