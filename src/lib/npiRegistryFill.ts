@@ -84,7 +84,7 @@ export interface NpiFillForm {
   licenses: NpiFillLicenseRow[];
   /** Whether the form saves a license row that holds only a state and a
    * number. NPPES has no expiration date, so when a row needs more, registry
-   * licenses the form has no row for are listed and never offered. */
+   * licenses the form has no row for are listed, never added or offered. */
   licenseRowSaveable: boolean;
   /** A36: the form's Gender value and the values its Gender options offer,
    * and its Phone. Left out, nothing is offered for that field. */
