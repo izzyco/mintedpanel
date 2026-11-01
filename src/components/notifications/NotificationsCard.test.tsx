@@ -400,6 +400,32 @@ describe("NotificationsCard: other members", () => {
     expect(editor).not.toContain(">On<");
   });
 
+  it("keeps on/off out of a digest that is switched on but has no schedule, until Minted sets one", () => {
+    state.isAdmin = true;
+    const digestRow = {
+      ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+      id: "seq-digest",
+      purpose: "followup_digest" as const,
+      enabled: true,
+    };
+    state.sequences = { followup_digest: digestRow };
+    const unscheduled = renderToStaticMarkup(<NotificationsCard />);
+    expect(unscheduled).toContain(NOT_SET_UP);
+    expect(unscheduled).toContain(">Not set up<");
+    expect(unscheduled).not.toContain("Minted switched these on");
+    expect(unscheduled).not.toContain("Minted switches notifications on");
+    state.sequences = { followup_digest: { ...digestRow, ...MINTED_SET_UP } };
+    const scheduled = renderToStaticMarkup(<NotificationsCard />);
+    expect(scheduled).toContain("On. Minted switched these on for your organization.");
+    expect(scheduled).toContain(">On<");
+    expect(scheduled).not.toContain(NOT_SET_UP);
+    // Intake has no schedule, so its on/off line always shows.
+    state.sequences = { intake_reminder: intakeConfig() };
+    expect(renderToStaticMarkup(<NotificationsCard />)).toContain(
+      "On. Minted switched these on for your organization.",
+    );
+  });
+
   it("never shows a stored zone it cannot use: the digest reads as not set up", () => {
     const digestRow = {
       ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),

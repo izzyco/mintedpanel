@@ -1360,20 +1360,6 @@ function hourLabel(hour: number): string {
   return hour < 12 ? `${hour} am` : `${hour - 12} pm`;
 }
 
-/**
- * "8 am Central time" for the digest's read-only send time. Null when the
- * hour or zone is missing, the hour is out of range, or the zone is not one
- * this runtime can use: the card never shows an unusable zone name. (The
- * resolver never returns one; this guards direct callers.)
- */
-export function describeSendTime(hour: number | null, zone: string | null): string | null {
-  if (hour == null || zone == null || !Number.isInteger(hour) || hour < 0 || hour > 23) {
-    return null;
-  }
-  if (!isIanaTimeZone(zone)) return null;
-  return `${hourLabel(hour)} ${timeZoneName(zone)}`;
-}
-
 const WEEKDAY_PLURALS = [
   "Mondays",
   "Tuesdays",

@@ -802,8 +802,11 @@ bounce_escalation_step, updated_at)`; the platform-managed
   are deleted before it, which detaches the consent) plus `archived_at`. No
   CHECKs (the row was checked in `sms_consents`). RLS **forced** with no
   policies; `service_role` holds SELECT and nothing else; no other role has
-  a grant. So only service_role and the owner read it, and nothing deletes
-  from it.
+  a grant. Forced RLS binds the owner too, so only roles with BYPASSRLS get
+  in: service_role reads it, and the owner reads and writes it through
+  BYPASSRLS. The trigger's insert relies on that (hosted Supabase's
+  `postgres` has BYPASSRLS; without it an org delete would be refused, and
+  nothing lost). Nothing deletes from it.
 - **Access**: RLS on all six. Members read their org's rows and nobody
   reads another org's; members of any org read the defaults. Only
   `user_role(org_id) = 'admin'` writes sequences and steps; `sms_consents` and

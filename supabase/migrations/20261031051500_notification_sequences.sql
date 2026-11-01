@@ -103,8 +103,10 @@
 --     and a BEFORE DELETE trigger first copies it, whatever deleted it, to
 --     sms_consent_archive: the row's columns, org_id as a plain uuid with no
 --     foreign key, and archived_at. RLS is forced there with no policies and
---     only service_role holds a grant (SELECT), so only service_role and the
---     owner read it.
+--     only service_role holds a grant (SELECT). Forced RLS applies to the
+--     owner too, so only roles with BYPASSRLS get in: service_role reads it,
+--     and the owner reads and writes it through BYPASSRLS (the archiving
+--     trigger's insert relies on that).
 --   * Stop conditions are a validated, non-empty subset of submitted, paused,
 --     withdrawn, provider_replied (intake only; A11: at least one is
 --     required). Each is switchable per org, submitted included.
@@ -183,6 +185,10 @@
 --   SELECT tgname FROM pg_trigger
 --    WHERE tgrelid = 'public.sms_consents'::regclass
 --      AND tgname = 'sms_consents_archive_before_delete';  -- one row
+--   SELECT r.rolbypassrls OR r.rolsuper FROM pg_proc AS p
+--     JOIN pg_roles AS r ON r.oid = p.proowner
+--    WHERE p.oid = 'private.sms_consents_archive_before_delete()'::regprocedure;
+--     -> true   (the trigger's owner gets past the archive's forced RLS)
 --   SELECT pg_get_function_identity_arguments(oid), prosecdef
 --     FROM pg_proc WHERE proname = 'save_notification_sequence';
 --     -> p_org_id uuid, p_purpose text, p_payload jsonb | false
@@ -1004,7 +1010,10 @@ $function$;
 -- delete is archived: consent rows are not otherwise deleted, so this is the
 -- simplest rule. SECURITY DEFINER so the copy works for any deleting role
 -- (none but the owner and service_role holds a grant on the archive); it
--- writes only the archive, from OLD.
+-- writes only the archive, from OLD. The archive's RLS is forced, so being
+-- its owner is not enough: the insert works because the owner has BYPASSRLS
+-- (hosted Supabase's postgres does, as does a superuser). Without it, the
+-- insert, and so the delete, would be refused: nothing is lost.
 CREATE OR REPLACE FUNCTION private.sms_consents_archive_before_delete()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -1128,8 +1137,10 @@ ALTER TABLE public.notification_sequence_default_steps ENABLE ROW LEVEL SECURITY
 ALTER TABLE public.notification_sequences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notification_sequence_steps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sms_consents ENABLE ROW LEVEL SECURITY;
--- D5: forced, with no policies. Roles that bypass RLS (service_role, the
--- owner) read it; the grants below keep every other role out as well.
+-- D5: forced, with no policies, so it binds the owner too. Only roles with
+-- BYPASSRLS get in: service_role (its SELECT grant) and the owner, which
+-- reads and writes it through BYPASSRLS; the grants below keep every other
+-- role out as well.
 ALTER TABLE public.sms_consent_archive ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sms_consent_archive FORCE ROW LEVEL SECURITY;
 
@@ -1631,7 +1642,7 @@ COMMENT ON COLUMN public.notification_sequence_steps.cc_recipients IS
 COMMENT ON TABLE public.sms_consents IS
   'MINT-107: a provider''s recorded agreement to receive texts at one number: when, how (source), which consent text version, and revocation. Evidence: the allowed updates are stamping revoked_at + revoked_source once and the provider FK nulling provider_id when the provider row is deleted (ON DELETE SET NULL (provider_id)); no DELETE grant; a row deleted anyway (the org FK''s cascade) is first copied to sms_consent_archive (D5). Members read; only service_role writes (the intake form, later). staff_recorded rows name recorded_by.';
 COMMENT ON TABLE public.sms_consent_archive IS
-  'MINT-107 D5: every deleted sms_consents row, copied by the sms_consents_archive_before_delete trigger before the delete (an org delete''s cascade is the only path today), so consent evidence survives the org. The consent''s own columns as they were, org_id as a plain uuid with no foreign key, and archived_at. RLS forced with no policies; service_role SELECT only, so only service_role and the owner read it. Nothing deletes from it.';
+  'MINT-107 D5: every deleted sms_consents row, copied by the sms_consents_archive_before_delete trigger before the delete (an org delete''s cascade is the only path today), so consent evidence survives the org. The consent''s own columns as they were, org_id as a plain uuid with no foreign key, and archived_at. RLS forced with no policies; service_role SELECT only. Only roles with BYPASSRLS get in: service_role reads it, and the owner reads and writes it through BYPASSRLS (the trigger''s insert relies on it). Nothing deletes from it.';
 COMMENT ON COLUMN public.sms_consents.provider_id IS
   'The provider who consented; required on insert. NULL only after that provider row was deleted: the consent and any revocation stay as evidence, with the number and timestamps, and no copy of the provider''s data.';
 COMMENT ON COLUMN public.sms_consents.phone_e164 IS 'The consented number in E.164 form, e.g. +15555550123.';

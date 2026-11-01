@@ -19,7 +19,6 @@ import {
   describeCcList,
   describeDigestSchedule,
   describeOffsets,
-  describeSendTime,
   describeStep,
   digestScheduleOf,
   draftBounceEscalationStep,
@@ -953,25 +952,19 @@ describe("purpose rules", () => {
 });
 
 describe("send time (answer 5)", () => {
-  it("reads 8 in America/Chicago as 8 am Central time", () => {
-    expect(describeSendTime(8, "America/Chicago")).toBe("8 am Central time");
-    expect(describeSendTime(0, "America/New_York")).toBe("12 am Eastern time");
-    expect(describeSendTime(12, "America/Denver")).toBe("12 pm Mountain time");
-    expect(describeSendTime(17, "America/Los_Angeles")).toBe("5 pm Pacific time");
-  });
-
-  it("names other zones from Intl, and never shows a zone it cannot use", () => {
-    expect(describeSendTime(9, "Europe/Paris")).toMatch(/^9 am .*European time$/);
-    for (const zone of ["Mars/Olympus_Mons", "Gone/Zone", "america/chicago", "CST", ""]) {
-      expect(describeSendTime(9, zone)).toBeNull();
-    }
-  });
-
-  it("says nothing when the hour or zone is missing or out of range", () => {
-    expect(describeSendTime(null, "America/Chicago")).toBeNull();
-    expect(describeSendTime(8, null)).toBeNull();
-    expect(describeSendTime(24, "America/Chicago")).toBeNull();
-    expect(describeSendTime(7.5, "America/Chicago")).toBeNull();
+  it("names the hour and the zone in the schedule line, US zones by name, others from Intl", () => {
+    const daily = (sendHour: number, sendTimeZone: string) =>
+      describeDigestSchedule({ ...MINTED_SET_UP, sendHour, sendTimeZone, secondSendHour: 23 });
+    expect(daily(0, "America/New_York")).toBe(
+      "Sent once a day, around 12 am Eastern time. Minted sets this.",
+    );
+    expect(daily(12, "America/Denver")).toBe(
+      "Sent once a day, around 12 pm Mountain time. Minted sets this.",
+    );
+    expect(daily(17, "America/Los_Angeles")).toBe(
+      "Sent once a day, around 5 pm Pacific time. Minted sets this.",
+    );
+    expect(daily(9, "Europe/Paris")).toMatch(/^Sent once a day, around 9 am .*European time\./);
   });
 
   it("accepts IANA zone names only, with the database's pattern", () => {

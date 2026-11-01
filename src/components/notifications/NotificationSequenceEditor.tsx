@@ -43,6 +43,7 @@ import {
   defaultStepsCcNote,
   describeDigestSchedule,
   describeStep,
+  digestScheduleOf,
   enabledStatusNote,
   draftBounceEscalationStep,
   moveStep,
@@ -191,8 +192,11 @@ export function NotificationSequenceEditor({
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
-      {/* A9: only Minted switches notifications on or off. */}
-      <p className="text-[13px] text-foreground">{enabledStatusNote(saved?.enabled ?? false)}</p>
+      {/* A9: only Minted switches notifications on or off. A digest with no
+          schedule says it isn't set up instead (G2), so on/off waits for one. */}
+      {!rules.hasSendTime || digestScheduleOf(saved) != null ? (
+        <p className="text-[13px] text-foreground">{enabledStatusNote(saved?.enabled ?? false)}</p>
+      ) : null}
 
       {ownSteps && rules.stepsEditable ? (
         <>
