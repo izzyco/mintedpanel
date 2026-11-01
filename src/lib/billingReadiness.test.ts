@@ -92,9 +92,12 @@ function readySnapshot(): BillingReadinessSnapshot {
 }
 
 const selection = { providerId: "p1", facilityId: "f1", payerId: "pay1" };
+// The app never edits a snapshot in place, so its index is built once per
+// snapshot object. These tests do edit one between assessments, so each
+// assessment gets a fresh object, as a changed snapshot would be.
 const assess = (snapshot: BillingReadinessSnapshot, next: Partial<typeof selection> = {}) =>
   evaluateBillingReadiness(
-    snapshot,
+    { ...snapshot },
     { ...selection, ...next },
     TODAY,
     DEFAULT_BILLING_READINESS_RULES,
@@ -709,8 +712,9 @@ describe("clearance lookup search and payer statuses", () => {
       createdAt: "2025-02-01T12:00:00.000Z",
       createdBy: null,
     });
+    // A changed snapshot is a new object.
     expect(
-      providerPayerStatuses(snapshot, "p1", TODAY, DEFAULT_BILLING_READINESS_RULES).map(
+      providerPayerStatuses({ ...snapshot }, "p1", TODAY, DEFAULT_BILLING_READINESS_RULES).map(
         (row) => row.status,
       ),
     ).toEqual(["ready", "ready"]);
@@ -846,7 +850,7 @@ const withRules = (next: {
 });
 
 const assessWith = (snapshot: BillingReadinessSnapshot, rules: BillingReadinessRules) =>
-  evaluateBillingReadiness(snapshot, selection, TODAY, rules);
+  evaluateBillingReadiness({ ...snapshot }, selection, TODAY, rules);
 
 describe("BillingReadinessRules", () => {
   it("defaults to the PM's Oct 20 decisions, frozen", () => {

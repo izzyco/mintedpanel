@@ -14,15 +14,12 @@
 // - Counted providers are non-terminated, non-test, non-reference.
 // - An org's totals are distinct across its groups; facilities with no group
 //   roll up under a "No group" row so nothing silently drops.
-import type { LifecycleState } from "@/types";
-
 export const NO_GROUP_ID = "__no_group__";
 export const UNKNOWN_STATE = "Unknown";
 
 export interface FootprintOrgInput {
   id: string;
   name: string;
-  lifecycleState: LifecycleState;
 }
 
 export interface FootprintGroupInput {
@@ -81,7 +78,6 @@ export interface GroupFootprint {
 export interface OrgFootprint {
   orgId: string;
   name: string;
-  lifecycleState: LifecycleState;
   providers: number;
   locations: number;
   stateCount: number;
@@ -194,7 +190,6 @@ export function buildPortfolioFootprint(input: FootprintInput, today: string): O
       return {
         orgId: org.id,
         name: org.name,
-        lifecycleState: org.lifecycleState,
         providers: providerIds.size,
         locations: groups.reduce((n, g) => n + g.locations, 0),
         stateCount: states.size,

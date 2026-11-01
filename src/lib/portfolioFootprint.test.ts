@@ -11,8 +11,8 @@ const TODAY = "2026-10-20";
 function input(): FootprintInput {
   return {
     orgs: [
-      { id: "fp", name: "Kansas Fitness Physio", lifecycleState: "prospect" },
-      { id: "luna", name: "Luna", lifecycleState: "active" },
+      { id: "fp", name: "Kansas Fitness Physio" },
+      { id: "luna", name: "Luna" },
     ],
     groups: [
       { id: "ks", orgId: "fp", name: "Kansas Fitness Physio P.A.", isActive: true },

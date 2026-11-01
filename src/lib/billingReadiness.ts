@@ -363,22 +363,7 @@ interface SnapshotIndex {
   licensesByProvider: Map<string, BillingLicense[]>;
 }
 
-const INDEXED_ARRAYS = [
-  "providers",
-  "groups",
-  "facilities",
-  "payers",
-  "groupMemberships",
-  "facilityAssignments",
-  "licenses",
-  "cases",
-  "caseFacilities",
-] as const;
-
-const snapshotIndexes = new WeakMap<
-  BillingReadinessSnapshot,
-  { arrays: readonly unknown[][]; lengths: number[]; index: SnapshotIndex }
->();
+const snapshotIndexes = new WeakMap<BillingReadinessSnapshot, SnapshotIndex>();
 
 function byId<T extends { id: string }>(rows: readonly T[]): Map<string, T> {
   const map = new Map<string, T>();
@@ -399,21 +384,12 @@ function groupRows<T>(rows: readonly T[], key: (row: T) => string | null): Map<s
 }
 
 // At Luna scale (thousands of clinicians, tens of thousands of cases) an
-// assessment must not rescan the whole snapshot. The index is rebuilt whenever
-// one of the snapshot's arrays is replaced or changes length. Rows are shared
-// by reference, so an in-place edit to a field the index does not key on is
-// seen; an in-place edit to a keyed field (id, providerId, caseId, facilityId)
-// is not, until the array is replaced. Snapshots from the service are never
-// edited in place.
+// assessment must not rescan the whole snapshot. The index is built once per
+// snapshot object: a snapshot is data, never edited in place, and a changed
+// one is a new object (the service and the query cache both work that way).
 function snapshotIndex(snapshot: BillingReadinessSnapshot): SnapshotIndex {
-  const arrays = INDEXED_ARRAYS.map((key) => snapshot[key] as unknown[]);
   const cached = snapshotIndexes.get(snapshot);
-  if (
-    cached &&
-    arrays.every((rows, i) => rows === cached.arrays[i] && rows.length === cached.lengths[i])
-  ) {
-    return cached.index;
-  }
+  if (cached) return cached;
   const index: SnapshotIndex = {
     providers: byId(snapshot.providers),
     groups: byId(snapshot.groups),
@@ -426,7 +402,7 @@ function snapshotIndex(snapshot: BillingReadinessSnapshot): SnapshotIndex {
     assignmentsByFacility: groupRows(snapshot.facilityAssignments, (row) => row.facilityId),
     licensesByProvider: groupRows(snapshot.licenses, (row) => row.providerId),
   };
-  snapshotIndexes.set(snapshot, { arrays, lengths: arrays.map((rows) => rows.length), index });
+  snapshotIndexes.set(snapshot, index);
   return index;
 }
 
