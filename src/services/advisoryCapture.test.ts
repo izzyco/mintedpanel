@@ -64,18 +64,20 @@ describe("toLedgerAdvisory (the mapping)", () => {
       ["npi_registry.name_mismatch", "npi_registry.name_mismatch"],
       ["npi_registry.inactive", "npi_registry.inactive"],
       ["npi_registry.not_checked", "npi_registry.unchecked"],
+      ["npi_registry.credentials_differ", "npi_registry.credentials_differ"],
+      ["npi_registry.taxonomy_differs", "npi_registry.taxonomy_differs"],
+      ["npi_registry.license_differs", "npi_registry.license_differs"],
     ];
     for (const [theirs, ours] of keys) {
       expect(toLedgerAdvisory(advisory(theirs), FORM)?.key).toBe(ours);
     }
   });
 
-  it("drops the checks the ledger has no key for", () => {
+  it("drops a check the seam doesn't map", () => {
     for (const check of [
-      "npi_registry.credentials_differ",
-      "npi_registry.taxonomy_differs",
-      "npi_registry.license_differs",
+      "npi_registry.dea_differs",
       "npi_registry.unchecked",
+      "npi.missing",
       "toString",
       "",
     ]) {
@@ -132,6 +134,39 @@ describe("recordAdvisories (the seam)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it("records the registry's differences too, the license row's field left behind", async () => {
+    await recordAdvisories(
+      [
+        advisory("npi_registry.credentials_differ", {
+          record: { table: "providers", id: PROVIDER, field: "credentials" },
+        }),
+        advisory("npi_registry.taxonomy_differs", {
+          record: { table: "providers", id: PROVIDER, field: "taxonomyCode" },
+        }),
+        advisory("npi_registry.license_differs", {
+          record: { table: "providers", id: PROVIDER, field: "licenses.0.number" },
+          context: { confirmed: true },
+        }),
+      ],
+      { surface: "roster_form" },
+    );
+    expect(rpc.mock.calls.map((call) => call[1])).toEqual(
+      [
+        "npi_registry.credentials_differ",
+        "npi_registry.taxonomy_differs",
+        "npi_registry.license_differs",
+      ].map((key) => ({
+        p_org_id: ORG,
+        p_check_key: key,
+        p_severity: "advisory",
+        p_record_table: "providers",
+        p_record_id: PROVIDER,
+        p_source: "panel",
+        p_context: { surface: "roster_form" },
+      })),
+    );
+  });
+
   it("records an import row's advisories with the import source, run and line", async () => {
     await recordAdvisories(
       [advisory("npi_registry.name_mismatch"), advisory("npi_registry.inactive")],
@@ -151,8 +186,8 @@ describe("recordAdvisories (the seam)", () => {
     ]);
   });
 
-  it("sends nothing for a check the ledger has no key for, or for nothing at all", async () => {
-    await recordAdvisories([advisory("npi_registry.license_differs")], FORM);
+  it("sends nothing for a check the seam doesn't map, or for nothing at all", async () => {
+    await recordAdvisories([advisory("npi_registry.dea_differs")], FORM);
     await recordAdvisories([], FORM);
     expect(rpc).not.toHaveBeenCalled();
   });

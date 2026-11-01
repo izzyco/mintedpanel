@@ -9,8 +9,10 @@
 // the ledger's registry (src/lib/advisoryChecks.ts): its check key, the
 // provider, and the context the registry declares for that key. The ledger's
 // context is closed, so the field, where the advisory showed and whether
-// staff confirmed it stay behind, and a check the registry has no key for is
-// not recorded.
+// staff confirmed it stay behind. Every registry check #564 hands over has a
+// ledger key (the registry additions migration added the three differences:
+// since A30c the roster form and the record page don't show them, so the
+// ledger is their only trace); anything else is not recorded.
 //
 // Never throws. A failed RPC is logged by recordAdvisory (advisory_record_failed,
 // the check key and the SQLSTATE); anything else that fails here is logged as
@@ -21,14 +23,16 @@ import type { AdvisoryContextFor, CheckKey } from "@/lib/advisoryChecks";
 import { recordAdvisory } from "@/services/advisories";
 
 /** The NPI Registry check keys #564 and #566 hand over, and the ledger's key
- * for each. Credentials, taxonomy and license differences have no key in the
- * ledger's registry, so they are not recorded. */
+ * for each. */
 const LEDGER_KEYS = {
   "npi_registry.organization_number": "npi_registry.organization_number",
   "npi_registry.not_found": "npi_registry.not_found",
   "npi_registry.name_mismatch": "npi_registry.name_mismatch",
   "npi_registry.inactive": "npi_registry.inactive",
   "npi_registry.not_checked": "npi_registry.unchecked",
+  "npi_registry.credentials_differ": "npi_registry.credentials_differ",
+  "npi_registry.taxonomy_differs": "npi_registry.taxonomy_differs",
+  "npi_registry.license_differs": "npi_registry.license_differs",
 } as const satisfies Record<string, CheckKey>;
 type LedgerKey = (typeof LEDGER_KEYS)[keyof typeof LEDGER_KEYS];
 
