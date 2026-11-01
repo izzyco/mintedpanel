@@ -551,35 +551,42 @@ describe("importNpiCaptureAdvisories — the registry's answers, facts only", ()
 });
 
 describe("estimateRemainingMs", () => {
-  it("shows nothing until enough rows are done to trust the rate", () => {
-    expect(
-      estimateRemainingMs({ done: ETA_MIN_DONE - 1, total: 100, elapsedMs: 5_000 }),
-    ).toBeNull();
-    expect(estimateRemainingMs({ done: 30, total: 100, elapsedMs: 0 })).toBeNull();
-    expect(estimateRemainingMs({ done: 100, total: 100, elapsedMs: 90_000 })).toBeNull();
+  // 20 of this run's rows done in 2 s of requests (0.1 s a row), all 20 sent
+  // in a budget window that opened 2 s ago; 80 rows left.
+  const estimate = (over: Partial<Parameters<typeof estimateRemainingMs>[0]> = {}) =>
+    estimateRemainingMs({
+      done: 20,
+      activeMs: 2_000,
+      remaining: 80,
+      windowOpensInMs: -2_000,
+      sentInWindow: 20,
+      ...over,
+    });
+
+  it("shows nothing until enough of this run's rows are done to trust the pace", () => {
+    expect(estimate({ done: ETA_MIN_DONE - 1 })).toBeNull();
+    expect(estimate({ activeMs: 0 })).toBeNull();
+    expect(estimate({ remaining: 0 })).toBeNull();
   });
 
-  it("past 60 rows, waits for the minute the last row can go in, however fast the registry is", () => {
-    // 100 rows: the last 40 go in the second minute.
-    expect(estimateRemainingMs({ done: 20, total: 100, elapsedMs: 1_000 })).toBe(59_000);
-    // The first 60 done in 3 s: still the rest of the minute to wait.
-    expect(estimateRemainingMs({ done: 60, total: 100, elapsedMs: 3_000 })).toBe(57_000);
-    // 200 rows: the last ones go in the fourth minute.
-    expect(estimateRemainingMs({ done: 20, total: 200, elapsedMs: 1_000 })).toBe(179_000);
+  it("past this window's 60, waits for the window the last row falls in", () => {
+    // 40 more fit in this window; the last 40 wait 58 s for the next, then take 4 s.
+    expect(estimate()).toBe(62_000);
+    // 180 left: the last 20 go in the third window after this one.
+    expect(estimate({ remaining: 180 })).toBe(178_000 + 2_000);
   });
 
-  it("leaves the time spent waiting out the budget out of the pace", () => {
-    // 70 done at 61 s, 53 s of it waiting: the last 30 take about 3 s, not 26.
-    expect(estimateRemainingMs({ done: 70, total: 100, elapsedMs: 61_000, waitedMs: 53_000 })).toBe(
-      3_429,
-    );
+  it("after a 429, counts from the window its Retry-After names", () => {
+    // The window opens in 36 s: 60 go then, and the last 10 a minute later.
+    expect(estimate({ remaining: 70, windowOpensInMs: 36_000, sentInWindow: 0 })).toBe(97_000);
+    // Nothing past that window: the wait, then the rows at pace.
+    expect(estimate({ remaining: 40, windowOpensInMs: 36_000, sentInWindow: 0 })).toBe(40_000);
   });
 
-  it("uses the pace so far when the registry is slower than the budget", () => {
-    // 20 rows in 20 s is one a second: 80 more take 80 s, past the minute.
-    expect(estimateRemainingMs({ done: 20, total: 100, elapsedMs: 20_000 })).toBe(80_000);
-    // Within one minute's budget, pace alone decides.
-    expect(estimateRemainingMs({ done: 20, total: 60, elapsedMs: 2_000 })).toBe(4_000);
+  it("uses the pace alone when the rows fit the window, or the registry is slower than the budget", () => {
+    expect(estimate({ remaining: 30 })).toBe(3_000);
+    // One row a second: 80 rows take 80 s, longer than the wait for the next window.
+    expect(estimate({ activeMs: 20_000, windowOpensInMs: -20_000 })).toBe(80_000);
   });
 });
 

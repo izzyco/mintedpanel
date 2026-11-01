@@ -1,8 +1,9 @@
-// MINT-110 PR 2 — the batch check's shared rule: what a request may carry
-// (1 to 10 NPIs, the /lookup check on each).
+// MINT-110 PR 2 — the batch check's shared rules: what a request may carry
+// (1 to 10 NPIs, the /lookup check on each), and a request fits the budget.
 import { describe, expect, it } from "vitest";
 import {
   NPI_REGISTRY_BATCH_MAX,
+  NPI_REGISTRY_BATCH_PER_MINUTE,
   NPI_REGISTRY_BATCH_SIZE_MESSAGE,
   validateNpiRegistryBatch,
 } from "./npiRegistryBatch";
@@ -52,5 +53,11 @@ describe("validateNpiRegistryBatch", () => {
     });
     expect(validateNpiRegistryBatch({ npis: [good, 1234567893] })).toMatchObject({ ok: false });
     expect(validateNpiRegistryBatch({ npis: ["12345A7893"] })).toMatchObject({ ok: false });
+  });
+});
+
+describe("the batch budget", () => {
+  it("fits a whole request in one minute: the window admits a request's NPIs together, never more than its limit", () => {
+    expect(NPI_REGISTRY_BATCH_MAX).toBeLessThanOrEqual(NPI_REGISTRY_BATCH_PER_MINUTE);
   });
 });

@@ -76,26 +76,33 @@ function harness(
   return { calls, verifyBatch };
 }
 
-/** The server's budget: 60 NPIs a minute, a fixed window per user. */
-function fixedWindowServer() {
-  let windowStart = Number.NEGATIVE_INFINITY;
-  let count = 0;
-  return (npis: string[]): NpiRegistryBatchResult => {
-    const now = Date.now();
-    if (now - windowStart >= 60_000) {
-      windowStart = now;
-      count = 0;
-    }
-    if (count + npis.length > 60) {
-      throw new HttpError(429, Math.max(1, Math.ceil((windowStart + 60_000 - now) / 1000)));
-    }
-    count += npis.length;
-    return allChecked(npis);
+/** The server's budget: 60 NPIs a minute, a fixed window per user. `used`
+ * NPIs already went in a window that opened `usedAgoMs` before the run (a
+ * second tab, an earlier import, the review opened again). */
+function fixedWindowServer(used = 0, usedAgoMs = 0) {
+  let windowStart = used > 0 ? Date.now() - usedAgoMs : Number.NEGATIVE_INFINITY;
+  let count = used;
+  const server = {
+    first429At: null as number | null,
+    respond: (npis: string[]): NpiRegistryBatchResult => {
+      const now = Date.now();
+      if (now - windowStart >= 60_000) {
+        windowStart = now;
+        count = 0;
+      }
+      if (count + npis.length > 60) {
+        server.first429At ??= now;
+        throw new HttpError(429, Math.max(1, Math.ceil((windowStart + 60_000 - now) / 1000)));
+      }
+      count += npis.length;
+      return allChecked(npis);
+    },
   };
+  return server;
 }
 
 async function settle(verifier: ImportNpiVerifier): Promise<ImportNpiSnapshot> {
-  for (let i = 0; i < 1_000; i += 1) {
+  for (let i = 0; i < 5_000; i += 1) {
     const snap = verifier.getSnapshot();
     if (snap.phase === "done" || snap.phase === "stopped") return snap;
     await vi.advanceTimersByTimeAsync(100);
@@ -136,31 +143,64 @@ describe("ImportNpiVerifier", () => {
     expect(seen.at(-1)).toMatchObject({ phase: "done", done: 100 });
   });
 
-  it("against the server's window, waits out the 429 and estimates the time left honestly", async () => {
-    const h = harness(fixedWindowServer());
-    const verifier = new ImportNpiVerifier(items(100), h.verifyBatch);
-    const etas: Array<[number, number, number | null]> = [];
-    verifier.subscribe(() => {
-      const snap = verifier.getSnapshot();
-      etas.push([Date.now(), snap.done, snap.etaMs]);
+  // Against a server window like the route's, each request taking a second:
+  // the run finishes, and every time left shown lands within 5 s of when it
+  // really ended (each request's second of latency drifts the server's next
+  // window a little). Before its first 429 the browser cannot see a window
+  // that was already partly used, so with one the estimates are held to this
+  // from that 429 on; it comes within a few requests.
+  for (const { label, rows, known, used, usedAgoMs } of [
+    { label: "a fresh window, 100 rows", rows: 100, known: 0, used: 0, usedAgoMs: 0 },
+    { label: "30 used 20 s before, 100 rows", rows: 100, known: 0, used: 30, usedAgoMs: 20_000 },
+    { label: "60 used 30 s before, 100 rows", rows: 100, known: 0, used: 60, usedAgoMs: 30_000 },
+    { label: "60 used 30 s before, 200 rows", rows: 200, known: 0, used: 60, usedAgoMs: 30_000 },
+    { label: "100 of 150 already checked", rows: 150, known: 100, used: 0, usedAgoMs: 0 },
+  ]) {
+    it(`time left against the server's window: ${label}`, async () => {
+      const server = fixedWindowServer(used, usedAgoMs);
+      const h = harness(server.respond);
+      const all = items(rows);
+      const carried = new Map(
+        all.slice(0, known).map((item) => [item.npi, { status: "checked" as const, record: null }]),
+      );
+      const verifier = new ImportNpiVerifier(all, h.verifyBatch, carried);
+      const shown: Array<{ at: number; done: number; eta: number | null; phase: string }> = [];
+      verifier.subscribe(() => {
+        const snap = verifier.getSnapshot();
+        shown.push({ at: Date.now(), done: snap.done, eta: snap.etaMs, phase: snap.phase });
+      });
+      verifier.start();
+      const end = await settle(verifier);
+      expect(end).toMatchObject({ phase: "done", done: rows, checked: rows });
+      const finishedAt = Date.now();
+      if (used > 0) expect(server.first429At).not.toBeNull();
+      const held = shown.filter(
+        ({ at, eta }) => eta !== null && (used === 0 || at >= (server.first429At ?? 0)),
+      );
+      if (rows - known > 30) expect(held.length).toBeGreaterThan(0);
+      for (const { at, eta } of held) {
+        expect(Math.abs(at + (eta ?? 0) - finishedAt)).toBeLessThanOrEqual(5_000);
+      }
+      // Never frozen: a 429 wait refreshes the time left every second, so
+      // no gap is longer than one wait step plus one request (1 s each here).
+      const running = shown.filter(({ phase }) => phase === "running");
+      for (let i = 1; i < running.length; i += 1) {
+        expect(running[i].at - running[i - 1].at).toBeLessThanOrEqual(2_000);
+      }
     });
+  }
+
+  it("waits out the server's 429 and sends the refused batch again once its window has ended", async () => {
+    const server = fixedWindowServer();
+    const h = harness(server.respond);
+    const verifier = new ImportNpiVerifier(items(100), h.verifyBatch);
     verifier.start();
-    const end = await settle(verifier);
-    expect(end).toMatchObject({ phase: "done", done: 100, checked: 100 });
+    expect(await settle(verifier)).toMatchObject({ phase: "done", done: 100, checked: 100 });
     // Six answered, the seventh refused, then the same batch again once the
     // window (opened by the first answer, at 1 s) has ended.
     expect(h.calls).toHaveLength(11);
     expect(h.calls[7].npis).toEqual(h.calls[6].npis);
     expect(h.calls[7].at).toBe(61_000);
-    const finishedAt = Date.now();
-    expect(etas.filter(([, done]) => done < 20).every(([, , eta]) => eta === null)).toBe(true);
-    // Each estimate lands within a few seconds of when the run really ended.
-    for (const [at, done, eta] of etas) {
-      if (done < 20 || done === 100) continue;
-      expect(eta).not.toBeNull();
-      expect(Math.abs(at + (eta ?? 0) - finishedAt)).toBeLessThanOrEqual(5_000);
-    }
-    expect(etas.at(-1)?.[2]).toBeNull();
   });
 
   it("finishes at once when there is nothing to check", () => {

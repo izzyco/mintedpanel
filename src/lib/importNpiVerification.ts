@@ -311,27 +311,34 @@ export function importNpiCaptureAdvisories(input: {
  * handful of rows swings too much to show. */
 export const ETA_MIN_DONE = 20;
 
-/** Time left: the rows left at the registry's pace so far (time spent
- * waiting out the budget left out), or, when it is later, the minute the last
- * row can go in. The budget lets NPI_REGISTRY_BATCH_PER_MINUTE NPIs through a
- * minute (a fixed window from the first request), so past 60 rows the checks
- * wait for the next minute however fast the registry answers. Null while the
- * estimate would not be reliable — fewer than ETA_MIN_DONE rows done, or
- * nothing left. */
+/** Time left for this run's own rows (rows a previous run already checked
+ * cost no time and are not counted). Two limits, and the later wins:
+ * - the registry's pace: this run's rows over the time their requests took;
+ * - the budget: NPI_REGISTRY_BATCH_PER_MINUTE NPIs per minute-long window, so
+ *   the last row cannot go before the window it falls in opens. Windows are
+ *   counted from `windowOpensInMs` (when the current window opened, negative,
+ *   or the next one opens, from a 429's Retry-After), and `sentInWindow` NPIs
+ *   of this run already went in it.
+ * Null while the estimate would not be reliable — fewer than ETA_MIN_DONE of
+ * this run's rows done, or nothing left. */
 export function estimateRemainingMs(input: {
   done: number;
-  total: number;
-  elapsedMs: number;
-  /** Of elapsedMs, the time spent waiting out a 429. */
-  waitedMs?: number;
+  activeMs: number;
+  remaining: number;
+  windowOpensInMs: number;
+  sentInWindow: number;
 }): number | null {
-  const { done, total, elapsedMs, waitedMs = 0 } = input;
-  const remaining = total - done;
-  if (remaining <= 0 || done < ETA_MIN_DONE || elapsedMs <= 0) return null;
-  const atPace = (remaining * Math.max(0, elapsedMs - waitedMs)) / done;
-  const lastMinuteOpensIn =
-    Math.floor((total - 1) / NPI_REGISTRY_BATCH_PER_MINUTE) * 60_000 - elapsedMs;
-  return Math.ceil(Math.max(atPace, lastMinuteOpensIn));
+  const { done, activeMs, remaining, windowOpensInMs, sentInWindow } = input;
+  if (remaining <= 0 || done < ETA_MIN_DONE || activeMs <= 0) return null;
+  const msPerRow = activeMs / done;
+  // The last row's place in the windows, counted from the current one's start.
+  const lastRow = sentInWindow + remaining - 1;
+  const lastWindowOpensIn =
+    windowOpensInMs + Math.floor(lastRow / NPI_REGISTRY_BATCH_PER_MINUTE) * 60_000;
+  const rowsInLastWindow = Math.min(remaining, (lastRow % NPI_REGISTRY_BATCH_PER_MINUTE) + 1);
+  return Math.ceil(
+    Math.max(remaining * msPerRow, Math.max(0, lastWindowOpensIn) + rowsInLastWindow * msPerRow),
+  );
 }
 
 /** "A few seconds left", "About 40 seconds left", "About 2 minutes left". */

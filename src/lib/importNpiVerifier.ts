@@ -2,7 +2,8 @@
 // state machine over the batch route: it sends the rows' NPIs ten at a time,
 // one request in flight, and keeps every outcome in memory only.
 //
-// - A 429 waits out Retry-After, then sends the same batch again.
+// - A 429 waits out Retry-After, then sends the same batch again. The time
+//   left counts down through the wait, a snapshot a second.
 // - Any other failure (a 502, a dropped connection, an expired session) marks
 //   that batch "not checked"; two in a row mark everything left "not checked"
 //   and finish, rather than wait on a registry that is down.
@@ -63,9 +64,15 @@ export class ImportNpiVerifier {
   private queue: string[];
   private readonly results = new Map<string, ImportNpiOutcome>();
   private phase: ImportNpiPhase = "idle";
-  private startedAt: number | null = null;
-  /** Time spent waiting out 429s, which the time-left pace leaves out. */
-  private waitedMs = 0;
+  /** Outcomes carried over from a previous run (no time, no budget). */
+  private readonly knownCount: number;
+  /** For the time left: how long this run's answered requests took, when the
+   * server's budget window opened (or opens, after a 429), and how many of
+   * this run's NPIs went in it. Until a 429 says otherwise, the window is
+   * taken to open with the run. */
+  private activeMs = 0;
+  private windowOpensAt = 0;
+  private sentInWindow = 0;
   private readonly controller = new AbortController();
   private readonly listeners = new Set<() => void>();
   private snapshot: ImportNpiSnapshot;
@@ -82,6 +89,7 @@ export class ImportNpiVerifier {
       const outcome = known?.get(npi);
       if (outcome?.status === "checked") this.results.set(npi, outcome);
     }
+    this.knownCount = this.results.size;
     this.queue = this.npis.filter((npi) => !this.results.has(npi));
     this.snapshot = this.buildSnapshot();
   }
@@ -98,7 +106,7 @@ export class ImportNpiVerifier {
   /** Begin checking. A second call does nothing. */
   start(): void {
     if (this.phase !== "idle") return;
-    this.startedAt = Date.now();
+    this.windowOpensAt = Date.now();
     this.phase = "running";
     // Anything unexpected (a malformed answer, a bug) ends the run as "not
     // checked" instead of leaving it running with nothing scheduled.
@@ -127,12 +135,13 @@ export class ImportNpiVerifier {
       if (outcome.status === "checked" || outcome.reason !== "stopped") done += 1;
     }
     const etaMs =
-      this.phase === "running" && this.startedAt !== null
+      this.phase === "running"
         ? estimateRemainingMs({
-            done,
-            total: this.npis.length,
-            elapsedMs: Date.now() - this.startedAt,
-            waitedMs: this.waitedMs,
+            done: done - this.knownCount,
+            activeMs: this.activeMs,
+            remaining: this.npis.length - done,
+            windowOpensInMs: this.windowOpensAt - Date.now(),
+            sentInWindow: this.sentInWindow,
           })
         : null;
     return {
@@ -169,19 +178,27 @@ export class ImportNpiVerifier {
     this.emit();
     while (this.queue.length > 0) {
       const batch = this.queue.slice(0, NPI_REGISTRY_BATCH_MAX);
+      const sentAt = Date.now();
       let response: NpiRegistryBatchResult;
       try {
         response = await this.verifyBatch(batch, signal);
       } catch (error) {
         if (signal.aborted) return;
         if (readNumber(error, "status") === 429) {
+          // The budget's next window opens after Retry-After; wait it out a
+          // second at a time so the time left counts down.
           const seconds = readNumber(error, "retryAfterSeconds") ?? DEFAULT_RETRY_AFTER_SECONDS;
-          const waitFrom = Date.now();
-          await abortableSleep(Math.max(1, seconds) * 1000, signal);
+          this.windowOpensAt = Date.now() + Math.max(1, seconds) * 1000;
+          this.sentInWindow = 0;
+          while (Date.now() < this.windowOpensAt && !signal.aborted) {
+            this.emit();
+            await abortableSleep(Math.min(1_000, this.windowOpensAt - Date.now()), signal);
+          }
           if (signal.aborted) return;
-          this.waitedMs += Date.now() - waitFrom;
           continue;
         }
+        this.activeMs += Date.now() - sentAt;
+        this.sentInWindow += batch.length;
         // The same words the provider forms use for a failed call.
         const message = npiRegistryErrorMessage(error);
         failures += 1;
@@ -197,6 +214,8 @@ export class ImportNpiVerifier {
         continue;
       }
       if (signal.aborted) return;
+      this.activeMs += Date.now() - sentAt;
+      this.sentInWindow += batch.length;
       failures = 0;
       const byNpi = new Map(response.results.map((result) => [result.npi, result]));
       for (const npi of batch) {
