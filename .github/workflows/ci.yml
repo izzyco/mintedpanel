@@ -393,8 +393,8 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-workflow-advisories.sql
 
       # MINT-136 roster "Export anyway": an override needs no typed reason and
-      # stores none, its other guards hold, and the advisory's rule and field
-      # are closed vocabularies. Rollback-only; any failed check raises.
+      # stores none, its other guards hold, and the advisory records the
+      # mapping and row count. Rollback-only; any failed check raises.
       - name: Run MINT-136 roster Export anyway SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint136-roster-export-anyway.sql
 

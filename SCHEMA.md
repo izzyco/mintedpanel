@@ -681,11 +681,9 @@ index `workflow_advisories_one_open_job_row` keeps one open job row per
 `(org_id, check_key, record_table, record_id)`. RLS on with no policies;
 service_role has SELECT and nothing else.
 
-`context` holds declared facts only. Its 18 keys are a closed list, kept in
-`private.workflow_advisory_context_valid` (latest definition:
-`20261101150000_mint136_roster_export_anyway.sql`) and mirrored by
-`CONTEXT_KEYS` in `src/lib/advisoryChecks.ts`; any other key is refused, and
-one context holds at most 16. Each key has one kind:
+`context` holds declared facts only. Its 16 keys are a closed list, kept in
+`private.workflow_advisory_context_valid` and mirrored by `CONTEXT_KEYS` in
+`src/lib/advisoryChecks.ts`; any other key is refused. Each key has one kind:
 
 - **count:** an integer from 0 to the key's own bound: `line` 100000, `count`
   9999, `earlier_open_count` and `step_order` 99, `removed_count` 20,
@@ -696,11 +694,8 @@ one context holds at most 16. Each key has one kind:
   check that each one names an existing record of the org; a payer or SOP
   template may be a global catalog row.
 - **token / tokens:** a value, or a set of up to 20, from the key's closed
-  vocabulary (`attributes`, `case_type`, `column`, `field`, `layer`, `rule`,
-  `surface`). There are no open tokens. `rule` and `field` (MINT-136) are a
-  roster override's overrideable rule code and its field key with `.` spelled
-  `_` (`src/lib/rosterOverrideAdvisory.ts`); `roster_export.override` records
-  them with the roster's row count under `count`.
+  vocabulary (`attributes`, `case_type`, `column`, `layer`, `surface`). There
+  are no open tokens.
 
 A set is sorted in byte order with no repeats, so its order carries nothing.
 No field, check key included, accepts text, an arbitrary number or an

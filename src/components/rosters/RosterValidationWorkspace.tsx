@@ -68,7 +68,7 @@ export function RosterValidationWorkspace({ detail }: { detail: RosterMappingDet
     [preview?.rows],
   );
   // MINT-136: one click, "Export anyway", with no typed reason. The server
-  // records the override and the bypassed check (rule and field). A
+  // records the override (its rule and field) and the bypassed check. A
   // non-overrideable error has no button and keeps export blocked.
   const canOverride = Boolean(
     canWrite &&

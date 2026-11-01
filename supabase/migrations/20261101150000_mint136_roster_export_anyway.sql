@@ -1,9 +1,9 @@
 -- MINT-136 roster "Export anyway": an overrideable roster-validation hard
 -- error is overridden with one click, with no typed reason, and the click is
--- recorded in MINT-134's workflow advisories with its rule and field
--- (Sowmya, Nov 1 2026, Addendum 9, U7). Non-overrideable errors stay hard:
--- the file goes to a payer and must be accurate. That rule lives in the app
--- (validation.exportable) and is unchanged here.
+-- recorded with its rule and field (Sowmya, Nov 1 2026, Addendum 9, U7).
+-- Non-overrideable errors stay hard: the file goes to a payer and must be
+-- accurate. That rule lives in the app (validation.exportable) and is
+-- unchanged here.
 --
 -- 1. roster_export_overrides.reason becomes nullable and loses its CHECK of
 --    at least 20 characters (20260925203025, the inline CHECK on reason).
@@ -18,28 +18,17 @@
 --    the override; what it sends is dropped. The app stops sending it. Every
 --    other check (writer membership, revision, fingerprint) and the audit_log
 --    row are unchanged. Same signature, owner and grants (service_role only).
--- 3. private.workflow_advisory_context_valid gains two declared context keys
---    for roster_export.override, both closed vocabularies:
---      rule   the overrideable rule codes of src/lib/rosterValidation.ts.
---      field  the field keys those rules name, with "." spelled "_": every
---             column key of the seeded payer templates
---             (roster_engine_seed_templates) and the source fields the row
---             checks name (provider.npi is provider_npi).
---    The row count goes under #568's existing count key (bound 9999; a
---    roster holds at most 5,000 rows). The body is #568's, verbatim, with
---    the two VALUES rows added in key order; src/lib/advisoryChecks.contract.test.ts
---    reads this, the latest definition, and checks that nothing else
---    changed. A field key outside the list (a template added later) is left
---    out of the row by the app, never sent as text. A later check key or
---    vocabulary value is again a migration that replaces this function with
---    the union of every key so far.
 --
--- No PHI: a rule code and a field key name a check and a column, never a
--- value. The record is the roster mapping (record_table roster_mappings,
--- already in #568's set).
+-- The override row keeps its rule_code and field_key, as before. The bypass
+-- also goes to MINT-134's workflow advisories (roster_export.override on the
+-- roster mapping, with the roster's row count under #568's existing count
+-- key); that needs no SQL here. The closed rule_code and field_key context
+-- vocabulary for that key belongs to the shared #568 registry PR, which
+-- replaces private.workflow_advisory_context_valid once for every key: this
+-- migration does not touch it.
 --
--- Order: after 20261101090000_mint134_workflow_advisories.sql, which creates
--- the validator and the ledger. Apply this migration BEFORE deploying the app
+-- Order: any time after 20260925203025_wp13_roster_engine_tables.sql; it
+-- needs nothing from #568. Apply this migration BEFORE deploying the app
 -- that stops sending a reason: the old function refuses a missing or short
 -- reason (roster_override_reason_too_short), so until this is applied an
 -- override from the new app fails with a 422 and nothing is recorded.
@@ -62,10 +51,6 @@
 --          has_function_privilege('service_role',
 --            'public.roster_engine_record_override(uuid, uuid, uuid, integer, text, text, text, text, text)', 'EXECUTE');
 --     -> false | true
---   SELECT private.workflow_advisory_context_valid(
---            '{"rule": "facility_zip_plus_4_invalid", "field": "facility_zip", "count": 12}'),
---          private.workflow_advisory_context_valid('{"rule": "jane_smith"}');
---     -> true | false
 --   The behavioural packet, supabase/tests/mint136-roster-export-anyway.sql,
 --   needs a superuser and runs only in CI's disposable database, never hosted.
 
@@ -97,7 +82,7 @@ $$;
 ALTER TABLE public.roster_export_overrides ALTER COLUMN reason DROP NOT NULL;
 
 COMMENT ON COLUMN public.roster_export_overrides.reason IS
-  'Legacy typed reason (at least 20 characters) for overrides recorded before MINT-136. NULL for every override since: "Export anyway" takes no typed text, and the bypass is recorded in workflow_advisories (roster_export.override) with its rule and field.';
+  'Legacy typed reason (at least 20 characters) for overrides recorded before MINT-136. NULL for every override since: "Export anyway" takes no typed text. The row keeps its rule_code and field_key, and the bypass is also recorded in workflow_advisories (roster_export.override).';
 
 -- ---------------------------------------------------------------------------
 -- 2. The override RPC: no reason required, none stored. The body is
@@ -144,127 +129,5 @@ GRANT EXECUTE ON FUNCTION public.roster_engine_record_override(uuid, uuid, uuid,
 
 COMMENT ON FUNCTION public.roster_engine_record_override(uuid, uuid, uuid, integer, text, text, text, text, text) IS
   'Records one roster validation override ("Export anyway", MINT-136) for an admin or specialist, bound to the mapping revision and the current source fingerprint, with an audit_log row. Takes no typed reason: p_reason is accepted for older callers and never stored (reason is NULL). service_role only.';
-
--- ---------------------------------------------------------------------------
--- 3. The context validator: #568's body with the rule and field rows added.
---    CREATE OR REPLACE, as #568 does: the table CHECK depends on it. Rows
---    already stored stay valid, since a key is only added.
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION private.workflow_advisory_context_valid(p_context jsonb)
-RETURNS boolean
-LANGUAGE plpgsql
-IMMUTABLE
-PARALLEL SAFE
-SET search_path = ''
-AS $function$
-DECLARE
-  v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
-  v_key text;
-  v_value jsonb;
-  v_type text;
-  v_kind text;
-  v_max integer;
-  v_allowed text[];
-  v_number numeric;
-  v_keys integer := 0;
-  v_capacity numeric := 1;
-BEGIN
-  IF p_context IS NULL OR pg_catalog.jsonb_typeof(p_context) <> 'object' THEN
-    RETURN false;
-  END IF;
-  FOR v_key, v_value IN SELECT e.key, e.value FROM pg_catalog.jsonb_each(p_context) AS e LOOP
-    v_keys := v_keys + 1;
-    IF v_keys > 16 THEN
-      RETURN false;
-    END IF;
-
-    -- A key that isn't declared is refused, whatever its value.
-    SELECT d.kind, d.max_value, d.allowed
-      INTO v_kind, v_max, v_allowed
-      FROM (VALUES
-        ('attributes', 'tokens', NULL, ARRAY['caqh_id', 'caqh_attested', 'npi', 'dob', 'ssn_last4']),
-        ('case_type', 'token', NULL, ARRAY['contract', 'enrollment', 'recredentialing']),
-        ('column', 'token', NULL, ARRAY['npi', 'npi_type2', 'group_npi', 'phone', 'fax', 'appointment_phone', 'billing_phone', 'billing_fax', 'corr_phone', 'corr_fax', 'cred_phone', 'cred_fax']),
-        ('count', 'count', 9999, NULL),
-        ('earlier_open_count', 'count', 99, NULL),
-        ('facility_ids', 'ids', NULL, NULL),
-        ('field', 'token', NULL, ARRAY['address_1', 'city', 'dob', 'facility_city', 'facility_state',
-                                       'facility_street', 'facility_zip', 'first_name', 'group_name', 'group_npi',
-                                       'individual_npi', 'last_name', 'license_expiration', 'license_license_number', 'license_number',
-                                       'location_name', 'npi', 'phone', 'practice_name', 'provider_npi',
-                                       'state', 'taxonomy', 'tin', 'zip_plus_4']),
-        ('import_run_id', 'id', NULL, NULL),
-        ('layer', 'token', NULL, ARRAY['platform', 'org']),
-        ('line', 'count', 100000, NULL),
-        ('payer_id', 'id', NULL, NULL),
-        ('recipient_id', 'id', NULL, NULL),
-        ('removed_count', 'count', 20, NULL),
-        ('rule', 'token', NULL, ARRAY['active_state_license_missing', 'date_invalid', 'facility_city_missing',
-                                      'facility_state_missing', 'facility_street_missing', 'facility_zip_plus_4_invalid',
-                                      'npi_invalid', 'phone_invalid', 'provider_npi_invalid',
-                                      'required_value_missing']),
-        ('step_order', 'count', 99, NULL),
-        ('step_position', 'count', 10, NULL),
-        ('surface', 'token', NULL, ARRAY['add_provider', 'roster_form', 'record_edit', 'import']),
-        ('template_ids', 'ids', NULL, NULL)
-      ) AS d(context_key, kind, max_value, allowed)
-     WHERE d.context_key = v_key;
-    IF NOT FOUND THEN
-      RETURN false;
-    END IF;
-
-    -- Each branch tests the JSON type before anything that needs it (a
-    -- numeric cast, an array length), so no value makes the validator error.
-    v_type := pg_catalog.jsonb_typeof(v_value);
-    IF v_kind = 'flag' THEN
-      IF v_type <> 'boolean' THEN
-        RETURN false;
-      END IF;
-    ELSIF v_kind = 'count' THEN
-      IF v_type <> 'number' THEN
-        RETURN false;
-      END IF;
-      v_number := (v_value #>> '{}')::numeric;
-      IF v_number < 0 OR v_number <> pg_catalog.trunc(v_number) OR v_number > v_max THEN
-        RETURN false;
-      END IF;
-      v_capacity := v_capacity * (v_max + 1);
-    ELSIF v_kind = 'id' THEN
-      IF v_type <> 'string' THEN
-        RETURN false;
-      END IF;
-      IF (v_value #>> '{}') !~ v_uuid THEN
-        RETURN false;
-      END IF;
-    ELSIF v_kind = 'ids' THEN
-      IF NOT private.workflow_advisory_context_set_valid(v_value, NULL) THEN
-        RETURN false;
-      END IF;
-    ELSIF v_kind = 'token' THEN
-      IF v_type <> 'string' THEN
-        RETURN false;
-      END IF;
-      IF NOT ((v_value #>> '{}') = ANY (v_allowed)) THEN
-        RETURN false;
-      END IF;
-    ELSIF v_kind = 'tokens' THEN
-      IF NOT private.workflow_advisory_context_set_valid(v_value, v_allowed) THEN
-        RETURN false;
-      END IF;
-    ELSE
-      RETURN false;
-    END IF;
-  END LOOP;
-
-  -- No context may carry a 7-digit number or longer split across its counts.
-  RETURN v_capacity < 10000000;
-END;
-$function$;
-
-REVOKE ALL ON FUNCTION private.workflow_advisory_context_valid(jsonb)
-  FROM PUBLIC, anon, authenticated, service_role;
-
-COMMENT ON FUNCTION private.workflow_advisory_context_valid(jsonb) IS
-  'MINT-134, MINT-136: a workflow advisory context is a flat object of at most 16 declared keys (the closed list in this function, mirrored by CONTEXT_KEYS in src/lib/advisoryChecks.ts). count: an integer 0 to the key''s bound; id/ids: a lowercase UUID or a set of up to 20; token/tokens: a value or a set of up to 20 from the key''s closed vocabulary; flag: a boolean. The bounds of the count keys present multiply to under 10,000,000. MINT-136 added rule and field (roster_export.override).';
 
 NOTIFY pgrst, 'reload schema';

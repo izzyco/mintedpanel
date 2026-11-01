@@ -1,8 +1,10 @@
 -- MINT-136 roster "Export anyway" packet: an override needs no typed reason
 -- and stores none, every other override guard still holds, existing rows
--- keep their reason, and the bypass is recorded in the workflow advisories
--- with its rule and field as closed vocabularies
+-- keep their reason, and the bypass records in the workflow advisories as
+-- roster_export.override on the mapping with the row count
 -- (supabase/migrations/20261101150000_mint136_roster_export_anyway.sql).
+-- The closed rule_code and field_key context vocabulary is the shared #568
+-- registry PR's, and its packet covers it.
 --
 -- Run after all migrations in a disposable PostgreSQL database, never against
 -- hosted. CI's Migration dry-run job runs it after the MINT-134 packet:
@@ -15,11 +17,6 @@
 -- from the auth schema. pg_temp.m136_call runs one statement as a role and
 -- returns 'ok:<value>' or '<SQLSTATE>:<message>'; a failure rolls only its
 -- own block back.
---
--- The context cases between the context-cases markers are also read by
--- src/lib/rosterOverrideAdvisory.test.ts, which runs each through the
--- TypeScript validator: the SQL and the code accept and refuse the same
--- roster contexts.
 \set ON_ERROR_STOP on
 \set QUIET on
 \pset format unaligned
@@ -42,20 +39,16 @@ BEGIN
   IF to_regprocedure('public.roster_engine_record_override(uuid, uuid, uuid, integer, text, text, text, text, text)') IS NULL
      OR to_regprocedure('public.roster_engine_build_source(uuid, uuid)') IS NULL
      OR to_regprocedure('public.record_workflow_advisory(uuid, text, text, text, uuid, text, jsonb, uuid)') IS NULL
-     OR to_regprocedure('private.workflow_advisory_context_valid(jsonb)') IS NULL
-     OR NOT private.workflow_advisory_context_valid('{"rule": "npi_invalid"}') THEN
-    RAISE EXCEPTION 'mint136-roster-export-anyway.sql runs after supabase/migrations/20261101150000_mint136_roster_export_anyway.sql';
+     OR (SELECT a.attnotnull FROM pg_catalog.pg_attribute AS a
+          WHERE a.attrelid = 'public.roster_export_overrides'::regclass
+            AND a.attname = 'reason') THEN
+    RAISE EXCEPTION 'mint136-roster-export-anyway.sql runs after supabase/migrations/20261101150000_mint136_roster_export_anyway.sql (and 20261101090000_mint134_workflow_advisories.sql)';
   END IF;
 END;
 $$;
 
 CREATE TEMP TABLE m136_results (name text PRIMARY KEY, passed boolean NOT NULL);
 CREATE TEMP TABLE m136_calls (name text PRIMARY KEY, result text NOT NULL);
-CREATE TEMP TABLE m136_context_cases (
-  label text PRIMARY KEY,
-  expect_valid boolean NOT NULL,
-  context text NOT NULL
-);
 
 CREATE FUNCTION pg_temp.m136_mark(p_name text, p_passed boolean) RETURNS void
 LANGUAGE sql AS $$
@@ -309,32 +302,25 @@ SELECT pg_temp.m136_mark('a_legacy_reason_is_kept',
 
 -- ---------------------------------------------------------------------------
 -- The bypass in the workflow advisories: roster_export.override on the
--- mapping, from the /api route (service_role names the actor), with the rule,
--- the field token and the row count.
+-- mapping, from the /api route (service_role names the actor), with the
+-- roster's row count, as src/server/rosterRoutes.ts records it.
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.m136_run('advisory_with_rule_field_and_count', 'service_role',
+SELECT pg_temp.m136_run('advisory_with_the_row_count', 'service_role',
   $$SELECT public.record_workflow_advisory(
       '13600000-0000-4000-a000-00000000000a', 'roster_export.override', 'advisory',
       'roster_mappings', '13600000-0000-4000-a000-0000000a0009', 'api',
-      '{"rule": "facility_zip_plus_4_invalid", "field": "facility_zip", "count": 1}'::jsonb,
-      '13600000-0000-4000-a000-000000000001')$$);
-SELECT pg_temp.m136_run('advisory_with_a_dotted_field', 'service_role',
+      '{"count": 1}'::jsonb, '13600000-0000-4000-a000-000000000001')$$);
+SELECT pg_temp.m136_run('advisory_with_a_typed_reason', 'service_role',
   $$SELECT public.record_workflow_advisory(
       '13600000-0000-4000-a000-00000000000a', 'roster_export.override', 'advisory',
       'roster_mappings', '13600000-0000-4000-a000-0000000a0009', 'api',
-      '{"rule": "facility_zip_plus_4_invalid", "field": "facility.zip", "count": 1}'::jsonb,
-      '13600000-0000-4000-a000-000000000001')$$);
-SELECT pg_temp.m136_run('advisory_with_an_unknown_rule', 'service_role',
-  $$SELECT public.record_workflow_advisory(
-      '13600000-0000-4000-a000-00000000000a', 'roster_export.override', 'advisory',
-      'roster_mappings', '13600000-0000-4000-a000-0000000a0009', 'api',
-      '{"rule": "ZIP_PLUS_4_REQUIRED", "count": 1}'::jsonb,
+      '{"count": 1, "reason": "payer confirmed by phone"}'::jsonb,
       '13600000-0000-4000-a000-000000000001')$$);
 
-SELECT pg_temp.m136_mark('the_advisory_records_the_rule_field_and_count',
+SELECT pg_temp.m136_mark('the_advisory_records_the_mapping_and_row_count',
   EXISTS (
     SELECT 1 FROM public.workflow_advisories
-     WHERE id = pg_temp.m136_ok_id('advisory_with_rule_field_and_count')
+     WHERE id = pg_temp.m136_ok_id('advisory_with_the_row_count')
        AND org_id = '13600000-0000-4000-a000-00000000000a'
        AND check_key = 'roster_export.override'
        AND severity_at_time = 'advisory'
@@ -343,48 +329,12 @@ SELECT pg_temp.m136_mark('the_advisory_records_the_rule_field_and_count',
        AND actor_id = '13600000-0000-4000-a000-000000000001'
        AND actor_role = 'specialist'
        AND source = 'api'
-       AND context = '{"rule": "facility_zip_plus_4_invalid", "field": "facility_zip", "count": 1}'::jsonb));
-SELECT pg_temp.m136_mark('a_field_key_with_its_dot_is_refused',
-  pg_temp.m136_result('advisory_with_a_dotted_field') = '22023:workflow_advisory_context_invalid');
-SELECT pg_temp.m136_mark('a_rule_outside_the_vocabulary_is_refused',
-  pg_temp.m136_result('advisory_with_an_unknown_rule') = '22023:workflow_advisory_context_invalid');
+       AND context = '{"count": 1}'::jsonb));
+SELECT pg_temp.m136_mark('a_typed_reason_cannot_ride_along_in_the_context',
+  pg_temp.m136_result('advisory_with_a_typed_reason') = '22023:workflow_advisory_context_invalid');
 SELECT pg_temp.m136_mark('only_the_accepted_advisory_was_written',
   (SELECT count(*) = 1 FROM public.workflow_advisories
     WHERE org_id = '13600000-0000-4000-a000-00000000000a'));
-
--- ---------------------------------------------------------------------------
--- The validator's roster cases. A rule or field is a listed token only: a
--- field key keeps its dot out, a value or a name is refused, the row count is
--- bounded.
--- ---------------------------------------------------------------------------
--- context-cases:begin
-INSERT INTO pg_temp.m136_context_cases (label, expect_valid, context) VALUES
-  ('a_rule_a_field_and_a_row_count', true, '{"rule": "required_value_missing", "field": "first_name", "count": 12}'),
-  ('the_largest_roster', true, '{"rule": "npi_invalid", "field": "npi", "count": 5000}'),
-  ('a_rule_alone', true, '{"rule": "date_invalid"}'),
-  ('a_field_alone', true, '{"field": "zip_plus_4"}'),
-  ('a_source_field_spelled_with_an_underscore', true, '{"rule": "provider_npi_invalid", "field": "provider_npi", "count": 1}'),
-  ('the_license_source_field', true, '{"rule": "active_state_license_missing", "field": "license_license_number"}'),
-  ('every_facility_rule_field', true, '{"rule": "facility_street_missing", "field": "facility_street"}'),
-  ('a_roster_field_beside_the_mint134_keys', true, '{"rule": "phone_invalid", "field": "phone", "count": 3, "surface": "roster_form"}'),
-  ('a_field_key_with_its_dot', false, '{"field": "provider.npi"}'),
-  ('a_template_column_outside_the_seed', false, '{"field": "practice_zip"}'),
-  ('a_rule_in_capitals', false, '{"rule": "ZIP_PLUS_4_REQUIRED"}'),
-  ('a_rule_that_cannot_be_overridden', false, '{"rule": "ssn_last4_invalid"}'),
-  ('a_scope_rule', false, '{"rule": "roster_scope_empty"}'),
-  ('a_name_as_a_rule', false, '{"rule": "jane_smith"}'),
-  ('an_npi_as_a_field', false, '{"field": "n1234567893"}'),
-  ('a_value_as_a_field', false, '{"field": "12345-6789"}'),
-  ('a_rule_and_field_swapped', false, '{"rule": "zip_plus_4", "field": "npi_invalid"}'),
-  ('a_rule_set_under_a_token_key', false, '{"rule": ["npi_invalid"]}'),
-  ('a_number_as_a_rule', false, '{"rule": 12}'),
-  ('a_row_count_past_its_bound', false, '{"rule": "npi_invalid", "count": 10000}'),
-  ('a_typed_reason', false, '{"rule": "npi_invalid", "reason": "payer confirmed by phone"}');
--- context-cases:end
-
-SELECT pg_temp.m136_mark('context_validator_' || label,
-  private.workflow_advisory_context_valid(context::jsonb) = expect_valid)
-  FROM pg_temp.m136_context_cases;
 
 -- ---------------------------------------------------------------------------
 -- Report.

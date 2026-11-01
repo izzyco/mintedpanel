@@ -18,7 +18,6 @@ import {
 } from "@/services/rosterEngineData";
 import { evaluateRosterSource } from "@/lib/rosterValidation";
 import { isRosterSourceCompatibleWithTarget } from "@/lib/rosterTransforms";
-import { rosterOverrideContext } from "@/lib/rosterOverrideAdvisory";
 import { serializeRosterFile } from "@/lib/rosterSpreadsheet";
 import { recordServerAdvisory } from "./advisories";
 import { fail, ok } from "./envelope";
@@ -393,9 +392,11 @@ export function handleRosterValidation(id: string, ctx: AuthContext): Promise<Re
 
 // MINT-136 "Export anyway": one click, no typed reason. A reason an older
 // client still sends is ignored, so no free text reaches the ledger. The
-// override is recorded, then the bypass goes to the workflow advisories
-// (roster_export.override: the mapping, the rule, the field and the row
-// count). The advisory helper never throws, so the override stands either way.
+// override (with its rule code and field key) is recorded, then the bypass
+// goes to the workflow advisories (roster_export.override: the mapping and
+// the row count; rule_code and field_key join it once the shared #568
+// registry PR declares them). The advisory helper never throws, so the
+// override stands either way.
 export function handleSaveRosterOverride(
   id: string,
   body: unknown,
@@ -445,7 +446,7 @@ export function handleSaveRosterOverride(
         "api",
         "roster_export.override",
         { table: "roster_mappings", id },
-        rosterOverrideContext(issue.ruleCode, issue.fieldKey, result.validation.rowCount),
+        { count: result.validation.rowCount },
       );
       return override;
     },

@@ -353,15 +353,15 @@ describe("roster API route governance", () => {
       MAPPING_ID,
       overrideInput,
     );
-    // MINT-136: the bypass goes to the workflow advisories with its rule, its
-    // field (as a closed token) and the roster's row count, after the save.
+    // MINT-136: the bypass goes to the workflow advisories on the mapping,
+    // with the roster's row count, after the save.
     expect(recordServerAdvisory).toHaveBeenCalledTimes(1);
     expect(recordServerAdvisory).toHaveBeenCalledWith(
       caller,
       "api",
       "roster_export.override",
       { table: "roster_mappings", id: MAPPING_ID },
-      { rule: "provider_npi_invalid", field: "provider_npi", count: 1 },
+      { count: 1 },
     );
     expect(vi.mocked(recordRosterOverride).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(recordServerAdvisory).mock.invocationCallOrder[0] ?? 0,

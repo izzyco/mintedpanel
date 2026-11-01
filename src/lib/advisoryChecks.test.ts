@@ -168,13 +168,8 @@ describe("check registry contract", () => {
 describe("context key vocabulary", () => {
   const entries = Object.entries(CONTEXT_KEYS) as [string, ContextKeyKind][];
 
-  // MINT-136's rule and field took the registry past one context's 16 keys.
-  // What binds is each check's own list, which pickDeclared never exceeds.
-  it("declares no check with more keys than one context may hold", () => {
-    expect(entries.length).toBeGreaterThan(0);
-    expect(Math.max(...DEFINITIONS.map(([, def]) => def.contextKeys.length))).toBeLessThanOrEqual(
-      CONTEXT_MAX_KEYS,
-    );
+  it("declares at most as many keys as one context may hold", () => {
+    expect(entries.length).toBeLessThanOrEqual(CONTEXT_MAX_KEYS);
   });
 
   it.each(entries)("%s: name and kind agree", (key, def) => {
@@ -376,14 +371,12 @@ describe("pickDeclared, the second wall", () => {
       count: 3,
       earlier_open_count: 1,
       facility_ids: [UUID_A],
-      field: "provider_npi",
       import_run_id: UUID_B,
       layer: "org",
       line: 12,
       payer_id: UUID_A,
       recipient_id: UUID_A,
       removed_count: 1,
-      rule: "provider_npi_invalid",
       step_order: 2,
       step_position: 2,
       surface: "record_edit",
@@ -392,7 +385,7 @@ describe("pickDeclared, the second wall", () => {
       provider_name: "jane",
       dob: "1961-04-12",
       problem: "n1_2_3_4_5_6_7_8_9_3",
-      reason: "payer confirmed by phone",
+      rule: "jane_smith",
     };
     const picked = pickDeclared(def, everything);
     expect(Object.keys(picked).sort()).toEqual([...def.contextKeys].sort());
