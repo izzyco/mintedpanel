@@ -33,7 +33,8 @@ export function isValidUsPhone(value: string): boolean {
 // Business policy is configuration: each field below holds Sowmya's decision
 // of Oct 31, 2026 (MINT-91 Addendum 8) as its default. A stored phone the user
 // didn't touch is never re-checked (A4); a NEW import row with an invalid phone
-// is created without the phone and warned about, not blocked (A5). A platform
+// takes a valid phone from the same record's other rows in the file, else is
+// created without the phone, and is warned about, not blocked (A5). A platform
 // override, then an organization override, may change a field
 // (resolvePhoneValidationRules). Nothing stores an override yet, so every
 // caller resolves to the defaults (usePhoneValidationRules); the setting
@@ -43,9 +44,10 @@ export function isValidUsPhone(value: string): boolean {
 // setting (A3): the resolver reads only the fields below, and
 // validatePhoneValidationRules rejects anything that names the format.
 
-/** What an import does with a NEW provider, group or facility row whose phone
- * fails isValidUsPhone. A row that matches an existing record never writes its
- * phone, so it is never affected. */
+/** What an import does with a NEW provider, group or facility whose phone
+ * fails isValidUsPhone and no row of the same record in the file has a valid
+ * one (a valid one is always used first). A row that matches an existing
+ * record never writes its phone, so it is never affected. */
 export const IMPORT_INVALID_PHONE_RULES = ["create_without_phone", "block_row"] as const;
 export type ImportInvalidPhoneRule = (typeof IMPORT_INVALID_PHONE_RULES)[number];
 
@@ -56,10 +58,12 @@ export interface PhoneValidationRules {
    * flows check every entered phone either way, and the onboarding progress
    * check never re-checks one. */
   recheckStoredOnEdit: boolean;
-  /** "create_without_phone" (default): the record is created with that phone
-   * left blank, and a warning naming the column shows on the row in the import
-   * review and in the run's report. "block_row": the row is not committed,
-   * and neither are that record's other rows in the file. */
+  /** Applies only when the record's phone isn't a US number and no row of the
+   * same record in the file has a valid one; a valid one is used first under
+   * either value. "create_without_phone" (default): the record is created with
+   * that phone left blank, and a warning naming the column shows on the row in
+   * the import review and in the run's report. "block_row": none of the
+   * record's rows is committed. */
   importInvalidPhone: ImportInvalidPhoneRule;
 }
 

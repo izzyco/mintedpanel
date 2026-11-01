@@ -375,10 +375,26 @@ describe("error report assembly", () => {
       { line: 12, column: "npi", reason: 'NPI must be exactly 10 digits, got "999"' },
       { line: 30, column: null, reason: "Row has 21 values but the header row has 20 columns" },
     ]);
-    expect(rows[0]).toEqual(["row", "column", "reason"]);
-    expect(rows[1]).toEqual([12, "npi", 'NPI must be exactly 10 digits, got "999"']);
+    expect(rows[0]).toEqual(["row", "column", "reason", "severity"]);
+    expect(rows[1]).toEqual([12, "npi", 'NPI must be exactly 10 digits, got "999"', "error"]);
     expect(rows[2][1]).toBe(""); // null column renders empty
     expect(toCsv(rows)).toContain('"NPI must be exactly 10 digits, got ""999"""');
+  });
+
+  it("marks a warning apart from an error in the severity column (MINT-91)", () => {
+    const rows = errorReportCsvRows([
+      { line: 4, column: "group_tin", reason: "group_tin is required" },
+      {
+        line: 7,
+        column: "phone",
+        reason: "Warning: Phone isn't a US number, so it was left blank.",
+        severity: "warning",
+      },
+    ]);
+    expect(rows.slice(1).map((r) => [r[0], r[3]])).toEqual([
+      [4, "error"],
+      [7, "warning"],
+    ]);
   });
 });
 

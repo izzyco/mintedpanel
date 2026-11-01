@@ -136,6 +136,36 @@ describe("provider import — invalid first-row phone", () => {
     expect(creates(validFirst)[0].notes.join(" ")).toMatch(/phone.*first row's values are used/);
   });
 
+  it("fills a blank first phone from a later row's valid one, noting it (no warning)", () => {
+    const out = providers([providerRow(2, NEW_NPI, null), providerRow(3, NEW_NPI, "910-555-0100")]);
+    expect(plannedPhone(out)).toEqual(["910-555-0100"]);
+    const [create] = creates(out);
+    expect(create.warnings).toBeUndefined();
+    expect(create.notes).toContain(
+      `Row 2 lists no phone for NPI ${NEW_NPI} — row 3's phone is used`,
+    );
+    expect(create.notes.some((n) => /phone/.test(n) && /first row's values/.test(n))).toBe(false);
+    // Under block_row too: nothing invalid is written, so nothing is blocked.
+    expect(
+      plannedPhone(
+        providers([providerRow(2, NEW_NPI, null), providerRow(3, NEW_NPI, "910-555-0100")], BLOCK),
+      ),
+    ).toEqual(["910-555-0100"]);
+  });
+
+  it("keeps a blank first phone blank when the later rows only hold invalid ones", () => {
+    const out = providers(
+      [providerRow(2, NEW_NPI, null), providerRow(3, NEW_NPI, "abc-def-ghij")],
+      BLOCK,
+    );
+    expect(out.map((d) => d.kind)).toEqual(["create"]);
+    expect(plannedPhone(out)).toEqual([null]);
+    expect(creates(out)[0].warnings).toBeUndefined();
+    expect(creates(out)[0].notes).toContain(
+      `Row 3's phone for NPI ${NEW_NPI} isn't a US number, so it isn't used`,
+    );
+  });
+
   it("leaves a blank or valid phone, and an EXISTING provider's row, untouched", () => {
     for (const phone of [null, "+1 (910) 555-0100"]) {
       const out = providers([providerRow(2, NEW_NPI, phone)]);
@@ -233,6 +263,16 @@ describe("group import — invalid phone", () => {
     expect(result.skips.map((s) => s.line)).toEqual([3]);
   });
 
+  it("fills a blank block phone from a later row with the same TIN", () => {
+    const result = groups([
+      groupRow(2, "555001234", { billing_phone: null }),
+      groupRow(3, "555001234", { billing_phone: "919-555-0100" }),
+    ]);
+    expect(result.creates[0].mapped.billing_phone).toBe("919-555-0100");
+    expect(result.creates[0].warnings).toBeUndefined();
+    expect(result.creates[0].notes).toEqual(["Row 2 lists no billing phone — row 3's is used"]);
+  });
+
   it("never touches an EXISTING group (matched by TIN)", () => {
     const result = groups([groupRow(2, GROUP1.tin, { billing_phone: "abc-def-ghij" })], BLOCK);
     expect(result.skips).toHaveLength(1);
@@ -314,6 +354,15 @@ describe("facility import — invalid phone", () => {
     ]);
     expect(result.creates[0].mapped.phone).toBe("910-555-0123");
     expect(result.creates[0].warnings?.[0]).toMatchObject({ leftBlank: false });
+  });
+
+  it("fills a blank phone from a later row for the same facility", () => {
+    const result = run([
+      row(2, { ...base, phone: null }),
+      row(3, { ...base, phone: "910-555-0123" }),
+    ]);
+    expect(result.creates[0].mapped.phone).toBe("910-555-0123");
+    expect(result.creates[0].warnings).toBeUndefined();
   });
 
   it("block_row: blocks the record and its repeat; an EXISTING facility is still skipped", () => {

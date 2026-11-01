@@ -343,6 +343,8 @@ export interface RowErrorRecord {
   line: number;
   column: string | null;
   reason: string;
+  /** MINT-91: "warning" for a value left out of a created record. */
+  severity?: "warning";
 }
 
 /** The compact (row, column, reason) list — persisted on the run row as
@@ -353,9 +355,14 @@ export function collectRowErrors(rows: readonly ScannedRow[]): RowErrorRecord[] 
     .map((r) => ({ line: r.line, column: r.errorColumn, reason: r.errorReason ?? "" }));
 }
 
-/** The downloadable error report (F3.0.4): one header row + one row per error. */
+/** The downloadable error report (F3.0.4): one header row + one row per
+ * entry. `severity` tells an error (the row was not imported) from a warning
+ * (MINT-91: a value left out of a record that was created). */
 export function errorReportCsvRows(errors: readonly RowErrorRecord[]): CsvCell[][] {
-  return [["row", "column", "reason"], ...errors.map((e) => [e.line, e.column ?? "", e.reason])];
+  return [
+    ["row", "column", "reason", "severity"],
+    ...errors.map((e) => [e.line, e.column ?? "", e.reason, e.severity ?? "error"]),
+  ];
 }
 
 /** The file's real (non-blank) header order — the gate is order-insensitive,

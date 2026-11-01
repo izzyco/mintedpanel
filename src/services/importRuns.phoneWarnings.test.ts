@@ -147,7 +147,7 @@ describe("commitImportRun — provider warnings are written after the commit (P2
     const run = readyRun(null);
     installTransport(run, { failReportWrites: 1 });
     await expect(commitImportRun("run-1", EMPTY_PLAN, [entry(warning(2))])).rejects.toThrow(
-      "The import committed, but its phone warnings weren't added to the run's report. Commit again to add them.",
+      "The import committed, but its phone warnings weren't added to the run's report. Commit again now to add them. If this page reloads first, they can't be added: the run's staged rows are already gone.",
     );
     expect(run).toMatchObject({ state: "committed", error_report: null });
 

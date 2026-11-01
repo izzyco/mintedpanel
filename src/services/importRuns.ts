@@ -470,7 +470,7 @@ export async function commitImportRun(
     if (warnings.length > 0) await recordRunReportWarnings(runId, warnings, "committed");
   } catch {
     throw new Error(
-      "The import committed, but its phone warnings weren't added to the run's report. Commit again to add them.",
+      "The import committed, but its phone warnings weren't added to the run's report. Commit again now to add them. If this page reloads first, they can't be added: the run's staged rows are already gone.",
     );
   }
   return { ...result, relationships };

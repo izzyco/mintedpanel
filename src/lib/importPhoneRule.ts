@@ -5,14 +5,16 @@
 //
 // A record can span several rows of the file: a provider's later rows fold
 // into its first row, and a repeated group TIN or facility is skipped as a
-// duplicate. When the first row's phone isn't a US number, the record takes
-// the first valid phone among its other rows, so a good phone in the file is
-// never thrown away. Only when none of its rows has one does
-// PhoneValidationRules.importInvalidPhone decide (Mission Control MINT-129):
+// duplicate. When the first row's phone is blank or isn't a US number, the
+// record takes the first valid phone among its other rows, so a good phone in
+// the file is never thrown away. Only when an invalid first phone has no valid
+// one to replace it does PhoneValidationRules.importInvalidPhone decide
+// (Mission Control MINT-129):
 //   "create_without_phone" (default): the phone is left blank;
 //   "block_row": the record's rows are blocked instead.
-// Either way the row carries a warning: on screen with the column's label and
-// the user's own value, and in the run's stored report with the label only.
+// An invalid first phone always carries a warning: on screen with the
+// column's label and the user's own value, and in the run's stored report with
+// the label only. A blank one that is filled carries a note.
 import {
   DEFAULT_PHONE_VALIDATION_RULES,
   isValidUsPhone,
@@ -105,10 +107,10 @@ export function applyProviderImportPhoneRule(
   return dispositions.flatMap((d): ImportRowDisposition[] => {
     if (d.kind !== "create") return [d];
     const first = d.provider.phone?.trim() ?? "";
-    if (!isInvalidPhone(first)) return [d];
+    if (first !== "" && isValidUsPhone(first)) return [d];
     const laterLines = d.lines.filter((line) => line !== d.line);
     const replacement = firstValidPhone(laterLines, "phone", mappedByLine);
-    if (!replacement && rules.importInvalidPhone === "block_row") {
+    if (!replacement && first !== "" && rules.importInvalidPhone === "block_row") {
       return d.lines.map((line) => ({
         kind: "blocked",
         line,
@@ -120,28 +122,37 @@ export function applyProviderImportPhoneRule(
             : `Same provider (NPI ${d.npi}) as row ${d.line}, which is blocked`,
       }));
     }
-    // The dedupe's fold note leaves the phone out when the first one is
-    // replaced; note each other row's phone that isn't the one used.
+    // The dedupe's fold note leaves the phone out unless the first row's is
+    // valid; note here which phone is used and each other one that isn't.
     const notes = [...d.notes];
-    if (replacement) {
-      for (const line of laterLines) {
-        const phone = cell(mappedByLine.get(line), "phone");
-        if (line !== replacement.line && phone !== "" && phone !== replacement.phone) {
-          notes.push(
-            `Row ${line} lists a different phone for NPI ${d.npi} — row ${replacement.line}'s phone is used`,
-          );
-        }
-      }
+    if (first === "" && replacement) {
+      notes.push(
+        `Row ${d.line} lists no phone for NPI ${d.npi} — row ${replacement.line}'s phone is used`,
+      );
     }
+    for (const line of laterLines) {
+      const phone = cell(mappedByLine.get(line), "phone");
+      if (line === replacement?.line || phone === "" || phone === replacement?.phone) continue;
+      notes.push(
+        replacement
+          ? `Row ${line} lists a different phone for NPI ${d.npi} — row ${replacement.line}'s phone is used`
+          : `Row ${line}'s phone for NPI ${d.npi} isn't a US number, so it isn't used`,
+      );
+    }
+    if (first === "" && !replacement && notes.length === d.notes.length) return [d];
     return [
       {
         ...d,
         provider: { ...d.provider, phone: replacement?.phone ?? null },
         notes,
-        warnings: [
-          ...(d.warnings ?? []),
-          phoneWarning(d.line, "phone", first, replacement?.line ?? null),
-        ],
+        ...(first === ""
+          ? {}
+          : {
+              warnings: [
+                ...(d.warnings ?? []),
+                phoneWarning(d.line, "phone", first, replacement?.line ?? null),
+              ],
+            }),
       },
     ];
   });
@@ -161,15 +172,25 @@ export function applySectionImportPhoneRule(
   // A duplicate line → the blocked first row of its record (block_row only).
   const blockedFirst = new Map<number, SectionCreateEntry>();
   for (const entry of result.creates) {
-    const bad = SECTION_PHONE_COLUMNS[entityKind].filter((c) =>
-      isInvalidPhone(cell(entry.mapped, c)),
-    );
-    if (bad.length === 0) {
-      creates.push(entry);
-      continue;
-    }
+    const columns = SECTION_PHONE_COLUMNS[entityKind];
     const duplicateLines = entry.duplicateLines ?? [];
     const mapped = { ...entry.mapped };
+    const notes = [...entry.notes];
+    // A blank phone takes the first valid one among the record's duplicate rows.
+    for (const column of columns) {
+      if (cell(entry.mapped, column) !== "") continue;
+      const replacement = firstValidPhone(duplicateLines, column, mappedByLine);
+      if (!replacement) continue;
+      mapped[column] = replacement.phone;
+      notes.push(
+        `Row ${entry.line} lists no ${labelOf(column).toLowerCase()} — row ${replacement.line}'s is used`,
+      );
+    }
+    const bad = columns.filter((c) => isInvalidPhone(cell(entry.mapped, c)));
+    if (bad.length === 0) {
+      creates.push(notes.length === entry.notes.length ? entry : { ...entry, mapped, notes });
+      continue;
+    }
     const outcomes = bad.map((column) => {
       const replacement = firstValidPhone(duplicateLines, column, mappedByLine);
       mapped[column] = replacement?.phone ?? null;
@@ -198,6 +219,7 @@ export function applySectionImportPhoneRule(
     creates.push({
       ...entry,
       mapped,
+      notes,
       warnings: [
         ...(entry.warnings ?? []),
         ...warned.map((o) => phoneWarning(entry.line, o.column, o.value, o.from)),

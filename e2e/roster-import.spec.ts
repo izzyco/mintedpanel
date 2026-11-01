@@ -574,7 +574,7 @@ test("TS-60: async scan survives navigation; good rows stage, error report lists
   expect(download.suggestedFilename()).toBe("roster-import-errors.csv");
   const report = readFileSync((await download.path()) as string, "utf8");
   const lines = report.split("\n");
-  expect(lines[0]).toBe("row,column,reason");
+  expect(lines[0]).toBe("row,column,reason,severity");
   expect(lines).toHaveLength(4);
   for (const [i, line] of [12, 27, 42].entries()) {
     expect(lines[i + 1]).toContain(`${line},npi,`);

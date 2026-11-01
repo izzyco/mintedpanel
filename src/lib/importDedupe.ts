@@ -257,12 +257,11 @@ const CREATE_SCALAR_LABELS = [
 
 function noteCreateScalarDisagreements(create: CreateDisposition, row: StagedImportRow): void {
   const later = createProviderDraft(row);
-  // MINT-91: a first-row phone that isn't a US number is not used; the phone
-  // rule (src/lib/importPhoneRule.ts) picks the phone and says which.
-  const firstPhoneReplaced =
-    Boolean(create.provider.phone) && !isValidUsPhone(create.provider.phone ?? "");
+  // MINT-91: unless the first row's phone is a valid US number, the phone rule
+  // (src/lib/importPhoneRule.ts) may take another row's, and notes which.
+  const firstPhoneMayBeReplaced = !isValidUsPhone(create.provider.phone ?? "");
   const labels = CREATE_SCALAR_LABELS.filter(([key]) => create.provider[key] !== later[key])
-    .filter(([key]) => !(key === "phone" && firstPhoneReplaced))
+    .filter(([key]) => !(key === "phone" && firstPhoneMayBeReplaced))
     .map(([, label]) => label);
   if (labels.length === 0) return;
   pushNote(
