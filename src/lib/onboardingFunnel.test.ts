@@ -1053,62 +1053,89 @@ describe("the default configuration is exhaustive", () => {
     return "ready_for_credentialing";
   }
 
-  it("places every combination of dimensions in exactly one visible stage, under every rule", () => {
-    const dimensions = everyDimension();
-    let checked = 0;
-    for (const licenseWithoutExpiryHolds of flags)
-      for (const statelessLocationHolds of flags)
-        for (const assignmentRequiredForReady of flags)
-          for (const futureMembershipCounts of flags)
-            for (const futureLocationAssignmentCounts of flags)
-              for (const locationMustBeInProviderGroup of flags)
-                for (const ungroupedLocationCounts of flags)
-                  for (const completeRecordMovesPastInvite of flags)
-                    for (const caseStatusesNotCountedAsCredentialing of [
-                      [],
-                      ["denied"],
-                    ] as CaseStatus[][])
-                      for (const requiredProfileFields of [
-                        [...ONBOARDING_FUNNEL_PROFILE_FIELDS],
-                        ["npi"],
-                      ] as OnboardingFunnelProfileField[][]) {
-                        const rules: OnboardingFunnelRules = {
-                          caseStatusesNotCountedAsCredentialing,
-                          requiredProfileFields,
-                          licenseWithoutExpiryHolds,
-                          statelessLocationHolds,
-                          assignmentRequiredForReady,
-                          futureMembershipCounts,
-                          futureLocationAssignmentCounts,
-                          locationMustBeInProviderGroup,
-                          ungroupedLocationCounts,
-                          completeRecordMovesPastInvite,
-                        };
-                        const config = withRules(rules);
-                        expect(validateOnboardingFunnelConfig(config)).toEqual([]);
-                        const visible = {
-                          read: visibleOnboardingFunnelStages(config, true).map((s) => s.key),
-                          unread: visibleOnboardingFunnelStages(config, false).map((s) => s.key),
-                        };
-                        const placed = placeOnboardingFunnelStages(dimensions, config);
-                        dimensions.forEach((d, i) => {
-                          expect(placed[i].stage).toBe(expectedStage(d, rules));
-                          expect(visible[d.intake === null ? "unread" : "read"]).toContain(
-                            placed[i].stage,
-                          );
-                          // A23: a missing group is never the provider's
-                          // reason; it is listed under awaiting assignment.
-                          if (placed[i].stage === "submitted")
-                            expect(placed[i].gaps).not.toContain(NO_GROUP_GAP);
-                          if (placed[i].stage === "verified_awaiting_assignment")
-                            expect(placed[i].gaps.includes(NO_GROUP_GAP)).toBe(
-                              assignmentRequiredForReady && !d.grouped,
-                            );
-                          checked += 1;
-                        });
-                      }
-    expect(checked).toBe(1024 * 256);
-  });
+  // Every combination, no sampling: 256 dimension combinations under 1,024
+  // rule combinations, 262,144 placements. Each rule combination is set up
+  // once (one validation, one visible-stage read, one batch placement), and
+  // each placement is checked in plain code with the problems collected, so
+  // a failure still names every bad placement. With one expect per placement
+  // this took about 3 s locally and 16 s on CI (run 41282244702, Nov 1),
+  // past vitest's 5 s default. It now takes under 1 s locally; the explicit
+  // 60 s timeout keeps headroom for a CI runner about 5 times slower.
+  it(
+    "places every combination of dimensions in exactly one visible stage, under every rule",
+    { timeout: 60_000 },
+    () => {
+      const dimensions = everyDimension();
+      const problems: string[] = [];
+      let checked = 0;
+      for (const licenseWithoutExpiryHolds of flags)
+        for (const statelessLocationHolds of flags)
+          for (const assignmentRequiredForReady of flags)
+            for (const futureMembershipCounts of flags)
+              for (const futureLocationAssignmentCounts of flags)
+                for (const locationMustBeInProviderGroup of flags)
+                  for (const ungroupedLocationCounts of flags)
+                    for (const completeRecordMovesPastInvite of flags)
+                      for (const caseStatusesNotCountedAsCredentialing of [
+                        [],
+                        ["denied"],
+                      ] as CaseStatus[][])
+                        for (const requiredProfileFields of [
+                          [...ONBOARDING_FUNNEL_PROFILE_FIELDS],
+                          ["npi"],
+                        ] as OnboardingFunnelProfileField[][]) {
+                          const rules: OnboardingFunnelRules = {
+                            caseStatusesNotCountedAsCredentialing,
+                            requiredProfileFields,
+                            licenseWithoutExpiryHolds,
+                            statelessLocationHolds,
+                            assignmentRequiredForReady,
+                            futureMembershipCounts,
+                            futureLocationAssignmentCounts,
+                            locationMustBeInProviderGroup,
+                            ungroupedLocationCounts,
+                            completeRecordMovesPastInvite,
+                          };
+                          const label = JSON.stringify(rules);
+                          const config = withRules(rules);
+                          const invalid = validateOnboardingFunnelConfig(config);
+                          if (invalid.length > 0) problems.push(`${label}: ${invalid.join(" ")}`);
+                          // Read and unread from one call: unread is read
+                          // without the intake-gated stages.
+                          const shown = visibleOnboardingFunnelStages(config, true);
+                          const visible = {
+                            read: new Set(shown.map((s) => s.key)),
+                            unread: new Set(
+                              shown.filter((s) => !s.needsIntakeData).map((s) => s.key),
+                            ),
+                          };
+                          const placed = placeOnboardingFunnelStages(dimensions, config);
+                          dimensions.forEach((d, i) => {
+                            const { stage, gaps } = placed[i];
+                            const fail = (why: string) =>
+                              problems.push(`${label} ${JSON.stringify(d)}: ${why}`);
+                            const expected = expectedStage(d, rules);
+                            if (stage !== expected)
+                              fail(`placed in ${stage}, expected ${expected}`);
+                            if (!visible[d.intake === null ? "unread" : "read"].has(stage))
+                              fail(`placed in ${stage}, which is hidden`);
+                            // A23: a missing group is never the provider's
+                            // reason; it is listed under awaiting assignment.
+                            if (stage === "submitted" && gaps.includes(NO_GROUP_GAP))
+                              fail("Submitted lists the missing group");
+                            if (
+                              stage === "verified_awaiting_assignment" &&
+                              gaps.includes(NO_GROUP_GAP) !==
+                                (assignmentRequiredForReady && !d.grouped)
+                            )
+                              fail("awaiting assignment lists the missing group wrongly");
+                            checked += 1;
+                          });
+                        }
+      expect(problems).toEqual([]);
+      expect(checked).toBe(1024 * 256);
+    },
+  );
 });
 
 describe("validateOnboardingFunnelConfig", () => {
