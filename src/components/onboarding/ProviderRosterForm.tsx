@@ -1,8 +1,9 @@
 // Provider form dialog (E1.3 F1.3.1) — the CAQH-anchored baseline over the
 // EXISTING providers columns. Group assignment is step one (required, M:N,
-// one primary). Required to save: name, Type 1 NPI (10 digits + CMS check digit),
-// ≥1 group assignment; every other CAQH field is optional (readiness — E1.8
-// — is the gate, not entry). SSN is captured as LAST-4 ONLY (hard rule; the
+// one primary). Required to save: name and ≥1 group assignment. The Type 1 NPI
+// is optional (Addendum 11, B3); an entered one must be 10 digits with the CMS
+// check digit. Every other CAQH field is optional (readiness — E1.8 — is the
+// gate, not entry). SSN is captured as LAST-4 ONLY (hard rule; the
 // full-SSN vault is R6/R7). No status picker — new providers default to
 // `onboarding`. Work history / disclosures are NOT captured (CAQH
 // attestation is the proxy). Licenses + PSV ride the same save.

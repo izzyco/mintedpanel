@@ -9,8 +9,12 @@ import { EMPTY_LICENSE_DRAFT, addRegistryLicenseDraft, type LicenseDraft } from 
 import { applyRosterNpiPick, rosterNpiError } from "./rosterNpi";
 
 describe("rosterNpiError", () => {
-  it("requires an NPI", () => {
-    expect(rosterNpiError("  ", true)).toBe("Type 1 NPI is required");
+  it("takes a blank NPI (Addendum 11, B3): optional, as in Add Provider", () => {
+    expect(rosterNpiError("", true)).toBeNull();
+    expect(rosterNpiError("  ", true)).toBeNull();
+    expect(rosterNpiError("", false)).toBeNull();
+    // An entered one still has to be the ten digits.
+    expect(rosterNpiError("12345", true)).toBe("NPI must be 10 digits");
   });
 
   it("rejects a pasted label, dots and letters, and accepts dashes and spaces", () => {

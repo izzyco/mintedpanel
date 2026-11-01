@@ -38,6 +38,8 @@
 //      next, and a confirmed license row keeps its confirmation when another
 //      row is removed, giving none away. In the roster form an NPI typed
 //      before the name says "name not checked yet".
+//   6. An NPI is optional (Addendum 11, B3): the roster form saves a provider
+//      with none, and nothing is asked of the registry.
 import {
   test,
   expect,
@@ -955,6 +957,37 @@ test("MINT-110: in the roster form an NPI typed before the name says name not ch
   await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(card).toContainText("Jane Roe", { timeout: 15000 });
   expect(fixtures.providers).toHaveLength(1);
+});
+
+test("MINT-110: the roster form saves a provider with no NPI and asks the registry nothing (B3)", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = makeFixtures();
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  const registry = await mockRegistry(context);
+  await seedAuth(context);
+
+  await page.goto("/onboarding/wizard");
+  const card = page.locator("#wizard-providers");
+  await card.getByRole("button", { name: "Add provider" }).click({ timeout: 30000 });
+  const dialog = page.getByRole("dialog", { name: "Add provider" });
+  await dialog.getByLabel("Assign Tree Hill Sports Therapy LLC").click();
+  await dialog.locator("#prov-first").fill("Nora");
+  await dialog.locator("#prov-last").fill("Blank");
+  // Addendum 11 (B3): the NPI is optional; an entered one is still checked.
+  await dialog.locator("#prov-npi").fill("12345");
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(dialog).toContainText("NPI must be 10 digits");
+  expect(fixtures.providers).toHaveLength(0);
+  await dialog.locator("#prov-npi").fill("");
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(card).toContainText("Nora Blank", { timeout: 15000 });
+  expect(fixtures.providers).toHaveLength(1);
+  expect(fixtures.providers[0]).toMatchObject({ npi: null });
+  expect(registry.calls).toEqual([]);
 });
 
 // Add Provider, from the Credentials step to the Review step and back.

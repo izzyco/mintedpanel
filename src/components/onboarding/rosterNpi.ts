@@ -21,14 +21,15 @@ import {
   stripNpiSeparators,
 } from "@/lib/providerIdentity";
 
-/** Why the roster form refuses the NPI, or null. Required; separators are
- * stripped and nothing else, so a pasted label or dots fail. `check` is
- * whether this save checks the NPI (identityFieldNeedsCheck: entered or
- * changed, or every stored one under recheckStoredOnEdit), so legacy data
- * never blocks an unrelated edit. These are facts about the number and stay
- * hard; the NPI Registry check never refuses a save. */
+/** Why the roster form refuses the NPI, or null. Optional (Addendum 11, B3):
+ * a blank NPI saves, and nothing asks the registry about it. An entered one
+ * has its separators stripped and nothing else, so a pasted label or dots
+ * fail. `check` is whether this save checks the NPI (identityFieldNeedsCheck:
+ * entered or changed, or every stored one under recheckStoredOnEdit), so
+ * legacy data never blocks an unrelated edit. These are facts about the
+ * number and stay hard; the NPI Registry check never refuses a save. */
 export function rosterNpiError(npi: string, check: boolean): string | null {
-  if (!npi.trim()) return "Type 1 NPI is required";
+  if (!npi.trim()) return null;
   if (!check) return null;
   const digits = stripNpiSeparators(npi);
   if (!/^\d{10}$/.test(digits)) return NPI_FORMAT_MESSAGE;
