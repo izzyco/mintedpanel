@@ -1,6 +1,5 @@
-// An in-memory stand-in for the tables the follow-up digest job reads, for
-// public.notification_sends and its two RPCs, and for
-// public.notification_org_slots and complete_notification_org_slot
+// An in-memory stand-in for the tables the follow-up digest job reads, and
+// for public.notification_sends and its two RPCs
 // (supabase/migrations/20261031060000_notification_sends.sql), for the
 // MINT-108 job tests.
 //
@@ -11,24 +10,15 @@
 // worst case for PHI, so a test proves the caller maps field by field. Every
 // read is recorded with its table, columns and filters.
 //
-// RPCs: the claim answers {status:"exhausted"} after three failed rows for the
-// key, {status:"taken", outcome, recent} while a claimed or sent row holds it
-// (recent: claimed under NOTIFICATION_SEND_RECENT_MINUTES ago by `clock`),
-// else {status:"claimed", id}; the finish takes only a closed error code and a safe
-// message id, and touches only a claimed row. The org-slot completion inserts
-// into `tables.notification_org_slots` once per (job, org, slot), so the job's
-// own read of that table sees it. The SQL itself is exercised by
+// RPCs, as the SQL: one row per (org, job, slot, recipient). The claim
+// inserts a new key or re-takes a failed one (true), and answers false while
+// the row is claimed or sent; the finish takes sent or failed and touches
+// only a claimed row. The SQL itself is exercised by
 // supabase/tests/mint108-notification-sends.sql.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import { JOB_NAME_RE } from "@/server/jobs/registry";
-import {
-  NOTIFICATION_SEND_ERROR_CODES,
-  NOTIFICATION_SEND_MAX_FAILURES,
-  NOTIFICATION_SEND_RECENT_MINUTES,
-  NOTIFICATION_SLOT_RE,
-  PROVIDER_MESSAGE_ID_RE,
-} from "@/server/jobs/notificationSends";
+import { NOTIFICATION_SLOT_RE } from "@/server/jobs/notificationSends";
 
 export const POSTGREST_MAX_ROWS = 1000;
 
@@ -48,20 +38,16 @@ export interface FakeRead {
 }
 
 export interface FakeNotificationSend {
-  id: string;
   job: string;
   slot: string;
   org_id: string;
   recipient_user_id: string;
   outcome: "claimed" | "sent" | "failed";
-  /** Epoch ms, from `clock`. */
-  claimed_at: number;
-  provider_message_id: string | null;
-  error_code: string | null;
+  /** How many times this key was claimed: 1, plus one per retry after a rejection. */
+  claims: number;
 }
 
-type SendRpc =
-  "claim_notification_send" | "finish_notification_send" | "complete_notification_org_slot";
+type SendRpc = "claim_notification_send" | "finish_notification_send";
 
 export interface FakeDigestDb {
   db: SupabaseClient<Database>;
@@ -77,8 +63,6 @@ export interface FakeDigestDb {
   failNextRpc: Partial<Record<SendRpc, FakeError>>;
   /** A claim for one of these recipients answers with a connection error. */
   failClaimFor: Set<string>;
-  /** The database's now(), in epoch ms; tests move it with the run. */
-  clock: { now: number };
 }
 
 type Result = { data: unknown; error: FakeError | null; count?: number | null };
@@ -116,9 +100,7 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
     failRead: null,
     failNextRpc: {},
     failClaimFor: new Set(),
-    clock: { now: Date.now() },
   };
-  let sequence = 0;
 
   const from = (table: string) => {
     const read: FakeRead = { table, columns: "", filters: [], ranged: false };
@@ -188,48 +170,38 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
     return builder;
   };
 
+  const keyOf = (args: Record<string, unknown>) => ({
+    job: String(args.p_job),
+    slot: String(args.p_slot),
+    org_id: String(args.p_org_id),
+    recipient_user_id: String(args.p_recipient_user_id),
+  });
+  const find = (key: ReturnType<typeof keyOf>) =>
+    state.sends.find(
+      (row) =>
+        row.job === key.job &&
+        row.slot === key.slot &&
+        row.org_id === key.org_id &&
+        row.recipient_user_id === key.recipient_user_id,
+    );
+
   const claim = (args: Record<string, unknown>): Result => {
-    const job = String(args.p_job);
-    const slot = String(args.p_slot);
-    const orgId = String(args.p_org_id);
-    const recipient = String(args.p_recipient_user_id);
-    if (!JOB_NAME_RE.test(job) || !NOTIFICATION_SLOT_RE.test(slot)) {
+    const key = keyOf(args);
+    if (!JOB_NAME_RE.test(key.job) || !NOTIFICATION_SLOT_RE.test(key.slot)) {
       return { data: null, error: { code: "23514", message: "notification_sends check" } };
     }
-    if (state.failClaimFor.has(recipient)) {
+    if (state.failClaimFor.has(key.recipient_user_id)) {
       return { data: null, error: { code: "08006", message: "connection failure" } };
     }
-    const forKey = state.sends.filter(
-      (row) =>
-        row.job === job &&
-        row.slot === slot &&
-        row.org_id === orgId &&
-        row.recipient_user_id === recipient,
-    );
-    if (forKey.filter((row) => row.outcome === "failed").length >= NOTIFICATION_SEND_MAX_FAILURES) {
-      return { data: { status: "exhausted" }, error: null };
+    const row = find(key);
+    if (!row) {
+      state.sends.push({ ...key, outcome: "claimed", claims: 1 });
+      return { data: true, error: null };
     }
-    const live = forKey.find((row) => row.outcome === "claimed" || row.outcome === "sent");
-    if (live) {
-      const recent =
-        live.outcome === "claimed" &&
-        live.claimed_at > state.clock.now - NOTIFICATION_SEND_RECENT_MINUTES * 60_000;
-      return { data: { status: "taken", outcome: live.outcome, recent }, error: null };
-    }
-    sequence += 1;
-    const id = `10800000-0000-4000-b000-${String(sequence).padStart(12, "0")}`;
-    state.sends.push({
-      id,
-      job,
-      slot,
-      org_id: orgId,
-      recipient_user_id: recipient,
-      outcome: "claimed",
-      claimed_at: state.clock.now,
-      provider_message_id: null,
-      error_code: null,
-    });
-    return { data: { status: "claimed", id }, error: null };
+    if (row.outcome !== "failed") return { data: false, error: null };
+    row.outcome = "claimed";
+    row.claims += 1;
+    return { data: true, error: null };
   };
 
   const finish = (args: Record<string, unknown>): Result => {
@@ -237,55 +209,21 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
     if (outcome !== "sent" && outcome !== "failed") {
       return { data: null, error: { code: "22023", message: "finish_notification_send: outcome" } };
     }
-    const code = typeof args.p_error_code === "string" ? args.p_error_code : null;
-    if (code !== null && !(NOTIFICATION_SEND_ERROR_CODES as readonly string[]).includes(code)) {
-      return { data: null, error: { code: "22023", message: "finish_notification_send: code" } };
-    }
-    const messageId =
-      typeof args.p_provider_message_id === "string" ? args.p_provider_message_id : null;
-    if (
-      (outcome === "failed") !== (code !== null) ||
-      (messageId !== null && (outcome !== "sent" || !PROVIDER_MESSAGE_ID_RE.test(messageId)))
-    ) {
-      return { data: null, error: { code: "23514", message: "notification_sends check" } };
-    }
-    const row = state.sends.find((r) => r.id === args.p_id && r.outcome === "claimed");
-    if (!row) return { data: false, error: null };
+    const row = find(keyOf(args));
+    if (!row || row.outcome !== "claimed") return { data: false, error: null };
     row.outcome = outcome;
-    row.error_code = code;
-    row.provider_message_id = messageId;
-    return { data: true, error: null };
-  };
-
-  const completeOrgSlot = (args: Record<string, unknown>): Result => {
-    const job = String(args.p_job);
-    const slot = String(args.p_slot);
-    const orgId = String(args.p_org_id);
-    if (!JOB_NAME_RE.test(job) || !NOTIFICATION_SLOT_RE.test(slot)) {
-      return { data: null, error: { code: "23514", message: "notification_org_slots check" } };
-    }
-    const rows = (state.tables.notification_org_slots ??= []);
-    if (rows.some((r) => r.job === job && r.org_id === orgId && r.slot === slot)) {
-      return { data: false, error: null };
-    }
-    rows.push({ job, org_id: orgId, slot, completed_at: "2026-10-31T00:00:00Z" });
     return { data: true, error: null };
   };
 
   const rpc = async (fn: string, args: Record<string, unknown>): Promise<Result> => {
     state.rpcCalls.push({ fn, args });
-    if (
-      fn === "claim_notification_send" ||
-      fn === "finish_notification_send" ||
-      fn === "complete_notification_org_slot"
-    ) {
+    if (fn === "claim_notification_send" || fn === "finish_notification_send") {
       const injected = state.failNextRpc[fn];
       if (injected) {
         delete state.failNextRpc[fn];
         return { data: null, error: injected };
       }
-      if (fn === "claim_notification_send") return claim(args);
-      return fn === "finish_notification_send" ? finish(args) : completeOrgSlot(args);
+      return fn === "claim_notification_send" ? claim(args) : finish(args);
     }
     return { data: null, error: { code: "PGRST202", message: "Could not find the function" } };
   };

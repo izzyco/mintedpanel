@@ -135,10 +135,11 @@ describe("the follow-up digest's hourly GitHub Actions tick", () => {
     expect(script).not.toMatch(/(^|\s)(-L|--location)(\s|$)/m);
   });
 
-  it("is green only for HTTP 200 with a succeeded or skipped run", () => {
+  it("is green only for HTTP 200 with a succeeded run (there is no skipped outcome)", () => {
     expect(script).toContain(
-      `if [ "\${status}" = "200" ] \\\n            && jq -e '.data.outcome == "succeeded" or .data.outcome == "skipped"' "\${body}" >/dev/null 2>&1; then\n            ran=1`,
+      `if [ "\${status}" = "200" ] \\\n            && jq -e '.data.outcome == "succeeded"' "\${body}" >/dev/null 2>&1; then\n            ran=1`,
     );
+    expect(tick).not.toContain("skipped");
     expect(script).toMatch(
       /if \[ "\$\{ran\}" -ne 1 \]; then\n\s+echo "::error[^\n]*"\n\s+exit 1\n\s+fi\s*$/,
     );

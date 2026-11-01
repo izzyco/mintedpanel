@@ -5,17 +5,13 @@ import {
   CATCH_UP_UNTIL_MIDNIGHT,
   DEFAULT_FOLLOW_UP_DIGEST_RULES,
   MAX_DIGEST_SECTION_ROWS,
-  UNASSIGNED_FOLLOW_UP_MODES,
   digestSlot,
   digestSlotKey,
   dueFollowUps,
   isoWeekday,
-  lastDigestSendHour,
   planFollowUpDigests,
-  catchUpRuleProblem,
   resolveFollowUpDigestRules,
   touchCanResolveFollowUp,
-  validateFollowUpDigestRules,
   zonedDateHour,
   type DigestCase,
   type DigestMember,
@@ -95,13 +91,8 @@ const CHICAGO = daily(8, "America/Chicago");
 const at = (iso: string) => new Date(iso);
 
 /** A once-a-day slot (daily, or weekly on its day): its one send, keyed by the local date. */
-function once(
-  state: DigestSlotState,
-  localDate: string,
-  localHour: number,
-  sendHour = 8,
-): DigestSlot {
-  return { due: state === "due", state, localDate, localHour, send: 1, sendHour, slot: localDate };
+function once(state: DigestSlotState, localDate: string, localHour: number): DigestSlot {
+  return { due: state === "due", state, localDate, localHour, send: 1, slot: localDate };
 }
 
 describe("zonedDateHour: the org's wall clock", () => {
@@ -198,15 +189,13 @@ describe("digestSlot: the hour gate", () => {
       due: false,
       localHour: 1,
     });
-    expect(digestSlot(twoAm, at("2027-03-14T08:00:00Z"))).toEqual(once("due", "2027-03-14", 3, 2));
+    expect(digestSlot(twoAm, at("2027-03-14T08:00:00Z"))).toEqual(once("due", "2027-03-14", 3));
   });
 
   it("uses the org's own hour and zone, as Minted set them", () => {
     const now = at("2026-10-31T15:30:00Z");
     expect(digestSlot(daily(8, "America/Los_Angeles"), now)).toEqual(once("due", "2026-10-31", 8));
-    expect(digestSlot(daily(11, "America/New_York"), now)).toEqual(
-      once("due", "2026-10-31", 11, 11),
-    );
+    expect(digestSlot(daily(11, "America/New_York"), now)).toEqual(once("due", "2026-10-31", 11));
     expect(digestSlot(daily(12, "America/New_York"), now)).toMatchObject({
       due: false,
     });
@@ -494,20 +483,15 @@ describe("planFollowUpDigests", () => {
 
 /* -------- FollowUpDigestRules (policy as configuration, MINT-113) -------- */
 
-describe("FollowUpDigestRules: decided defaults", () => {
-  it("count unassigned follow-ups only (Oct 31) and catch up until local midnight (D77)", () => {
-    expect(DEFAULT_FOLLOW_UP_DIGEST_RULES).toEqual({
-      unassignedFollowUps: "count_only",
-      catchUpUntilLocalHour: null,
-    });
+describe("FollowUpDigestRules: the decided default", () => {
+  it("catches up until local midnight (D77): null", () => {
+    expect(DEFAULT_FOLLOW_UP_DIGEST_RULES).toEqual({ catchUpUntilLocalHour: null });
     expect(Object.isFrozen(DEFAULT_FOLLOW_UP_DIGEST_RULES)).toBe(true);
-    // The Work-queue mode is MINT-127's, not built here.
-    expect(UNASSIGNED_FOLLOW_UP_MODES).toEqual(["count_only"]);
     expect(CATCH_UP_UNTIL_MIDNIGHT).toBe(24);
   });
 });
 
-describe("resolveFollowUpDigestRules: org over platform over default, field by field", () => {
+describe("resolveFollowUpDigestRules: org over platform over default", () => {
   it("gives the defaults with no layers", () => {
     expect(resolveFollowUpDigestRules()).toEqual(DEFAULT_FOLLOW_UP_DIGEST_RULES);
     expect(resolveFollowUpDigestRules(null, null)).toEqual(DEFAULT_FOLLOW_UP_DIGEST_RULES);
@@ -515,18 +499,14 @@ describe("resolveFollowUpDigestRules: org over platform over default, field by f
 
   it("takes the platform over the default, and the org over the platform", () => {
     expect(resolveFollowUpDigestRules({ catchUpUntilLocalHour: 18 })).toEqual({
-      unassignedFollowUps: "count_only",
       catchUpUntilLocalHour: 18,
     });
     expect(
       resolveFollowUpDigestRules({ catchUpUntilLocalHour: 18 }, { catchUpUntilLocalHour: 12 }),
-    ).toMatchObject({ catchUpUntilLocalHour: 12 });
-    expect(
-      resolveFollowUpDigestRules(
-        { unassignedFollowUps: "count_only" },
-        { catchUpUntilLocalHour: 20 },
-      ),
-    ).toEqual({ unassignedFollowUps: "count_only", catchUpUntilLocalHour: 20 });
+    ).toEqual({ catchUpUntilLocalHour: 12 });
+    expect(resolveFollowUpDigestRules(null, { catchUpUntilLocalHour: 20 })).toEqual({
+      catchUpUntilLocalHour: 20,
+    });
   });
 
   it("inherits on null or undefined, and spells an explicit midnight 24", () => {
@@ -543,7 +523,7 @@ describe("resolveFollowUpDigestRules: org over platform over default, field by f
   });
 
   it("skips a value of the wrong shape like a missing one", () => {
-    const junk = { unassignedFollowUps: "work_queue", catchUpUntilLocalHour: 25 } as never;
+    const junk = { catchUpUntilLocalHour: 25 } as never;
     expect(resolveFollowUpDigestRules(junk)).toEqual(DEFAULT_FOLLOW_UP_DIGEST_RULES);
     for (const bad of [0, -1, 7.5, "18", true]) {
       expect(
@@ -552,49 +532,6 @@ describe("resolveFollowUpDigestRules: org over platform over default, field by f
         } as never).catchUpUntilLocalHour,
       ).toBe(18);
     }
-  });
-});
-
-describe("validateFollowUpDigestRules", () => {
-  it("passes the defaults, partial overrides and null as inherit", () => {
-    expect(validateFollowUpDigestRules(DEFAULT_FOLLOW_UP_DIGEST_RULES)).toEqual([]);
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 18 })).toEqual([]);
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 24 })).toEqual([]);
-    expect(validateFollowUpDigestRules({ unassignedFollowUps: null })).toEqual([]);
-    expect(
-      validateFollowUpDigestRules({ catchUpUntilLocalHour: 9 }, daily(8, "America/Chicago")),
-    ).toEqual([]);
-  });
-
-  it("names every unknown or invalid value in plain language", () => {
-    expect(validateFollowUpDigestRules({ unassignedFollowUps: "work_queue" })).toEqual([
-      'Unassigned follow-ups can only be counted for now ("count_only").',
-    ]);
-    for (const bad of [0, 25, 7.5, "18"]) {
-      expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: bad })).toEqual([
-        "The catch-up cut-off must be a whole hour from 1 to 23, or 24 (or none) for local midnight.",
-      ]);
-    }
-    expect(validateFollowUpDigestRules({ lookAheadDays: 2 })).toEqual([
-      '"lookAheadDays" is not a follow-up digest rule.',
-    ]);
-    expect(validateFollowUpDigestRules(null)).toEqual([
-      "The follow-up digest rules must be a set of named values.",
-    ]);
-  });
-
-  it("refuses a cut-off at or before the org's send hour: the digest would never go out", () => {
-    expect(
-      validateFollowUpDigestRules({ catchUpUntilLocalHour: 8 }, daily(8, "America/Chicago")),
-    ).toEqual([
-      "The catch-up cut-off (8:00) must be after the send hour (8:00), or the digest never goes out.",
-    ]);
-    expect(
-      validateFollowUpDigestRules({ catchUpUntilLocalHour: 6 }, daily(8, "America/Chicago")),
-    ).toHaveLength(1);
-    expect(
-      validateFollowUpDigestRules({ catchUpUntilLocalHour: 24 }, daily(23, "America/Chicago")),
-    ).toEqual([]);
   });
 });
 
@@ -623,83 +560,11 @@ describe("digestSlot with the catch-up rule", () => {
     expect(digestSlot(CHICAGO, at("2026-10-31T12:00:00Z"), noon)).toMatchObject({ due: false });
   });
 
-  it("is never due when the cut-off is at or before the send hour", () => {
+  it("is never due when the cut-off is at or before the send hour: nothing checks it (no validator)", () => {
     for (let h = 0; h < 24; h += 1) {
       const now = new Date(Date.UTC(2026, 9, 31, 5 + h));
       expect(digestSlot(CHICAGO, now, { catchUpUntilLocalHour: 8 })?.due).toBe(false);
     }
-  });
-});
-
-describe("catch-up cut-off edges (review)", () => {
-  it.each([
-    // Chile: 23:59 on Sep 5 2026 (-04) is followed by 1 am on Sep 6 (-03).
-    ["America/Santiago", "2026-09-05", "2026-09-06", "2026-09-13"],
-    // Paraguay's last DST start: 23:59 on Oct 5 2024, then 1 am on Oct 6.
-    ["America/Asuncion", "2024-10-05", "2024-10-06", "2024-10-13"],
-  ])(
-    "lets 1 am stand in for a midnight send hour that DST start skips in %s",
-    (zone, dayBefore, dstStart, weekLater) => {
-      const midnight = daily(0, zone);
-      const cutAtOne = { catchUpUntilLocalHour: 1 };
-      // This runtime's tzdata has the transition the test is about.
-      expect(zonedDateHour(at(`${dstStart}T03:00:00Z`), zone)).toEqual({
-        date: dayBefore,
-        hour: 23,
-      });
-      expect(zonedDateHour(at(`${dstStart}T04:00:00Z`), zone)).toEqual({
-        date: dstStart,
-        hour: 1,
-      });
-      // The day before: midnight exists, and 11 pm is past the cut-off.
-      expect(digestSlot(midnight, at(`${dayBefore}T04:07:00Z`), cutAtOne)?.due).toBe(true);
-      expect(digestSlot(midnight, at(`${dstStart}T03:07:00Z`), cutAtOne)).toEqual(
-        once("past_catch_up", dayBefore, 23, 0),
-      );
-      // The DST-start date's first hour is 1 am: it stands in for midnight.
-      expect(digestSlot(midnight, at(`${dstStart}T04:07:00Z`), cutAtOne)).toEqual(
-        once("due", dstStart, 1, 0),
-      );
-      // 2 am is past the cut-off.
-      expect(digestSlot(midnight, at(`${dstStart}T05:07:00Z`), cutAtOne)).toEqual(
-        once("past_catch_up", dstStart, 2, 0),
-      );
-      // A week later midnight exists again: 1 am is past the cut-off.
-      expect(digestSlot(midnight, at(`${weekLater}T03:07:00Z`), cutAtOne)?.due).toBe(true);
-      expect(digestSlot(midnight, at(`${weekLater}T04:07:00Z`), cutAtOne)).toEqual(
-        once("past_catch_up", weekLater, 1, 0),
-      );
-    },
-  );
-
-  it("calls a cut-off at or before the send hour a problem, and none otherwise", () => {
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 8 }, 8)).toBe("cut_off_not_after_send_hour");
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 6 }, 8)).toBe("cut_off_not_after_send_hour");
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 9 }, 8)).toBeNull();
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: null }, 23)).toBeNull();
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 24 }, 23)).toBeNull();
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 8 }, null)).toBeNull();
-  });
-
-  it("lets the first hour after a send hour DST skips stand in for it, past a cut-off", () => {
-    const twoAm = daily(2, "America/Chicago");
-    const cutAtThree = { catchUpUntilLocalHour: 3 };
-    // Mar 14 2027: 1:59 am CST, then 3:00 am CDT.
-    expect(digestSlot(twoAm, at("2027-03-14T07:07:00Z"), cutAtThree)).toEqual(
-      once("not_yet", "2027-03-14", 1, 2),
-    );
-    expect(digestSlot(twoAm, at("2027-03-14T08:07:00Z"), cutAtThree)).toEqual(
-      once("due", "2027-03-14", 3, 2),
-    );
-    expect(digestSlot(twoAm, at("2027-03-14T09:07:00Z"), cutAtThree)).toMatchObject({
-      due: false,
-      localHour: 4,
-    });
-    // The next day, 2 am exists again: 3 am is past the cut-off.
-    expect(digestSlot(twoAm, at("2027-03-15T08:07:00Z"), cutAtThree)).toMatchObject({
-      due: false,
-      localHour: 3,
-    });
   });
 });
 
@@ -773,7 +638,6 @@ describe("digestSlot: daily, weekly or twice a day (A8)", () => {
       localDate,
       localHour,
       send: 1,
-      sendHour: 8,
       slot: localDate,
     });
     const second = (localHour: number, localDate = "2026-10-31") => ({
@@ -782,7 +646,6 @@ describe("digestSlot: daily, weekly or twice a day (A8)", () => {
       localDate,
       localHour,
       send: 2,
-      sendHour: 14,
       slot: `${localDate}:2`,
     });
     // Oct 31 is CDT: 8 am is 13:00 UTC, 2 pm is 19:00 UTC.
@@ -869,41 +732,12 @@ describe("digestSlot: daily, weekly or twice a day (A8)", () => {
 });
 
 describe("the schedule's helpers", () => {
-  it("names the day's last send hour: the second hour for twice a day", () => {
-    expect(lastDigestSendHour(CHICAGO)).toBe(8);
-    expect(lastDigestSendHour(WEEKLY)).toBe(8);
-    expect(lastDigestSendHour(TWICE)).toBe(14);
-    // Not set up (G2): no last send hour.
-    expect(lastDigestSendHour({ ...TWICE, secondSendHour: null })).toBeNull();
-    expect(lastDigestSendHour({ ...CHICAGO, secondSendHour: 14 })).toBe(8);
-    expect(lastDigestSendHour(daily(null, null))).toBeNull();
-  });
-
   it("reads ISO weekdays and keys the second send apart", () => {
     expect(["2026-11-01", "2026-11-02", "2026-11-06"].map(isoWeekday)).toEqual([7, 1, 5]);
     expect(() => isoWeekday("2026-02-30")).toThrow(RangeError);
     expect(digestSlotKey("2026-10-31", 1)).toBe("2026-10-31");
     expect(digestSlotKey("2026-10-31", 2)).toBe("2026-10-31:2");
     expect(digestSlotKey("2026-10-31", 2)).toMatch(SLOT_RE);
-  });
-
-  it("refuses a cut-off at or before the second hour for twice a day, in plain language", () => {
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 14 }, lastDigestSendHour(TWICE))).toBe(
-      "cut_off_not_after_send_hour",
-    );
-    expect(catchUpRuleProblem({ catchUpUntilLocalHour: 15 }, lastDigestSendHour(TWICE))).toBeNull();
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 12 }, TWICE)).toEqual([
-      "The catch-up cut-off (12:00) must be after the second send hour (14:00), or the second digest never goes out.",
-    ]);
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 15 }, TWICE)).toEqual([]);
-    // A daily or weekly org's second hour plays no part.
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 12 }, WEEKLY)).toEqual([]);
-    expect(
-      validateFollowUpDigestRules(
-        { catchUpUntilLocalHour: 12 },
-        { ...CHICAGO, secondSendHour: 14 },
-      ),
-    ).toEqual([]);
   });
 });
 
@@ -917,39 +751,6 @@ describe("never look ahead (A14)", () => {
     expect(result.digests).toEqual([]);
     expect(result.suppressed).toBe(1);
     // No rule or input can widen it.
-    expect(Object.keys(DEFAULT_FOLLOW_UP_DIGEST_RULES).sort()).toEqual([
-      "catchUpUntilLocalHour",
-      "unassignedFollowUps",
-    ]);
-  });
-});
-
-describe("planFollowUpDigests with the unassigned rule", () => {
-  it("counts unassigned follow-ups and sends them to no one under count_only, as with no rules", () => {
-    const mine = kase({ assignedTo: JANE });
-    const nobody = kase({ assignedTo: null });
-    const input = {
-      cases: [mine, nobody],
-      touchpoints: [mine, nobody].map((c) => touch(c.id, "2026-10-01", "2026-10-30")),
-    };
-    const explicit = plan({ ...input, rules: { unassignedFollowUps: "count_only" } });
-    expect(explicit.unassignedFollowUps).toBe(1);
-    expect(explicit.digests.map((d) => d.recipientUserId)).toEqual([JANE]);
-    expect(JSON.stringify(explicit.digests)).not.toContain(nobody.id);
-    expect(explicit).toEqual(plan(input));
-  });
-
-  it("counts unassigned follow-ups whatever the mode: the mode decides routing only", () => {
-    const nobody = kase({ assignedTo: null });
-    const input = {
-      cases: [nobody],
-      touchpoints: [touch(nobody.id, "2026-10-01", "2026-10-30")],
-    };
-    const unknownMode = plan({
-      ...input,
-      rules: { unassignedFollowUps: "work_queue" as never },
-    });
-    expect(unknownMode.unassignedFollowUps).toBe(1);
-    expect(unknownMode.digests).toEqual([]);
+    expect(Object.keys(DEFAULT_FOLLOW_UP_DIGEST_RULES)).toEqual(["catchUpUntilLocalHour"]);
   });
 });

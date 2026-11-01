@@ -31,11 +31,11 @@
 // that day: the second carries the same list. "Today" is the org's local date
 // at the run. Each scheduled send has its own slot: the local date, and
 // `YYYY-MM-DD:2` for twice a day's second send. The per-recipient send claim
-// and the org's completion record key on it, so a rerun, a changed hour or a
-// changed zone cannot send a scheduled send twice. The hour is read off the
-// zone's wall clock at the run's instant, so a repeated hour (DST ends) stays
-// the same local date, and a skipped hour (DST starts) is caught by "at or
-// after". No clock read here: `now` is passed in.
+// keys on it, so a rerun, a later hour, a changed hour or a changed zone
+// cannot send a scheduled send twice. The hour is read off the zone's wall
+// clock at the run's instant, so a repeated hour (DST ends) stays the same
+// local date, and a skipped hour (DST starts) is caught by "at or after". No
+// clock read here: `now` is passed in.
 //
 // Two edges follow from keying on the local date (D78, accepted). A day's
 // last send at 23:00 is due in one hourly call only, so it gets one attempt.
@@ -53,17 +53,16 @@
 //   * A coordinator is a current member assigned (credential_cases.assigned_to)
 //     to at least one open case. Each gets one email with their own rows.
 //   * An unassigned follow-up (no coordinator, or a coordinator who is no
-//     longer a member) goes to no one. The plan counts it; no row is built
-//     (FollowUpDigestRules.unassignedFollowUps, "count_only", Oct 31).
+//     longer a member) goes to no one, and is always counted (Oct 31; the
+//     Work-queue routing is MINT-127).
 //   * A coordinator with nothing due gets no email (suppressed).
 //
-// Business policy is configuration, never a constant: the two rules above
-// that Sowmya decided are FollowUpDigestRules, resolved from the decided
-// defaults, then a platform override, then an organization override, field
-// by field (resolveFollowUpDigestRules); validateFollowUpDigestRules is the
-// check an override must pass first. Nothing stores an override yet; the
-// Mission Control setting is MINT-113, and the job reads the defaults through
-// FollowUpDigestDeps.rules (src/server/jobs/followupDigestRun.ts).
+// The catch-up cut-off is a setting (FollowUpDigestRules), resolved from the
+// decided default (local midnight, D77), then a platform override, then an
+// organization override (resolveFollowUpDigestRules). Nothing stores an
+// override yet; the Mission Control setting is MINT-113, and the job reads
+// the default through FollowUpDigestDeps.rules
+// (src/server/jobs/followupDigestRun.ts).
 //
 // What an email may carry: the case number and link, the provider's display
 // name, the payer's name, and the follow-up date and status. Never a touch
@@ -83,44 +82,24 @@ export const MAX_DIGEST_SECTION_ROWS = 100;
 
 /* ----------------------------------- Rules ----------------------------------- */
 
-/**
- * What happens to an overdue or due-today follow-up on an open case with no
- * current coordinator (no assignee, or one who is no longer a member).
- *   count_only  sent to no one, counted as unassigned_follow_ups (Oct 31).
- * MINT-127 adds a mode that lists them in every coordinator's Work queue; it
- * is not built here, so count_only is the only mode.
- */
-export type UnassignedFollowUpMode = "count_only";
-
-export const UNASSIGNED_FOLLOW_UP_MODES: readonly UnassignedFollowUpMode[] = ["count_only"];
-
 /** In an override, the explicit spelling of "until local midnight" (null inherits there). */
 export const CATCH_UP_UNTIL_MIDNIGHT = 24;
 
 /** The digest's policy rules. Each field names its default. */
 export interface FollowUpDigestRules {
-  /** Unassigned follow-ups. Default "count_only" (Oct 31). */
-  unassignedFollowUps: UnassignedFollowUpMode;
   /**
    * How late in the org's local day the day's last scheduled send still goes
    * out when it was missed. null (default, D77: as built): until local
    * midnight, so every hourly run from that send's hour through the 23:00
    * hour catches up. A whole hour H from 1 to 23: only runs whose local hour
-   * is before H, so a send not made by H:00 is not made for that date. When
-   * DST start skips the send's hour (midnight included, as in
-   * America/Santiago), the first hour after it stands in for it, whatever
-   * the cut-off. An H at or before the day's last send hour (the
-   * send hour, or for twice a day the second send hour) would mean that send
-   * is never due: it is invalid (catchUpRuleProblem), and the job falls back
-   * to midnight and counts it. A twice-a-day first send's window always ends
-   * at the second send hour.
+   * is before H. A twice-a-day first send's window always ends at the second
+   * send hour.
    */
   catchUpUntilLocalHour: number | null;
 }
 
-/** The decided defaults: Sowmya's Oct 31 answers (count only; until midnight). */
+/** The decided default: Sowmya's Oct 31 answer (until midnight, D77). */
 export const DEFAULT_FOLLOW_UP_DIGEST_RULES: Readonly<FollowUpDigestRules> = Object.freeze({
-  unassignedFollowUps: "count_only",
   catchUpUntilLocalHour: null,
 });
 
@@ -141,90 +120,21 @@ function isCatchUpHour(value: unknown): value is number {
   );
 }
 
-const RULE_CHECKS: { [K in keyof FollowUpDigestRules]: (value: unknown) => boolean } = {
-  unassignedFollowUps: (value) =>
-    typeof value === "string" && (UNASSIGNED_FOLLOW_UP_MODES as readonly string[]).includes(value),
-  catchUpUntilLocalHour: isCatchUpHour,
-};
-
 /**
- * Field by field: the organization's value, else the platform's, else the
- * default. null or undefined inherits; a value of the wrong shape is skipped
- * like a missing one. A cut-off of 24 resolves to null (local midnight).
+ * The organization's value, else the platform's, else the default. null or
+ * undefined inherits; a value of the wrong shape is skipped like a missing
+ * one. A cut-off of 24 resolves to null (local midnight).
  */
 export function resolveFollowUpDigestRules(
   platform?: FollowUpDigestRulesOverride | null,
   organization?: FollowUpDigestRulesOverride | null,
 ): FollowUpDigestRules {
-  const pick = <K extends keyof FollowUpDigestRules>(key: K): FollowUpDigestRules[K] => {
-    for (const override of [organization, platform]) {
-      const value: unknown = override?.[key];
-      if (value != null && RULE_CHECKS[key](value)) return value as FollowUpDigestRules[K];
-    }
-    return DEFAULT_FOLLOW_UP_DIGEST_RULES[key];
-  };
-  const cutOff = pick("catchUpUntilLocalHour");
-  return {
-    unassignedFollowUps: pick("unassignedFollowUps"),
-    catchUpUntilLocalHour: cutOff === CATCH_UP_UNTIL_MIDNIGHT ? null : cutOff,
-  };
-}
-
-/** Why resolved rules cannot be applied to an org with this schedule, or null. */
-export type CatchUpRuleProblem = "cut_off_not_after_send_hour";
-
-/**
- * Pass the hour of the day's last scheduled send (lastDigestSendHour): the
- * send hour, or for twice a day the second send hour.
- */
-export function catchUpRuleProblem(
-  rules: Pick<FollowUpDigestRules, "catchUpUntilLocalHour">,
-  lastSendHour: number | null,
-): CatchUpRuleProblem | null {
-  const cutOff = rules.catchUpUntilLocalHour;
-  if (cutOff == null || cutOff >= CATCH_UP_UNTIL_MIDNIGHT || lastSendHour == null) return null;
-  return cutOff <= lastSendHour ? "cut_off_not_after_send_hour" : null;
-}
-
-/**
- * Plain-language problems with an override (or resolved rules); empty when it
- * can go live. null leaves a rule to the layer below. Pass the org's
- * effective schedule (its send hour, and for twice a day its frequency and
- * second send hour) to also check that the cut-off leaves every scheduled
- * send a due hour.
- */
-export function validateFollowUpDigestRules(
-  rules: unknown,
-  context: Partial<DigestSchedule> = {},
-): string[] {
-  if (rules == null || typeof rules !== "object" || Array.isArray(rules)) {
-    return ["The follow-up digest rules must be a set of named values."];
+  let cutOff = DEFAULT_FOLLOW_UP_DIGEST_RULES.catchUpUntilLocalHour;
+  for (const override of [platform, organization]) {
+    const value = override?.catchUpUntilLocalHour;
+    if (isCatchUpHour(value)) cutOff = value;
   }
-  const record = rules as Record<string, unknown>;
-  const errors: string[] = [];
-  for (const key of Object.keys(record)) {
-    if (!(key in RULE_CHECKS)) errors.push(`"${key}" is not a follow-up digest rule.`);
-  }
-  const mode = record.unassignedFollowUps;
-  if (mode != null && !RULE_CHECKS.unassignedFollowUps(mode)) {
-    errors.push('Unassigned follow-ups can only be counted for now ("count_only").');
-  }
-  const cutOff = record.catchUpUntilLocalHour;
-  if (cutOff != null && !isCatchUpHour(cutOff)) {
-    errors.push(
-      "The catch-up cut-off must be a whole hour from 1 to 23, or 24 (or none) for local midnight.",
-    );
-  } else if (isCatchUpHour(cutOff)) {
-    const last = lastDigestSendHour(context);
-    if (catchUpRuleProblem({ catchUpUntilLocalHour: cutOff }, last)) {
-      errors.push(
-        last === context.sendHour
-          ? `The catch-up cut-off (${cutOff}:00) must be after the send hour (${last}:00), or the digest never goes out.`
-          : `The catch-up cut-off (${cutOff}:00) must be after the second send hour (${last}:00), or the second digest never goes out.`,
-      );
-    }
-  }
-  return errors;
+  return { catchUpUntilLocalHour: cutOff === CATCH_UP_UNTIL_MIDNIGHT ? null : cutOff };
 }
 
 export type DigestFollowUpStatus = "overdue" | "due_today";
@@ -298,8 +208,6 @@ export interface FollowUpDigestPlan {
 }
 
 export interface FollowUpDigestPlanInput {
-  /** Resolved rules (resolveFollowUpDigestRules); default DEFAULT_FOLLOW_UP_DIGEST_RULES. */
-  rules?: Pick<FollowUpDigestRules, "unassignedFollowUps">;
   practiceName: string;
   /** The org's local date, YYYY-MM-DD (digestSlot). */
   today: string;
@@ -379,18 +287,6 @@ function sendHours(schedule: DigestScheduleSettings): number[] {
     : [schedule.sendHour];
 }
 
-/**
- * The hour of the day's last scheduled send: the second send hour for twice
- * a day, else the send hour. The catch-up cut-off must be after it
- * (catchUpRuleProblem). Null when the org's digest is not set up.
- */
-export function lastDigestSendHour(schedule: Partial<DigestSchedule>): number | null {
-  const set = digestScheduleOf(schedule);
-  if (!set) return null;
-  const hours = sendHours(set);
-  return hours[hours.length - 1];
-}
-
 /** The ISO weekday (1 = Monday to 7 = Sunday) of a YYYY-MM-DD date. */
 export function isoWeekday(iso: string): number {
   requireDay(iso);
@@ -425,9 +321,7 @@ export interface DigestSlot {
    * past the cut-off, else the first. 2 only for twice a day.
    */
   send: 1 | 2;
-  /** That send's hour: its first due hour, where once-per-send logging happens. */
-  sendHour: number;
-  /** That send's key for the claims and the completion row (digestSlotKey). */
+  /** That send's key for the send claims (digestSlotKey). */
   slot: string;
 }
 
@@ -464,7 +358,6 @@ export function digestSlot(
       localDate: local.date,
       localHour: local.hour,
       send,
-      sendHour: hours[index],
       slot: digestSlotKey(local.date, send),
     };
   };
@@ -483,27 +376,8 @@ export function digestSlot(
   if (index < hours.length - 1) return at("due", index);
 
   // The day's last send: due until the catch-up cut-off.
-  const hour = hours[index];
   const cutOff = rules.catchUpUntilLocalHour;
-  let beforeCutOff = cutOff == null || local.hour < cutOff;
-  if (!beforeCutOff && local.hour > hour) {
-    // DST start can skip the send's hour (2 am on Mar 14 2027 in Chicago).
-    // The first hour after it then stands in for it, so a cut-off just after
-    // that hour still leaves that one attempt. Where DST start skips
-    // midnight itself (America/Santiago on Sep 6 2026: 23:59 on the 5th, then
-    // 1 am on the 6th), the hour before this one is on the previous date:
-    // this is the local day's first hour, and every hour before it was
-    // skipped, so it counts as "the hour before was before the send hour". On
-    // any other day the hour before this one is on this date and at or after
-    // the send's hour.
-    try {
-      const hourBefore = zonedDateHour(new Date(now.getTime() - 3_600_000), sendTimeZone);
-      if (hourBefore.date !== local.date || hourBefore.hour < hour) beforeCutOff = true;
-    } catch {
-      // The zone formatted a moment ago; leave the cut-off as it is.
-    }
-  }
-  return at(beforeCutOff ? "due" : "past_catch_up", index);
+  return at(cutOff == null || local.hour < cutOff ? "due" : "past_catch_up", index);
 }
 
 /* -------------------------------- What is listed ------------------------------ */
@@ -585,7 +459,6 @@ function buildSection(rows: readonly FollowUpDigestRow[]): FollowUpDigestSection
 /** Every digest to send for one org on its local date, and what was held back. */
 export function planFollowUpDigests(input: FollowUpDigestPlanInput): FollowUpDigestPlan {
   const { today, appBaseUrl } = input;
-  const rules = input.rules ?? DEFAULT_FOLLOW_UP_DIGEST_RULES;
   const due = dueFollowUps(input.cases, input.touchpoints, today);
   const memberIds = new Set(input.members.map((m) => m.userId));
 
@@ -600,13 +473,8 @@ export function planFollowUpDigests(input: FollowUpDigestPlanInput): FollowUpDig
     const followUp = due.get(c.id);
     if (!followUp) continue;
     if (!rows) {
-      // A fact, counted whatever the mode. The mode decides routing only:
-      // count_only (the one mode until MINT-127) sends it to no one.
+      // Sent to no one, always counted (MINT-127 adds the Work-queue routing).
       unassignedFollowUps += 1;
-      switch (rules.unassignedFollowUps) {
-        case "count_only":
-          break;
-      }
       continue;
     }
     rows.push({

@@ -1,8 +1,10 @@
 name: Follow-up digest hourly tick
 
 # MINT-108. The follow-up digest (GET /api/jobs/followup-digest) must be
-# called every hour: each call sends to every org whose local hour has reached
-# its send hour, once per org-local date (src/server/jobs/followupDigest.ts).
+# called every hour: each call sends to every org one of whose scheduled sends
+# is open, once per scheduled send (src/server/jobs/followupDigest.ts). There
+# is no run ledger: every call runs the job, and its per-recipient send claim
+# keeps a second call (this tick and the Vercel backup, say) from resending.
 # Production is on Vercel's Hobby plan, which runs a cron at most once a day
 # and fails a deploy with a more frequent one, so the hourly tick comes from
 # here. vercel.json keeps one daily call at 18:00 UTC as a backup.
@@ -19,8 +21,10 @@ name: Follow-up digest hourly tick
 # interpolated into a script, and is never printed. The target must be one of
 # three exact origins. No redirect is followed and only https is spoken. The
 # tick is green only for HTTP 200 with the job envelope's outcome
-# `succeeded` or `skipped`; anything else (a failed run's 500, a redirect, an
-# HTML page, JSON without `data`, no response) is red. It prints the HTTP
+# `succeeded`; anything else (a failed run's 500, a redirect, an HTML page,
+# JSON without `data`, no response) is red. A run whose sends partly failed
+# still succeeds: it is green, its counts show `send_failures` and
+# `orgs_failed`, and the next hour retries what it can. It prints the HTTP
 # status, the outcome and the integer counts, which carry no PHI.
 #
 # Known limits.
@@ -28,10 +32,10 @@ name: Follow-up digest hourly tick
 #     and stays green, and only the 18:00 UTC Vercel backup sends (about noon
 #     to 1 pm Central).
 #   * `--max-time 60`: a run longer than that turns the tick red while the
-#     function may still finish; job_runs records the real outcome. How long
-#     a Hobby function may run depends on the project's Fluid compute setting.
-#     The function's maxDuration is not raised here: it would apply to the one
-#     server function, so to every API route.
+#     function may still finish; the next hour's run picks up whatever it
+#     left. How long a Hobby function may run depends on the project's
+#     Fluid compute setting. The function's maxDuration is not raised here:
+#     it would apply to the one server function, so to every API route.
 #   * GitHub runs schedules on the default branch only, may delay or skip them
 #     under load, and disables them after 60 days without activity in a public
 #     repository. The daily backup and "at or after" catch up.
@@ -43,8 +47,7 @@ name: Follow-up digest hourly tick
 on:
   schedule:
     # Seven past each hour, off the top of the hour when GitHub's scheduler is
-    # busiest. The job keys each run on the UTC hour, so a late tick still
-    # counts for its hour and a second call in the same hour is skipped.
+    # busiest. A late tick still catches up ("at or after" the send hour).
     - cron: "7 * * * *"
   workflow_dispatch:
 
@@ -96,7 +99,7 @@ jobs:
           [ -n "${summary}" ] || summary='"not the job envelope"'
           ran=0
           if [ "${status}" = "200" ] \
-            && jq -e '.data.outcome == "succeeded" or .data.outcome == "skipped"' "${body}" >/dev/null 2>&1; then
+            && jq -e '.data.outcome == "succeeded"' "${body}" >/dev/null 2>&1; then
             ran=1
           fi
           rm -f "${body}"

@@ -812,72 +812,46 @@ bounce_escalation_step, updated_at)`; the platform-managed
 - Regression packet: `supabase/tests/mint107-notification-sequences.sql`, run
   by CI's Migration dry-run job.
 
-## MINT-108 notification ledgers (repository-only, operator apply pending)
+## MINT-108 notification sends (repository-only, operator apply pending)
 
 Migration `20261031060000_notification_sends.sql`, applied after
-`20261031050000` and `20261031051500`. The ledgers behind scheduled
-notification jobs: a job run is at-least-once (`job_runs`), so a job that
-emails people claims each send in `notification_sends` before sending it, and
-records in `notification_org_slots` when an org's sends for a slot are
-settled. The first user is the follow-up digest (`GET
-/api/jobs/followup-digest`, `src/server/jobs/followupDigestRun.ts`), which
-is called hourly (a GitHub Actions schedule, plus a daily Vercel cron as a
-backup); its slot is each scheduled send's: the org's **local date**, or
-`YYYY-MM-DD:2` for a twice-a-day digest's second send (A8), not its
-`job_runs` run key (the UTC hour). Until the migration is applied the digest cannot check a slot
-or claim a send, so it sends nothing and its run is recorded failed.
+`20261031051500`. The per-recipient send record behind scheduled
+notification jobs. There is no run ledger (MINT-106): every call to a job
+runs it, so a job that emails people claims each send here before sending
+it, and sends only what it claimed. The first user is the follow-up digest
+(`GET /api/jobs/followup-digest`, `src/server/jobs/followupDigestRun.ts`),
+called hourly (a GitHub Actions schedule, plus a daily Vercel cron as a
+backup; they may overlap). Its slot is each scheduled send's: the org's
+**local date**, or `YYYY-MM-DD:2` for a twice-a-day digest's second send
+(A8). Until the migration is applied the digest cannot claim a send, so it
+sends nothing.
 
 ### notification_sends
 
-`id`, `job` (the `job_runs` pattern), `slot` (what the send is once-only for:
-for the digest, the org's local date `YYYY-MM-DD`, or `YYYY-MM-DD:2` for the
-second send of a twice-a-day digest; CHECK
-`^[0-9A-Za-z:_-]{1,64}$`), `org_id` (FK to `organizations`, ON DELETE
-CASCADE), `recipient_user_id` (the member it went to; an actor id, not a
-foreign key), `outcome` (`claimed | sent | failed`), `claimed_at`,
-`finished_at` (set exactly when no longer claimed), `provider_message_id`
-(SendGrid's `x-message-id`, only on `sent`, `^[A-Za-z0-9._=-]{1,128}$`),
-`error_code` (set exactly when `failed`; `misconfigured`, `invalid_input` or
-`provider_rejected` for a SendGrid 4xx other than 408: the mailer's errors
-that prove nothing was accepted). The partial unique index `notification_sends_one_live_send` on
-`(job, slot, org_id, recipient_user_id) WHERE outcome IN ('claimed', 'sent')`
-is the once-per-slot guarantee: a rerun, a later hourly run, a changed send
-hour, time zone or frequency cannot repeat a scheduled send. Only a definite rejection is `failed`, and a later attempt may claim
-again, up to three failed rows per key. A send that may have been delivered (a
-network error or timeout, a SendGrid 5xx or 408, an unexplained error, a
-function that died mid-send) stays `claimed` and is never resent: SendGrid has
-no idempotency key. No PHI: no address, name, subject or body. RLS on with no policies;
-service_role has SELECT and nothing else.
-
-### notification_org_slots
-
-`job`, `org_id` (FK to `organizations`, ON DELETE CASCADE), `slot` (same
-pattern as above), `completed_at`; primary key `(job, org_id, slot)`. One row
-once an org's sends for the slot are settled: every planned send is sent,
-already sent, given up after three rejections, or left claimed by a finished
-attempt because it may have been delivered. A claim another attempt took under
-15 minutes ago keeps the slot open for that attempt. The hourly digest skips an org that has a row for its
-open scheduled send's slot. An org whose run failed, or that has a send a
-later attempt may retry, gets no row, so the next hourly run catches it up
-while that send's window is open (until the next send's hour, or the
-catch-up cut-off, local midnight by default).
-Insert-only. No PHI. RLS on with no policies; service_role has SELECT and
+`org_id` (FK to `organizations`, ON DELETE CASCADE), `job` (the registered
+job name, `^[a-z][a-z0-9-]{0,47}$`), `slot` (what the send is once-only for;
+CHECK `^[0-9A-Za-z:_-]{1,64}$`), `recipient_user_id` (the member it went to;
+an actor id, not a foreign key), `outcome` (`claimed | sent | failed`),
+`claimed_at`. The primary key `(org_id, job, slot, recipient_user_id)` is the
+once-per-slot guarantee: one row per send, so no rerun, later hourly run,
+overlapping run, changed send hour, time zone or frequency repeats a
+scheduled send. It leads with `org_id`, so it also serves the org FK. A send
+that may have been delivered (a network error or timeout, a SendGrid 5xx or
+408, an unexplained error, a function that died mid-send) stays `claimed` and
+is never resent: SendGrid has no idempotency key. Only a definite rejection
+(a 4xx other than 408, invalid input, misconfiguration) is `failed`, and a
+later call claims that same row again. No other index. No PHI: no address,
+name, subject or body. RLS on with no policies; service_role has SELECT and
 nothing else.
 
 ### RPCs (service_role only, SECURITY DEFINER, `search_path = ''`)
 
 - `claim_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id)
-→ jsonb` — `{"status":"claimed","id":…}` for a new claimed row,
-  `{"status":"taken","outcome":"sent"|"claimed","recent":…}` when that send
-  is already sent or claimed for the slot (`recent`: claimed under 15
-  minutes ago, the `job_runs` stale window, so another attempt may still be
-  sending it), `{"status":"exhausted"}` after three failed rows for the key.
-- `finish_notification_send(p_id, p_outcome, p_provider_message_id DEFAULT
-NULL, p_error_code DEFAULT NULL) → boolean` — records `sent` or `failed` on a
-  `claimed` row; false when the row is not claimed. Refuses an outcome or an
-  error code outside the closed sets; the table CHECKs pair them.
-- `complete_notification_org_slot(p_job, p_org_id, p_slot) → boolean` — true
-  for a new `notification_org_slots` row, false when the slot was already
-  recorded.
+→ boolean` — true when the caller now holds the send (a new key, or a
+  `failed` row taken again, `claimed_at` reset); false when it is already
+  `claimed` or `sent`, so the caller skips it.
+- `finish_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id,
+p_outcome) → boolean` — records `sent` or `failed` on a `claimed` row;
+  false when the row is not claimed. Refuses any other outcome (22023).
 - Regression packet: `supabase/tests/mint108-notification-sends.sql`, run by
   CI's Migration dry-run job after the MINT-107 packet.

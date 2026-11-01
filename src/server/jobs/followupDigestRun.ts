@@ -6,80 +6,58 @@
 //   1. Discovery, the one cross-org read: every org whose followup_digest
 //      sequence is on, with its own steps, and Minted's default
 //      (listEnabledNotificationSequences). resolveNotificationSequence gives
-//      each org's effective sequence: its frequency (daily, weekly or twice a
-//      day, A8), send hour, time zone, second send hour, weekday and step.
-//   2. The hour gate (digestSlot, src/lib/followUpDigest.ts): an org whose
-//      digest Minted has not set up (no schedule on its row; G2, no default)
+//      each org's effective sequence: its schedule (frequency, weekday, send
+//      hour, zone and second hour, A8, A10) and its step.
+//   2. The hour gate (digestSlot, src/lib/followUpDigest.ts). An org whose
+//      digest Minted has not set up (no schedule; G2, there is no default)
 //      is not due. Otherwise it is due while one of its scheduled sends is
 //      open: from that send's hour until the next send's hour, or for the
-//      day's last send until the catch-up cut-off (FollowUpDigestRules; local
-//      midnight by default, D77). A weekly digest is scheduled only on its
-//      weekday, in the org's zone.
-//      The local date is the digest's "today"; the scheduled send's slot is
-//      that date, or `date:2` for twice a day's second send. An org not due
-//      is counted and nothing of it is read.
-//   3. Once per scheduled send: a due org that already has a completion row
-//      for (job, org, slot) in notification_org_slots is skipped.
-//   4. The step's template_key must pass the consumer contract
-//      (templateSendProblem) and have a body here, or the org is skipped and
-//      counted. Nothing is sent for it.
-//   5. Read the org's name, members, open cases and touchpoints
+//      day's last send until the catch-up cut-off (local midnight by
+//      default, D77). A weekly digest is scheduled only on its weekday, in
+//      the org's zone. The local date is
+//      the digest's "today"; the scheduled send's slot is that date, or
+//      `date:2` for twice a day's second send. Nothing of an org that is not
+//      due is read.
+//   3. The step's template_key must pass the consumer contract
+//      (templateSendProblem) and have a body here. Otherwise the org's
+//      coordinators are skipped, with no fallback digest (U6): counted and
+//      logged, one line each run.
+//   4. Read the org's name, members, open cases and touchpoints
 //      (src/services/followUpDigest.ts), each scoped to the org, and plan the
 //      digests (planFollowUpDigests): one per coordinator with something due.
-//      Unassigned follow-ups go to no one and are counted (the rules'
-//      count_only, the one mode until MINT-127).
-//   6. For each digest, claim (job, slot, org, recipient) in
+//      Unassigned follow-ups go to no one and are counted.
+//   5. For each digest, claim (job, slot, org, recipient) in
 //      notification_sends, send followup_digest_daily through sendEmail, and
-//      record the send sent or failed.
-//   7. When nothing is left that a later run could retry, and no other
-//      attempt holds a recent claim for the org, record the org's slot
-//      complete, so later hourly runs skip that scheduled send.
+//      record the send sent or failed. A recipient already sent, or claimed
+//      by an attempt that may have delivered, is skipped: that unique claim
+//      alone keeps anyone from getting a scheduled send twice, however many
+//      runs see the org while its send is open.
 //
-// Failure semantics. One recipient's failed send, one org's failed read, or
-// a send whose ledger row could not be finished never stops the rest: every
-// other digest still goes out. An org with a failed read or a retryable send
-// gets no completion row, so the next hourly run catches it up while the
-// send's window is open; the claims keep that run from resending what
-// already went. If
-// anything failed, the run then throws FollowUpDigestIncompleteError, so
-// job_runs records the hour failed. Only a definite rejection (a SendGrid 4xx
-// other than 408, invalid input, misconfiguration) is retried, at most three
-// times per recipient per scheduled send: a network error, a timeout, a SendGrid
-// 5xx or 408 (its edge may have accepted the message) or an unexplained error
-// may have been delivered, so that send stays claimed and is never resent. A
-// claim another attempt took under NOTIFICATION_SEND_RECENT_MINUTES ago is
-// left to it: this run neither sends it nor completes the org, so a
-// rejection there can still be retried. One edge remains between two
-// concurrent runs: if run A completes the org while run B is sending to a
-// coordinator A never claimed (B's plan saw a follow-up A's did not), and B's
-// send is then definitely rejected, the org is already complete, so that
-// rejection is not retried that day. There is still no duplicate. Missing configuration (the SendGrid
-// env, or an APP_BASE_URL that is not a bare origin) throws before any send.
-// A template problem is one org's setting: it is counted every run until
-// fixed, logged once per org per scheduled send (in its first due hour), and
-// does not fail the run.
+// Failures. One recipient's failed send or one org's failed read never stops
+// the rest; each is logged (one line) and counted, and the run still answers
+// its counts. The next hourly run, while the send is open, plans the org
+// again: a definitely rejected send (a SendGrid 4xx other than 408, invalid
+// input, misconfiguration) was marked failed and is claimed and sent again; a
+// send that may have been delivered (a network error, a timeout, a SendGrid
+// 5xx or 408, an unexplained error) stayed claimed and is never resent.
+// Missing configuration (the SendGrid env, or an APP_BASE_URL that is not a
+// bare origin) and a failed discovery read throw, so the run fails.
 //
 // Edges, by design (D78). A day's last send at 23:00 is due in one hourly
-// tick only (the next is the next local date), so it gets one attempt; a
-// send hour can be 22 at the latest since A10 (its second hour must be
-// later), so only a twice-a-day second hour of 23 meets this. A twice-a-day
-// first send still unmade at the second hour is not made: the second carries
-// the same list. A zone change can move an org's local date: westward across
-// the date line (Honolulu to Tokyo, say) a local date can be skipped;
-// eastward the org can get a digest for an earlier date a few hours after the
-// last. A frequency change takes effect at the next run: the day's sends made
-// so far keep their slots, so none is repeated. A failed run's counts are
-// lost: the MINT-106 runner records `{}` on failure (a follow-up there, not
-// here).
+// tick only (the next is the next local date), so it gets one attempt. A
+// twice-a-day first send still unmade at the second hour is not made: the
+// second carries the same list. A zone change can move an org's local date:
+// westward across the date line (Honolulu to Tokyo, say) a local date can be
+// skipped; eastward the org can get a digest for an earlier date a few hours
+// after the last. A frequency change takes effect at the next run: the day's
+// sends made so far keep their slots, so none is repeated.
 //
 // Logging: ctx.log.error only, with closed snake_case events. Nothing here
 // logs an address, a name, a case, a date or a count.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import {
-  catchUpRuleProblem,
   digestSlot,
-  lastDigestSendHour,
   planFollowUpDigests,
   resolveFollowUpDigestRules,
   type FollowUpDigestRules,
@@ -108,10 +86,7 @@ import {
   type FollowUpDigestCounts,
 } from "./followupDigest";
 import {
-  NOTIFICATION_SEND_ERROR_CODES,
   supabaseNotificationSendLedger,
-  type NotificationOrgSlotKey,
-  type NotificationSendErrorCode,
   type NotificationSendKey,
   type NotificationSendLedger,
 } from "./notificationSends";
@@ -122,33 +97,18 @@ export const DIGEST_EMAIL_TEMPLATE = "followup_digest_daily" satisfies TemplateK
 
 type DigestTemplate = typeof DIGEST_EMAIL_TEMPLATE;
 
-// Thrown values whose class name is the whole log line's explanation.
+// Thrown or logged values whose class name is the whole log line's explanation.
 export class FollowUpDigestNotConfiguredError extends Error {
   override name = "FollowUpDigestNotConfiguredError";
 }
 export class FollowUpDigestTemplateError extends Error {
   override name = "FollowUpDigestTemplateError";
 }
-/** An org's digest rules that cannot apply to its send hour; the run uses the
- *  default for that rule instead. */
-export class FollowUpDigestRulesError extends Error {
-  override name = "FollowUpDigestRulesError";
+export class FollowUpDigestRecipientError extends Error {
+  override name = "FollowUpDigestRecipientError";
 }
 export class NotificationSendFinishLostError extends Error {
   override name = "NotificationSendFinishLostError";
-}
-export class NotificationSendRetriesExhaustedError extends Error {
-  override name = "NotificationSendRetriesExhaustedError";
-}
-/** Something failed; everything else was sent. Carries the attempt's counts
- *  for tests and callers; the runner records the run failed without them. */
-export class FollowUpDigestIncompleteError extends Error {
-  override name = "FollowUpDigestIncompleteError";
-  readonly counts: FollowUpDigestCounts;
-  constructor(counts: FollowUpDigestCounts) {
-    super("Some follow-up digests were not sent");
-    this.counts = counts;
-  }
 }
 
 export interface FollowUpDigestConfig {
@@ -173,12 +133,9 @@ export interface FollowUpDigestDeps {
   config: () => FollowUpDigestConfig;
   send: (input: SendEmailInput<DigestTemplate>) => Promise<SendEmailResult>;
   ledger: (db: SupabaseClient<Database>) => NotificationSendLedger;
-  /**
-   * One org's resolved digest rules (resolveFollowUpDigestRules). Synchronous
-   * on purpose: when Mission Control stores overrides (MINT-113), carry them
-   * on the existing discovery read (listEnabledNotificationSequences) rather
-   * than adding a read per org here.
-   */
+  /** One org's resolved digest rules (resolveFollowUpDigestRules). Nothing
+   *  stores an override yet, so every org gets the decided default; Mission
+   *  Control (MINT-113) carries overrides on the discovery read. */
   rules: (orgId: string) => FollowUpDigestRules;
 }
 
@@ -186,9 +143,6 @@ const DEFAULT_DEPS: FollowUpDigestDeps = {
   config: resolveFollowUpDigestConfig,
   send: (input) => sendEmail(input),
   ledger: supabaseNotificationSendLedger,
-  // Nothing stores a platform or org override yet, so every org gets the
-  // decided rules. Mission Control (MINT-113) adds the stored overrides; a
-  // services/ reader then passes them to resolveFollowUpDigestRules here.
   rules: () => resolveFollowUpDigestRules(),
 };
 
@@ -213,113 +167,77 @@ function zeroCounts(): FollowUpDigestCounts {
   ) as FollowUpDigestCounts;
 }
 
-/** SendGrid answers that may come after its edge accepted the message: any
- *  5xx, and 408 (request timeout). */
-export function isAmbiguousProviderStatus(status: number | undefined): boolean {
-  return status === undefined || status >= 500 || status === 408;
+/** True only when the mailer's error proves nothing was accepted: it was
+ *  misconfigured or the input invalid (both before any request), or SendGrid
+ *  answered a 4xx other than 408 (429 included). A network error or timeout,
+ *  a 5xx or 408 (SendGrid's edge may have accepted the message) and an error
+ *  the mailer did not classify may have been delivered. */
+export function isDefiniteRejection(error: unknown): error is EmailError {
+  if (!(error instanceof EmailError)) return false;
+  if (error.kind === "misconfigured" || error.kind === "invalid_input") return true;
+  const status = error.status;
+  return (
+    error.kind === "provider_rejected" && status !== undefined && status < 500 && status !== 408
+  );
 }
 
-/** The code of a definite rejection, or null when the send may have been
- *  delivered: a network error or timeout, a SendGrid 5xx or 408, or an error
- *  the mailer did not classify. Every other 4xx, 429 included, is definite. */
-export function definiteRejectionCode(error: unknown): NotificationSendErrorCode | null {
-  if (!(error instanceof EmailError)) return null;
-  if (error.kind === "provider_rejected" && isAmbiguousProviderStatus(error.status)) return null;
-  const kind: string = error.kind;
-  return (NOTIFICATION_SEND_ERROR_CODES as readonly string[]).includes(kind)
-    ? (kind as NotificationSendErrorCode)
-    : null;
+async function record(
+  log: JobLogger,
+  ledger: NotificationSendLedger,
+  key: NotificationSendKey,
+  outcome: "sent" | "failed",
+): Promise<void> {
+  try {
+    if (!(await ledger.finish(key, outcome))) {
+      log.error("send_unrecorded", new NotificationSendFinishLostError());
+    }
+  } catch (error) {
+    // The row stays claimed: a sent email is never resent, and a rejected one
+    // is not retried for this scheduled send.
+    log.error("send_unrecorded", error);
+  }
 }
 
-type DeliveryOutcome =
-  | "sent"
-  | "already_sent"
-  /** Another attempt claimed it recently and may still be sending it. */
-  | "in_flight"
-  /** Claimed by an earlier attempt that is over: maybe delivered, never resent. */
-  | "held"
-  | "failed"
-  /** A definite rejection whose failed row could not be written: it stays
-   *  claimed, so no later run retries it. */
-  | "failed_unrecorded"
-  | "uncertain"
-  | "exhausted"
-  | "unrecorded";
-
+/** Claim, send, record. "skipped" when the send is already sent or claimed. */
 async function deliver(
   log: JobLogger,
   deps: FollowUpDigestDeps,
   ledger: NotificationSendLedger,
   key: NotificationSendKey,
   input: SendEmailInput<DigestTemplate>,
-): Promise<DeliveryOutcome> {
-  let claimId: string;
+): Promise<"sent" | "skipped" | "failed"> {
   try {
-    const claim = await ledger.claim(key);
-    if (claim.status === "taken") {
-      if (claim.outcome === "sent") return "already_sent";
-      return claim.recent ? "in_flight" : "held";
-    }
-    if (claim.status === "exhausted") {
-      log.error("send_retries_exhausted", new NotificationSendRetriesExhaustedError());
-      return "exhausted";
-    }
-    claimId = claim.id;
+    if (!(await ledger.claim(key))) return "skipped";
   } catch (error) {
-    // No claim, no send: the ledger is what keeps a retry from resending.
+    // No claim, no send: the claim is what keeps a later run from resending.
     log.error("send_claim_failed", error);
     return "failed";
   }
 
-  let result: SendEmailResult;
   try {
-    result = await deps.send(input);
+    await deps.send(input);
   } catch (error) {
-    const errorCode = definiteRejectionCode(error);
-    if (errorCode === null) {
+    if (!isDefiniteRejection(error)) {
       // It may have been delivered: leave the claim, so it is never resent.
       log.error(`send_uncertain_${error instanceof EmailError ? error.kind : "error"}`, error);
-      return "uncertain";
+      return "failed";
     }
-    log.error(`send_failed_${errorCode}`, error);
-    try {
-      if (await ledger.finish(claimId, { outcome: "failed", errorCode })) return "failed";
-      log.error("send_failure_unrecorded", new NotificationSendFinishLostError());
-    } catch (finishError) {
-      log.error("send_failure_unrecorded", finishError);
-    }
-    // The claim stays claimed, so this recipient is not retried that day.
-    return "failed_unrecorded";
+    log.error(`send_failed_${error.kind}`, error);
+    // Nothing was accepted: mark it failed, so a later run may send it.
+    await record(log, ledger, key, "failed");
+    return "failed";
   }
-
-  try {
-    const recorded = await ledger.finish(claimId, {
-      outcome: "sent",
-      providerMessageId: result.messageId,
-    });
-    if (recorded) return "sent";
-    log.error("send_finish_lost", new NotificationSendFinishLostError());
-  } catch (error) {
-    log.error("send_unrecorded", error);
-  }
-  // The email went out; the claim still blocks a resend.
-  return "unrecorded";
+  await record(log, ledger, key, "sent");
+  return "sent";
 }
 
-/** A due org: its effective sequence, its rules, the local date and hour of
- *  the run, and the scheduled send that is open (its hour and slot). */
+/** A due org: its effective sequence, the local date of the run, and the
+ *  open scheduled send's slot. */
 interface DueOrg {
   orgId: string;
   sequence: EffectiveNotificationSequence;
-  rules: FollowUpDigestRules;
   localDate: string;
-  localHour: number;
-  sendHour: number;
   slot: string;
-}
-
-function orgSlot(org: DueOrg): NotificationOrgSlotKey {
-  return { job: FOLLOWUP_DIGEST_JOB_NAME, orgId: org.orgId, slot: org.slot };
 }
 
 async function runOrg(
@@ -332,20 +250,14 @@ async function runOrg(
 ): Promise<void> {
   const problem = digestStepProblem(org.sequence.steps);
   if (problem) {
+    // U6: no fallback digest. #568 will record this once per scheduled send.
     counts.orgs_skipped_template += 1;
-    // Counted every run; logged once per scheduled send, in its first due
-    // hour. So the line is missing for a send whose due-hour tick was
-    // skipped or delayed, or when the org was switched on after that hour;
-    // the counts still show the skip.
-    if (org.localHour === org.sendHour) {
-      ctx.log.error(`org_skipped_${problem}`, new FollowUpDigestTemplateError());
-    }
+    ctx.log.error(`org_skipped_${problem}`, new FollowUpDigestTemplateError());
     return;
   }
 
   const data = await loadFollowUpDigestOrgData({ db: ctx.db }, org.orgId);
   const plan = planFollowUpDigests({
-    rules: org.rules,
     practiceName: data.practiceName,
     today: org.localDate,
     appBaseUrl: config.appBaseUrl,
@@ -356,20 +268,22 @@ async function runOrg(
   counts.digests_suppressed += plan.suppressed;
   counts.unassigned_follow_ups += plan.unassignedFollowUps;
 
-  // Sends a later run could still make (a failed claim or a recorded definite
-  // rejection), or that another attempt may still be making.
-  let open = 0;
   for (const digest of plan.digests) {
     const to = digest.email?.trim() ?? "";
     if (!isEmailAddress(to)) {
-      counts.recipients_skipped += 1;
+      ctx.log.error("recipient_skipped_no_email", new FollowUpDigestRecipientError());
       continue;
     }
     const outcome = await deliver(
       ctx.log,
       deps,
       ledger,
-      { ...orgSlot(org), recipientUserId: digest.recipientUserId },
+      {
+        job: FOLLOWUP_DIGEST_JOB_NAME,
+        orgId: org.orgId,
+        slot: org.slot,
+        recipientUserId: digest.recipientUserId,
+      },
       {
         to,
         template: DIGEST_EMAIL_TEMPLATE,
@@ -379,32 +293,7 @@ async function runOrg(
       },
     );
     if (outcome === "sent") counts.digests_sent += 1;
-    else if (outcome === "already_sent") counts.digests_already_sent += 1;
-    else if (outcome === "in_flight") {
-      counts.sends_in_flight += 1;
-      open += 1;
-    } else if (outcome === "held") counts.sends_held += 1;
-    else if (outcome === "failed") {
-      counts.send_failures += 1;
-      open += 1;
-    } else if (outcome === "failed_unrecorded") counts.send_failures += 1;
-    else if (outcome === "uncertain") counts.sends_uncertain += 1;
-    else if (outcome === "exhausted") counts.sends_exhausted += 1;
-    else {
-      counts.digests_sent += 1;
-      counts.sends_unrecorded += 1;
-    }
-  }
-
-  // Leave the day open for the next hourly run, or for the attempt in flight.
-  if (open > 0) return;
-  try {
-    if (await ledger.completeOrgSlot(orgSlot(org))) counts.orgs_completed += 1;
-    // A concurrent attempt recorded it first.
-    else counts.orgs_already_completed += 1;
-  } catch (error) {
-    counts.orgs_completion_unrecorded += 1;
-    ctx.log.error("org_completion_unrecorded", error);
+    else if (outcome === "failed") counts.send_failures += 1;
   }
 }
 
@@ -423,83 +312,28 @@ export async function runFollowUpDigest(
   for (const row of discovery.sequences) {
     const sequence = resolveNotificationSequence("followup_digest", row, discovery.platformDefault);
     if (!sequence.enabled) continue;
-    counts.orgs_enabled += 1;
-    let rules = deps.rules(row.orgId);
-    // A cut-off at or before the day's last send hour would mean that send
-    // is never made: run with the default (until local midnight) and count
-    // it, like a template skip.
-    const rulesProblem = catchUpRuleProblem(rules, lastDigestSendHour(sequence));
-    if (rulesProblem) {
-      counts.orgs_rules_fallback += 1;
-      rules = { ...rules, catchUpUntilLocalHour: null };
-    }
-    const slot = digestSlot(sequence, ctx.now, rules);
-    // Logged once per scheduled send, in its first due hour (as a template skip).
-    if (rulesProblem && slot?.due && slot.localHour === slot.sendHour) {
-      ctx.log.error(`org_rules_${rulesProblem}`, new FollowUpDigestRulesError());
-    }
-    if (!slot) {
-      // Not set up: Minted has not set this org's digest schedule (G2, there
-      // is no default), so it is not due. Nothing to log.
-      counts.orgs_not_due += 1;
-    } else if (slot.state === "past_catch_up") {
-      counts.orgs_past_catch_up += 1;
-    } else if (!slot.due) {
-      // Before the day's first send hour, or a weekly digest's other days.
-      counts.orgs_not_due += 1;
-    } else {
-      counts.orgs_due += 1;
-      due.push({
-        orgId: row.orgId,
-        sequence,
-        rules,
-        localDate: slot.localDate,
-        localHour: slot.localHour,
-        sendHour: slot.sendHour,
-        slot: slot.slot,
-      });
-    }
+    // Null when Minted has not set the digest up (G2); not due before the
+    // send hour, on a weekly digest's other days, or past the cut-off.
+    const slot = digestSlot(sequence, ctx.now, deps.rules(row.orgId));
+    if (!slot?.due) continue;
+    due.push({ orgId: row.orgId, sequence, localDate: slot.localDate, slot: slot.slot });
   }
+  counts.orgs_due = due.length;
   if (due.length === 0) return counts;
 
+  const config = deps.config();
+  if (!config.emailReady || !config.appBaseUrl || !config.fromEmail) {
+    throw new FollowUpDigestNotConfiguredError();
+  }
+  const ready = { appBaseUrl: config.appBaseUrl, fromEmail: config.fromEmail };
   const ledger = deps.ledger(ctx.db);
-  const pending: DueOrg[] = [];
   for (const org of due) {
     try {
-      if (await ledger.isOrgSlotComplete(orgSlot(org))) counts.orgs_already_completed += 1;
-      else pending.push(org);
+      await runOrg(ctx, deps, ledger, ready, org, counts);
     } catch (error) {
       counts.orgs_failed += 1;
       ctx.log.error("org_failed", error);
     }
-  }
-
-  if (pending.length > 0) {
-    const config = deps.config();
-    if (!config.emailReady || !config.appBaseUrl || !config.fromEmail) {
-      throw new FollowUpDigestNotConfiguredError();
-    }
-    const ready = { appBaseUrl: config.appBaseUrl, fromEmail: config.fromEmail };
-    for (const org of pending) {
-      try {
-        await runOrg(ctx, deps, ledger, ready, org, counts);
-      } catch (error) {
-        counts.orgs_failed += 1;
-        ctx.log.error("org_failed", error);
-      }
-    }
-  }
-
-  // Exhausted sends do not fail the run: nothing is left to try for them.
-  if (
-    counts.orgs_failed +
-      counts.send_failures +
-      counts.sends_uncertain +
-      counts.sends_unrecorded +
-      counts.orgs_completion_unrecorded >
-    0
-  ) {
-    throw new FollowUpDigestIncompleteError(counts);
   }
   return counts;
 }

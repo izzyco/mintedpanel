@@ -20,15 +20,13 @@ import {
 import { DIGEST_TOUCH_CASE_CHUNK, DIGEST_TOUCH_FILTER } from "@/services/followUpDigest";
 import { resolveFollowUpDigestRules } from "@/lib/followUpDigest";
 import {
-  FollowUpDigestIncompleteError,
   FollowUpDigestNotConfiguredError,
-  definiteRejectionCode,
   digestStepProblem,
+  isDefiniteRejection,
   runFollowUpDigest,
   type FollowUpDigestConfig,
   type FollowUpDigestDeps,
 } from "./followupDigestRun";
-import { parseNotificationSendClaim, supabaseNotificationSendLedger } from "./notificationSends";
 import { JOB_REGISTRY } from "./registry";
 import { jobLogger, runJob } from "./runner";
 import type { JobContext } from "./types";
@@ -349,7 +347,6 @@ function mailer(fail: (input: DigestSend) => unknown = () => null) {
 
 function ctx(now = NOW): JobContext {
   clock = now;
-  fake.clock.now = now.getTime();
   return { db: fake.db, now, log: jobLogger(JOB, SITE) };
 }
 
@@ -364,37 +361,23 @@ function counts(partial: Partial<FollowUpDigestCounts>): FollowUpDigestCounts {
   };
 }
 
-async function incomplete(promise: Promise<unknown>): Promise<FollowUpDigestCounts> {
-  const error = await promise.then(
-    () => null,
-    (e: unknown) => e,
-  );
-  expect(error).toBeInstanceOf(FollowUpDigestIncompleteError);
-  return (error as FollowUpDigestIncompleteError).counts;
-}
-
 function logged(): string {
   return consoleError.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
 }
 
 const recipients = () => sent.map((input) => input.to).sort();
-const completions = () =>
-  (fake.tables.notification_org_slots ?? []).map((r) => [r.job, r.org_id, r.slot]).sort();
 const ledgerRows = () =>
   fake.sends.map((r) => [r.job, r.slot, r.org_id, r.recipient_user_id, r.outcome]).sort();
 const hours = (fromIso: string, count: number) =>
   Array.from({ length: count }, (_, i) => new Date(Date.parse(fromIso) + i * 3_600_000));
+const triesTo = (send: ReturnType<typeof mailer>, to: string) =>
+  send.mock.calls.filter(([input]) => input.to === to).length;
 
 /** At NOW, 8 am Central: both orgs are due, every coordinator is emailed. */
-const BASELINE = counts({
-  orgs_enabled: 2,
-  orgs_due: 2,
-  orgs_completed: 2,
-  digests_sent: 3,
-  unassigned_follow_ups: 1,
-});
-/** A later run the same local date: both orgs already had their digest. */
-const ALREADY = counts({ orgs_enabled: 2, orgs_due: 2, orgs_already_completed: 2 });
+const BASELINE = counts({ orgs_due: 2, digests_sent: 3, unassigned_follow_ups: 1 });
+/** A later run the same local date: both orgs are planned again, and every
+ *  claim is already taken, so nothing is sent. */
+const ALREADY = counts({ orgs_due: 2, unassigned_follow_ups: 1 });
 
 beforeEach(() => {
   vi.stubEnv("DEV", false);
@@ -442,7 +425,7 @@ describe("followup-digest: coordinators only (Sowmya, Oct 30)", () => {
     ]);
     expect(byTo.get("bill@example.test")?.practiceName).toBe("Coastal PT");
 
-    // One sent ledger row per coordinator, keyed on the org's local date.
+    // One sent row per coordinator, keyed on the org's local date.
     expect(ledgerRows()).toEqual(
       [
         [JOB, TODAY, ORG_A, JANE, "sent"],
@@ -450,11 +433,7 @@ describe("followup-digest: coordinators only (Sowmya, Oct 30)", () => {
         [JOB, TODAY, ORG_B, BILL, "sent"],
       ].sort(),
     );
-    expect(fake.sends.every((r) => /^msg\d+\.abc$/.test(r.provider_message_id ?? ""))).toBe(true);
-    expect(completions()).toEqual([
-      [JOB, ORG_A, TODAY],
-      [JOB, ORG_B, TODAY],
-    ]);
+    expect(logged()).toBe("");
   });
 
   it("sends an admin with no cases nothing, and an unassigned follow-up to no one", async () => {
@@ -490,7 +469,7 @@ describe("followup-digest: coordinators only (Sowmya, Oct 30)", () => {
     expect(recipients()).toEqual(["bill@example.test", "jane@example.test", "omar@example.test"]);
   });
 
-  it("counts a coordinator with nothing due as suppressed, and skips one with no usable address", async () => {
+  it("counts a coordinator with nothing due as suppressed, and logs one with no usable address", async () => {
     const w = world();
     // Jane's profile has no usable email; Omar's only follow-up moves to next week.
     const jane = w.tables.memberships.find((m) => m.user_id === JANE) as FakeRow;
@@ -499,10 +478,12 @@ describe("followup-digest: coordinators only (Sowmya, Oct 30)", () => {
     omarTouch.next_follow_up_date = "2026-11-07";
     fake = createFollowUpDigestFakeDb(w.tables);
     const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(
-      counts({ ...BASELINE, digests_sent: 1, digests_suppressed: 1, recipients_skipped: 1 }),
-    );
+    expect(result).toEqual(counts({ ...BASELINE, digests_sent: 1, digests_suppressed: 1 }));
     expect(recipients()).toEqual(["bill@example.test"]);
+    expect(fake.sends.some((r) => r.recipient_user_id === JANE)).toBe(false);
+    // One line per skip.
+    expect(logged().split("recipient_skipped_no_email").length - 1).toBe(1);
+    expect(logged()).toContain('"errorClass":"FollowUpDigestRecipientError"');
   });
 });
 
@@ -515,7 +496,7 @@ describe("followup-digest: the per-org send hour", () => {
       ctx(new Date("2026-10-31T12:59:59Z")),
       deps({ config, send }),
     );
-    expect(result).toEqual(counts({ orgs_enabled: 2, orgs_not_due: 2 }));
+    expect(result).toEqual(counts({}));
     expect(send).not.toHaveBeenCalled();
     expect(config).not.toHaveBeenCalled();
     expect(fake.rpcCalls).toEqual([]);
@@ -534,7 +515,7 @@ describe("followup-digest: the per-org send hour", () => {
     expect(sent.every((input) => input.data.digestDate === TODAY)).toBe(true);
   });
 
-  it("catches up an org whose run failed, in the next hourly run, without resending the other", async () => {
+  it("catches up an org whose read failed, in the next hourly run, without resending the other", async () => {
     let failA = true;
     fake.failRead = (read) =>
       failA &&
@@ -542,30 +523,14 @@ describe("followup-digest: the per-org send hour", () => {
       read.filters.some(([, column, value]) => column === "org_id" && value === ORG_A)
         ? { code: "57014", message: "canceling statement due to statement timeout" }
         : null;
-    const first = await incomplete(runFollowUpDigest(ctx(), deps()));
-    expect(first).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_failed: 1,
-        orgs_completed: 1,
-        digests_sent: 1,
-      }),
-    );
-    expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
+    const first = await runFollowUpDigest(ctx(), deps());
+    expect(first).toEqual(counts({ orgs_due: 2, orgs_failed: 1, digests_sent: 1 }));
+    expect(logged()).toContain("[jobs:followup-digest] org_failed");
+    expect(logged()).toContain('"sqlstate":"57014"');
 
     failA = false;
     const next = await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps());
-    expect(next).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_already_completed: 1,
-        orgs_completed: 1,
-        digests_sent: 2,
-        unassigned_follow_ups: 1,
-      }),
-    );
+    expect(next).toEqual(counts({ orgs_due: 2, digests_sent: 2, unassigned_follow_ups: 1 }));
     expect(recipients()).toEqual(["bill@example.test", "jane@example.test", "omar@example.test"]);
     expect(sent.find((input) => input.to === "jane@example.test")?.at).toBe(
       "2026-10-31T14:00:00.000Z",
@@ -576,31 +541,14 @@ describe("followup-digest: the per-org send hour", () => {
     fake = createFollowUpDigestFakeDb(world({ b: sendTime(10, "America/Los_Angeles") }).tables);
     // 13:00 UTC: 8 am Central (A due), 6 am Pacific (B not yet).
     const first = await runFollowUpDigest(ctx(), deps());
-    expect(first).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 1,
-        orgs_not_due: 1,
-        orgs_completed: 1,
-        digests_sent: 2,
-        unassigned_follow_ups: 1,
-      }),
-    );
+    expect(first).toEqual(counts({ orgs_due: 1, digests_sent: 2, unassigned_follow_ups: 1 }));
     expect(recipients()).toEqual(["jane@example.test", "omar@example.test"]);
     // 16:59 UTC is 9:59 am Pacific: still not.
     await runFollowUpDigest(ctx(new Date("2026-10-31T16:59:00Z")), deps());
     expect(recipients()).not.toContain("bill@example.test");
     // 17:00 UTC is 10 am Pacific.
     const third = await runFollowUpDigest(ctx(new Date("2026-10-31T17:00:00Z")), deps());
-    expect(third).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_already_completed: 1,
-        orgs_completed: 1,
-        digests_sent: 1,
-      }),
-    );
+    expect(third).toEqual(counts({ orgs_due: 2, digests_sent: 1, unassigned_follow_ups: 1 }));
     expect(fake.sends.find((r) => r.recipient_user_id === BILL)?.slot).toBe(TODAY);
   });
 
@@ -608,16 +556,7 @@ describe("followup-digest: the per-org send hour", () => {
     // Org B is switched on but has no schedule: there is no default to send on.
     fake = createFollowUpDigestFakeDb(world({ b: NO_SCHEDULE }).tables);
     const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 1,
-        orgs_not_due: 1,
-        orgs_completed: 1,
-        digests_sent: 2,
-        unassigned_follow_ups: 1,
-      }),
-    );
+    expect(result).toEqual(counts({ orgs_due: 1, digests_sent: 2, unassigned_follow_ups: 1 }));
     expect(recipients()).toEqual(["jane@example.test", "omar@example.test"]);
     expect(logged()).toBe("");
     // At any hour of the day.
@@ -635,19 +574,19 @@ describe("followup-digest: the per-org send hour", () => {
       world({ a: schedule({ send_time_zone: "Mars/Olympus" }) }).tables,
     );
     expect(await runFollowUpDigest(ctx(), deps())).toEqual(
-      counts({ orgs_enabled: 2, orgs_due: 1, orgs_not_due: 1, orgs_completed: 1, digests_sent: 1 }),
+      counts({ orgs_due: 1, digests_sent: 1 }),
     );
     // The database refuses an hour without the rest of the schedule; a row
     // that has one anyway is not set up.
     sent = [];
     fake = createFollowUpDigestFakeDb(world({ b: { ...NO_SCHEDULE, send_hour: 8 } }).tables);
-    expect((await runFollowUpDigest(ctx(), deps())).orgs_not_due).toBe(1);
+    expect((await runFollowUpDigest(ctx(), deps())).orgs_due).toBe(1);
     expect(recipients()).toEqual(["jane@example.test", "omar@example.test"]);
     expect(logged()).toBe("");
   });
 });
 
-describe("followup-digest: at most one digest per coordinator per local date", () => {
+describe("followup-digest: at most one digest per coordinator per scheduled send", () => {
   it("sends nothing new on later runs that day, and again on the next local date", async () => {
     await runFollowUpDigest(ctx(), deps());
     expect(sent).toHaveLength(3);
@@ -655,29 +594,28 @@ describe("followup-digest: at most one digest per coordinator per local date", (
       expect(await runFollowUpDigest(ctx(new Date(at)), deps())).toEqual(ALREADY);
     }
     expect(sent).toHaveLength(3);
-    // Nothing past the completion check was read or claimed on those runs.
-    expect(fake.rpcCalls.filter((c) => c.fn === "claim_notification_send")).toHaveLength(3);
+    // Each later run planned again and found every claim taken.
+    expect(fake.rpcCalls.filter((c) => c.fn === "claim_notification_send")).toHaveLength(12);
+    expect(fake.sends.map((r) => [r.outcome, r.claims])).toEqual([
+      ["sent", 1],
+      ["sent", 1],
+      ["sent", 1],
+    ]);
 
     // Nov 1, 8 am CST (DST has ended: 14:00 UTC).
     await runFollowUpDigest(ctx(new Date("2026-11-01T14:00:00Z")), deps());
     expect(sent).toHaveLength(6);
     expect(fake.sends.filter((r) => r.slot === "2026-11-01")).toHaveLength(3);
-    expect(completions()).toEqual([
-      [JOB, ORG_A, "2026-10-31"],
-      [JOB, ORG_A, "2026-11-01"],
-      [JOB, ORG_B, "2026-10-31"],
-      [JOB, ORG_B, "2026-11-01"],
-    ]);
   });
 
-  it("keys the send claim on the local date, so even a lost completion row cannot resend", async () => {
-    await runFollowUpDigest(ctx(), deps());
-    // As if the completion rows were never written: later hours re-plan, but
-    // every claim for the local date is taken.
-    fake.tables.notification_org_slots = [];
-    const later = await runFollowUpDigest(ctx(new Date("2026-10-31T19:00:00Z")), deps());
-    expect(later).toEqual(counts({ ...BASELINE, digests_sent: 0, digests_already_sent: 3 }));
+  it("sends once when two runs overlap (the tick and the Vercel backup)", async () => {
+    const [first, second] = await Promise.all([
+      runFollowUpDigest(ctx(), deps()),
+      runFollowUpDigest(ctx(), deps()),
+    ]);
+    expect(first.digests_sent + second.digests_sent).toBe(3);
     expect(sent).toHaveLength(3);
+    expect(recipients()).toEqual(["bill@example.test", "jane@example.test", "omar@example.test"]);
   });
 
   it.each([
@@ -700,13 +638,8 @@ describe("followup-digest: at most one digest per coordinator per local date", (
       (r) => r.org_id === ORG_A && r.purpose === "followup_digest",
     ) as FakeRow;
     Object.assign(sequence, change);
-    const withCompletion = await runFollowUpDigest(ctx(new Date(at)), deps());
-    expect(withCompletion.orgs_already_completed).toBe(2);
-    // And without the completion rows, the local-date claims still hold.
-    fake.tables.notification_org_slots = [];
-    const withoutCompletion = await runFollowUpDigest(ctx(new Date(at)), deps());
-    expect(withoutCompletion.digests_already_sent).toBe(3);
-    expect(withoutCompletion.digests_sent).toBe(0);
+    // The local-date claims hold whatever the hour or zone.
+    expect(await runFollowUpDigest(ctx(new Date(at)), deps())).toEqual(ALREADY);
     expect(sent).toHaveLength(3);
   });
 
@@ -728,6 +661,22 @@ describe("followup-digest: at most one digest per coordinator per local date", (
       "2026-10-31",
       "2026-11-01",
       "2026-11-01",
+    ]);
+  });
+
+  it("sends a coordinator whose list fills later in the window a digest at the next run, once", async () => {
+    const w = world();
+    // Omar has nothing due at 8 am; at 10 am someone sets a follow-up due today.
+    const omarTouch = w.tables.touches.find((t) => t.case_id === w.cases.omarToday.id) as FakeRow;
+    omarTouch.next_follow_up_date = "2026-11-07";
+    fake = createFollowUpDigestFakeDb(w.tables);
+    expect((await runFollowUpDigest(ctx(), deps())).digests_suppressed).toBe(1);
+    expect(recipients()).not.toContain("omar@example.test");
+    omarTouch.next_follow_up_date = TODAY;
+    await runFollowUpDigest(ctx(new Date("2026-10-31T16:00:00Z")), deps());
+    await runFollowUpDigest(ctx(new Date("2026-10-31T17:00:00Z")), deps());
+    expect(sent.filter((input) => input.to === "omar@example.test").map((i) => i.at)).toEqual([
+      "2026-10-31T16:00:00.000Z",
     ]);
   });
 });
@@ -877,29 +826,19 @@ describe("followup-digest: when nothing is sent", () => {
       "org_skipped_channel_unsupported",
     ],
   ])(
-    "skips an org whose own step names %s, counts it, and still sends the others",
+    "skips an org whose own step names %s with no fallback (U6), counts it, and still sends the others",
     async (_label, step, event) => {
       fake = createFollowUpDigestFakeDb(world({ aStep: step }).tables);
       const result = await runFollowUpDigest(ctx(), deps());
-      expect(result).toEqual(
-        counts({
-          orgs_enabled: 2,
-          orgs_due: 2,
-          orgs_skipped_template: 1,
-          orgs_completed: 1,
-          digests_sent: 1,
-        }),
-      );
+      expect(result).toEqual(counts({ orgs_due: 2, orgs_skipped_template: 1, digests_sent: 1 }));
       expect(recipients()).toEqual(["bill@example.test"]);
       expect(fake.sends.map((r) => r.org_id)).toEqual([ORG_B]);
-      // The skipped org is never read past its completion check, and stays
-      // open so a fix takes effect the same day.
+      // The skipped org's cases are never read.
       expect(
         fake.reads.some(
           (r) => r.table === "credential_cases" && r.filters.some((f) => f[2] === ORG_A),
         ),
       ).toBe(false);
-      expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
       expect(logged()).toContain(`[jobs:followup-digest] ${event}`);
     },
   );
@@ -928,43 +867,48 @@ describe("followup-digest: when nothing is sent", () => {
     expect(send).not.toHaveBeenCalled();
     expect(fake.rpcCalls).toEqual([]);
   });
+
+  it("logs a template skip on every run while the org is due: one line per skip", async () => {
+    fake = createFollowUpDigestFakeDb(world({ aStep: { channel: "sms" } }).tables);
+    const event = "[jobs:followup-digest] org_skipped_channel_unsupported";
+    const lines = () => logged().split(event).length - 1;
+    // 7 am Central: not due, nothing.
+    await runFollowUpDigest(ctx(new Date("2026-10-31T12:00:00Z")), deps());
+    expect(lines()).toBe(0);
+    for (const at of hours("2026-10-31T13:00:00Z", 3)) {
+      const result = await runFollowUpDigest(ctx(at), deps());
+      expect(result.orgs_skipped_template).toBe(1);
+    }
+    expect(lines()).toBe(3);
+  });
 });
 
-describe("followup-digest: at-least-once runs, once-per-day sends", () => {
-  it("keeps sending when one coordinator is rejected, fails the run, and the next run retries only that one", async () => {
+describe("followup-digest: sending once, retrying only a definite rejection", () => {
+  it("keeps sending when one coordinator is rejected, and the next run retries only that one", async () => {
     const send = mailer((input) =>
       input.to === "jane@example.test"
         ? new EmailError("provider_rejected", "SendGrid rejected the send (400)", 400)
         : null,
     );
-    const first = await incomplete(runFollowUpDigest(ctx(), deps({ send })));
-    expect(first).toEqual(
-      counts({ ...BASELINE, orgs_completed: 1, digests_sent: 2, send_failures: 1 }),
-    );
+    const first = await runFollowUpDigest(ctx(), deps({ send }));
+    expect(first).toEqual(counts({ ...BASELINE, digests_sent: 2, send_failures: 1 }));
     expect(recipients()).toEqual(["bill@example.test", "omar@example.test"]);
     expect(fake.sends.find((r) => r.recipient_user_id === JANE)).toMatchObject({
       outcome: "failed",
-      error_code: "provider_rejected",
-      provider_message_id: null,
+      claims: 1,
     });
-    // Org A's day stays open; org B's is done.
-    expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
     expect(logged()).toContain("[jobs:followup-digest] send_failed_provider_rejected");
 
     const retry = await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps());
-    expect(retry).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_already_completed: 1,
-        orgs_completed: 1,
-        digests_sent: 1,
-        digests_already_sent: 1,
-        unassigned_follow_ups: 1,
-      }),
-    );
+    expect(retry).toEqual(counts({ orgs_due: 2, digests_sent: 1, unassigned_follow_ups: 1 }));
     expect(sent.filter((input) => input.to === "jane@example.test")).toHaveLength(1);
     expect(sent).toHaveLength(3);
+    // The same row, claimed again: one row per key.
+    expect(fake.sends.find((r) => r.recipient_user_id === JANE)).toMatchObject({
+      outcome: "sent",
+      claims: 2,
+    });
+    expect(fake.sends).toHaveLength(3);
   });
 
   it("records only definite rejections as failed; a timeout or an unexplained error stays claimed", async () => {
@@ -975,182 +919,109 @@ describe("followup-digest: at-least-once runs, once-per-day sends", () => {
       }
       return new TypeError("something unexplained");
     });
-    const first = await incomplete(runFollowUpDigest(ctx(), deps({ send })));
-    expect(first).toEqual(
-      counts({
-        ...BASELINE,
-        orgs_completed: 1,
-        digests_sent: 0,
-        send_failures: 1,
-        sends_uncertain: 2,
-      }),
-    );
-    const byRecipient = Object.fromEntries(
-      fake.sends.map((r) => [r.recipient_user_id, [r.outcome, r.error_code]]),
-    );
-    expect(byRecipient).toEqual({
-      [JANE]: ["failed", "provider_rejected"],
-      [OMAR]: ["claimed", null],
-      [BILL]: ["claimed", null],
+    const first = await runFollowUpDigest(ctx(), deps({ send }));
+    expect(first).toEqual(counts({ ...BASELINE, digests_sent: 0, send_failures: 3 }));
+    expect(Object.fromEntries(fake.sends.map((r) => [r.recipient_user_id, r.outcome]))).toEqual({
+      [JANE]: "failed",
+      [OMAR]: "claimed",
+      [BILL]: "claimed",
     });
     expect(logged()).toContain("[jobs:followup-digest] send_uncertain_network");
     expect(logged()).toContain("[jobs:followup-digest] send_uncertain_error");
-    // Org B's only send may have gone out: nothing left to retry there.
-    expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
 
-    // The next run resends only the definite rejection; Omar's possibly
-    // delivered send is held, and not counted as sent.
+    // The next run resends only the definite rejection; the possibly
+    // delivered sends stay claimed and are never resent.
     const retry = await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps());
-    expect(retry).toMatchObject({ digests_sent: 1, digests_already_sent: 0, sends_held: 1 });
+    expect(retry).toEqual(counts({ orgs_due: 2, digests_sent: 1, unassigned_follow_ups: 1 }));
     expect(recipients()).toEqual(["jane@example.test"]);
   });
 
-  it("stops retrying a coordinator after three rejections that local date, without failing the run", async () => {
+  it("retries a definite rejection at every run while its send is open: no try cap", async () => {
     const send = mailer((input) =>
       input.to === "jane@example.test"
         ? new EmailError("provider_rejected", "SendGrid rejected the send (400)", 400)
         : null,
     );
-    const runs = hours("2026-10-31T13:00:00Z", 4);
-    for (const at of runs.slice(0, 3)) await incomplete(runFollowUpDigest(ctx(at), deps({ send })));
-    const janeAttempts = () =>
-      send.mock.calls.filter(([input]) => input.to === "jane@example.test");
-    expect(janeAttempts()).toHaveLength(3);
-    expect(fake.sends.filter((r) => r.recipient_user_id === JANE).map((r) => r.outcome)).toEqual([
-      "failed",
-      "failed",
-      "failed",
-    ]);
-
-    const fourth = await runFollowUpDigest(ctx(runs[3]), deps({ send }));
-    expect(fourth).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_already_completed: 1,
-        orgs_completed: 1,
-        digests_already_sent: 1,
-        sends_exhausted: 1,
-        unassigned_follow_ups: 1,
-      }),
-    );
-    expect(janeAttempts()).toHaveLength(3);
-    expect(logged()).toContain("[jobs:followup-digest] send_retries_exhausted");
-
-    // The cap is per local date: tomorrow's digest is tried again.
-    await incomplete(runFollowUpDigest(ctx(new Date("2026-11-01T14:00:00Z")), deps({ send })));
-    expect(janeAttempts()).toHaveLength(4);
+    // Every hour from 8 am to 11 pm Central (13:00 to 04:00 UTC): 16 runs.
+    for (const at of hours("2026-10-31T13:00:00Z", 16)) {
+      expect((await runFollowUpDigest(ctx(at), deps({ send }))).send_failures).toBe(1);
+    }
+    expect(triesTo(send, "jane@example.test")).toBe(16);
+    expect(fake.sends.find((r) => r.recipient_user_id === JANE)).toMatchObject({
+      outcome: "failed",
+      claims: 16,
+    });
+    // Local midnight closes the send: no more tries until the next local date's.
+    await runFollowUpDigest(ctx(new Date("2026-11-01T05:00:00Z")), deps({ send }));
+    expect(triesTo(send, "jane@example.test")).toBe(16);
+    expect(triesTo(send, "omar@example.test")).toBe(1);
   });
 
-  it("does not send to a coordinator whose claim fails, still sends the rest, and leaves the day open", async () => {
+  it("does not send to a coordinator whose claim fails, still sends the rest, and sends them next run", async () => {
     fake.failClaimFor.add(OMAR);
-    const result = await incomplete(runFollowUpDigest(ctx(), deps()));
-    expect(result).toEqual(
-      counts({ ...BASELINE, orgs_completed: 1, digests_sent: 2, send_failures: 1 }),
-    );
+    const result = await runFollowUpDigest(ctx(), deps());
+    expect(result).toEqual(counts({ ...BASELINE, digests_sent: 2, send_failures: 1 }));
     expect(sent.some((input) => input.to === "omar@example.test")).toBe(false);
-    expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
     expect(logged()).toContain("[jobs:followup-digest] send_claim_failed");
     expect(logged()).toContain('"sqlstate":"08006"');
+
+    fake.failClaimFor.clear();
+    await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps());
+    expect(recipients()).toEqual(["bill@example.test", "jane@example.test", "omar@example.test"]);
   });
 
-  it("counts a sent email whose ledger row could not be finished, and never resends it", async () => {
+  it("counts a sent email whose row could not be finished as sent, and never resends it", async () => {
     fake.failNextRpc.finish_notification_send = { code: "08006", message: "connection failure" };
-    const result = await incomplete(runFollowUpDigest(ctx(), deps()));
-    expect(result).toEqual(counts({ ...BASELINE, sends_unrecorded: 1 }));
+    const result = await runFollowUpDigest(ctx(), deps());
+    expect(result).toEqual(BASELINE);
+    expect(logged()).toContain("[jobs:followup-digest] send_unrecorded");
     expect(fake.sends.filter((r) => r.outcome === "claimed")).toHaveLength(1);
 
-    fake.tables.notification_org_slots = [];
     const retry = await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps());
-    // The unrecorded one went out but reads as held, not as sent.
-    expect(retry).toEqual(
-      counts({ ...BASELINE, digests_sent: 0, digests_already_sent: 2, sends_held: 1 }),
-    );
+    expect(retry).toEqual(ALREADY);
     expect(sent).toHaveLength(3);
   });
 
-  it("fails the run when a settled org's completion cannot be recorded, and the next run settles it without resending", async () => {
-    fake.failNextRpc.complete_notification_org_slot = { code: "08006", message: "lost" };
-    const first = await incomplete(runFollowUpDigest(ctx(), deps()));
-    expect(first).toEqual(
-      counts({ ...BASELINE, orgs_completed: 1, orgs_completion_unrecorded: 1 }),
-    );
-    expect(logged()).toContain("[jobs:followup-digest] org_completion_unrecorded");
-    expect(completions()).toHaveLength(1);
-
-    const next = await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps());
-    expect(next.orgs_already_completed).toBe(1);
-    expect(next.orgs_completed).toBe(1);
-    expect(next.digests_sent).toBe(0);
-    expect(completions()).toHaveLength(2);
-    expect(sent).toHaveLength(3);
-  });
-
-  it("does not let one org's failed completion check stop another org", async () => {
-    fake.failRead = (read) =>
-      read.table === "notification_org_slots" &&
-      read.filters.some(([, column, value]) => column === "org_id" && value === ORG_A)
-        ? { code: "08006", message: "connection failure" }
-        : null;
-    const result = await incomplete(runFollowUpDigest(ctx(), deps()));
-    expect(result).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_failed: 1,
-        orgs_completed: 1,
-        digests_sent: 1,
-      }),
-    );
-    expect(recipients()).toEqual(["bill@example.test"]);
-    expect(logged()).toContain("[jobs:followup-digest] org_failed");
-  });
-
-  it("through the runner: every call runs; a failed run answers failed, the next retries only the rejected send", async () => {
+  it("through the runner: a run with a failed send succeeds with its counts; a run that cannot send fails", async () => {
     let failJane = true;
     const send = mailer((input) =>
       failJane && input.to === "jane@example.test"
         ? new EmailError("provider_rejected", "x", 429)
         : null,
     );
+    let config = CONFIG;
     const job = {
       ...followupDigestJob,
       run: (jobCtx: JobContext) => {
         clock = jobCtx.now;
-        fake.clock.now = jobCtx.now.getTime();
-        return runFollowUpDigest(jobCtx, deps({ send }));
+        return runFollowUpDigest(jobCtx, deps({ send, config: () => config }));
       },
     };
     const runAt = (date: Date) => runJob(job, { db: fake.db, now: date, site: SITE });
 
-    const first = await runAt(NOW);
-    expect(first).toMatchObject({ outcome: "failed", counts: {} });
-    expect(sent).toHaveLength(2);
-
-    failJane = false;
-    const second = await runAt(new Date("2026-10-31T13:30:00Z"));
-    expect(second).toEqual({
+    expect(await runAt(NOW)).toEqual({
       job: JOB,
       outcome: "succeeded",
-      counts: counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_already_completed: 1,
-        orgs_completed: 1,
-        digests_sent: 1,
-        digests_already_sent: 1,
-        unassigned_follow_ups: 1,
-      }),
+      counts: counts({ ...BASELINE, digests_sent: 2, send_failures: 1 }),
+    });
+
+    failJane = false;
+    expect(await runAt(new Date("2026-10-31T13:30:00Z"))).toEqual({
+      job: JOB,
+      outcome: "succeeded",
+      counts: counts({ orgs_due: 2, digests_sent: 1, unassigned_follow_ups: 1 }),
     });
     expect(sent).toHaveLength(3);
 
-    const third = await runAt(new Date("2026-10-31T13:45:00Z"));
-    expect(third).toMatchObject({ outcome: "succeeded", counts: ALREADY });
-    expect(sent).toHaveLength(3);
+    // Misconfigured: the run fails (HTTP 500, the tick turns red).
+    config = { ...CONFIG, emailReady: false };
+    const failed = await runAt(new Date("2026-10-31T13:45:00Z"));
+    expect(failed).toMatchObject({ job: JOB, outcome: "failed", counts: {} });
+    expect(logged()).toContain('"errorClass":"FollowUpDigestNotConfiguredError"');
   });
 });
 
-describe("followup-digest: what counts as delivered, and whose claim it is", () => {
+describe("followup-digest: what counts as delivered", () => {
   it.each([500, 502, 503, 504, 408])(
     "treats a SendGrid %i as possibly delivered: stays claimed, never resent",
     async (status) => {
@@ -1159,18 +1030,12 @@ describe("followup-digest: what counts as delivered, and whose claim it is", () 
           ? new EmailError("provider_rejected", `SendGrid rejected the send (${status})`, status)
           : null,
       );
-      const first = await incomplete(runFollowUpDigest(ctx(), deps({ send })));
-      expect(first).toEqual(counts({ ...BASELINE, digests_sent: 2, sends_uncertain: 1 }));
-      expect(fake.sends.find((r) => r.recipient_user_id === JANE)).toMatchObject({
-        outcome: "claimed",
-        error_code: null,
-      });
+      const first = await runFollowUpDigest(ctx(), deps({ send }));
+      expect(first).toEqual(counts({ ...BASELINE, digests_sent: 2, send_failures: 1 }));
+      expect(fake.sends.find((r) => r.recipient_user_id === JANE)?.outcome).toBe("claimed");
       expect(logged()).toContain("[jobs:followup-digest] send_uncertain_provider_rejected");
-      // Nothing left to retry, so both orgs' dates are settled.
-      expect(completions()).toHaveLength(2);
-      fake.tables.notification_org_slots = [];
       await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps({ send }));
-      expect(send.mock.calls.filter(([input]) => input.to === "jane@example.test")).toHaveLength(1);
+      expect(triesTo(send, "jane@example.test")).toBe(1);
     },
   );
 
@@ -1183,14 +1048,9 @@ describe("followup-digest: what counts as delivered, and whose claim it is", () 
           ? new EmailError("provider_rejected", `SendGrid rejected the send (${status})`, status)
           : null,
       );
-      const first = await incomplete(runFollowUpDigest(ctx(), deps({ send })));
-      expect(first).toEqual(
-        counts({ ...BASELINE, orgs_completed: 1, digests_sent: 2, send_failures: 1 }),
-      );
-      expect(fake.sends.find((r) => r.recipient_user_id === JANE)).toMatchObject({
-        outcome: "failed",
-        error_code: "provider_rejected",
-      });
+      const first = await runFollowUpDigest(ctx(), deps({ send }));
+      expect(first).toEqual(counts({ ...BASELINE, digests_sent: 2, send_failures: 1 }));
+      expect(fake.sends.find((r) => r.recipient_user_id === JANE)?.outcome).toBe("failed");
       reject = false;
       await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps({ send }));
       expect(recipients()).toContain("jane@example.test");
@@ -1199,146 +1059,51 @@ describe("followup-digest: what counts as delivered, and whose claim it is", () 
 
   it("classifies mailer errors: only a 4xx other than 408, bad input or misconfiguration is definite", () => {
     const rejected = (status?: number) => new EmailError("provider_rejected", "x", status);
-    expect(definiteRejectionCode(rejected(400))).toBe("provider_rejected");
-    expect(definiteRejectionCode(rejected(429))).toBe("provider_rejected");
-    expect(definiteRejectionCode(rejected(499))).toBe("provider_rejected");
-    expect(definiteRejectionCode(rejected(408))).toBeNull();
-    expect(definiteRejectionCode(rejected(500))).toBeNull();
-    expect(definiteRejectionCode(rejected(599))).toBeNull();
+    expect(isDefiniteRejection(rejected(400))).toBe(true);
+    expect(isDefiniteRejection(rejected(429))).toBe(true);
+    expect(isDefiniteRejection(rejected(499))).toBe(true);
+    expect(isDefiniteRejection(rejected(408))).toBe(false);
+    expect(isDefiniteRejection(rejected(500))).toBe(false);
+    expect(isDefiniteRejection(rejected(599))).toBe(false);
     // No status: it cannot be shown to be a refusal.
-    expect(definiteRejectionCode(rejected())).toBeNull();
-    expect(definiteRejectionCode(new EmailError("invalid_input", "x"))).toBe("invalid_input");
-    expect(definiteRejectionCode(new EmailError("misconfigured", "x"))).toBe("misconfigured");
-    expect(definiteRejectionCode(new EmailError("network", "x"))).toBeNull();
-    expect(definiteRejectionCode(new TypeError("x"))).toBeNull();
+    expect(isDefiniteRejection(rejected())).toBe(false);
+    expect(isDefiniteRejection(new EmailError("invalid_input", "x"))).toBe(true);
+    expect(isDefiniteRejection(new EmailError("misconfigured", "x"))).toBe(true);
+    expect(isDefiniteRejection(new EmailError("network", "x"))).toBe(false);
+    expect(isDefiniteRejection(new TypeError("x"))).toBe(false);
   });
 
-  /** A live claim another attempt made `minutesAgo` minutes before NOW. */
-  function seedClaim(recipient: string, minutesAgo: number) {
+  it("never resends a send an earlier attempt left claimed, however long ago", async () => {
+    // As if a function died mid-send: it may have been delivered.
     fake.sends.push({
-      id: `seeded-${recipient}`,
       job: JOB,
       slot: TODAY,
       org_id: ORG_A,
-      recipient_user_id: recipient,
+      recipient_user_id: JANE,
       outcome: "claimed",
-      claimed_at: NOW.getTime() - minutesAgo * 60_000,
-      provider_message_id: null,
-      error_code: null,
+      claims: 1,
     });
-  }
-
-  it("leaves a recent claim from another attempt alone and keeps the org's date open", async () => {
-    seedClaim(JANE, 5);
-    const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(
-      counts({ ...BASELINE, orgs_completed: 1, digests_sent: 2, sends_in_flight: 1 }),
+    expect(await runFollowUpDigest(ctx(), deps())).toEqual(
+      counts({ ...BASELINE, digests_sent: 2 }),
     );
-    expect(recipients()).toEqual(["bill@example.test", "omar@example.test"]);
-    // Org A is not settled: the other attempt may still fail and be retried.
-    expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
-
-    // An hour later that claim is past the window: held, and the date settles.
-    const later = await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps());
-    expect(later).toMatchObject({ sends_held: 1, digests_already_sent: 1, orgs_completed: 1 });
-    expect(completions()).toHaveLength(2);
+    for (const at of hours("2026-10-31T14:00:00Z", 3)) {
+      await runFollowUpDigest(ctx(at), deps());
+    }
     expect(recipients()).toEqual(["bill@example.test", "omar@example.test"]);
   });
 
-  it("treats a claim older than the window as held: never resent, never counted as sent", async () => {
-    seedClaim(JANE, 20);
-    const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(counts({ ...BASELINE, digests_sent: 2, sends_held: 1 }));
-    expect(recipients()).toEqual(["bill@example.test", "omar@example.test"]);
-    expect(completions()).toHaveLength(2);
-  });
-
-  it("counts a rejection it could not record as a failure, then as held, never as sent", async () => {
+  it("does not retry a rejection it could not record: the row stays claimed", async () => {
     // Jane is the first digest sent, so hers is the first finish call.
     fake.failNextRpc.finish_notification_send = { code: "08006", message: "connection failure" };
     const send = mailer((input) =>
       input.to === "jane@example.test" ? new EmailError("provider_rejected", "400", 400) : null,
     );
-    const first = await incomplete(runFollowUpDigest(ctx(), deps({ send })));
+    const first = await runFollowUpDigest(ctx(), deps({ send }));
     expect(first).toEqual(counts({ ...BASELINE, digests_sent: 2, send_failures: 1 }));
-    expect(logged()).toContain("[jobs:followup-digest] send_failure_unrecorded");
-    // Its claim stays claimed, so no later run could retry it: the date settles.
-    expect(completions()).toHaveLength(2);
-
-    fake.tables.notification_org_slots = [];
-    const next = await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps({ send }));
-    expect(next).toMatchObject({ digests_already_sent: 2, sends_held: 1, digests_sent: 0 });
-    expect(send.mock.calls.filter(([input]) => input.to === "jane@example.test")).toHaveLength(1);
-  });
-
-  it("counts an org completed only when this run recorded it", async () => {
-    // A ledger whose completion check never sees a row, as if a concurrent
-    // attempt recorded it between the check and the write.
-    const blind: FollowUpDigestDeps["ledger"] = (db) => ({
-      ...supabaseNotificationSendLedger(db),
-      isOrgSlotComplete: async () => false,
-    });
-    await runFollowUpDigest(ctx(), deps({ ledger: blind }));
-    const second = await runFollowUpDigest(
-      ctx(new Date("2026-10-31T14:00:00Z")),
-      deps({ ledger: blind }),
-    );
-    expect(second).toEqual(
-      counts({
-        ...BASELINE,
-        orgs_completed: 0,
-        orgs_already_completed: 2,
-        digests_sent: 0,
-        digests_already_sent: 3,
-      }),
-    );
-  });
-
-  it("parses every answer the claim RPC gives, and refuses any other shape", () => {
-    expect(parseNotificationSendClaim({ status: "claimed", id: "x1" })).toEqual({
-      status: "claimed",
-      id: "x1",
-    });
-    for (const outcome of ["sent", "claimed"] as const) {
-      for (const recent of [true, false]) {
-        expect(parseNotificationSendClaim({ status: "taken", outcome, recent })).toEqual({
-          status: "taken",
-          outcome,
-          recent,
-        });
-      }
-    }
-    expect(parseNotificationSendClaim({ status: "exhausted" })).toEqual({ status: "exhausted" });
-    for (const bad of [
-      null,
-      [],
-      { status: "taken" },
-      { status: "taken", outcome: "failed", recent: false },
-      { status: "taken", outcome: "sent", recent: "no" },
-      { status: "claimed" },
-      { status: "other" },
-    ]) {
-      expect(() => parseNotificationSendClaim(bad)).toThrow();
-    }
-  });
-});
-
-describe("followup-digest: logging a skipped org", () => {
-  it("counts a template skip every run but logs it once per org per local date, in its first due hour", async () => {
-    fake = createFollowUpDigestFakeDb(world({ aStep: { channel: "sms" } }).tables);
-    const event = "[jobs:followup-digest] org_skipped_channel_unsupported";
-    const lines = () => logged().split(event).length - 1;
-    // 7 am Central: not due, nothing.
-    await runFollowUpDigest(ctx(new Date("2026-10-31T12:00:00Z")), deps());
-    expect(lines()).toBe(0);
-    for (const at of hours("2026-10-31T13:00:00Z", 3)) {
-      const result = await runFollowUpDigest(ctx(at), deps());
-      expect(result.orgs_skipped_template).toBe(1);
-    }
-    expect(lines()).toBe(1);
-    // Nov 1, 8 am CST (14:00 UTC): its first due hour, so once more.
-    await runFollowUpDigest(ctx(new Date("2026-11-01T14:00:00Z")), deps());
-    expect(lines()).toBe(2);
+    expect(logged()).toContain("[jobs:followup-digest] send_unrecorded");
+    expect(fake.sends.find((r) => r.recipient_user_id === JANE)?.outcome).toBe("claimed");
+    await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps({ send }));
+    expect(triesTo(send, "jane@example.test")).toBe(1);
   });
 });
 
@@ -1375,7 +1140,7 @@ describe("followup-digest: paging and tenant scope", () => {
     w.tables.notification_sequences.unshift(...filler);
     fake = createFollowUpDigestFakeDb(w.tables);
     const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(counts({ ...BASELINE, orgs_enabled: 1_102, orgs_not_due: 1_100 }));
+    expect(result).toEqual(BASELINE);
     expect(recipients()).toEqual(["bill@example.test", "jane@example.test", "omar@example.test"]);
     const discovery = fake.reads.filter((r) => r.table === "notification_sequences");
     expect(discovery.length).toBeGreaterThan(2);
@@ -1412,7 +1177,7 @@ describe("followup-digest: paging and tenant scope", () => {
     const send = mailer((input) =>
       input.to === "omar@example.test" ? new Error(`boom ${SENTINEL_NOTE} ${SENTINEL_DOB}`) : null,
     );
-    const result = await incomplete(runFollowUpDigest(ctx(), deps({ send })));
+    const result = await runFollowUpDigest(ctx(), deps({ send }));
     // What SendGrid would receive, rendered from what the job handed the mailer.
     const payloads = JSON.stringify(sent.map((input) => buildMailPayload(input, ENV)));
     expect(sent.length).toBe(2);
@@ -1523,14 +1288,13 @@ describe("followup-digest: the touches read", () => {
     expect(jane?.followUps.rows.map((r) => r.caseNumber)).toContain(9999);
   });
 
-  it("reads no touches for an org with no open case, and still settles its day", async () => {
+  it("reads no touches for an org with no open case", async () => {
     const w = world();
     (w.cases.billLate as FakeRow).case_status = "approved";
     fake = createFollowUpDigestFakeDb(w.tables);
     const result = await runFollowUpDigest(ctx(), deps());
     expect(touchReads(ORG_B)).toEqual([]);
     expect(result).toEqual(counts({ ...BASELINE, digests_sent: 2 }));
-    expect(completions()).toContainEqual([JOB, ORG_B, TODAY]);
   });
 });
 
@@ -1542,8 +1306,8 @@ describe("followup-digest: registry entry", () => {
   });
 });
 
-describe("followup-digest: FollowUpDigestRules per org (policy as configuration, MINT-113)", () => {
-  it("reads each enabled org's rules, and with the defaults sends exactly as before", async () => {
+describe("followup-digest: the catch-up cut-off (FollowUpDigestRules, MINT-113)", () => {
+  it("reads each enabled org's rules, and with the default sends exactly as before", async () => {
     const asked: string[] = [];
     const result = await runFollowUpDigest(
       ctx(),
@@ -1568,114 +1332,8 @@ describe("followup-digest: FollowUpDigestRules per org (policy as configuration,
           resolveFollowUpDigestRules(null, orgId === ORG_A ? { catchUpUntilLocalHour: 12 } : null),
       }),
     );
-    expect(result).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_past_catch_up: 1,
-        orgs_due: 1,
-        orgs_completed: 1,
-        digests_sent: 1,
-      }),
-    );
+    expect(result).toEqual(counts({ orgs_due: 1, digests_sent: 1 }));
     expect(recipients()).toEqual(["bill@example.test"]);
-    expect(completions()).toEqual([[JOB, ORG_B, TODAY]]);
-  });
-
-  it("counts an org before its send hour as not due, not past the cut-off", async () => {
-    // 7 am Central: before the 8 am send hour; the noon cut-off is irrelevant.
-    const result = await runFollowUpDigest(
-      ctx(new Date("2026-10-31T12:00:00Z")),
-      deps({ rules: () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 12 }) }),
-    );
-    expect(result).toEqual(counts({ orgs_enabled: 2, orgs_not_due: 2 }));
-  });
-
-  it("treats a cut-off at or before the send hour as invalid: sends as by default, counted, logged once a date", async () => {
-    const event = "[jobs:followup-digest] org_rules_cut_off_not_after_send_hour";
-    const lines = () => logged().split(event).length - 1;
-    const invalid = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 8 });
-    // 8 am Central, the send hour: without the fallback nothing would ever go.
-    const first = await runFollowUpDigest(ctx(), deps({ rules: invalid }));
-    expect(first).toEqual({ ...BASELINE, orgs_rules_fallback: 2 });
-    expect(recipients()).toEqual(["bill@example.test", "jane@example.test", "omar@example.test"]);
-    expect(lines()).toBe(2);
-    // 10 am: counted again, not logged again (one line per org per local date).
-    const later = await runFollowUpDigest(
-      ctx(new Date("2026-10-31T15:00:00Z")),
-      deps({ rules: invalid }),
-    );
-    expect(later).toEqual({ ...ALREADY, orgs_rules_fallback: 2 });
-    expect(lines()).toBe(2);
-  });
-
-  it("keeps one attempt when DST start skips the send hour and the cut-off is the hour after", async () => {
-    // Mar 14 2027 in Chicago: 1:59 am CST is followed by 3:00 am CDT. A 2 am
-    // send hour with a 3 am cut-off would otherwise have no due hour at all.
-    fake = createFollowUpDigestFakeDb(world({ a: sendTime(2), b: sendTime(2) }).tables);
-    const rules = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 3 });
-    // 1:07 am CST: before the send hour.
-    const early = await runFollowUpDigest(ctx(new Date("2027-03-14T07:07:00Z")), deps({ rules }));
-    expect(early.orgs_not_due).toBe(2);
-    // 3:07 am CDT: the first hour after the skipped 2 am stands in for it.
-    const stand = await runFollowUpDigest(ctx(new Date("2027-03-14T08:07:00Z")), deps({ rules }));
-    expect(stand.orgs_due).toBe(2);
-    expect(stand.orgs_past_catch_up).toBe(0);
-    expect(stand.orgs_rules_fallback).toBe(0);
-    // 4:07 am CDT: past the cut-off.
-    const late = await runFollowUpDigest(ctx(new Date("2027-03-14T09:07:00Z")), deps({ rules }));
-    expect(late.orgs_past_catch_up).toBe(2);
-    expect(late.orgs_due).toBe(0);
-  });
-
-  it.each([
-    ["America/Santiago", "2026-09-06"],
-    ["America/Asuncion", "2024-10-06"],
-  ])(
-    "keeps one attempt in %s when DST start skips a midnight send hour and the cut-off is 1 am",
-    async (zone, dstStart) => {
-      fake = createFollowUpDigestFakeDb(
-        world({ a: sendTime(0, zone), b: sendTime(0, zone) }).tables,
-      );
-      const rules = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 1 });
-      // 03:07 UTC: 11:07 pm the day before (-04), past that date's cut-off.
-      const before = await runFollowUpDigest(
-        ctx(new Date(`${dstStart}T03:07:00Z`)),
-        deps({ rules }),
-      );
-      expect(before.orgs_past_catch_up).toBe(2);
-      // 04:07 UTC: 1:07 am (-03). Midnight did not exist; 1 am stands in.
-      const stand = await runFollowUpDigest(
-        ctx(new Date(`${dstStart}T04:07:00Z`)),
-        deps({ rules }),
-      );
-      expect(stand.orgs_due).toBe(2);
-      expect(stand.orgs_past_catch_up).toBe(0);
-      expect(completions()).toEqual(
-        [
-          [JOB, ORG_A, dstStart],
-          [JOB, ORG_B, dstStart],
-        ].sort(),
-      );
-      // 05:07 UTC: 2:07 am, past the cut-off.
-      const late = await runFollowUpDigest(ctx(new Date(`${dstStart}T05:07:00Z`)), deps({ rules }));
-      expect(late.orgs_past_catch_up).toBe(2);
-    },
-  );
-
-  it("still sends before the cut-off, and counts unassigned follow-ups under count_only", async () => {
-    // 11 am Central: before org A's noon cut-off.
-    const result = await runFollowUpDigest(
-      ctx(new Date("2026-10-31T16:00:00Z")),
-      deps({
-        rules: () =>
-          resolveFollowUpDigestRules({
-            catchUpUntilLocalHour: 12,
-            unassignedFollowUps: "count_only",
-          }),
-      }),
-    );
-    expect(result).toEqual(BASELINE);
-    expect(result.unassigned_follow_ups).toBe(1);
   });
 });
 
@@ -1689,13 +1347,12 @@ describe("followup-digest: daily, weekly or twice a day (A8)", () => {
   const slotsOf = (userId: string) =>
     fake.sends.filter((r) => r.recipient_user_id === userId).map((r) => [r.slot, r.outcome]);
   const timesTo = (to: string) => sent.filter((input) => input.to === to).map((i) => i.at);
-  const settle = (promise: Promise<unknown>) => promise.catch(() => null);
 
   it("sends a weekly digest only on its day, Monday in the org's zone, and lists nothing ahead (A14)", async () => {
     fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "weekly" } }).tables);
     // Saturday Oct 31, 8 am Central: org B (daily) is due; org A is not.
     expect(await runFollowUpDigest(ctx(), deps())).toEqual(
-      counts({ orgs_enabled: 2, orgs_due: 1, orgs_not_due: 1, orgs_completed: 1, digests_sent: 1 }),
+      counts({ orgs_due: 1, digests_sent: 1 }),
     );
     // Every hour to Tuesday 1 am Central.
     for (const at of hours("2026-10-31T14:00:00Z", 66)) {
@@ -1752,13 +1409,6 @@ describe("followup-digest: daily, weekly or twice a day (A8)", () => {
       ["2026-10-31", "sent"],
       ["2026-10-31:2", "sent"],
     ]);
-    expect(completions()).toEqual(
-      [
-        [JOB, ORG_A, "2026-10-31"],
-        [JOB, ORG_A, "2026-10-31:2"],
-        [JOB, ORG_B, "2026-10-31"],
-      ].sort(),
-    );
     const [morning, afternoon] = sent.filter((input) => input.to === JANE_TO);
     expect(afternoon.data).toEqual(morning.data);
     expect(afternoon.data.digestDate).toBe(TODAY);
@@ -1772,30 +1422,28 @@ describe("followup-digest: daily, weekly or twice a day (A8)", () => {
     );
     expect(timesTo(JANE_TO)).toEqual(["2026-10-31T19:00:00.000Z"]);
     expect(slotsOf(JANE)).toEqual([["2026-10-31:2", "sent"]]);
-    expect(completions()).toEqual(
-      [
-        [JOB, ORG_A, "2026-10-31:2"],
-        [JOB, ORG_B, "2026-10-31"],
-      ].sort(),
-    );
   });
 
-  it("catches up and retries each scheduled send on its own: three rejections spend only that send's tries", async () => {
+  it("catches up and retries each scheduled send on its own", async () => {
     fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "twice_daily" } }).tables);
     const send = mailer((input) =>
       input.to === JANE_TO
         ? new EmailError("provider_rejected", "SendGrid rejected the send (400)", 400)
         : null,
     );
-    // 8 am to 2 pm Central: three tries for the first send, then exhausted.
+    // 8 am to 2 pm Central: six tries for the first send (8 am to 1 pm), then
+    // the second send's window opens at 2 pm.
     for (const at of hours("2026-10-31T13:00:00Z", 7)) {
-      await settle(runFollowUpDigest(ctx(at), deps({ send })));
+      await runFollowUpDigest(ctx(at), deps({ send }));
     }
-    const janeTries = send.mock.calls.filter(([input]) => input.to === JANE_TO);
-    expect(janeTries).toHaveLength(4);
+    expect(triesTo(send, JANE_TO)).toBe(7);
+    expect(
+      fake.sends.filter((r) => r.recipient_user_id === JANE).map((r) => [r.slot, r.claims]),
+    ).toEqual([
+      ["2026-10-31", 6],
+      ["2026-10-31:2", 1],
+    ]);
     expect(slotsOf(JANE)).toEqual([
-      ["2026-10-31", "failed"],
-      ["2026-10-31", "failed"],
       ["2026-10-31", "failed"],
       ["2026-10-31:2", "failed"],
     ]);
@@ -1841,55 +1489,15 @@ describe("followup-digest: daily, weekly or twice a day (A8)", () => {
     // Daily to twice a day after the 8 am send: the 2 pm send goes too.
     orgA().digest_frequency = "twice_daily";
     const afternoon = await runFollowUpDigest(ctx(new Date("2026-10-31T19:00:00Z")), deps());
-    expect(afternoon).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 2,
-        orgs_already_completed: 1,
-        orgs_completed: 1,
-        digests_sent: 2,
-        unassigned_follow_ups: 1,
-      }),
-    );
+    expect(afternoon).toEqual(counts({ orgs_due: 2, digests_sent: 2, unassigned_follow_ups: 1 }));
     // Back to daily: the day's one send was made.
     orgA().digest_frequency = "daily";
     expect(await runFollowUpDigest(ctx(new Date("2026-10-31T20:00:00Z")), deps())).toEqual(ALREADY);
     // Weekly on a Saturday: not its day.
     orgA().digest_frequency = "weekly";
     expect(await runFollowUpDigest(ctx(new Date("2026-10-31T21:00:00Z")), deps())).toEqual(
-      counts({ orgs_enabled: 2, orgs_due: 1, orgs_not_due: 1, orgs_already_completed: 1 }),
+      counts({ orgs_due: 1 }),
     );
     expect(timesTo(JANE_TO)).toEqual(["2026-10-31T13:00:00.000Z", "2026-10-31T19:00:00.000Z"]);
-  });
-
-  it("checks the cut-off against the second hour for twice a day: falls back, counts, logs once per send", async () => {
-    const event = "[jobs:followup-digest] org_rules_cut_off_not_after_send_hour";
-    const lines = () => logged().split(event).length - 1;
-    fake = createFollowUpDigestFakeDb(world({ a: { digest_frequency: "twice_daily" } }).tables);
-    // Noon is after org B's 8 am but not after org A's 2 pm second send.
-    const rules = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 12 });
-    expect(await runFollowUpDigest(ctx(), deps({ rules }))).toEqual({
-      ...BASELINE,
-      orgs_rules_fallback: 1,
-    });
-    expect(lines()).toBe(1);
-    await runFollowUpDigest(ctx(new Date("2026-10-31T14:00:00Z")), deps({ rules }));
-    expect(lines()).toBe(1);
-    const afternoon = await runFollowUpDigest(
-      ctx(new Date("2026-10-31T19:00:00Z")),
-      deps({ rules }),
-    );
-    expect(afternoon).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 1,
-        orgs_past_catch_up: 1,
-        orgs_rules_fallback: 1,
-        orgs_completed: 1,
-        digests_sent: 2,
-        unassigned_follow_ups: 1,
-      }),
-    );
-    expect(lines()).toBe(2);
   });
 });

@@ -81,10 +81,10 @@ Because automatic deployments from Git pushes are disabled in `vercel.json` (`gi
 
 ### CI surfaces (panel)
 
-| Workflow                                     | What                                                                                                                                                                                                                                                                                                                                               |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/ci.yml`                   | format, typecheck, lint, unit tests, build, migration dry-run and release guardrails                                                                                                                                                                                                                                                               |
-| `.github/workflows/followup-digest-tick.yml` | hourly schedule (`7 * * * *`) plus manual dispatch: calls `GET /api/jobs/followup-digest` with `CRON_SECRET` from the **Production Jobs** environment (MINT-108; Vercel Hobby allows only daily crons). No checkout, `permissions: {}`; green only for HTTP 200 with a `succeeded` or `skipped` run; exits 0 with a notice until the secret is set |
+| Workflow                                     | What                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/ci.yml`                   | format, typecheck, lint, unit tests, build, migration dry-run and release guardrails                                                                                                                                                                                                                                                                                                                                |
+| `.github/workflows/followup-digest-tick.yml` | hourly schedule (`7 * * * *`) plus manual dispatch: calls `GET /api/jobs/followup-digest` with `CRON_SECRET` from the **Production Jobs** environment (MINT-108; Vercel Hobby allows only daily crons). No checkout, `permissions: {}`; green only for HTTP 200 with a `succeeded` run (a run whose sends partly failed still succeeds and shows them in its counts); exits 0 with a notice until the secret is set |
 
 **Follow-up digest tick setup (Sowmya).** Create the GitHub environment
 **Production Jobs** (Settings > Environments) with `main` as its only deployment
@@ -100,9 +100,9 @@ Actions minute, about 744 a month in a private repository. GitHub runs
 schedules on the default branch only, can delay or skip them under load, and
 disables them after 60 days without activity in a public repository; failure
 emails for a scheduled run go only to whoever last edited its cron line. A run
-longer than the tick's 60-second wait turns the tick red while `job_runs`
-records the real outcome; how long a Hobby function may run depends on the
-project's Fluid compute setting.
+longer than the tick's 60-second wait turns the tick red while the function
+may still finish (the next hour's run picks up what it left); how long a
+Hobby function may run depends on the project's Fluid compute setting.
 
 The previous hosted `verify-org-isolation.yml` workflow is retired. Production
 isolation must run inside the single approved production job described in
