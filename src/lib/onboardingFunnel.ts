@@ -271,8 +271,10 @@ export interface OnboardingFunnelDimensions {
   /** Has an active, non-reference location that counts. */
   assigned: boolean;
   assignmentGaps: string[];
-  /** Has a current group membership. A missing group is a staff-side gap
-   * (A23): listed under awaiting assignment, never as the provider's reason. */
+  /** Has a current group membership. Group gaps are staff-side (A23): a
+   * missing group, or a membership that does not count where the
+   * provider's locations are. Listed under awaiting assignment, never as
+   * the provider's reason. */
   grouped: boolean;
   groupGaps: string[];
   /** Fact: every active location has a valid state. */
@@ -1198,33 +1200,37 @@ function lapsedMembershipReason(
   return null;
 }
 
-/** Why a location does not count, or null when it does. `groupOnly`: the
- * only problem is that the location's group is not a current group of the
- * provider's (a mismatch, or a membership there that does not count). */
+/** Why a location does not count, or null when it does. A group reason
+ * means the location's group is not a current group of the provider's:
+ * `mismatch` says so in location terms, and `membership` names the
+ * provider's membership there when one exists but does not count. */
+type LocationReason =
+  | { kind: "location"; text: string }
+  | { kind: "group"; mismatch: string; membership: string | null };
+
 function locationReason(
   location: OnboardingFunnelLocationInput,
   current: ReadonlySet<string>,
   lapsed: ReadonlyMap<string, string>,
   today: string,
   rules: OnboardingFunnelRules,
-): { text: string; groupOnly: boolean } | null {
+): LocationReason | null {
   const name = location.locationName;
   if (rules.locationMustBeInProviderGroup) {
     if (location.groupId === null) {
       if (!rules.ungroupedLocationCounts)
-        return { text: `Location ${name} has no group`, groupOnly: false };
+        return { kind: "location", text: `Location ${name} has no group` };
     } else if (!current.has(location.groupId)) {
       return {
-        text:
-          lapsed.get(location.groupId) ??
-          `Location ${name} is under ${location.groupName ?? "another group"}, not the provider's group`,
-        groupOnly: true,
+        kind: "group",
+        mismatch: `Location ${name} is under ${location.groupName ?? "another group"}, not the provider's group`,
+        membership: lapsed.get(location.groupId) ?? null,
       };
     }
   }
   const start = day(location.assignmentStartDate);
   if (!rules.futureLocationAssignmentCounts && start !== null && start > today)
-    return { text: `Assignment to ${name} starts ${start}`, groupOnly: false };
+    return { kind: "location", text: `Assignment to ${name} starts ${start}` };
   return null;
 }
 
@@ -1262,9 +1268,11 @@ function placementGaps(
 
   // The location: per-location reasons, for a provider with or without a
   // group alike (A23). An ungrouped location can count for anyone (A22).
-  // Without a current group, a reason that only says the location's group is
-  // not theirs is a group gap, so it is staff-side too and never the
-  // provider's reason. With one, it is a real location mismatch.
+  // Membership and group text is always staff-side, never the provider's
+  // reason. Without a current group, a location under someone else's group
+  // is part of that group gap too. With one, the location's mismatch is a
+  // real location gap, said in location terms, and any membership reason
+  // for the location's group goes with the staff-side group gaps.
   let assigned = false;
   const assignmentGaps: string[] = [];
   if (locations.length === 0) assignmentGaps.push("Needs a location");
@@ -1276,9 +1284,13 @@ function placementGaps(
     const reasons = sorted.map((l) => locationReason(l, current, lapsed, today, rules));
     assigned = reasons.some((reason) => reason === null);
     if (!assigned)
-      for (const reason of reasons as Array<{ text: string; groupOnly: boolean }>) {
-        if (reason.groupOnly && !grouped) groupGaps.push(reason.text);
-        else assignmentGaps.push(reason.text);
+      for (const reason of reasons as LocationReason[]) {
+        if (reason.kind === "location") assignmentGaps.push(reason.text);
+        else if (!grouped) groupGaps.push(reason.membership ?? reason.mismatch);
+        else {
+          assignmentGaps.push(reason.mismatch);
+          if (reason.membership) groupGaps.push(reason.membership);
+        }
       }
   }
 

@@ -515,6 +515,8 @@ describe("a location must be under the provider's group", () => {
   });
 });
 
+const DURHAM_MISMATCH = "Location Durham is under Rose City Rehab, not the provider's group";
+
 describe("accurate reasons when the location's group is the provider's own", () => {
   // Fay is a current member of Shelby Sports Rehab; her only location is
   // under Rose City Rehab, where her membership does not count.
@@ -525,10 +527,12 @@ describe("accurate reasons when the location's group is the provider's own", () 
     return data;
   }
 
+  // With a current group, staff see the location's mismatch and, beside it,
+  // why her Rose membership does not count (A23: both staff-side here).
   it("says the membership ended", () => {
     expect(rowFor(lapsed({ endDate: "2026-10-01" }), "ready")).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Membership in Rose City Rehab ended 2026-10-01"],
+      gaps: [DURHAM_MISMATCH, "Membership in Rose City Rehab ended 2026-10-01"],
     });
   });
 
@@ -538,14 +542,14 @@ describe("accurate reasons when the location's group is the provider's own", () 
     expect(rowFor(data, "ready")).toMatchObject({ stage: "ready_for_credentialing" });
     expect(rowFor(data, "ready", off)).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Membership in Rose City Rehab starts 2026-11-01"],
+      gaps: [DURHAM_MISMATCH, "Membership in Rose City Rehab starts 2026-11-01"],
     });
   });
 
   it("says the group is inactive", () => {
     expect(rowFor(lapsed({ groupActive: false }), "ready")).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Group Rose City Rehab is inactive"],
+      gaps: [DURHAM_MISMATCH, "Group Rose City Rehab is inactive"],
     });
   });
 
@@ -559,11 +563,14 @@ describe("accurate reasons when the location's group is the provider's own", () 
       stage: "verified_awaiting_assignment",
       gaps: ["Membership group not found"],
     });
-    // Beside a current group, the location under the unseen group reads the same.
+    // Beside a current group, the location's mismatch shows too.
     data.groupMemberships = [...data.groupMemberships, member("ready", null, underShelby)];
     expect(rowFor(data, "ready")).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Membership group not found"],
+      gaps: [
+        "Location NC Clinic is under another group, not the provider's group",
+        "Membership group not found",
+      ],
     });
     expect(rowFor(data, "ready")?.gaps.join(" ")).not.toMatch(/inactive/);
     // A known inactive group with no name on record still says only what is known.
@@ -2033,6 +2040,35 @@ describe("A23: a group problem is never the provider's reason (review of 209c1df
     });
   }
 
+  for (const { name, membership, rules = DEFAULT, staff } of cases.filter((c) => c.membership)) {
+    it(`keeps ${name} out of Submitted beside a current group, with the plain mismatch`, () => {
+      // Bea is also a current member of Shelby Sports Rehab (review of bf0d3082).
+      const data = pendingAtRose(membership);
+      data.groupMemberships = [
+        ...data.groupMemberships,
+        member("bea", null, { ...underShelby, groupActive: true }),
+      ];
+      const mismatch = DURHAM_MISMATCH;
+      const row = rowFor(data, "bea", rules);
+      expect(row).toMatchObject({
+        stage: "submitted",
+        gaps: ["Record pending verification", mismatch],
+      });
+      expect(row?.dimensions).toMatchObject({
+        assigned: false,
+        assignmentGaps: [mismatch],
+        grouped: true,
+        groupGaps: staff,
+      });
+      // Verified, staff see both under awaiting assignment.
+      data.providers = [complete("bea", "Bea Pending")];
+      expect(rowFor(data, "bea", rules)).toMatchObject({
+        stage: "verified_awaiting_assignment",
+        gaps: [mismatch, ...staff],
+      });
+    });
+  }
+
   it("keeps a real location mismatch for a provider who has a current group", () => {
     const data = pendingAtRose({ ...underShelby });
     expect(rowFor(data, "bea")).toMatchObject({
@@ -2114,13 +2150,16 @@ describe("A23: a group problem is never the provider's reason (review of 209c1df
                 for (const row of rowsOf(data, rules)) {
                   if (row.stage !== "submitted") continue;
                   submitted += 1;
-                  for (const gap of row.gaps) expect(row.dimensions.groupGaps).not.toContain(gap);
-                  // Without a current group, nothing about groups is shown.
-                  if (!row.dimensions.grouped)
-                    for (const gap of row.gaps)
-                      expect(gap).not.toMatch(
-                        /^(Membership |Group |The provider's group|No group)|not the provider's group$/,
-                      );
+                  for (const gap of row.gaps) {
+                    expect(row.dimensions.groupGaps).not.toContain(gap);
+                    // No membership or group text, for anyone.
+                    expect(gap).not.toMatch(
+                      /^(Membership |Group |The provider's group|No group assigned)/,
+                    );
+                    // Without a current group, not even a location's mismatch.
+                    if (!row.dimensions.grouped)
+                      expect(gap).not.toMatch(/not the provider's group$/);
+                  }
                 }
               }
     expect(submitted).toBeGreaterThan(1000);
