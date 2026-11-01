@@ -29,9 +29,11 @@
 --
 -- Order: any time after 20260925203025_wp13_roster_engine_tables.sql; it
 -- needs nothing from #568. Apply this migration BEFORE deploying the app
--- that stops sending a reason: the old function refuses a missing or short
--- reason (roster_override_reason_too_short), so until this is applied an
--- override from the new app fails with a 422 and nothing is recorded.
+-- that stops sending a reason: the old function has no default for
+-- p_reason, so PostgREST finds no function for the new app's call (PGRST202,
+-- a 500 "Roster operation could not be completed") and nothing is recorded.
+-- The old app keeps working after the apply: its reason is accepted and
+-- dropped.
 --
 -- Additive and re-runnable. REPO-ONLY until an operator applies it, staging
 -- first. It has never been applied to a hosted database.
