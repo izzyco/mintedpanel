@@ -447,7 +447,7 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     expect(moved.steps?.[1].templateKey).toBe("intake_reminder_final");
   });
 
-  it("shows the digest as one read-only daily step: no cc, no inputs, Minted's send time", () => {
+  it("shows the digest as one read-only step: no cc, no inputs, Minted's send time", () => {
     const draft = starterDraft();
     const html = renderToStaticMarkup(
       <NotificationSequenceEditor

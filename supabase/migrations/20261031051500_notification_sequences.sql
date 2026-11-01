@@ -1533,7 +1533,7 @@ BEGIN
       v_after,
       CASE p_purpose
         WHEN 'intake_reminder' THEN 'Saved provider intake reminder settings'
-        ELSE 'Saved daily follow-up digest settings'
+        ELSE 'Saved follow-up digest settings'
       END
     );
 

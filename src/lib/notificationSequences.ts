@@ -20,7 +20,7 @@
 // group per layer, A10) and weekday are platform-managed: only Minted sets
 // them, on the default or as an org override, never an org admin.
 //
-// Two policy decisions are settings too, not code (NotificationPolicyRules,
+// Four policy decisions are settings too, not code (NotificationPolicyRules,
 // resolved by resolveNotificationPolicyRules; Mission Control edits them,
 // MINT-113):
 //   * Which intake step's bounce escalates to that step's cc list
@@ -29,8 +29,11 @@
 //   * Whether the digest's step may carry a cc list (digest_cc_allowed): no,
 //     coordinators only (D59, S7). Minted's default, which an org row may
 //     override; platform-managed, so only Minted writes either.
+//   * How often the digest goes out (digest_frequency): daily (A8), or weekly
+//     or twice a day. Org-owned: an org row overrides Minted's default.
+//   * The weekly digest's day (digest_weekday): Monday (A8). Platform-managed.
 //
-// Nothing here sends anything. The consumers (the daily follow-up digest, and
+// Nothing here sends anything. The consumers (the follow-up digest, and
 // intake reminders once the intake back end lands) resolve the effective
 // sequence and call `scheduleSequenceSends` and `bounceEscalationRecipients`
 // below, so the rules they apply are pinned by tests now.
@@ -44,12 +47,14 @@
 // can name a key the catalog does not have.
 //
 // The database enforces the same bounds (migration 20261031051500): offsets 0
-// to 90, at most 10 steps, offsets strictly increasing, the digest at most one
-// step and no cc unless Minted allows it, cc lists of at most 20 users or
-// roles, target 1 to 90 days, send hour 0 to 23 in an IANA zone, bounce
-// escalation step 0 to 10. Rules that
-// a later PR may relax without a migration (the digest offset fixed at 0,
-// intake offsets from day 1) are enforced here and in the card only.
+// to 90, intake offsets from day 1 (A12), at most 10 steps, offsets strictly
+// increasing, the digest at most one step and no cc unless Minted allows it,
+// cc lists of at most 20 users or roles, at least one stop condition (A11),
+// target 1 to 90 days, the digest's frequency and weekly weekday, its send
+// hour, zone and second hour as one group (0 to 23, an IANA zone, the second
+// later, A10), bounce escalation step 0 to 10. The one rule a later PR may
+// relax without a migration, the digest offset fixed at 0, is enforced here
+// and in the card only.
 //
 // All date math is date-only (YYYY-MM-DD, UTC) against passed-in dates. No
 // clock read.
@@ -199,8 +204,9 @@ export const PURPOSE_RULES: Record<NotificationPurpose, PurposeRules> = {
     // The digest is one message each time it goes out.
     maxSteps: 1,
     minOffsetDays: 0,
-    // An offset has no meaning for a daily digest until the digest PR gives
-    // it one; 0 keeps the shared step shape. Relaxing this needs no migration.
+    // An offset has no meaning for the digest: when it goes out is its
+    // frequency and send time (A8). 0 keeps the shared step shape. Relaxing
+    // this needs no migration.
     fixedOffsetDays: 0,
     hasIntakeSettings: false,
     hasFrequency: true,
@@ -747,7 +753,7 @@ export function validateDraft(
     add("steps", null, "Add at least one step, or use Minted's default steps.");
   }
   if (purpose === "followup_digest" && steps.length > 1) {
-    add("steps", null, "The daily digest has exactly one step.");
+    add("steps", null, "The follow-up digest has exactly one step.");
   } else if (steps.length > rules.maxSteps) {
     add("steps", null, `A sequence can have at most ${rules.maxSteps} steps.`);
   }
@@ -759,7 +765,7 @@ export function validateDraft(
     if (!isWholeNumber(offset)) {
       add("offsetDays", index, `Enter a whole number of days for step ${n}.`);
     } else if (rules.fixedOffsetDays != null && offset !== rules.fixedOffsetDays) {
-      add("offsetDays", index, `The daily digest is sent on day ${rules.fixedOffsetDays}.`);
+      add("offsetDays", index, `The follow-up digest is sent on day ${rules.fixedOffsetDays}.`);
     } else if (offset < rules.minOffsetDays || offset > NOTIFICATION_LIMITS.maxOffsetDays) {
       add(
         "offsetDays",
@@ -793,7 +799,7 @@ export function validateDraft(
       add(
         "ccRecipients",
         index,
-        "The daily digest goes to coordinators only, so it has no cc list.",
+        "The follow-up digest goes to coordinators only, so it has no cc list.",
       );
     }
     if (step.ccRecipients.length > NOTIFICATION_LIMITS.maxCcRecipients) {
@@ -861,13 +867,13 @@ export function validateDraft(
     }
   } else {
     if (draft.stopConditions != null) {
-      add("stopConditions", null, "The daily digest has no stop conditions.");
+      add("stopConditions", null, "The follow-up digest has no stop conditions.");
     }
     if (draft.targetDaysToReady != null) {
-      add("targetDaysToReady", null, "The daily digest has no target.");
+      add("targetDaysToReady", null, "The follow-up digest has no target.");
     }
     if (draft.bounceEscalationStep != null) {
-      add("bounceEscalationStep", null, "The daily digest has no bounce rule.");
+      add("bounceEscalationStep", null, "The follow-up digest has no bounce rule.");
     }
   }
   if (rules.hasFrequency) {
@@ -993,10 +999,10 @@ const SAVE_ERROR_MESSAGES: ReadonlyArray<[string, string]> = [
     "notification_cc_user_not_member",
     "Someone cc'd on a step is no longer a member of this organization. Remove them and save again.",
   ],
-  ["notification_digest_single_step", "The daily digest has exactly one step."],
+  ["notification_digest_single_step", "The follow-up digest has exactly one step."],
   [
     "notification_digest_has_no_cc",
-    "The daily digest goes to coordinators only, so it can't cc anyone.",
+    "The follow-up digest goes to coordinators only, so it can't cc anyone.",
   ],
   ["notification_platform_setting", "Minted sets that setting, so it can't be changed here."],
   ["notification_step_offsets_not_increasing", "Each step must go out after the one before it."],

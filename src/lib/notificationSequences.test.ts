@@ -254,7 +254,7 @@ describe("validateDraft: offsets", () => {
   it("fixes the digest offset at 0", () => {
     const draft = updateStep(digest(), 0, { offsetDays: 1 });
     expect(messages(validateDraft("followup_digest", draft))).toEqual([
-      "The daily digest is sent on day 0.",
+      "The follow-up digest is sent on day 0.",
     ]);
   });
 });
@@ -263,7 +263,7 @@ describe("validateDraft: steps", () => {
   it("allows the digest exactly one step, and own steps are never empty", () => {
     const two: SequenceDraft = { ...digest(), steps: [...digest().steps, digest().steps[0]] };
     expect(messages(validateDraft("followup_digest", two))).toContain(
-      "The daily digest has exactly one step.",
+      "The follow-up digest has exactly one step.",
     );
     const none: SequenceDraft = { ...digest(), steps: [] };
     expect(messages(validateDraft("followup_digest", none))).toEqual([
@@ -377,7 +377,7 @@ describe("validateDraft: cc recipients", () => {
   it("refuses any cc on the digest, which goes to coordinators only (answer 2)", () => {
     const draft = updateStep(digest(), 0, { ccRecipients: [{ kind: "role", role: "admin" }] });
     expect(messages(validateDraft("followup_digest", draft))).toEqual([
-      "The daily digest goes to coordinators only, so it has no cc list.",
+      "The follow-up digest goes to coordinators only, so it has no cc list.",
     ]);
     expect(() => buildSavePayload("followup_digest", draft, null)).toThrow(/coordinators only/);
   });
@@ -442,7 +442,10 @@ describe("validateDraft: intake settings", () => {
           targetDaysToReady: 14,
         }),
       ),
-    ).toEqual(["The daily digest has no stop conditions.", "The daily digest has no target."]);
+    ).toEqual([
+      "The follow-up digest has no stop conditions.",
+      "The follow-up digest has no target.",
+    ]);
   });
 });
 
@@ -1125,7 +1128,7 @@ describe("copy helpers", () => {
       "Only admins can change notifications.",
     );
     expect(saveErrorMessage("notification_digest_has_no_cc")).toBe(
-      "The daily digest goes to coordinators only, so it can't cc anyone.",
+      "The follow-up digest goes to coordinators only, so it can't cc anyone.",
     );
     expect(saveErrorMessage("notification_platform_setting: send_hour")).toBe(
       "Minted sets that setting, so it can't be changed here.",
@@ -1556,7 +1559,7 @@ describe("bounce escalation step (Oct 30 decision, now a setting)", () => {
     expect(validateDraft("intake_reminder", { ...intake(), bounceEscalationStep: 0 })).toEqual([]);
     expect(
       messages(validateDraft("followup_digest", { ...digest(), bounceEscalationStep: 1 })),
-    ).toEqual(["The daily digest has no bounce rule."]);
+    ).toEqual(["The follow-up digest has no bounce rule."]);
     expect(() =>
       buildSavePayload("followup_digest", { ...digest(), bounceEscalationStep: 1 }, null),
     ).toThrow(/no bounce rule/);
@@ -1618,7 +1621,7 @@ describe("digest audience (D59, now Minted's setting digest_cc_allowed)", () => 
   it("validates and builds a digest cc only when the caller says Minted allows it", () => {
     const withCc = updateStep(digest(), 0, { ccRecipients: CC_ADMINS });
     expect(messages(validateDraft("followup_digest", withCc))).toEqual([
-      "The daily digest goes to coordinators only, so it has no cc list.",
+      "The follow-up digest goes to coordinators only, so it has no cc list.",
     ]);
     expect(validateDraft("followup_digest", withCc, { digestCcAllowed: false })).toHaveLength(1);
     expect(validateDraft("followup_digest", withCc, { digestCcAllowed: true })).toEqual([]);
