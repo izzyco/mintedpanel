@@ -33,7 +33,6 @@ vi.mock("./jobs/registry", async () => {
   };
 });
 
-import { createFakeJobDb, type FakeJobDb } from "@/__fixtures__/jobRunsFakeDb";
 import { resolveEnrollmentContext } from "@/services/clientAccess";
 import { handleApiRequest } from "./api";
 import { authenticate, authenticateUser, GuardError } from "./guard";
@@ -41,15 +40,13 @@ import { authenticate, authenticateUser, GuardError } from "./guard";
 const SECRET = "cron-secret-0123456789abcdef";
 const ORIGIN = "chrome-extension://dppfnbikpojpgdiobckgcknmkjlfoinh";
 
-let fake: FakeJobDb;
 let consoleError: MockInstance<(...args: unknown[]) => void>;
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("DEV", false);
   vi.stubEnv("CRON_SECRET", SECRET);
   vi.stubEnv("API_CORS_ORIGINS", ORIGIN);
-  fake = createFakeJobDb(Date.now());
-  hoisted.db = fake.db;
+  hoisted.db = { stand_in: "service client" };
   hoisted.run = vi.fn(async () => ({ sent: 3 }));
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(authenticateUser).mockRejectedValue(new GuardError(401, "Invalid or expired token"));
