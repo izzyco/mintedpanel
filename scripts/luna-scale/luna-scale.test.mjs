@@ -335,7 +335,7 @@ test("every Provider Onboarding funnel stage and gap has members, as generated",
   const total = [...funnel.values()].length;
   assert.ok(byStage.verified_awaiting_assignment / total > 0.04, "awaiting assignment > 4%");
   // The platform-default counts quoted in the README and the PR (#560 at
-  // 209c1dfd: a location with no group counts for anyone, A22).
+  // bf0d3082: a location with no group counts for anyone, A22).
   assert.deepEqual(
     FUNNEL_STAGES.map((stage) => byStage[stage]),
     [420, 348, 174, 315, 2208],
