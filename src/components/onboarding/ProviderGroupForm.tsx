@@ -46,6 +46,7 @@ import {
   type GroupFormErrors,
   type GroupFormValue,
 } from "@/lib/providerGroup";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import { US_STATES } from "@/lib/usStates";
 import type { ProviderGroup } from "@/types";
 
@@ -230,6 +231,7 @@ export function ProviderGroupForm({
 
   const createMut = useCreateProviderGroup();
   const updateMut = useUpdateProviderGroup(group?.id ?? "");
+  const phoneRules = usePhoneValidationRules();
   const pending = createMut.isPending || updateMut.isPending;
 
   const set = (patch: Partial<GroupFormValue>) => setValue((v) => ({ ...v, ...patch }));
@@ -240,7 +242,7 @@ export function ProviderGroupForm({
       correspondence: sameCorr ? value.billing : value.correspondence,
       credentialing: sameCred ? value.billing : value.credentialing,
     };
-    const errs = groupFormErrors(resolved, group ? groupToFormValue(group) : undefined);
+    const errs = groupFormErrors(resolved, group ? groupToFormValue(group) : undefined, phoneRules);
     setErrors(errs);
     if (hasGroupFormErrors(errs)) return;
     const input = formValueToInput(resolved);

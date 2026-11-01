@@ -41,6 +41,7 @@ import {
   type RunResolutions,
   type UpdateDisposition,
 } from "@/lib/importDedupe";
+import { importWarningEntries } from "@/lib/importPhoneRule";
 import type { ImportRun } from "@/types";
 
 function MetricCard({
@@ -268,7 +269,7 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
     if (!dispositions) return;
     const plan = buildCommitPlan(dispositions, resolutions);
     commit.mutate(
-      { runId: run.id, plan },
+      { runId: run.id, plan, warnings: importWarningEntries(dispositions) },
       {
         onSuccess: (result) => {
           setConfirmCommit(false);
@@ -335,7 +336,14 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
               {creates.map((d) =>
                 d.kind === "create" ? (
                   <TableRow key={`c-${d.line}`}>
-                    <TableCell className="text-[13px] font-medium">{d.displayName}</TableCell>
+                    <TableCell className="text-[13px] font-medium">
+                      {d.displayName}
+                      {d.warnings?.map((w) => (
+                        <p key={w.column} className="text-[11px] font-normal text-[#92400E]">
+                          {w.reason}
+                        </p>
+                      ))}
+                    </TableCell>
                     <TableCell className="text-[13px] tabular-nums">{d.npi}</TableCell>
                     <TableCell className="text-[13px]">{d.groupIds.length}</TableCell>
                     <TableCell className="text-[13px]">{d.facilityIds.length}</TableCell>

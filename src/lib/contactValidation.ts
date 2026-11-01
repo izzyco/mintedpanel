@@ -3,7 +3,7 @@
 // RLS/services) is the enforcement authority; these give the user immediate,
 // friendly feedback before submit.
 import type { ContactInput } from "@/types";
-import { usPhoneError } from "@/lib/phone";
+import { usPhoneError, type PhoneValidationRules } from "@/lib/phone";
 
 // Format check mirrors the RPC's server-side regex closely enough for a
 // pre-submit gate: one @, no spaces, a dot in the domain. Deliberately lenient
@@ -51,7 +51,8 @@ export function commonEmailDomainTypo(value: string): string | null {
 // assert_contact_valid: name, valid email, phone, and the meaningful split
 // address parts (line2/country optional). Returns per-field messages. An
 // entered office phone must also be a US number (MINT-91); on an edit pass the
-// stored phone, so an untouched legacy value never blocks the save.
+// stored phone, so by default an untouched legacy value never blocks the save
+// (recheckStoredOnEdit).
 export interface ContactFieldErrors {
   firstName?: string;
   lastName?: string;
@@ -63,7 +64,11 @@ export interface ContactFieldErrors {
   postalCode?: string;
 }
 
-export function contactErrors(c: ContactInput, storedPhone?: string | null): ContactFieldErrors {
+export function contactErrors(
+  c: ContactInput,
+  storedPhone?: string | null,
+  phoneRules?: PhoneValidationRules,
+): ContactFieldErrors {
   const e: ContactFieldErrors = {};
   // D6: the name is captured split, so it is validated split. The composed
   // `name` the RPC still requires is derived at the service boundary.
@@ -73,7 +78,7 @@ export function contactErrors(c: ContactInput, storedPhone?: string | null): Con
   else if (!isValidEmail(c.email)) e.email = "Enter a valid email address";
   if (!c.phoneOffice.trim()) e.phoneOffice = "Phone is required";
   else {
-    const phoneError = usPhoneError(c.phoneOffice, storedPhone);
+    const phoneError = usPhoneError(c.phoneOffice, storedPhone, phoneRules);
     if (phoneError) e.phoneOffice = phoneError;
   }
   if (!c.addressLine1.trim()) e.addressLine1 = "Street address is required";

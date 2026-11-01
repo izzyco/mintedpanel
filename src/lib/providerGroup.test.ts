@@ -16,7 +16,7 @@ import {
   type GroupFormValue,
 } from "./providerGroup";
 import type { ProviderGroup } from "@/types";
-import { US_PHONE_MESSAGE } from "@/lib/phone";
+import { DEFAULT_PHONE_VALIDATION_RULES, US_PHONE_MESSAGE } from "@/lib/phone";
 
 const validForm: GroupFormValue = {
   name: "Tree Hill Sports Therapy LLC",
@@ -130,6 +130,18 @@ describe("groupFormErrors", () => {
     expect(
       groupFormErrors({ ...stored, billing: { ...stored.billing, phone: "919-555-0100" } }, stored),
     ).toEqual({});
+  });
+
+  it("under recheckStoredOnEdit (MINT-129 alternative), an untouched stored phone is checked too", () => {
+    const stored: GroupFormValue = {
+      ...validForm,
+      credentialing: { ...validForm.credentialing, phone: "555-0100" },
+    };
+    const recheck = { ...DEFAULT_PHONE_VALIDATION_RULES, recheckStoredOnEdit: true };
+    expect(groupFormErrors(stored, stored, DEFAULT_PHONE_VALIDATION_RULES)).toEqual({});
+    expect(groupFormErrors(stored, stored, recheck)).toEqual({
+      credentialingPhone: US_PHONE_MESSAGE,
+    });
   });
 });
 

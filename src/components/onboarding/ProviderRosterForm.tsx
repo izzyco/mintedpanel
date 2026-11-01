@@ -45,6 +45,7 @@ import { isValidNpi } from "@/lib/providerGroup";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import { usPhoneError } from "@/lib/phone";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import {
   ProviderSaveError,
   type LicenseCommand,
@@ -198,6 +199,7 @@ function FormBody({
   const createMut = useCreateProviderWithDetails();
   const updateMut = useUpdateProviderWithLicenses(provider?.id ?? "");
   const pending = createMut.isPending || updateMut.isPending;
+  const phoneRules = usePhoneValidationRules();
 
   const set = (patch: Partial<RosterFormState>) => setForm((f) => ({ ...f, ...patch }));
 
@@ -225,9 +227,13 @@ function FormBody({
       next.ssnLast4 = "Enter the LAST 4 digits only";
     const assignmentError = validateGroupAssignments(assignments);
     if (assignmentError) next.assignments = assignmentError;
-    // MINT-91: an entered or changed phone must be a US number; an untouched
-    // stored phone never blocks an edit.
-    const phoneError = usPhoneError(form.phone, provider ? initialForm.phone : undefined);
+    // MINT-91: an entered or changed phone must be a US number. By default an
+    // untouched stored phone never blocks an edit (recheckStoredOnEdit).
+    const phoneError = usPhoneError(
+      form.phone,
+      provider ? initialForm.phone : undefined,
+      phoneRules,
+    );
     if (phoneError) next.phone = phoneError;
 
     const licErrs: Record<number, string> = {};

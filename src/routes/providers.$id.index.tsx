@@ -80,7 +80,8 @@ import { isValidNpi } from "@/lib/providerGroup";
 import { hasValidLicenseDateOrder, LICENSE_DATE_ORDER_ERROR } from "@/lib/licenseDates";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { US_PHONE_MESSAGE, isValidUsPhone } from "@/lib/phone";
+import { usPhoneError } from "@/lib/phone";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import {
   PROVIDER_GENDER_UNSET_VALUE,
   providerGenderLabel,
@@ -379,6 +380,7 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  const phoneRules = usePhoneValidationRules();
 
   const dateDisplay = (v: string | null) => (v ? fmtDate(v) : "—");
   const groups: { title: string; cells: Cell[] }[] = [
@@ -408,13 +410,7 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           value: provider.email ?? null,
           validate: (v) => (isValidEmail(v) ? null : "Enter a valid email address."),
         },
-        {
-          label: "Phone",
-          key: "phone",
-          value: provider.phone ?? null,
-          mono: true,
-          validate: (v) => (isValidUsPhone(v) ? null : `${US_PHONE_MESSAGE}.`),
-        },
+        { label: "Phone", key: "phone", value: provider.phone ?? null, mono: true },
       ],
     },
     {
@@ -478,6 +474,10 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
 
   const save = async () => {
     const errors: Record<string, string> = {};
+    // MINT-91: the phone check. An unchanged stored phone is re-checked only
+    // under PhoneValidationRules.recheckStoredOnEdit (off by default).
+    const phoneError = usPhoneError(draft.phone ?? "", provider.phone ?? null, phoneRules);
+    if (phoneError) errors.phone = `${phoneError}.`;
     for (const f of fields) {
       const draftValue = draft[f.key] ?? "";
       const v = f.type === "gender" ? draftValue : draftValue.trim();

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isValidEmail, commonEmailDomainTypo, contactErrors } from "./contactValidation";
 import { EMPTY_CONTACT } from "./contacts";
 import type { ContactInput } from "@/types";
-import { US_PHONE_MESSAGE } from "@/lib/phone";
+import { DEFAULT_PHONE_VALIDATION_RULES, US_PHONE_MESSAGE } from "@/lib/phone";
 
 // A fully-populated contact. Was the shared DEFAULT_SALES_REP fixture until org
 // intake stopped auto-creating a placeholder sales rep and that constant was
@@ -98,5 +98,15 @@ describe("contactErrors — office phone format (MINT-91)", () => {
       US_PHONE_MESSAGE,
     );
     expect(contactErrors({ ...legacy, phoneOffice: "704-555-0199" }, "abc-def-ghij")).toEqual({});
+  });
+});
+
+describe("contactErrors — recheckStoredOnEdit (MINT-129 alternative)", () => {
+  it("blocks the edit on an untouched invalid stored phone only when the rule is on", () => {
+    const legacy = { ...FULL_CONTACT, phoneOffice: "abc-def-ghij" };
+    const recheck = { ...DEFAULT_PHONE_VALIDATION_RULES, recheckStoredOnEdit: true };
+    expect(contactErrors(legacy, "abc-def-ghij", DEFAULT_PHONE_VALIDATION_RULES)).toEqual({});
+    expect(contactErrors(legacy, "abc-def-ghij", recheck).phoneOffice).toBe(US_PHONE_MESSAGE);
+    expect(contactErrors(FULL_CONTACT, FULL_CONTACT.phoneOffice, recheck)).toEqual({});
   });
 });

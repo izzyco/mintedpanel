@@ -168,6 +168,11 @@ export function SectionImportPreview({
             {result.creates.map((c) => (
               <li key={`c-${c.line}`} className="text-foreground">
                 {c.displayName}
+                {c.warnings?.map((w) => (
+                  <p key={w.column} className="text-[11px] text-[#92400E]">
+                    {w.reason}
+                  </p>
+                ))}
               </li>
             ))}
           </ul>

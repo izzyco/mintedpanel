@@ -22,6 +22,7 @@ import { matchGroupLocator } from "@/lib/groupLocator";
 import { decodeDelimited } from "@/lib/importSections";
 import { DAY_KEYS, emptyHoursDraft, encodeHours } from "@/lib/facilityHours";
 import { normalizeWebsiteUrl } from "@/lib/providerGroup";
+import { importWarningEntries, withReportEntries } from "@/lib/importPhoneRule";
 import { attachGroupPayer, listPayerNetworkTargets } from "@/services/payerNetworkTargets";
 import type { ScannedRow } from "@/lib/rosterImport";
 import type {
@@ -413,8 +414,13 @@ async function applyProviderRelationships(
 export async function commitImportRun(
   runId: string,
   plan: CommitPlan,
+  warnings: ImportRunErrorEntry[] = [],
 ): Promise<CommitImportRunResult> {
   requireActiveOrg();
+  // MINT-91: the review's warnings (a phone left blank on a new provider) join
+  // the run's durable report first; the RPC appends its blocked entries after
+  // them, and they survive the staged-row purge.
+  await recordRunReportWarnings(runId, warnings);
   // Snapshot the staged rows BEFORE the RPC — commit purges import_rows
   // (TE-7), and the relationship pass reads the scan-resolved ids off them.
   const stagedSnapshot = await listStagedImportRows(runId);
@@ -461,6 +467,29 @@ export async function commitImportRun(
     await ensureFirstFacilityPrimary([...result.createdProviderIds, ...result.updatedProviderIds]);
   }
   return { ...result, relationships };
+}
+
+/** Append warnings to a ready run's error report, skipping any it already
+ * holds, so a retried commit never writes one twice. A committed run is left
+ * alone: its commit replays as a no-op. */
+async function recordRunReportWarnings(
+  runId: string,
+  warnings: ImportRunErrorEntry[],
+): Promise<void> {
+  if (warnings.length === 0) return;
+  const orgId = requireActiveOrg();
+  const run = await getImportRun(runId);
+  if (!run || run.state !== "ready_for_review") return;
+  const current = run.errorReport ?? [];
+  const next = withReportEntries(current, warnings);
+  if (next.length === current.length) return;
+  const { error } = await supabase
+    .from("import_runs")
+    .update({ error_report: next as never, updated_at: new Date().toISOString() })
+    .eq("org_id", orgId)
+    .eq("id", runId)
+    .eq("state", "ready_for_review");
+  if (error) throw error;
 }
 
 export interface BatchAssignmentResult {
@@ -668,14 +697,19 @@ export async function commitSectionImportRun(input: {
     created += 1;
   }
 
-  // Flip the run to committed, append blocked entries to the durable error
-  // report (they survive the purge), and purge the staged rows.
+  // Flip the run to committed, append blocked entries and the creates'
+  // warnings (MINT-91) to the durable error report (they survive the purge),
+  // and purge the staged rows.
   const blockedEntries: ImportRunErrorEntry[] = input.blocked.map((b) => ({
     line: b.line,
     column: b.column,
     reason: b.reason,
   }));
-  const nextReport = [...(run.errorReport ?? []), ...blockedEntries];
+  const nextReport = [
+    ...(run.errorReport ?? []),
+    ...blockedEntries,
+    ...importWarningEntries(input.creates),
+  ];
   const { error } = await supabase
     .from("import_runs")
     .update({

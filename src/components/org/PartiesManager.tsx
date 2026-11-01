@@ -48,6 +48,7 @@ import {
   useRemovePartyFromOrg,
 } from "@/hooks/useParties";
 import { contactErrors, hasContactErrors, type ContactFieldErrors } from "@/lib/contactValidation";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import { PARTY_ROLE_LABELS, EMPTY_CONTACT, partyToContactInput } from "@/lib/contacts";
 import type { ContactInput, OrgParty, Party, PartyRoleKey, PartyRoleType } from "@/types";
 
@@ -338,12 +339,13 @@ function AddPartyDialog({
 
 function EditPartyDialog({ party, onClose }: { party: Party; onClose: () => void }) {
   const update = useUpdateParty();
+  const phoneRules = usePhoneValidationRules();
   const [value, setValue] = useState<ContactInput>(partyToContactInput(party));
   const [errors, setErrors] = useState<ContactFieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
 
   function save() {
-    const e = contactErrors(value, party.phoneOffice);
+    const e = contactErrors(value, party.phoneOffice, phoneRules);
     setErrors(e);
     if (hasContactErrors(e)) return;
     setFormError(null);
