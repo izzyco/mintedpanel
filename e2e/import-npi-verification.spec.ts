@@ -453,11 +453,19 @@ interface BatchCall {
 
 /** Answers each NPI from RECORDS. `holdFrom` (1-based) leaves that call and
  * later ones unanswered, so a test can cancel while a request is in flight. */
-// Requests a test left unanswered on purpose. Each test's end aborts any the
-// page has not already given up on, so nothing is left pending in the worker.
-const held: Route[] = [];
-test.afterEach(async () => {
-  for (const route of held.splice(0)) await route.abort().catch(() => undefined);
+// Requests a test leaves unanswered on purpose wait on this gate inside their
+// route handler (the pattern npi-registry.spec.ts uses), and each test's end
+// opens it: every handler then finishes, so nothing is left pending in the
+// browser the worker shares with the next spec.
+let openGate: () => void = () => undefined;
+let gate: Promise<void> = Promise.resolve();
+test.beforeEach(() => {
+  gate = new Promise<void>((resolve) => {
+    openGate = resolve;
+  });
+});
+test.afterEach(() => {
+  openGate();
 });
 
 async function mockBatchRoute(context: BrowserContext, opts: { holdFrom?: number } = {}) {
@@ -467,7 +475,9 @@ async function mockBatchRoute(context: BrowserContext, opts: { holdFrom?: number
     const body = req.postDataJSON() as Record<string, unknown>;
     calls.push({ body, authorization: req.headers()["authorization"] });
     if (opts.holdFrom !== undefined && calls.length >= opts.holdFrom) {
-      held.push(route);
+      await gate;
+      // The page gave up on it long ago; answer, and ignore that it is gone.
+      await route.fulfill({ status: 503, body: "" }).catch(() => undefined);
       return;
     }
     const npis = (body.npis as string[]) ?? [];
