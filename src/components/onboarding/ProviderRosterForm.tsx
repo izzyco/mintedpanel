@@ -230,15 +230,10 @@ function FormBody({
   const recordNpiAdvisories = useRecordNpiAdvisoriesAfterSave();
   // MINT-110 (A30, A30c): the registry check never holds up the save, and the
   // roster form has no review step (only Add Provider does): Save saves, and
-  // the answer is the quiet note under the NPI. The check runs for a new
-  // provider, or when the NPI or the name changed (a stored NPI under a new
-  // name can stop matching). After the save every advisory, the credentials,
-  // taxonomy and license differences included, goes to the backend capture.
-  const nameChanged =
-    !provider ||
-    form.firstName.trim() !== initialForm.firstName.trim() ||
-    form.lastName.trim() !== initialForm.lastName.trim();
-  const registryVerify = npiChanged || nameChanged;
+  // the answer is the quiet note under the NPI. Only an NPI that is new or
+  // changed is checked; a name-only edit leaves the stored NPI unchecked
+  // (Addendum 10). After the save every advisory, the credentials, taxonomy
+  // and license differences included, goes to the backend capture.
 
   // MINT-110: the last NPI Registry pick (its summary, and what it wrote so a
   // second pick can replace it). Picking never adds a license row; staff add
@@ -287,7 +282,7 @@ function FormBody({
     recordNpiAdvisories({
       recordId,
       npi: npiDigits,
-      verify: registryVerify,
+      verify: npiChanged,
       typed: { firstName: form.firstName, lastName: form.lastName },
       entered: {
         credentials: form.credentials,
@@ -649,7 +644,7 @@ function FormBody({
             npi={npiDigits}
             firstName={form.firstName}
             lastName={form.lastName}
-            verify={registryVerify}
+            verify={npiChanged}
             // Whether each offer is on the form is read from the rows, so a
             // removed row can be added again.
             pick={

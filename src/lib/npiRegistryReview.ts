@@ -62,8 +62,8 @@ export interface NpiRegistryReview {
 export interface NpiReviewInput {
   /** The NPI, separators stripped. */
   npi: string;
-  /** False when this save does not check the NPI (an edit that changed
-   * neither the NPI nor the name). */
+  /** False when this save does not check the NPI (an edit that kept the
+   * stored NPI, whatever else it changed). */
   verify: boolean;
   state: NpiLookupState;
   typed: { firstName: string; lastName: string };
