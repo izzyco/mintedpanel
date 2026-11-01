@@ -31,9 +31,8 @@ export interface ApiMeta {
   truncated?: boolean;
   // GET /api/cases?q= only, always sent there: the limit applied, the most
   // rows `data` can hold. The request's &limit= when it sent one (1 to 50),
-  // else the platform case-search limit (default 5), resolved by
-  // src/server/caseSearchLimit.ts; clients take it from here rather than
-  // keeping a constant of their own.
+  // else the default of 5 (src/server/caseSearchLimit.ts); clients take it
+  // from here rather than keeping a constant of their own.
   limit?: number;
   /**
    * Exact-key active mapping/readiness metadata. Rows are emitted only for

@@ -336,8 +336,8 @@ export function caseNumberSearchDigits(raw: string): string | null {
 // ctx, matching payer name / provider name / tracking id (payer_reference_id —
 // the E4.0 case-list search precedent) AND case number (C-<n> / bare digits) as
 // a case-insensitive substring, capped at `limit`. The caller owns the limit:
-// the route resolves it through src/server/caseSearchLimit.ts (the platform
-// setting, default 5), so this service holds no cap of its own. Filtering is
+// the route takes it from src/server/caseSearchLimit.ts (default 5), so this
+// service holds no cap of its own. Filtering is
 // in memory over the org's own cases (the providerCases.ts idiom, robust
 // across the provider/payer FK embeds); the service-role client is org-scoped
 // by the eq(org_id) on the read, so a cross-org row can never appear. The read

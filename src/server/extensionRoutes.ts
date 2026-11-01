@@ -39,7 +39,7 @@ import {
 import { ok, fail, type ApiMeta } from "./envelope";
 import { isWriter, type AuthContext, type UserContext } from "./guard";
 import { resolveUserTokens } from "./userTokens";
-import { parseRequestedCaseSearchLimit, resolveCaseSearchLimit } from "./caseSearchLimit";
+import { CASE_SEARCH_DEFAULT_LIMIT, parseRequestedCaseSearchLimit } from "./caseSearchLimit";
 import { resolveOrgContactProfileTokens } from "@/services/orgContacts";
 import { proposeSharedFieldMap, type SharedProposeBody } from "@/services/sharedFieldMaps";
 import {
@@ -724,10 +724,10 @@ export async function handleBatchLearnPortalFieldMaps(
 //                       display fields only. At most meta.limit rows: the
 //                       optional &limit= (a whole number from 1 to 50, the
 //                       extension's "Show more"; anything else is a 422),
-//                       else the platform case-search limit (default 5), from
-//                       caseSearchLimit.ts. meta.limit is the limit applied,
-//                       meta.total counts every match and meta.truncated says
-//                       whether `data` holds all of them.
+//                       else the default of 5, from caseSearchLimit.ts.
+//                       meta.limit is the limit applied, meta.total counts
+//                       every match and meta.truncated says whether `data`
+//                       holds all of them.
 // providerId takes precedence when both are present (the fill flow's primary
 // path). Neither present is a 422 — the route never dumps the whole org.
 export async function handleListProviderCases(url: URL, ctx: AuthContext): Promise<Response> {
@@ -744,7 +744,7 @@ export async function handleListProviderCases(url: URL, ctx: AuthContext): Promi
   if (q != null) {
     const requested = parseRequestedCaseSearchLimit(url.searchParams.get("limit"));
     if (!requested.ok) return fail(422, requested.message);
-    const limit = requested.limit ?? (await resolveCaseSearchLimit(ctx.db));
+    const limit = requested.limit ?? CASE_SEARCH_DEFAULT_LIMIT;
     const result = await searchOrgCases({ db: ctx.db, orgId: ctx.orgId }, q, limit);
     return ok(result.rows, { total: result.total, truncated: result.truncated, limit });
   }

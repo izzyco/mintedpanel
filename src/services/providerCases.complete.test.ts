@@ -179,7 +179,7 @@ function parentMatches(tables: Tables, query: string) {
   return rows;
 }
 
-// The platform default the route resolves (src/server/caseSearchLimit.ts),
+// The default the route applies (src/server/caseSearchLimit.ts),
 // and the parent's fixed cut, which a platform admin may set again.
 const DEFAULT_LIMIT = 5;
 const PARENT_LIMIT = 50;

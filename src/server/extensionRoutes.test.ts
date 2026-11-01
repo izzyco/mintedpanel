@@ -41,11 +41,6 @@ vi.mock("@/services/extensionViewPrefs", () => ({
   getQuickCardCatalog: vi.fn(),
   putExtensionViewPrefs: vi.fn(),
 }));
-// Pass-through spy: every route test still resolves the real limit (5).
-vi.mock("./caseSearchLimit", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./caseSearchLimit")>();
-  return { ...actual, resolveCaseSearchLimit: vi.fn(actual.resolveCaseSearchLimit) };
-});
 
 import {
   listEffectivePortalMapResolutions,
@@ -66,7 +61,6 @@ import { recordSubmissionTouch } from "@/services/submissionTouches";
 import { listUserOrgMemberships } from "@/services/orgMemberships";
 import { getNextBestAction } from "@/services/nextBestAction";
 import { completeTaskStep } from "@/services/taskSteps";
-import { resolveCaseSearchLimit } from "./caseSearchLimit";
 import {
   getExtensionViewPrefs,
   getQuickCardCatalog,
@@ -1438,7 +1432,7 @@ describe("provider cases handler", () => {
   });
 
   // E4.3 TE-11 — the additive ?q= case-search mode on the same route.
-  it("routes ?q= to the case search with the resolved limit (default 5), forwarding the org-scoped ctx", async () => {
+  it("routes ?q= to the case search with the default limit (5), forwarding the org-scoped ctx", async () => {
     const rows = [
       {
         id: "c1",
@@ -1468,16 +1462,8 @@ describe("provider cases handler", () => {
     expect(listCasesMock).not.toHaveBeenCalled();
   });
 
-  // S2/S3 (Sowmya, Oct 31): a platform default with no org override, and an
-  // optional &limit= so the extension can offer "Show more" up to the cap.
-  it("reads only the platform setting when the request names no limit", async () => {
-    searchCasesMock.mockResolvedValue({ rows: [], total: 0, truncated: false });
-    const request = ctx();
-    const b = await body(await handleListProviderCases(url("?q=a"), request));
-    expect(vi.mocked(resolveCaseSearchLimit).mock.calls).toEqual([[request.db]]);
-    expect(b.meta).toEqual({ total: 0, truncated: false, limit: 5 });
-  });
-
+  // S3 (Sowmya, Oct 31): an optional &limit= so the extension can offer
+  // "Show more" up to the cap.
   it.each([
     ["50", 50],
     ["12", 12],
@@ -1491,8 +1477,6 @@ describe("provider cases handler", () => {
       limit,
     );
     expect(b.meta).toEqual({ total: 312, truncated: true, limit });
-    // A request that names its limit does not need the platform setting.
-    expect(vi.mocked(resolveCaseSearchLimit)).not.toHaveBeenCalled();
   });
 
   it.each(["0", "51", "2.5", "-1", "abc", ""])(
