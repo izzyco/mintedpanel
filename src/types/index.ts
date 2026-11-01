@@ -2371,7 +2371,7 @@ export interface NotificationSequence {
    * (0: none); null uses Minted's default. Always null for the digest.
    */
   bounceEscalationStep: number | null;
-  /** Digest only, org-owned (A8); null uses Minted's default. */
+  /** Digest only, platform-managed (Addendum 10): daily, weekly or twice a day, set by Minted per org; null uses Minted's default. */
   digestFrequency: DigestFrequency | null;
   /** Digest only, platform-managed: the weekly ISO weekday (1 = Monday); null uses Minted's default. */
   digestWeekday: number | null;
