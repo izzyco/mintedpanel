@@ -10,11 +10,11 @@
 \pset format unaligned
 \pset tuples_only on
 
+-- The grant: hosted Supabase lets authenticated reach auth.uid(); the bare CI
+-- Postgres does not until it (rolled back with everything else).
 BEGIN;
-SET LOCAL client_min_messages = warning;
--- Hosted Supabase lets authenticated reach auth.uid(); the bare CI Postgres
--- does not until this grant (rolled back with everything else).
 GRANT USAGE ON SCHEMA auth TO authenticated;
+SET LOCAL client_min_messages = warning;
 \o /dev/null
 
 CREATE TEMP TABLE pfa_results (name text PRIMARY KEY, passed boolean NOT NULL);

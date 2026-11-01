@@ -61,6 +61,7 @@ interface CapturedWrite {
 function installTransport(
   stagedRows: StagedImportRow[],
   facilityIds = ["facility-2", "facility-3", "facility-4", "facility-5"],
+  providerStartDates: Record<string, string> = {},
 ) {
   const writes: CapturedWrite[] = [];
   mocks.from.mockImplementation((table: string) => {
@@ -83,7 +84,9 @@ function installTransport(
           providers: [
             { id: "provider-1", npi: NPI },
             { id: "provider-2", npi: OTHER_NPI },
-          ].filter((p) => !ids || ids.includes(p.id)),
+          ]
+            .map((p) => ({ ...p, start_date: providerStartDates[p.id] ?? null }))
+            .filter((p) => !ids || ids.includes(p.id)),
           provider_groups: GROUPS,
           facilities: facilityIds.map((id) => ({ id })),
         };
@@ -313,6 +316,20 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
     expect(mocks.rpc.mock.calls[0][1].p_plan.assignment_start_date).toBeNull();
     expect(mocks.insertAssignmentRows).toHaveBeenCalledWith([
       { providerId: "provider-1", facilityId: "facility-2", startDate: null },
+    ]);
+  });
+
+  it("starts a relationship row on the provider's own start date first, as the RPC does", async () => {
+    installTransport([relationshipRow(2, 0, "CO")], undefined, { "provider-1": "2026-09-01" });
+    mocks.resolveAddProviderRules.mockReturnValueOnce({
+      ...DEFAULT_ADD_PROVIDER_RULES,
+      assignmentStartDateDefault: "none",
+    });
+
+    await commitImportRun("run-1", updatePlan());
+
+    expect(mocks.insertAssignmentRows).toHaveBeenCalledWith([
+      { providerId: "provider-1", facilityId: "facility-2", startDate: "2026-09-01" },
     ]);
   });
 

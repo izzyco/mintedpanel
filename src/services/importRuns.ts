@@ -289,12 +289,15 @@ async function applyProviderRelationships(
 
   const { data: providerRows, error: pErr } = await supabase
     .from("providers")
-    .select("id, npi")
+    .select("id, npi, start_date")
     .eq("org_id", orgId)
     .in("id", providerIds);
   if (pErr) throw pErr;
   const providerByNpi = new Map(
     (providerRows ?? []).filter((r) => r.npi).map((r) => [String(r.npi), r.id as string]),
+  );
+  const providerStartDate = new Map(
+    (providerRows ?? []).map((r) => [r.id as string, (r.start_date as string | null) ?? null]),
   );
 
   const { data: groupRows, error: gErr } = await supabase
@@ -377,13 +380,13 @@ async function applyProviderRelationships(
   }
 
   if (facilityInserts.length > 0) {
-    // Relationship rows from the CSV carry no start date: the Add Provider
-    // rule's (blankAssignmentStartDate), the same date the commit RPC used.
+    // As in the commit RPC: the assignment starts on the provider's start
+    // date, else the Add Provider rule's (blankAssignmentStartDate).
     await insertAssignmentRows(
       facilityInserts.map((f) => ({
         providerId: f.providerId,
         facilityId: f.facilityId,
-        startDate: assignmentStartDate,
+        startDate: providerStartDate.get(f.providerId) ?? assignmentStartDate,
       })),
     );
     summary.facilityAssignments = facilityInserts.length;
