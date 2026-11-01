@@ -295,12 +295,18 @@ async function applyProviderRelationships(
     (providerRows ?? []).filter((r) => r.npi).map((r) => [String(r.npi), r.id as string]),
   );
   // A row without an NPI (B3) joins its provider by name: the dedupe creates
-  // one NPI-less provider per name and blocks a name it cannot tell apart.
-  const npilessProviderByName = new Map(
-    (providerRows ?? [])
-      .filter((r) => !r.npi)
-      .map((r) => [providerNameKey(r.first_name, r.last_name), r.id as string]),
-  );
+  // one NPI-less provider per name and blocks a name it cannot tell apart. A
+  // name held by two NPI-less providers joins neither, so a later change can
+  // never attach a row to the wrong one.
+  const npilessProviderByName = new Map<string, string>();
+  const npilessNamesSeenTwice = new Set<string>();
+  for (const r of providerRows ?? []) {
+    if (r.npi) continue;
+    const key = providerNameKey(r.first_name, r.last_name);
+    if (npilessProviderByName.has(key)) npilessNamesSeenTwice.add(key);
+    npilessProviderByName.set(key, r.id as string);
+  }
+  for (const key of npilessNamesSeenTwice) npilessProviderByName.delete(key);
 
   const { data: groupRows, error: gErr } = await supabase
     .from("provider_groups")
