@@ -18,6 +18,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LifecyclePill } from "@/components/mission-control/LifecyclePill";
 import { OrgProfileCard } from "@/components/mission-control/OrgProfileCard";
+import { SameNameNotice } from "@/components/mission-control/SameNameNotice";
 import { useLifecycleStages } from "@/hooks/useLifecycleStages";
 import {
   useGrantSelfAdminMembership,
@@ -150,6 +151,7 @@ function OrgHeader({ org, stage }: { org: PlatformOrgListRow; stage: LifecycleSt
             <LifecyclePill stage={stage} />
           </div>
           <p className="mt-1 font-mono text-[12.5px] text-muted-foreground">{joinPath(org.slug)}</p>
+          <SameNameNotice name={org.name} excludeId={org.id} />
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={() => void copyJoinLink()}>

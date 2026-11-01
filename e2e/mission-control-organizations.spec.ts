@@ -599,6 +599,49 @@ test("(b) creating an organization takes one form and one click, and the slug ru
   await expect(page.getByRole("button", { name: "Open in workspace" })).toBeVisible();
 });
 
+test("(b) a duplicate name is allowed: the notice links the other organization before and after Save", async ({
+  context,
+  page,
+}) => {
+  const state = initialState();
+  await installMocks(context, state, ROSE);
+
+  await page.goto("/mission-control/organizations");
+  await page.getByRole("button", { name: "New organization" }).click({ timeout: 30000 });
+  const dialog = page.getByRole("dialog", { name: "New organization" });
+  await dialog.getByLabel("Organization name").fill("rose city  rehab collective");
+  // Shown as soon as the name matches, with a link to the other organization.
+  const notice = dialog.getByRole("note");
+  await expect(notice).toContainText("Another organization has this name");
+  await expect(notice).toContainText("You can still create this one.");
+  await expect(notice.getByRole("link", { name: "Rose City Rehab Collective" })).toHaveAttribute(
+    "href",
+    `/mission-control/organizations/${ROSE}`,
+  );
+  await dialog.getByLabel("Slug").fill("rose-city-west");
+  await dialog.getByLabel("Owner name").fill("Wes Owner");
+  await dialog.getByLabel("Owner email").fill("wes@rosewest.example");
+  // No confirm dialog: one click creates it.
+  await dialog.getByRole("button", { name: "Create organization" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/mission-control/organizations/${NEW_ORG}$`), {
+    timeout: 15000,
+  });
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  expect(
+    state.orgs.filter(
+      (o) => o.name.replace(/\s+/g, "").toLowerCase() === "rosecityrehabcollective",
+    ),
+  ).toHaveLength(2);
+  expect(rpcArgs(state, "platform_create_organization")).toHaveLength(1);
+  // After Save, the new organization's page still says so and links the other.
+  const after = page.getByRole("note").filter({ hasText: "Another organization has this name" });
+  await expect(after.getByRole("link", { name: "Rose City Rehab Collective" })).toHaveAttribute(
+    "href",
+    `/mission-control/organizations/${ROSE}`,
+  );
+});
+
 test("(c) the detail page: counts, one-click lifecycle moves, members, invites, join link, self-grant", async ({
   context,
   page,

@@ -951,12 +951,16 @@ same transaction; a call that changes nothing writes nothing.
   `before/after = {lifecycleState}`. No reason or note.
 - `platform_create_organization(p_name, p_slug, p_owner_name, p_owner_email,
 p_plan_tier)` — platform admin; `22023 slug_invalid`, `23505 slug_taken`;
-  then the existing `create_organization(p_name, p_owner_name, p_owner_email)`
-  (prospect stage, the caller as first admin member, the 22 status_configs,
-  the owner party, its `audit_log` row, its duplicate-name refusal and owner
-  checks), then `plan_tier`. Ledger `org.create` (after: name, slug, planTier,
-  lifecycleState, owner, creatorRole). Returns `{ orgId, name, slug, planTier,
-lifecycleState, auditId }`.
+  the owner name and email checks of the 3-arg overload; then the existing
+  `create_organization(p_name)` (the organization row, the caller as first
+  admin member, the 22 status_configs, its `audit_log` row), then the
+  prospect stage, `plan_tier` and the owner party. A name matching an existing
+  organization's normalized name is **allowed** (Sowmya, Nov 1 2026; Mission
+  Control shows a notice linking the other organization); the existing
+  `create_organization` overloads keep their own refusal for their callers.
+  Ledger `org.create` (after: name, slug, planTier, lifecycleState, owner,
+  creatorRole). Returns `{ orgId, name, slug, planTier, lifecycleState,
+auditId }`.
 - `platform_grant_membership(p_org_id uuid)` — "Grant myself admin
   membership": the caller as `admin` (insert, or a role raise). Ledger
   `membership.grant`, target `user` = the caller, `before` = the previous role
@@ -976,8 +980,8 @@ p_plan_tier)` — the one organization profile write; the caller is resolved
   owner) or the organization's own `admin` (`audit_log` UPDATE row; changing
   `plan_tier` is `42501 plan_tier_platform_only`); anyone else
   `42501 org_admin_required`. Refused while offboarded (`42501 org_offboarded`).
-  Updates the org's default owner party, or creates one. Keeps
-  `create_organization`'s duplicate-name refusal.
+  Updates the org's default owner party, or creates one. A duplicate
+  normalized name is allowed, as at creation.
 
 Also new: `normalize_lifecycle_state(text)`, `org_is_writable(uuid)`,
 `org_slug_from_name(text)` (authenticated, service_role),

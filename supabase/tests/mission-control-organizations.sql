@@ -648,7 +648,8 @@ DECLARE
   v_denied text;
   v_bad_slug text;
   v_taken text;
-  v_dup_name text;
+  v_dup jsonb;
+  v_legacy_dup text;
   v_missing_owner text;
   v_rename text;
   v_row public.admin_audit_log%ROWTYPE;
@@ -665,7 +666,7 @@ BEGIN
   SET LOCAL ROLE authenticated;
   v_bad_slug := pg_temp.mo_try($q$SELECT public.platform_create_organization('MO New Org', 'MO New Org', 'Pat Owner', 'pat@example.invalid', NULL)$q$);
   v_taken := pg_temp.mo_try($q$SELECT public.platform_create_organization('MO New Org', 'mo-synthetic-org-b', 'Pat Owner', 'pat@example.invalid', NULL)$q$);
-  v_dup_name := pg_temp.mo_try($q$SELECT public.platform_create_organization('mo synthetic ORG b', 'mo-other-slug', 'Pat Owner', 'pat@example.invalid', NULL)$q$);
+  v_dup := public.platform_create_organization('mo synthetic ORG b', 'mo-other-slug', 'Bo Owner', 'bo@example.invalid', NULL);
   v_missing_owner := pg_temp.mo_try($q$SELECT public.platform_create_organization('MO New Org', 'mo-new-org', '', 'pat@example.invalid', NULL)$q$);
   v_result := public.platform_create_organization('  MO New Org ', ' Mo-New-Org ', 'Pat Owner', 'pat@example.invalid', ' pilot ');
   RESET ROLE;
@@ -673,8 +674,23 @@ BEGIN
 
   PERFORM pg_temp.mo_assert('create.slug_invalid', v_bad_slug = '22023:slug_invalid');
   PERFORM pg_temp.mo_assert('create.slug_taken', v_taken = '23505:slug_taken');
-  PERFORM pg_temp.mo_assert('create.duplicate_name_refused',
-    v_dup_name LIKE 'P0001:An organization named "mo synthetic ORG b" already exists.%');
+  -- Sowmya, Nov 1 2026: a duplicate normalized name is allowed (Mission
+  -- Control shows a notice); the existing create_organization overloads keep
+  -- their own refusal for their callers.
+  PERFORM pg_temp.mo_assert('create.duplicate_name_allowed',
+    (SELECT count(*) FROM public.organizations
+      WHERE lower(regexp_replace(name, '\s+', '', 'g')) = 'mosyntheticorgb') = 2
+    AND (SELECT slug || '|' || lifecycle_state FROM public.organizations
+          WHERE id = (v_dup->>'orgId')::uuid) = 'mo-other-slug|prospect'
+    AND (SELECT count(*) FROM public.admin_audit_log
+          WHERE org_id = (v_dup->>'orgId')::uuid AND action = 'org.create') = 1);
+  PERFORM pg_temp.mo_claims(v_admin_a);
+  SET LOCAL ROLE authenticated;
+  v_legacy_dup := pg_temp.mo_try($q$SELECT public.create_organization('MO Synthetic Org B', 'Lee Owner', 'lee@example.invalid')$q$);
+  RESET ROLE;
+  PERFORM pg_temp.mo_no_claims();
+  PERFORM pg_temp.mo_assert('create.existing_overload_still_refuses_duplicate',
+    v_legacy_dup LIKE 'P0001:An organization named "MO Synthetic Org B" already exists.%');
   PERFORM pg_temp.mo_assert('create.owner_required', v_missing_owner = 'P0001:Owner name is required');
 
   SELECT * INTO v_org FROM public.organizations WHERE id = (v_result->>'orgId')::uuid;
@@ -687,10 +703,12 @@ BEGIN
              WHERE a.org_id = v_org.id AND a.role_key = 'owner' AND p.name = 'Pat Owner'
                AND p.email = 'pat@example.invalid')
     AND (SELECT role FROM public.memberships WHERE org_id = v_org.id AND user_id = v_pa) = 'admin'
-    AND (SELECT count(*) FROM public.status_configs WHERE org_id = v_org.id) = 22);
+    AND (SELECT count(*) FROM public.status_configs WHERE org_id = v_org.id) = 22
+    AND (SELECT count(*) FROM public.audit_log
+          WHERE org_id = v_org.id AND action_type = 'CREATE' AND entity_type = 'organization') = 1);
   SELECT * INTO v_row FROM public.admin_audit_log WHERE id = (v_result->>'auditId')::uuid;
   PERFORM pg_temp.mo_assert('create.one_ledger_row',
-    (SELECT count(*) FROM public.admin_audit_log) = v_ledger + 1
+    (SELECT count(*) FROM public.admin_audit_log) = v_ledger + 2
     AND v_row.action = 'org.create' AND v_row.actor_user_id = v_pa AND v_row.org_id = v_org.id
     AND v_row.after->>'slug' = 'mo-new-org' AND v_row.after->'owner'->>'email' = 'pat@example.invalid');
   PERFORM pg_temp.mo_assert('create.setting_cleared',
@@ -767,7 +785,7 @@ DECLARE
   v_cross text;
   v_tier text;
   v_frozen text;
-  v_dup text;
+  v_dup jsonb;
   v_customer jsonb;
 BEGIN
   -- Platform admin: name, owner and plan tier; one org.update row.
@@ -777,7 +795,7 @@ BEGIN
   v_result := public.update_organization_profile(v_org_b, 'MO Synthetic Org B Renamed', 'Bea Owner', 'bea@example.invalid', 'standard');
   v_noop := public.update_organization_profile(v_org_b, 'MO Synthetic Org B Renamed', 'Bea Owner', 'bea@example.invalid', 'standard');
   v_frozen := pg_temp.mo_try(format($q$SELECT public.update_organization_profile(%L::uuid, 'MO C', 'C Owner', 'c@example.invalid', NULL)$q$, v_org_c));
-  v_dup := pg_temp.mo_try(format($q$SELECT public.update_organization_profile(%L::uuid, 'mo synthetic org a', 'Bea Owner', 'bea@example.invalid', 'standard')$q$, v_org_b));
+  v_dup := public.update_organization_profile('7d200000-0000-4000-8000-000000000004', 'mo synthetic org a', 'Dee Owner', 'dee@example.invalid', NULL);
   RESET ROLE;
   PERFORM pg_temp.mo_no_claims();
   SELECT * INTO v_row FROM public.admin_audit_log WHERE id = (v_result->>'auditId')::uuid;
@@ -792,12 +810,14 @@ BEGIN
     v_row.action = 'org.update' AND v_row.org_id = v_org_b AND v_row.actor_user_id = v_pa
     AND v_row.before->>'name' = 'MO Synthetic Org B' AND v_row.before->'owner' = 'null'::jsonb
     AND v_row.after->'owner'->>'name' = 'Bea Owner'
-    AND (SELECT count(*) FROM public.admin_audit_log) = v_ledger + 1);
+    AND (SELECT count(*) FROM public.admin_audit_log
+          WHERE org_id = v_org_b AND action = 'org.update') = 1);
   PERFORM pg_temp.mo_assert('profile.no_change_writes_nothing',
-    NOT (v_noop->>'changed')::boolean AND (SELECT count(*) FROM public.admin_audit_log) = v_ledger + 1);
+    NOT (v_noop->>'changed')::boolean AND (SELECT count(*) FROM public.admin_audit_log) = v_ledger + 2);
   PERFORM pg_temp.mo_assert('profile.offboarded_refused', v_frozen = '42501:org_offboarded');
-  PERFORM pg_temp.mo_assert('profile.duplicate_name_refused',
-    v_dup LIKE 'P0001:An organization named "mo synthetic org a" already exists.%');
+  PERFORM pg_temp.mo_assert('profile.duplicate_name_allowed',
+    (v_dup->>'changed')::boolean
+    AND (SELECT name FROM public.organizations WHERE id = '7d200000-0000-4000-8000-000000000004') = 'mo synthetic org a');
 
   -- The organization's own admin: name and owner, audit_log not the ledger;
   -- plan tier is platform-only; a specialist and another org's admin are refused.

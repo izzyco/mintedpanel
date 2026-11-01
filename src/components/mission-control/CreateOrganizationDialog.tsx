@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SameNameNotice } from "@/components/mission-control/SameNameNotice";
 import { usePlatformOrgCreateForm } from "@/hooks/usePlatformOrgCreateForm";
 import { PLAN_TIERS, joinPath } from "@/lib/orgProfile";
 
@@ -69,6 +70,7 @@ export function CreateOrganizationDialog({ onClose }: { onClose: () => void }) {
               className="h-9"
             />
             {form.errors.name ? <div className={FIELD_ERROR}>{form.errors.name}</div> : null}
+            <SameNameNotice name={form.name} creating />
           </div>
 
           <div>

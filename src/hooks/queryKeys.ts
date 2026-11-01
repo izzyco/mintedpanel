@@ -152,6 +152,7 @@ export const queryKeys = {
   // page and the Home tiles together.
   platformOrgs: (query: unknown) => ["platform", "organizations", query] as const,
   platformOrg: (orgId: string) => ["platform", "organization", orgId] as const,
+  platformOrgNames: () => ["platform", "organization-names"] as const,
   platformOrgSummary: (orgId: string) => ["platform", "organization", orgId, "summary"] as const,
   platformOrgMembers: (orgId: string) => ["platform", "organization", orgId, "members"] as const,
   platformOrgInvites: (orgId: string) => ["platform", "organization", orgId, "invites"] as const,

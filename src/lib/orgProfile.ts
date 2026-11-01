@@ -38,6 +38,28 @@ export function slugProblem(value: string): string | null {
   return null;
 }
 
+/**
+ * The name two organizations "share": whitespace removed, lowercase, the same
+ * normalization create_organization's own duplicate check uses. A shared name
+ * is allowed in Mission Control (Sowmya, Nov 1 2026); it shows a notice.
+ */
+export function normalizeOrgName(name: string): string {
+  return name.replace(/\s+/g, "").toLowerCase();
+}
+
+/** The other organizations whose normalized name matches `name`. */
+export function sameNameOrganizations<T extends { id: string; name: string }>(
+  name: string,
+  organizations: readonly T[],
+  excludeId?: string,
+): T[] {
+  const target = normalizeOrgName(name);
+  if (!target) return [];
+  return organizations.filter(
+    (org) => org.id !== excludeId && normalizeOrgName(org.name) === target,
+  );
+}
+
 /** The join link an organization's members share: /join/<slug>. */
 export function joinPath(slug: string): string {
   return `/join/${slug}`;

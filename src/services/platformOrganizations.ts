@@ -9,6 +9,7 @@
 // platform_org_summary() RPC. Writes are SECURITY DEFINER RPCs that check
 // is_platform_admin() themselves and write one admin_audit_log row each.
 import { supabase } from "@/integrations/supabase/externalClient";
+import { readCompletePages } from "@/lib/completePages";
 import { orgErrorMessage } from "@/lib/orgProfile";
 import type {
   AppRole,
@@ -127,6 +128,19 @@ export async function listPlatformOrganizations(
   if (error) throw new Error(error.message);
   const rows = ((data ?? []) as unknown as OrgRow[]).map(toListRow);
   return { rows, total: total ?? rows.length };
+}
+
+/** Every organization's id and name, for the same-name notice. A complete
+ * read (paged past the server's row cap); names only, no PHI. */
+export async function listPlatformOrgNames(): Promise<Array<{ id: string; name: string }>> {
+  const query = supabase
+    .from("organizations")
+    .select("id, name", { count: "exact" })
+    .order("name")
+    .order("id", { ascending: true });
+  return readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Organization names",
+  });
 }
 
 export async function getPlatformOrganization(orgId: string): Promise<PlatformOrgListRow | null> {

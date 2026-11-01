@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SameNameNotice } from "@/components/mission-control/SameNameNotice";
 import { useUpdateOrganizationProfile } from "@/hooks/usePlatformOrganizations";
 import { isValidEmail } from "@/lib/contactValidation";
 import { fmtDate } from "@/lib/format";
@@ -92,6 +93,7 @@ export function OrgProfileCard({
               onChange={(event) => setDraft({ ...draft, name: event.target.value })}
               className="h-9"
             />
+            <SameNameNotice name={draft.name} excludeId={org.id} />
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>

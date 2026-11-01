@@ -1,15 +1,18 @@
 -- Mission Control M3: the organization RPCs behind /mission-control/organizations.
 --
 --   platform_create_organization(name, slug, owner_name, owner_email, plan_tier)
---     One form, one click. Reuses create_organization(name, owner_name,
---     owner_email), the existing overload that needs no escalation contact
---     (organization row in the prospect stage, the caller as its first admin
---     member, the canonical status_configs, the owner party, the audit_log
+--     One form, one click. Reuses create_organization(name), the existing
+--     overload with no duplicate-name refusal (organization row, the caller as
+--     its first admin member, the canonical status_configs, the audit_log
 --     row), with the operator's slug passed to the insert through the
---     transaction-local setting minted.new_org_slug (20261101160000), then
---     sets plan_tier. The escalation contact and sales rep are added later on
---     the detail page. Duplicate normalized names keep create_organization's
---     refusal.
+--     transaction-local setting minted.new_org_slug (20261101160000); then
+--     the prospect stage, plan_tier and the owner party (the same owner checks
+--     and party rows as the 3-arg overload). A name that matches an existing
+--     organization's normalized name is allowed (Sowmya, Nov 1 2026: business
+--     policy, not a boundary); Mission Control shows a notice linking the
+--     other organization. The existing create_organization overloads are
+--     unchanged and keep their own refusal for their callers. The escalation
+--     contact and sales rep are added later on the organization's page.
 --   platform_grant_membership(org_id)
 --     "Grant myself admin membership": the caller, as admin, one click. A
 --     platform admin never opens an organization's data without a membership.
@@ -22,7 +25,8 @@
 --     The one organization profile write, with the caller resolved inside: a
 --     platform admin (admin_audit_log org.update) or the organization's own
 --     admin (audit_log UPDATE). Only a platform admin may change plan_tier.
---     Refused while the organization is offboarded.
+--     Refused while the organization is offboarded. A duplicate normalized
+--     name is allowed, as at creation.
 --
 -- Every platform-admin mutation writes exactly one admin_audit_log row in the
 -- same transaction; a call that changes nothing writes nothing. All four are
@@ -45,13 +49,21 @@ DECLARE
   v_actor uuid := auth.uid();
   v_slug text := lower(btrim(coalesce(p_slug, '')));
   v_tier text := nullif(btrim(coalesce(p_plan_tier, '')), '');
+  v_owner_name text := btrim(coalesce(p_owner_name, ''));
+  v_owner_email text := btrim(coalesce(p_owner_email, ''));
+  v_email_re constant text := '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$';
   v_org_id uuid;
+  v_party_id uuid;
   v_org public.organizations%ROWTYPE;
   v_audit_id uuid;
 BEGIN
   IF NOT public.is_platform_admin() THEN
     RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'platform_admin_required';
   END IF;
+  IF btrim(coalesce(p_name, '')) = '' THEN RAISE EXCEPTION 'Organization name is required'; END IF;
+  IF v_owner_name = '' THEN RAISE EXCEPTION 'Owner name is required'; END IF;
+  IF v_owner_email = '' THEN RAISE EXCEPTION 'Owner email is required'; END IF;
+  IF v_owner_email !~ v_email_re THEN RAISE EXCEPTION 'Owner email is not valid'; END IF;
   IF v_slug !~ '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$' THEN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'slug_invalid';
   END IF;
@@ -60,10 +72,22 @@ BEGIN
   END IF;
 
   PERFORM set_config('minted.new_org_slug', v_slug, true);
-  v_org_id := public.create_organization(p_name, p_owner_name, p_owner_email);
+  v_org_id := public.create_organization(p_name);
   PERFORM set_config('minted.new_org_slug', '', true);
 
-  UPDATE public.organizations SET plan_tier = v_tier WHERE id = v_org_id RETURNING * INTO v_org;
+  UPDATE public.organizations
+     SET lifecycle_state = 'prospect', plan_tier = v_tier
+   WHERE id = v_org_id
+  RETURNING * INTO v_org;
+
+  INSERT INTO public.parties (org_id, party_type, name, first_name, last_name, email, created_by)
+  VALUES (v_org.id, 'person', v_owner_name,
+          nullif(public._party_first_name(v_owner_name), ''),
+          nullif(public._party_last_name(v_owner_name), ''),
+          v_owner_email, v_actor)
+  RETURNING id INTO v_party_id;
+  INSERT INTO public.party_role_assignments (org_id, party_id, role_key, scope_type, is_default)
+  VALUES (v_org.id, v_party_id, 'owner', 'org', true);
 
   INSERT INTO public.admin_audit_log
     (actor_user_id, actor_email, action, target_type, target_id, org_id, before, after, description)
@@ -80,7 +104,7 @@ BEGIN
       'slug', v_org.slug,
       'planTier', v_org.plan_tier,
       'lifecycleState', v_org.lifecycle_state,
-      'owner', jsonb_build_object('name', btrim(p_owner_name), 'email', btrim(p_owner_email)),
+      'owner', jsonb_build_object('name', v_owner_name, 'email', v_owner_email),
       'creatorRole', 'admin'),
     'Created organization ' || v_org.name
   )
@@ -284,13 +308,6 @@ BEGIN
   IF v_owner_email !~ v_email_re THEN RAISE EXCEPTION 'Owner email is not valid'; END IF;
   IF NOT v_platform AND v_tier IS DISTINCT FROM v_org.plan_tier THEN
     RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'plan_tier_platform_only';
-  END IF;
-  IF EXISTS (
-    SELECT 1 FROM public.organizations o
-     WHERE o.id <> p_org_id
-       AND lower(regexp_replace(o.name, '\s+', '', 'g')) = lower(regexp_replace(v_name, '\s+', '', 'g'))
-  ) THEN
-    RAISE EXCEPTION 'An organization named "%" already exists. Please use a different name.', v_name;
   END IF;
 
   SELECT a.party_id INTO v_party_id

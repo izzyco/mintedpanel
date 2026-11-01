@@ -16,6 +16,7 @@ import {
   grantSelfAdminMembership,
   listPlatformOrgInvites,
   listPlatformOrgMembers,
+  listPlatformOrgNames,
   listPlatformOrganizations,
   setOrgLifecycle,
   updateOrganizationProfile,
@@ -36,6 +37,17 @@ export function usePlatformOrgList(query: PlatformOrgListQuery) {
     enabled: isPlatformAdmin === true,
     staleTime: THIRTY_SECONDS,
     placeholderData: keepPreviousData,
+  });
+}
+
+/** Every organization's id and name (the same-name notice). */
+export function usePlatformOrgNames() {
+  const isPlatformAdmin = usePlatformAdmin();
+  return useQuery({
+    queryKey: queryKeys.platformOrgNames(),
+    queryFn: listPlatformOrgNames,
+    enabled: isPlatformAdmin === true,
+    staleTime: THIRTY_SECONDS,
   });
 }
 

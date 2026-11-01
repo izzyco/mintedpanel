@@ -3,8 +3,10 @@ import {
   PLAN_TIERS,
   isValidSlug,
   joinPath,
+  normalizeOrgName,
   orgErrorMessage,
   planTierLabel,
+  sameNameOrganizations,
   slugFromName,
   slugProblem,
 } from "./orgProfile";
@@ -93,5 +95,29 @@ describe("orgDetailTabs", () => {
       "invites",
       "settings",
     ]);
+  });
+});
+
+describe("same-name organizations (allowed, with a notice: Sowmya, Nov 1 2026)", () => {
+  const orgs = [
+    { id: "rose", name: "Rose City Rehab" },
+    { id: "lone", name: "Lone Star Rehab" },
+    { id: "rose2", name: "ROSE  city rehab" },
+  ];
+
+  it("normalizes like create_organization's check: whitespace out, lowercase", () => {
+    expect(normalizeOrgName("  Rose City\tRehab ")).toBe("rosecityrehab");
+  });
+
+  it("finds every other organization with the same normalized name", () => {
+    expect(sameNameOrganizations("rosecity rehab", orgs).map((o) => o.id)).toEqual([
+      "rose",
+      "rose2",
+    ]);
+    expect(sameNameOrganizations("Rose City Rehab", orgs, "rose").map((o) => o.id)).toEqual([
+      "rose2",
+    ]);
+    expect(sameNameOrganizations("Kansas Physio", orgs)).toEqual([]);
+    expect(sameNameOrganizations("   ", orgs)).toEqual([]);
   });
 });
