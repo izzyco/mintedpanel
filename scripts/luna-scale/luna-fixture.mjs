@@ -1,5 +1,5 @@
-// MINT-82 (RC-07) — the Luna-scale synthetic organization: identity, ownership
-// and target guards. Mirrors scripts/uat/uat-fixture.mjs. Pure apart from
+// MINT-82 (RC-07) — the Luna-scale synthetic organization: identity and
+// target guards. Mirrors scripts/uat/uat-fixture.mjs. Pure apart from
 // node:crypto; nothing here opens a connection.
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -8,7 +8,6 @@ import { ids as uatIds, psqlEnvironment } from "../uat/uat-fixture.mjs";
 
 export { psqlEnvironment };
 
-export const LUNA_FIXTURE_VERSION = "2026-10-31.1";
 export const LUNA_ORG_NAME = "Luna Demo (synthetic)";
 
 export const STAGING_PROJECT_REF = "vmznysvietfaddakkegt";
@@ -17,47 +16,14 @@ export const PRODUCTION_PROJECT_REF = "fkvuhfsqcmujywzgczmc";
 export const STAGING_CLUSTER = "7662742571317219726";
 export const PRODUCTION_CLUSTER = "7642734024280108049";
 
-/** Same shape as the UAT fixture's OWNERSHIP_MARKER, under its own key. It is
- * written into the jsonb receipts (audit_log.after) the seed leaves. */
-export const LUNA_OWNERSHIP_MARKER = Object.freeze({
-  minted_luna_scale_fixture: Object.freeze({ version: LUNA_FIXTURE_VERSION }),
-});
-
-// Every row id is self-certifying: its last 12 hex digits are a salted hash of
-// its first 20. The teardown and verifier recognise seed rows from the id
-// alone, so they need no copy of the parameters a run used, and a row someone
-// adds through the app (a random v4 id) passes with probability 2^-48.
 const ID_NAMESPACE = "minted-luna-scale";
-export const ID_TAG_SALT = "minted-luna-scale-tag:v1";
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-function sha256Hex(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-function ownershipTag(prefix20) {
-  return sha256Hex(`${ID_TAG_SALT}:${prefix20}`).slice(0, 12);
-}
-
-/** Deterministic v4-shaped id for (kind, key). Version-independent, so a
- * teardown written for one fixture version still removes another's rows. */
+/** Deterministic v4-shaped id for (kind, key), so the same dataset always has
+ * the same ids. The seed's rows are found by the Luna org id, not by id. */
 export function lunaUuid(kind, key) {
-  const h = sha256Hex(`${ID_NAMESPACE}:${kind}:${key}`);
-  const prefix = `${h.slice(0, 12)}4${h.slice(13, 16)}a${h.slice(17, 20)}`;
-  const hex = prefix + ownershipTag(prefix);
+  const h = createHash("sha256").update(`${ID_NAMESPACE}:${kind}:${key}`).digest("hex");
+  const hex = `${h.slice(0, 12)}4${h.slice(13, 16)}a${h.slice(17, 32)}`;
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-export function isLunaOwnedId(id) {
-  if (typeof id !== "string" || !UUID_RE.test(id)) return false;
-  const hex = id.replaceAll("-", "");
-  return hex.slice(20) === ownershipTag(hex.slice(0, 20));
-}
-
-/** The SQL twin of isLunaOwnedId. Built-in sha256() (PostgreSQL 11+), so it
- * needs no extension. Pinned against the JS rule in luna-scale.test.mjs. */
-export function ownedIdSqlPredicate(column) {
-  return `(right(replace(${column}::text, '-', ''), 12) = left(encode(sha256(convert_to('${ID_TAG_SALT}:' || left(replace(${column}::text, '-', ''), 20), 'UTF8')), 'hex'), 12))`;
 }
 
 export const LUNA_ORG_ID = lunaUuid("organization", 1);
@@ -407,10 +373,6 @@ export function assertMemberEmails(emails, role, environment = {}) {
     if (!out.includes(email)) out.push(email);
   }
   return out;
-}
-
-export function membershipId(email) {
-  return lunaUuid("membership", email.toLowerCase());
 }
 
 /** True when this file is the process entry point. realpath on both sides, so

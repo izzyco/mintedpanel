@@ -248,37 +248,47 @@ jobs:
           ON CONFLICT (id) DO NOTHING;
           INSERT INTO public.memberships (org_id, user_id, role) VALUES (:'uat_org', :'uat_member_id', 'specialist');
           SQL
-          echo "LUNA_MEMBER_ID=$member_id" >> "$GITHUB_ENV"
+          {
+            echo "LUNA_MEMBER_ID=$member_id"
+            echo "LUNA_UAT_MEMBER_ID=$uat_member_id"
+          } >> "$GITHUB_ENV"
       - name: Fingerprint every row outside the Luna org
         shell: bash
         run: |
           set -euo pipefail
-          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint outside > "$RUNNER_TEMP/outside-before.json"
+          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint > "$RUNNER_TEMP/outside-before.json"
           jq -e 'length > 0' "$RUNNER_TEMP/outside-before.json" > /dev/null
       - name: Dry run
         run: npm run seed:luna-scale -- --dry-run --local-rehearsal --member-email ci.luna.member@example.test
       - name: Apply
         run: npm run seed:luna-scale -- --apply --local-rehearsal --confirm "SEED LUNA SCALE ON local" --member-email ci.luna.member@example.test
-      - name: Verify the planned row count of every table (strict)
+      - name: Verify every table against the planned counts
         shell: bash
         run: |
           set -euo pipefail
-          npm run verify:luna-scale -- --local-rehearsal --strict
+          npm run verify:luna-scale -- --local-rehearsal
           test "$(psql "$LUNA_DATABASE_URL" -X -At -c "select count(*) from public.memberships where org_id = '$LUNA_ORG' and user_id = '$LUNA_MEMBER_ID' and role = 'admin'")" = 1
-      - name: A second apply is a no-op repair
+      - name: A second apply rebuilds the org (teardown plus insert)
         shell: bash
         run: |
           set -euo pipefail
-          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint seed > "$RUNNER_TEMP/seed-1.json"
+          case_numbers() {
+            psql "$LUNA_DATABASE_URL" -X -At -c "select md5(string_agg(id::text || ':' || case_number::text, ',' order by id)) from public.credential_cases where org_id = '$LUNA_ORG'"
+          }
+          first_case_numbers="$(case_numbers)"
           npm run seed:luna-scale -- --apply --local-rehearsal --confirm "SEED LUNA SCALE ON local" --member-email ci.luna.member@example.test
-          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint seed > "$RUNNER_TEMP/seed-2.json"
-          diff "$RUNNER_TEMP/seed-1.json" "$RUNNER_TEMP/seed-2.json"
-          npm run verify:luna-scale -- --local-rehearsal --strict
-          test "$(psql "$LUNA_DATABASE_URL" -X -At -c "select count(*) from public.audit_log where org_id = '$LUNA_ORG' and after -> 'minted_luna_scale_fixture' ->> 'event' = 'apply'")" = 2
+          npm run verify:luna-scale -- --local-rehearsal
+          # The cases were deleted and inserted again, so they hold new case numbers.
+          test "$(case_numbers)" != "$first_case_numbers"
+          test "$(psql "$LUNA_DATABASE_URL" -X -At -c "select count(*) from public.memberships where org_id = '$LUNA_ORG'")" = 1
       - name: A member of a UAT org is refused and the transaction rolls back
         shell: bash
         run: |
           set -euo pipefail
+          case_numbers() {
+            psql "$LUNA_DATABASE_URL" -X -At -c "select md5(string_agg(id::text || ':' || case_number::text, ',' order by id)) from public.credential_cases where org_id = '$LUNA_ORG'"
+          }
+          before="$(case_numbers)"
           if output="$(npm run seed:luna-scale -- --apply --local-rehearsal --confirm "SEED LUNA SCALE ON local" --member-email ci.luna.uat-member@example.test 2>&1)"; then
             echo "$output"
             echo "::error::the seed accepted a member of a UAT org"
@@ -287,13 +297,14 @@ jobs:
           echo "$output"
           # The refusal must be the UAT-org guard, not some other failure.
           grep -q "the member belongs to a UAT fixture org" <<<"$output"
-          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint seed > "$RUNNER_TEMP/seed-3.json"
-          diff "$RUNNER_TEMP/seed-1.json" "$RUNNER_TEMP/seed-3.json"
+          test "$(case_numbers)" = "$before"
+          test "$(psql "$LUNA_DATABASE_URL" -X -At -c "select count(*) from public.memberships where org_id = '$LUNA_ORG' and user_id = '$LUNA_UAT_MEMBER_ID'")" = 0
+          npm run verify:luna-scale -- --local-rehearsal
       - name: Data outside the Luna org is unchanged after the applies
         shell: bash
         run: |
           set -euo pipefail
-          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint outside > "$RUNNER_TEMP/outside-after-apply.json"
+          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint > "$RUNNER_TEMP/outside-after-apply.json"
           diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-after-apply.json"
       - name: Teardown
         shell: bash
@@ -301,23 +312,23 @@ jobs:
           set -euo pipefail
           npm run seed:luna-scale -- --dry-run --teardown --local-rehearsal
           npm run seed:luna-scale -- --teardown --local-rehearsal --confirm "TEAR DOWN LUNA SCALE ON local"
-      - name: Only the inactive org shell and its 3 roster templates remain (strict)
-        run: npm run verify:luna-scale -- --local-rehearsal --strict
+      - name: The org is inactive, with no seed rows and no members
+        run: npm run verify:luna-scale -- --local-rehearsal
       - name: Data outside the Luna org is unchanged after the teardown
         shell: bash
         run: |
           set -euo pipefail
-          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint outside > "$RUNNER_TEMP/outside-after-teardown.json"
+          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint > "$RUNNER_TEMP/outside-after-teardown.json"
           diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-after-teardown.json"
-      - name: The shell re-seeds and tears down again
+      - name: The inactive org re-seeds and tears down again
         shell: bash
         run: |
           set -euo pipefail
           npm run seed:luna-scale -- --apply --local-rehearsal --confirm "SEED LUNA SCALE ON local"
-          npm run verify:luna-scale -- --local-rehearsal --strict
+          npm run verify:luna-scale -- --local-rehearsal
           npm run seed:luna-scale -- --teardown --local-rehearsal --confirm "TEAR DOWN LUNA SCALE ON local"
-          npm run verify:luna-scale -- --local-rehearsal --strict
-          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint outside > "$RUNNER_TEMP/outside-final.json"
+          npm run verify:luna-scale -- --local-rehearsal
+          npm run --silent verify:luna-scale -- --local-rehearsal --fingerprint > "$RUNNER_TEMP/outside-final.json"
           diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-final.json"
 
   release-guardrails:

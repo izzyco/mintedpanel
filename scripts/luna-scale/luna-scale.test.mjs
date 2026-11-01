@@ -2,15 +2,12 @@
 // Pure: no database, no network. `npm run test:luna-scale`.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  ID_TAG_SALT,
   ISOLATION_GATE_LOGINS,
-  LUNA_FIXTURE_VERSION,
   LUNA_ORG_ID,
   PRODUCTION_CLUSTER,
   PRODUCTION_PROJECT_REF,
@@ -25,30 +22,26 @@ import {
   assertMemberEmails,
   confirmationToken,
   isEntryPoint,
-  isLunaOwnedId,
   lunaUuid,
   maskConnection,
-  ownedIdSqlPredicate,
   parseDatabaseUrl,
   psqlConnectionEnvironment,
 } from "./luna-fixture.mjs";
 import {
   CASE_STATUS_MIX,
   CANONICAL_STATUS_CONFIGS,
-  DEFAULT_LUNA_PARAMS,
   FUNNEL_STAGES,
   LUNA_TABLES,
   PROVIDER_SCENARIOS,
   STATELESS_LOCATIONS,
   UNGROUPED_LOCATIONS,
   buildLunaDataset,
-  paramsDigest,
   planCounts,
   summarizeDataset,
-  validateLunaParams,
 } from "./luna-dataset.mjs";
 import {
   INSERT_CHUNK_ROWS,
+  SEED_TABLES,
   TABLE_COLUMNS,
   TEARDOWN_TABLES,
   buildApplySql,
@@ -59,16 +52,15 @@ import {
 } from "./luna-sql.mjs";
 import { main, parseArgs, runPsql } from "./seed-luna-scale.mjs";
 import {
-  ROSTER_TEMPLATES_PER_ORG,
   checkSnapshot,
   lastJsonLine,
   main as verifyMain,
   parseVerifyArgs,
-  plannedFromReceipt,
+  plannedCounts,
 } from "./verify-luna-scale.mjs";
 
 const ANCHOR = "2026-10-30";
-const dataset = buildLunaDataset(DEFAULT_LUNA_PARAMS, { anchorDate: ANCHOR });
+const dataset = buildLunaDataset({ anchorDate: ANCHOR });
 const { tables } = dataset;
 const STAGING = { kind: "staging", projectRef: STAGING_PROJECT_REF };
 
@@ -224,29 +216,22 @@ function allRows() {
 
 // ---------- generator ----------
 
-test("the dataset is deterministic for the same parameters and anchor", () => {
-  const again = buildLunaDataset(DEFAULT_LUNA_PARAMS, { anchorDate: ANCHOR });
+test("the dataset is deterministic, and an anchor date moves dates, never ids or counts", () => {
+  const again = buildLunaDataset({ anchorDate: ANCHOR });
   assert.equal(JSON.stringify(again.tables), JSON.stringify(tables));
-  assert.equal(again.paramsSha256, dataset.paramsSha256);
-  const otherSeed = buildLunaDataset(
-    { ...DEFAULT_LUNA_PARAMS, seed: "another-seed" },
-    { anchorDate: ANCHOR },
-  );
-  assert.notEqual(
-    otherSeed.tables.providers[0].last_name + otherSeed.tables.providers[1].last_name,
-    tables.providers[0].last_name + tables.providers[1].last_name,
-  );
-  assert.notEqual(otherSeed.paramsSha256, dataset.paramsSha256);
-  // A later anchor shifts dates, never ids: a re-run on another day repairs.
-  const later = buildLunaDataset(DEFAULT_LUNA_PARAMS, { anchorDate: "2026-11-15" });
+  const later = buildLunaDataset({ anchorDate: "2026-11-15" });
   assert.deepEqual(
     later.tables.providers.map((row) => row.id),
     tables.providers.map((row) => row.id),
   );
-  assert.equal(later.paramsSha256, dataset.paramsSha256);
+  assert.notDeepEqual(later.tables.providers[0].start_date, tables.providers[0].start_date);
+  // verify:luna-scale checks against these counts, whatever the apply day was.
+  assert.deepEqual(planCounts(later), planCounts(dataset));
+  assert.deepEqual(plannedCounts(), planCounts(dataset));
+  assert.throws(() => buildLunaDataset({ anchorDate: "2026-02-30" }), /calendar/);
 });
 
-test("default counts match the Luna-scale brief and every count is a parameter", () => {
+test("the counts match the Luna-scale brief", () => {
   const counts = planCounts(dataset);
   assert.equal(counts.organizations, 1);
   assert.equal(counts.providers, 3500);
@@ -259,35 +244,9 @@ test("default counts match the Luna-scale brief and every count is a parameter",
   assert.ok(counts.credential_cases > 3 * 1000, "cases cross the 1,000-row cap several times");
   assert.equal(counts.status_configs, 22);
   assert.equal(tables.organizations[0].name, "Luna Demo (synthetic)");
-
-  const small = buildLunaDataset(
-    { seed: "params", providers: 1234, groups: 12, locations: 40, states: 9, payers: 6 },
-    { anchorDate: ANCHOR },
-  );
-  assert.equal(small.tables.providers.length, 1234);
-  assert.equal(small.tables.provider_groups.length, 12);
-  assert.equal(small.tables.facilities.length, 40 + UNGROUPED_LOCATIONS + STATELESS_LOCATIONS);
-  assert.equal(new Set(small.tables.facilities.map((row) => row.state).filter(Boolean)).size, 9);
-  assert.equal(small.tables.payers.length, 6);
-  // Fewer groups than states still reaches every state.
-  const wide = buildLunaDataset(
-    { seed: "wide", providers: 300, groups: 5, locations: 30, states: 20, payers: 8 },
-    { anchorDate: ANCHOR },
-  );
-  assert.equal(new Set(wide.tables.facilities.map((row) => row.state).filter(Boolean)).size, 20);
-});
-
-test("parameter validation rejects counts the generator cannot honour", () => {
-  assert.throws(() => validateLunaParams({ providers: 0 }), /providers/);
-  assert.throws(() => validateLunaParams({ providers: 100_000 }), /providers/);
-  assert.throws(() => validateLunaParams({ payers: 9 }), /payers/);
-  assert.throws(() => validateLunaParams({ states: 51 }), /states/);
-  assert.throws(() => validateLunaParams({ groups: 60, locations: 50 }), /locations/);
-  assert.throws(() => validateLunaParams({ seed: "has space" }), /seed/);
-  assert.throws(() => buildLunaDataset({}, { anchorDate: "2026-02-30" }), /calendar/);
-  assert.notEqual(
-    paramsDigest(validateLunaParams({ providers: 10 })),
-    paramsDigest(validateLunaParams({})),
+  assert.equal(
+    Object.values(counts).reduce((sum, n) => sum + n, 0),
+    64_644,
   );
 });
 
@@ -433,24 +392,6 @@ test("the edge-case locations serve only their scenario, never a case or a targe
   for (const id of edge.keys()) assert.ok(used.has(id));
 });
 
-test("with one group there is no other group's clinic, and the other holds still occur", () => {
-  const one = buildLunaDataset(
-    { seed: "one-group", providers: 400, groups: 1, locations: 5, states: 3, payers: 2 },
-    { anchorDate: ANCHOR },
-  );
-  const scenarios = summarizeDataset(one).scenarios;
-  assert.equal(scenarios.location_other_group ?? 0, 0);
-  for (const key of ["no_group", "no_location", "location_no_group", "location_no_state"])
-    assert.ok(scenarios[key] > 0, key);
-  const funnel = classifyFunnel(one.tables);
-  for (const [providerId, scenario] of one.providerScenario) {
-    if (scenario === "terminated") continue;
-    const expected = PROVIDER_SCENARIOS.find((s) => s.key === scenario)?.stage ?? "credentialing";
-    assert.equal(funnel.get(providerId).stage, expected, scenario);
-  }
-  assert.equal(one.tables.facilities.filter((f) => f.state === null).length, 1);
-});
-
 test("NPIs pass the CMS check digit, use the documented synthetic prefixes and never repeat", () => {
   // Vectors MINT-7's tests treat as valid/invalid.
   for (const valid of ["1234567893", "1112223338", "9998887779"])
@@ -500,32 +441,15 @@ test("ids and natural keys never collide", () => {
   primaries("provider_group_assignments", (r) => r.provider_id);
 });
 
-test("every row is tagged: a self-certifying id and the synthetic org", () => {
+test("every row carries the synthetic org and a deterministic v4-shaped id", () => {
   for (const { table, row } of allRows()) {
-    assert.ok(isLunaOwnedId(row.id), `${table} ${row.id}`);
+    assert.match(row.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/, table);
     if (table !== "organizations") assert.equal(row.org_id, LUNA_ORG_ID, table);
   }
-  assert.ok(isLunaOwnedId(LUNA_ORG_ID));
-  for (const id of UAT_ORGANIZATION_IDS) assert.equal(isLunaOwnedId(id), false);
-  let falsePositives = 0;
-  for (let index = 0; index < 20_000; index += 1)
-    if (isLunaOwnedId(randomUUID())) falsePositives += 1;
-  assert.equal(falsePositives, 0);
-  // The SQL predicate is the same rule: it salts the first 20 hex digits and
-  // compares the last 12.
-  const predicate = ownedIdSqlPredicate("id");
-  assert.ok(
-    predicate.includes(
-      `convert_to('${ID_TAG_SALT}:' || left(replace(id::text, '-', ''), 20), 'UTF8')`,
-    ),
-  );
-  assert.ok(predicate.startsWith("(right(replace(id::text, '-', ''), 12) = left(encode(sha256("));
-  const hex = LUNA_ORG_ID.replaceAll("-", "");
-  const tag = createHash("sha256")
-    .update(`${ID_TAG_SALT}:${hex.slice(0, 20)}`)
-    .digest("hex")
-    .slice(0, 12);
-  assert.equal(hex.slice(20), tag);
+  assert.equal(tables.organizations[0].id, LUNA_ORG_ID);
+  assert.equal(lunaUuid("organization", 1), LUNA_ORG_ID);
+  assert.notEqual(lunaUuid("provider", 1), lunaUuid("provider", 2));
+  for (const id of UAT_ORGANIZATION_IDS) assert.notEqual(id, LUNA_ORG_ID);
 });
 
 test("relationships stay inside the org and match the case-key rules", () => {
@@ -722,44 +646,67 @@ const applySql = buildApplySql(dataset, {
 });
 const teardownSql = buildTeardownSql({ target: STAGING });
 
-test("apply SQL inserts every table in chunks under the statement limit, idempotently", () => {
+test("apply SQL empties the org's seed tables, then inserts every table in chunks and checks its count", () => {
   const counts = planCounts(dataset);
-  for (const table of LUNA_TABLES.filter((t) => t !== "organizations")) {
+  for (const table of SEED_TABLES) {
     const statements = applySql.match(new RegExp(`INSERT INTO public\\.${table} \\(`, "g")) ?? [];
     assert.equal(statements.length, Math.ceil(counts[table] / INSERT_CHUNK_ROWS), table);
     assert.ok(applySql.includes(`expected ${counts[table]}'`), `${table} count is verified`);
+    assert.ok(
+      applySql.includes(
+        `SELECT count(*) INTO v_count FROM public.${table} WHERE org_id = '${LUNA_ORG_ID}'::uuid;`,
+      ),
+      `${table} is counted by the org id`,
+    );
   }
   const inserts = applySql
     .split(/(?=INSERT INTO public\.)/)
-    .filter((s) => s.startsWith("INSERT INTO public."));
+    .filter((piece) => piece.startsWith("INSERT INTO public."));
   for (const statement of inserts) {
     const body = statement.slice(0, statement.indexOf(";\n") + 1);
     assert.ok(Buffer.byteLength(body) < 1_000_000, "each statement stays well under a megabyte");
-    if (/^INSERT INTO public\.(organizations|audit_log|memberships)/.test(statement)) continue;
-    assert.match(body, /ON CONFLICT \(id\) DO NOTHING;$/);
   }
+  // Re-apply = teardown + insert: every seed table is emptied for the org,
+  // children first, before the first insert. Members and the org row stay.
+  const deletes = [
+    ...applySql.matchAll(/DELETE FROM public\.(\w+) WHERE org_id = '([0-9a-f-]+)'::uuid;/g),
+  ];
+  assert.deepEqual(
+    deletes.map((m) => m[1]),
+    [...SEED_TABLES].reverse(),
+  );
+  assert.ok(deletes.every((m) => m[2] === LUNA_ORG_ID));
+  assert.ok(
+    applySql.lastIndexOf("DELETE FROM public.") <
+      applySql.indexOf("INSERT INTO public.status_configs"),
+  );
+  assert.doesNotMatch(
+    applySql,
+    /DELETE FROM public\.(memberships|organizations|audit_log|roster_)/,
+  );
+  assert.doesNotMatch(applySql, /audit_log/, "no receipts");
   assert.ok(applySql.includes("ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role"));
-  assert.doesNotMatch(applySql, /DELETE FROM/);
-  assert.doesNotMatch(applySql, /UPDATE public\.(?!organizations)/);
-  // A trigger side effect (an unowned row appearing mid-apply) aborts it.
-  const snapshot = applySql.indexOf("CREATE TEMP TABLE luna_unowned_before");
-  const sideEffectCheck = applySql.indexOf("the database added % row(s)");
-  assert.ok(snapshot > applySql.indexOf("INSERT INTO public.organizations"));
-  assert.ok(snapshot < applySql.indexOf("INSERT INTO public.status_configs"));
-  assert.ok(sideEffectCheck > applySql.lastIndexOf("INSERT INTO public.enrollment_facts"));
-  assert.ok(sideEffectCheck < applySql.lastIndexOf("COMMIT;"));
-  for (const table of LUNA_TABLES.filter((t) => t !== "organizations")) {
-    assert.ok(applySql.includes(`SELECT 'public.${table}'::regclass AS rel`), table);
-  }
+  assert.ok(
+    applySql.indexOf(
+      "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, lifecycle_state = 'active'",
+    ) < applySql.indexOf("DELETE FROM public."),
+  );
+  // Members are checked before the bulk work, so a refusal fails fast.
+  assert.ok(
+    applySql.indexOf("belongs to a UAT fixture org") < applySql.indexOf("DELETE FROM public."),
+  );
+  const check = applySql.indexOf("Luna-scale seed verification failed");
+  assert.ok(check > applySql.lastIndexOf("INSERT INTO public.enrollment_facts"));
+  assert.ok(check < applySql.lastIndexOf("COMMIT;"));
 });
 
 test("apply SQL touches no id outside the synthetic org", () => {
+  const known = new Set([LUNA_ORG_ID, ...UAT_ORGANIZATION_IDS]);
+  for (const { row } of allRows()) known.add(row.id);
   const uuids = new Set(
     applySql.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g),
   );
-  for (const id of uuids) {
-    assert.ok(isLunaOwnedId(id) || UAT_ORGANIZATION_IDS.includes(id), `foreign id ${id}`);
-  }
+  for (const id of uuids) assert.ok(known.has(id), `foreign id ${id}`);
   // UAT org ids appear only in the member guard that refuses UAT personas.
   for (const id of UAT_ORGANIZATION_IDS) {
     assert.ok(applySql.indexOf(id) > applySql.indexOf("belongs to a UAT fixture org") - 400);
@@ -793,8 +740,8 @@ test("both scripts refuse production, foreign identities and a missing confirmat
   );
 });
 
-test("teardown covers every table written, child before parent, and only seed rows", () => {
-  const written = [...LUNA_TABLES.filter((table) => table !== "organizations"), "memberships"];
+test("teardown covers every table written, child before parent, scoped to the org", () => {
+  const written = [...SEED_TABLES, "memberships"];
   assert.deepEqual([...TEARDOWN_TABLES].sort(), [...written].sort());
   const position = (table) => teardownSql.indexOf(`DELETE FROM public.${table} WHERE`);
   for (const table of written) assert.ok(position(table) > 0, `${table} is deleted`);
@@ -831,17 +778,15 @@ test("teardown covers every table written, child before parent, and only seed ro
     assert.ok(position(child) < position(parent), `${child} before ${parent}`);
   }
   for (const statement of teardownSql.match(/DELETE FROM public\.\w+ WHERE [^;]+;/g)) {
-    assert.ok(
-      statement.endsWith(`WHERE org_id = '${LUNA_ORG_ID}'::uuid AND pg_temp.luna_owned(id);`),
-      statement,
-    );
+    assert.ok(statement.endsWith(`WHERE org_id = '${LUNA_ORG_ID}'::uuid;`), statement);
   }
   assert.doesNotMatch(teardownSql, /DELETE FROM public\.(organizations|audit_log|roster_)/);
-  assert.match(teardownSql, /UPDATE public\.organizations SET lifecycle_state = 'inactive'/);
-  assert.match(teardownSql, /refused: the synthetic org holds rows the seed did not create/);
+  assert.doesNotMatch(teardownSql, /audit_log/, "no receipts");
   assert.match(
-    buildTeardownSql({ target: STAGING, allowUnowned: true }),
-    /luna_allow_unowned', 'true'/,
+    teardownSql,
+    new RegExp(
+      `UPDATE public\\.organizations SET lifecycle_state = 'inactive' WHERE id = '${LUNA_ORG_ID}'::uuid;`,
+    ),
   );
   // Every column the generator writes is in the SQL column spec, and back.
   for (const table of LUNA_TABLES) {
@@ -1108,7 +1053,7 @@ const stagingEnvironment = {
 };
 
 function spies(identity = STAGING_CLUSTER) {
-  const calls = { identity: 0, sql: [], reports: [], files: [] };
+  const calls = { identity: 0, sql: [], reports: [] };
   return {
     calls,
     deps: {
@@ -1134,7 +1079,6 @@ function spies(identity = STAGING_CLUSTER) {
         return { stdout: `${identity}\n` };
       },
       runSql: async (url, sql, variables) => calls.sql.push({ url, sql, variables }),
-      writeFile: async (path, text) => calls.files.push({ path, text }),
       report: (message) => calls.reports.push(message),
     },
   };
@@ -1206,6 +1150,7 @@ test("a confirmed staging apply binds the observed identity and the token into p
   assert.ok(sql.includes(`IS DISTINCT FROM '${token}'`));
   assert.ok(sql.includes("lower(u.email) = 'reviewer@example.test'"));
   assert.ok(sql.includes("'specialist')\n  ON CONFLICT (org_id, user_id)"));
+  assert.ok(sql.includes("INSERT INTO public.memberships (org_id, user_id, role)"));
   assert.ok(!calls.reports.join("").includes("private-test-password"));
 
   const teardown = spies();
@@ -1217,7 +1162,7 @@ test("a confirmed staging apply binds the observed identity and the token into p
   assert.doesNotMatch(teardown.calls.sql[0].sql, /INSERT INTO public\.providers/);
 });
 
-test("dry-run and emit-sql never connect", async () => {
+test("the dry runs never connect", async () => {
   const { calls, deps } = spies();
   const result = await main(["--dry-run"], deps);
   assert.equal(calls.identity, 0);
@@ -1226,158 +1171,97 @@ test("dry-run and emit-sql never connect", async () => {
   const output = calls.reports.join("");
   assert.match(output, /DRY RUN \(no connection; nothing written\)/);
   assert.match(output, /providers\s+3,500/);
+  assert.match(output, /total\s+64,644/);
   assert.match(output, /target: staging vmznysvietfaddakkegt/);
+  assert.doesNotMatch(output, /audit_log|receipt/);
 
   const teardown = spies();
   await main(["--dry-run", "--teardown"], teardown.deps);
   assert.match(teardown.calls.reports.join(""), /Luna-scale teardown: DRY RUN/);
   assert.equal(teardown.calls.identity + teardown.calls.sql.length, 0);
 
-  const emitted = spies();
-  await main(["--emit-sql", "/tmp/never-written.sql"], emitted.deps);
-  assert.equal(emitted.calls.identity + emitted.calls.sql.length, 0);
-  assert.match(emitted.calls.files[0].text, /this is a review copy/);
+  // The fixed dataset takes no count, seed or anchor flags.
+  for (const flag of ["--providers", "--seed", "--anchor-date", "--emit-sql", "--allow-unowned"])
+    assert.throws(() => parseArgs(["--dry-run", flag, "5"]), /Unknown argument/, flag);
 });
 
-test("the verifier checks the receipt, the regenerated plan and, when strict, the whole org", () => {
-  const counts = planCounts(dataset);
-  const receipt = {
-    version: LUNA_FIXTURE_VERSION,
-    event: "apply",
-    params: dataset.params,
-    anchor_date: ANCHOR,
-    counts,
-  };
-  const planned = plannedFromReceipt(receipt);
-  assert.deepEqual(planned, counts, "the plan regenerates from the receipt alone");
-  assert.equal(plannedFromReceipt({ event: "teardown" }), null);
-  const seedTables = LUNA_TABLES.filter((t) => t !== "organizations");
-  const owned = Object.fromEntries(seedTables.map((t) => [t, counts[t]]));
-  const zeroUnowned = Object.fromEntries(seedTables.map((t) => [t, 0]));
+test("the verifier checks every seed table in the org against planCounts", () => {
+  const planned = planCounts(dataset);
+  const counts = Object.fromEntries(SEED_TABLES.map((t) => [t, planned[t]]));
   const good = {
     org: { name: "Luna Demo (synthetic)", lifecycle_state: "active" },
-    last_receipt: receipt,
-    owned: { ...owned, memberships: 1 },
-    unowned: zeroUnowned,
-    org_rows: {
-      ...owned,
-      memberships: 1,
-      audit_log: 1,
-      roster_templates: 3,
-      notes: 0,
-      contracts: 0,
-    },
+    counts: { ...counts, memberships: 1 },
     cross_org_case_links: 0,
     cases_without_primary_location: 0,
-    seed_rows_outside_org: 0,
   };
-  assert.deepEqual(checkSnapshot(good, { planned, strict: true }), []);
-  assert.match(checkSnapshot(good).join(), /no parameters to regenerate the plan/);
+  assert.deepEqual(checkSnapshot(good, planned), []);
   assert.match(
-    checkSnapshot({ ...good, owned: { ...good.owned, providers: 3499 } }, { planned }).join(),
-    /providers: 3499 seed rows, the receipt says 3500.*providers: 3499 seed rows, the plan says 3500/,
+    checkSnapshot({ ...good, counts: { ...good.counts, providers: 3499 } }, planned).join(),
+    /providers: 3499 rows in the Luna org, expected 3500/,
   );
   assert.match(
-    checkSnapshot(good, { planned: { ...planned, touches: planned.touches + 1 } }).join(),
-    /touches: .* the plan says/,
+    checkSnapshot(
+      { ...good, counts: { ...good.counts, touches: planned.touches + 1 } },
+      planned,
+    ).join(),
+    /touches: .* expected/,
   );
   assert.match(
-    checkSnapshot({ ...good, last_receipt: { ...receipt, version: "older" } }, { planned }).join(),
-    /fixture older/,
-  );
-  assert.match(
-    checkSnapshot({ ...good, cross_org_case_links: 2 }, { planned }).join(),
+    checkSnapshot({ ...good, cross_org_case_links: 2 }, planned).join(),
     /cross_org_case_links/,
   );
-  // Strict: a row the seed did not create, anywhere in the org, fails.
-  const unownedTouch = { ...good, unowned: { ...zeroUnowned, touches: 1 } };
-  assert.deepEqual(checkSnapshot(unownedTouch, { planned }), []);
+  assert.deepEqual(checkSnapshot({ ...good, org: null }, planned), [
+    "the Luna org does not exist; nothing has been applied",
+  ]);
   assert.match(
-    checkSnapshot(unownedTouch, { planned, strict: true }).join(),
-    /touches: 1 rows the seed did not create/,
-  );
-  const note = { ...good, org_rows: { ...good.org_rows, notes: 2 } };
-  assert.match(
-    checkSnapshot(note, { planned, strict: true }).join(),
-    /notes: 2 rows in the Luna org/,
+    checkSnapshot({ ...good, org: { ...good.org, lifecycle_state: "onboarding" } }, planned).join(),
+    /expected active \(applied\) or inactive \(torn down\)/,
   );
 
-  // After a teardown only the inactive shell, its roster templates and the
-  // receipts may remain.
-  const zero = Object.fromEntries(Object.keys(good.owned).map((t) => [t, 0]));
-  const shell = {
-    ...good,
-    org: { ...good.org, lifecycle_state: "inactive" },
-    last_receipt: { version: LUNA_FIXTURE_VERSION, event: "teardown" },
-    owned: zero,
-    org_rows: { ...zero, audit_log: 2, roster_templates: ROSTER_TEMPLATES_PER_ORG, notes: 0 },
-  };
-  assert.deepEqual(checkSnapshot(shell, { strict: true }), []);
+  // After a teardown the inactive org holds no seed rows and no members.
+  const zero = Object.fromEntries(Object.keys(good.counts).map((t) => [t, 0]));
+  const shell = { ...good, org: { ...good.org, lifecycle_state: "inactive" }, counts: zero };
+  assert.deepEqual(checkSnapshot(shell, planned), []);
   assert.match(
-    checkSnapshot({ ...shell, owned: { ...zero, tasks: 4 } }).join(),
-    /tasks: 4 seed rows remain/,
+    checkSnapshot({ ...shell, counts: { ...zero, tasks: 4 } }, planned).join(),
+    /tasks: 4 rows in the Luna org, expected 0/,
   );
   assert.match(
-    checkSnapshot({ ...shell, org: { ...shell.org, lifecycle_state: "active" } }).join(),
-    /not inactive after a teardown/,
-  );
-  assert.match(
-    checkSnapshot(
-      { ...shell, org_rows: { ...shell.org_rows, roster_mappings: 1 } },
-      { strict: true },
-    ).join(),
-    /roster_mappings: 1 rows in the Luna org/,
-  );
-  assert.match(
-    checkSnapshot(
-      { ...shell, org_rows: { ...shell.org_rows, roster_templates: 2 } },
-      { strict: true },
-    ).join(),
-    /roster_templates: 2 rows in the Luna org, expected 3/,
-  );
-  assert.match(
-    checkSnapshot(
-      { ...shell, org_rows: { ...shell.org_rows, providers: 1 } },
-      { strict: true },
-    ).join(),
-    /providers: 1 rows in the Luna org/,
+    checkSnapshot({ ...shell, counts: { ...zero, memberships: 1 } }, planned).join(),
+    /memberships: 1 after the teardown, expected 0/,
   );
 });
 
 test("verifier flags parse strictly", () => {
-  assert.deepEqual(parseVerifyArgs([]), { allowLocal: false, strict: false, fingerprint: null });
-  assert.deepEqual(parseVerifyArgs(["--local-rehearsal", "--strict", "--fingerprint", "seed"]), {
+  assert.deepEqual(parseVerifyArgs([]), { allowLocal: false, fingerprint: false });
+  assert.deepEqual(parseVerifyArgs(["--local-rehearsal", "--fingerprint"]), {
     allowLocal: true,
-    strict: true,
-    fingerprint: "seed",
+    fingerprint: true,
   });
-  assert.throws(() => parseVerifyArgs(["--fingerprint", "everything"]), /outside" or "seed/);
+  assert.throws(() => parseVerifyArgs(["--strict"]), /Unknown argument/);
   assert.throws(() => parseVerifyArgs(["--teardown"]), /Unknown argument/);
 });
 
 test("verify and fingerprint SQL are read-only and scoped to the Luna org", () => {
   const verifySql = buildVerifySql();
-  const outside = buildFingerprintSql("outside");
-  const seed = buildFingerprintSql("seed");
-  for (const sql of [verifySql, outside, seed]) {
+  const outside = buildFingerprintSql();
+  for (const sql of [verifySql, outside]) {
     assert.ok(sql.startsWith("BEGIN READ ONLY;"));
     assert.doesNotMatch(sql, /\b(INSERT|UPDATE|DELETE|TRUNCATE|ALTER|DROP|CREATE)\b/);
   }
-  // Every org-scoped public table is counted for the org, seed-owned or not.
-  assert.match(verifySql, /'org_rows', \(SELECT json_object_agg\(c\.relname/);
-  assert.match(verifySql, /a\.attname = 'org_id'/);
-  assert.ok(
-    verifySql.includes(`format('org_id = %L::uuid', '${LUNA_ORG_ID}')`),
-    "uuid compare keeps the org_id index",
-  );
+  for (const table of [...SEED_TABLES, "memberships"])
+    assert.ok(
+      verifySql.includes(
+        `'${table}', (SELECT count(*) FROM public.${table} WHERE org_id = '${LUNA_ORG_ID}'::uuid)`,
+      ),
+      table,
+    );
   // Outside: every public table, minus the Luna org's rows and its org row.
   assert.ok(outside.includes(`format('x.id <> %L::uuid', '${LUNA_ORG_ID}')`));
   assert.ok(outside.includes(`format('x.org_id IS DISTINCT FROM %L::uuid', '${LUNA_ORG_ID}')`));
   assert.match(outside, /n\.nspname = 'public' AND c\.relkind IN \('r', 'p'\)/);
-  // Seed: the org row and every table the seed writes or the members it adds.
-  for (const table of [...LUNA_TABLES, "memberships"])
-    assert.ok(seed.includes(`'${table}', (SELECT md5(`), table);
-  assert.throws(() => buildFingerprintSql("all"), /scope/);
+  assert.match(outside, /has_table_privilege\(c\.oid, 'SELECT'\)/, "catalog OIDs, never names");
+  assert.doesNotMatch(outside, /information_schema|public\.%I/);
 });
 
 test("seeded location links leave created_by null: it references auth.users", () => {
@@ -1404,13 +1288,13 @@ test("the CI job proves the seed on local Supabase, in order, and only there", a
     'supabase --workdir "$luna_workdir" start',
     "db reset --no-seed",
     "npm run seed:staging-uat",
-    '--fingerprint outside > "$RUNNER_TEMP/outside-before.json"',
+    '--fingerprint > "$RUNNER_TEMP/outside-before.json"',
     "--dry-run --local-rehearsal",
     '--apply --local-rehearsal --confirm "SEED LUNA SCALE ON local"',
-    "verify:luna-scale -- --local-rehearsal --strict",
-    '--fingerprint seed > "$RUNNER_TEMP/seed-1.json"',
-    'diff "$RUNNER_TEMP/seed-1.json" "$RUNNER_TEMP/seed-2.json"',
+    "verify:luna-scale -- --local-rehearsal",
+    'test "$(case_numbers)" != "$first_case_numbers"',
     "--member-email ci.luna.uat-member@example.test",
+    'test "$(case_numbers)" = "$before"',
     'diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-after-apply.json"',
     '--teardown --local-rehearsal --confirm "TEAR DOWN LUNA SCALE ON local"',
     'diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-after-teardown.json"',
@@ -1471,89 +1355,16 @@ test("a failed identity preflight reports psql's error without the credentials",
 
 // ---------- fix round: review of #562 ----------
 
-test("no scan resolves a table by name: every catalog query uses OIDs", () => {
-  const sql = [
-    buildApplySql(dataset, { target: STAGING }),
-    buildTeardownSql({ target: STAGING }),
-    buildVerifySql(),
-    buildFingerprintSql("outside"),
-    buildFingerprintSql("seed"),
-  ].join("\n");
-  assert.doesNotMatch(sql, /information_schema/);
-  assert.doesNotMatch(sql, /has_table_privilege\(format\(/);
-  assert.doesNotMatch(sql, /public\.%I/);
-  const privileges = [...sql.matchAll(/has_table_privilege\(([^,]+),/g)].map((m) => m[1]);
-  assert.ok(privileges.length >= 4);
-  for (const argument of privileges) assert.match(argument, /^(c\.oid|con\.conrelid)$/);
-  // org_id compares as uuid, so its index applies; ::text only for a non-uuid column.
-  for (const line of sql.split("\n").filter((l) => l.includes("org_id::text"))) {
-    assert.match(line, /ELSE format\('org_id::text = %L'|WHEN a\.attname IS NOT NULL THEN/, line);
-  }
-});
-
-test("teardown refuses any row that depends on a seed row, whatever --allow-unowned says", () => {
-  for (const sql of [teardownSql, buildTeardownSql({ target: STAGING, allowUnowned: true })]) {
-    assert.match(sql, /FROM pg_catalog\.pg_constraint con/);
-    assert.match(sql, /WHERE con\.contype = 'f' AND con\.confrelid = ANY \(v_targets\)/);
-    assert.match(
-      sql,
-      /unnest\(con\.conkey, con\.confkey\) WITH ORDINALITY AS k \(child_att, parent_att, ord\)/,
-    );
-    assert.match(sql, /rows the seed did not create reference seed rows/);
-    assert.match(sql, /cannot read % \(privilege or forced row security\)/);
-    assert.match(
-      sql,
-      /IF r\.confdeltype IN \('c', 'n', 'd'\) THEN\n\s+v_unreadable := v_unreadable \|\| to_jsonb\(r\.child::regclass::text\);/,
-    );
-    const unreadable = sql.indexOf("IF v_unreadable <> '[]'::jsonb THEN");
-    const dependents = sql.indexOf("IF v_dependents <> '{}'::jsonb THEN");
-    const unowned = sql.indexOf(
-      "IF v_unowned <> '{}'::jsonb AND current_setting('minted.luna_allow_unowned')",
-    );
-    const firstDelete = sql.indexOf("DELETE FROM public.");
-    assert.ok(
-      unreadable > 0 && unreadable < dependents && dependents < unowned && unowned < firstDelete,
-    );
-    assert.doesNotMatch(
-      sql.slice(unreadable, unowned),
-      /luna_allow_unowned/,
-      "no override for dependents",
-    );
-  }
-  for (const table of TEARDOWN_TABLES) {
-    assert.ok(
-      teardownSql.includes(`'public.${table}'::regclass::oid`),
-      `${table} is an FK-scan target`,
-    );
-  }
-  // Tables without a uuid id (the SSN vault, keyed by provider_id) count every row.
-  assert.match(
-    teardownSql,
-    /CASE WHEN r\.has_uuid_id THEN ' AND NOT pg_temp\.luna_owned\(id\)' ELSE '' END/,
-  );
-  // A seed row referencing a seed row is not a dependent; nothing else is excused.
-  assert.ok(
-    teardownSql.includes(
-      "THEN format(' AND NOT (d.org_id = %L::uuid AND pg_temp.luna_owned(d.id))'",
-    ),
-  );
-});
-
-test("inserts add only missing rows, so a repair burns no case_number values", () => {
+test("inserts are plain multi-row INSERTs that leave case_number to the database", () => {
   const statements = applySql
     .split(/(?=INSERT INTO public\.)/)
-    .filter((piece) => /^INSERT INTO public\.(?!organizations|audit_log|memberships)/.test(piece));
+    .filter((piece) => /^INSERT INTO public\.(?!organizations|memberships)/.test(piece));
   assert.ok(statements.length > 0);
   for (const statement of statements) {
     const table = /^INSERT INTO public\.(\w+) /.exec(statement)[1];
     const body = statement.slice(0, statement.indexOf(";\n") + 1);
-    assert.match(body, new RegExp(`^INSERT INTO public\\.${table} \\([^)]+\\)\\nSELECT v\\.id, `));
-    assert.ok(
-      body.endsWith(
-        `\nWHERE NOT EXISTS (SELECT 1 FROM public.${table} e WHERE e.id = v.id)\nON CONFLICT (id) DO NOTHING;`,
-      ),
-      table,
-    );
+    assert.match(body, new RegExp(`^INSERT INTO public\\.${table} \\(id, [^)]+\\) VALUES\\n\\(`));
+    assert.doesNotMatch(body, /ON CONFLICT|WHERE NOT EXISTS/, table);
   }
   const cases = statements.find((piece) => piece.startsWith("INSERT INTO public.credential_cases"));
   assert.doesNotMatch(
@@ -1701,10 +1512,7 @@ test("the teardown dry run prints the teardown token", async () => {
   const output = calls.reports.join("");
   assert.ok(output.includes(`--confirm "TEAR DOWN LUNA SCALE ON ${STAGING_PROJECT_REF}"`));
   assert.ok(!output.includes("SEED LUNA SCALE ON"));
-  assert.match(
-    output,
-    /Refuses, always, when any row the seed did not create references a seed row/,
-  );
+  assert.match(output, new RegExp(`Deletes every row of org ${LUNA_ORG_ID} from these tables`));
 });
 
 test("the entry guard follows symlinks and paths with spaces", async () => {

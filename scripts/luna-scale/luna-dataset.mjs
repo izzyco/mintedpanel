@@ -1,11 +1,9 @@
 // MINT-82 (RC-07) — deterministic generator for the Luna-scale synthetic org.
-// Same parameters + same anchor date => byte-identical rows. Pure: no clock
-// read (the caller passes the anchor date), no I/O. Rows are snake_case and
-// carry only the columns the seed writes; database defaults (case_number,
+// One fixed dataset: the same anchor date => byte-identical rows. Pure: no
+// clock read (the caller passes the anchor date), no I/O. Rows are snake_case
+// and carry only the columns the seed writes; database defaults (case_number,
 // case_email_token, context_version, ...) are left to the database.
-import { createHash } from "node:crypto";
 import {
-  LUNA_FIXTURE_VERSION,
   LUNA_ORG_ID,
   LUNA_ORG_NAME,
   SYNTHETIC_NPI_PREFIX_INDIVIDUAL,
@@ -14,7 +12,7 @@ import {
   syntheticNpi,
 } from "./luna-fixture.mjs";
 
-// The first 25 are the default footprint; the rest let --states grow to 50.
+// The 25 states the org works in.
 export const STATE_POOL = Object.freeze([
   ["AZ", "Arizona"],
   ["CA", "California"],
@@ -41,31 +39,6 @@ export const STATE_POOL = Object.freeze([
   ["TX", "Texas"],
   ["VA", "Virginia"],
   ["WA", "Washington"],
-  ["AL", "Alabama"],
-  ["AK", "Alaska"],
-  ["AR", "Arkansas"],
-  ["HI", "Hawaii"],
-  ["ID", "Idaho"],
-  ["IA", "Iowa"],
-  ["KS", "Kansas"],
-  ["LA", "Louisiana"],
-  ["ME", "Maine"],
-  ["MS", "Mississippi"],
-  ["MO", "Missouri"],
-  ["MT", "Montana"],
-  ["NE", "Nebraska"],
-  ["NH", "New Hampshire"],
-  ["NM", "New Mexico"],
-  ["ND", "North Dakota"],
-  ["OK", "Oklahoma"],
-  ["OR", "Oregon"],
-  ["RI", "Rhode Island"],
-  ["SD", "South Dakota"],
-  ["UT", "Utah"],
-  ["VT", "Vermont"],
-  ["WV", "West Virginia"],
-  ["WI", "Wisconsin"],
-  ["WY", "Wyoming"],
 ]);
 
 // Coverage is a catalog property: a payer only gets targets and cases in the
@@ -79,7 +52,6 @@ const PAYER_TEMPLATES = Object.freeze([
   ["harbor", "Synthetic Harbor Mutual (Luna demo)", "commercial", "even"],
   ["medicaid-mco", "Synthetic Medicaid MCO (Luna demo)", "medicaid_mco", "odd"],
   ["tricare", "Synthetic TRICARE Region (Luna demo)", "tricare", "thirds"],
-  ["summit", "Synthetic Summit Choice (Luna demo)", "commercial", "half"],
 ]);
 
 const DISCIPLINES = Object.freeze([
@@ -144,9 +116,8 @@ const CITIES = Object.freeze(["Testville", "Sampleton", "Mockford", "Demoburg", 
 // stage and gap here is UNDER THE PLATFORM-DEFAULT FUNNEL CONFIGURATION (the
 // default stage list and DEFAULT_ONBOARDING_FUNNEL_RULES). The funnel's stages
 // and rules are configuration, so an organization or platform override can
-// place these providers differently. Weights are fractions of --providers;
-// every scenario is guaranteed at least one provider when there are enough of
-// them.
+// place these providers differently. Weights are fractions of the 3,500
+// providers.
 //
 // Group and location (#560, Addendum 8). Ready needs a current group
 // membership and a location that counts: one under a group the provider is a
@@ -180,13 +151,8 @@ export const PROVIDER_SCENARIOS = Object.freeze([
   // "Needs a location": in a group, clinic not chosen yet.
   { key: "no_location", stage: "verified_awaiting_assignment", weight: 0.02 },
   // "Location … is under …, not the provider's group": works at another
-  // group's clinic. Needs at least two groups.
-  {
-    key: "location_other_group",
-    stage: "verified_awaiting_assignment",
-    weight: 0.015,
-    minGroups: 2,
-  },
+  // group's clinic.
+  { key: "location_other_group", stage: "verified_awaiting_assignment", weight: 0.015 },
   // Works only at a clinic linked to no group, with a group membership of
   // their own. A location with no group counts for any provider (A22), so
   // they are Ready. (With ungroupedLocationCounts off, the funnel would hold
@@ -205,8 +171,8 @@ export const FUNNEL_STAGES = Object.freeze([
   "credentialing",
 ]);
 
-// Edge-case locations, added on top of --locations when their scenario has
-// members: clinics with no group, and clinics of a group with no address yet.
+// Edge-case locations, added on top of the 200 group clinics: clinics with no
+// group, and clinics of a group with no address yet.
 export const UNGROUPED_LOCATIONS = 2;
 export const STATELESS_LOCATIONS = 2;
 
@@ -290,56 +256,17 @@ export const LUNA_TABLES = Object.freeze([
   "enrollment_facts",
 ]);
 
-export const DEFAULT_LUNA_PARAMS = Object.freeze({
+/** The one dataset. The ticket text says "one national group"; the planning
+ * session asked for about 50 state groups, which is what Luna-like orgs look
+ * like. 50 wins. `seed` names the PRNG streams. */
+export const LUNA_PARAMS = Object.freeze({
   seed: "luna-scale-2026-10-30",
   providers: 3500,
-  // The ticket text says "one national group"; the planning session asked for
-  // about 50 state groups, which is what Luna-like orgs look like. 50 wins.
   groups: 50,
   locations: 200,
   states: 25,
   payers: 7,
 });
-
-export function validateLunaParams(input = {}) {
-  const params = { ...DEFAULT_LUNA_PARAMS, ...input };
-  const int = (key, min, max) => {
-    const value = params[key];
-    if (!Number.isSafeInteger(value) || value < min || value > max) {
-      throw new Error(`--${key} must be an integer from ${min} to ${max}`);
-    }
-  };
-  if (typeof params.seed !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(params.seed)) {
-    throw new Error("--seed must be 1-64 letters, digits, dots, dashes or underscores");
-  }
-  int("providers", 1, 99_999);
-  int("groups", 1, 999);
-  int("states", 1, STATE_POOL.length);
-  int("locations", Math.max(params.groups, params.states), 9_999);
-  int("payers", 1, PAYER_TEMPLATES.length);
-  return Object.freeze({
-    seed: params.seed,
-    providers: params.providers,
-    groups: params.groups,
-    locations: params.locations,
-    states: params.states,
-    payers: params.payers,
-  });
-}
-
-/** sha256 of the fixture version + parameters (not the anchor date): a re-run
- * with the same digest is a repair, a different digest needs a teardown. */
-export function paramsDigest(params) {
-  const canonical = JSON.stringify({
-    version: LUNA_FIXTURE_VERSION,
-    params: Object.fromEntries(
-      Object.keys(params)
-        .sort()
-        .map((key) => [key, params[key]]),
-    ),
-  });
-  return createHash("sha256").update(canonical).digest("hex");
-}
 
 // ---------- deterministic randomness and dates ----------
 
@@ -409,27 +336,15 @@ function at(day, hour, minute = 0) {
 
 const pad = (value, width) => String(value).padStart(width, "0");
 
-/** Exact per-scenario counts (floored), at least one each once the roster is
- * big enough; credentialing takes the rest. A scenario the parameters cannot
- * build (another group's clinic with --groups 1) gets none. */
+/** Exact per-scenario counts (floored); credentialing takes the rest. */
 function allocateScenarios(params) {
   const total = params.providers;
-  const counts = PROVIDER_SCENARIOS.map(({ key, weight, minGroups = 1 }) => [
-    key,
-    params.groups >= minGroups ? Math.floor(weight * total) : 0,
-    params.groups >= minGroups,
-  ]);
-  if (total >= PROVIDER_SCENARIOS.length * 2) {
-    for (const entry of counts) if (entry[1] === 0 && entry[2]) entry[1] = 1;
-  }
+  const counts = PROVIDER_SCENARIOS.map(({ key, weight }) => [key, Math.floor(weight * total)]);
   const assigned = counts.reduce((sum, [, count]) => sum + count, 0);
-  return [
-    ...counts.map(([key, count]) => [key, count]),
-    ["credentialing", Math.max(0, total - assigned)],
-  ];
+  return [...counts, ["credentialing", total - assigned]];
 }
 
-function payerCoversState(coverage, stateIndex, stateCount) {
+function payerCoversState(coverage, stateIndex) {
   switch (coverage) {
     case "all":
       return true;
@@ -439,8 +354,6 @@ function payerCoversState(coverage, stateIndex, stateCount) {
       return stateIndex % 2 === 1;
     case "thirds":
       return stateIndex % 3 === 0;
-    case "half":
-      return stateIndex < Math.ceil(stateCount / 2);
     default:
       return false;
   }
@@ -448,8 +361,8 @@ function payerCoversState(coverage, stateIndex, stateCount) {
 
 // ---------- generator ----------
 
-export function buildLunaDataset(inputParams, { anchorDate }) {
-  const params = validateLunaParams(inputParams);
+export function buildLunaDataset({ anchorDate }) {
+  const params = LUNA_PARAMS;
   const anchor = toDay(anchorDate);
   const stream = (label) => createPrng(`${params.seed}:${label}`);
   const states = STATE_POOL.slice(0, params.states).map(([code, name]) => ({ code, name }));
@@ -477,9 +390,7 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
   // Payers are ORG-SCOPED (org_id = the Luna org), so no other organization's
   // global catalog grows and nothing outside this org changes.
   const payers = PAYER_TEMPLATES.slice(0, params.payers).map(([key, name, kind, coverage]) => {
-    const coveredStates = states.filter((_, index) =>
-      payerCoversState(coverage, index, states.length),
-    );
+    const coveredStates = states.filter((_, index) => payerCoversState(coverage, index));
     return {
       id: lunaUuid("payer", key),
       key,
@@ -521,19 +432,6 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
     const k = Math.floor(f / params.groups);
     const offset = k >= Math.ceil(facilityCountByGroup[g] / 2) ? 1 : 0;
     facilityStateIndex.push((g + offset) % states.length);
-  }
-  // Coverage: every state gets at least one location.
-  const covered = () => new Set(facilityStateIndex);
-  for (let s = 0; s < states.length; s += 1) {
-    if (covered().has(s)) continue;
-    const perState = new Map();
-    for (const index of facilityStateIndex) perState.set(index, (perState.get(index) ?? 0) + 1);
-    for (let f = params.locations - 1; f >= 0; f -= 1) {
-      if ((perState.get(facilityStateIndex[f]) ?? 0) > 1) {
-        facilityStateIndex[f] = s;
-        break;
-      }
-    }
   }
 
   const facilities = [];
@@ -602,31 +500,18 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
   // Edge-case locations for the assignment scenarios, outside every group's
   // own list: no target, case or second location ever lands on them.
   const scenarioPlan = allocateScenarios(params);
-  const planned = new Map(scenarioPlan);
-  const ungroupedFacilities =
-    planned.get("location_no_group") > 0
-      ? Array.from({ length: UNGROUPED_LOCATIONS }, (_, index) => {
-          const n = index + 1;
-          return {
-            id: lunaUuid("facility", `no-group:${n}`),
-            serial: n,
-            groupIndex: null,
-            state: states[index % states.length].code,
-          };
-        })
-      : [];
-  const statelessFacilities =
-    planned.get("location_no_state") > 0
-      ? Array.from({ length: Math.min(STATELESS_LOCATIONS, groups.length) }, (_, index) => {
-          const n = index + 1;
-          return {
-            id: lunaUuid("facility", `no-state:${n}`),
-            serial: n,
-            groupIndex: index,
-            state: null,
-          };
-        })
-      : [];
+  const ungroupedFacilities = Array.from({ length: UNGROUPED_LOCATIONS }, (_, index) => ({
+    id: lunaUuid("facility", `no-group:${index + 1}`),
+    serial: index + 1,
+    groupIndex: null,
+    state: states[index % states.length].code,
+  }));
+  const statelessFacilities = Array.from({ length: STATELESS_LOCATIONS }, (_, index) => ({
+    id: lunaUuid("facility", `no-state:${index + 1}`),
+    serial: index + 1,
+    groupIndex: index,
+    state: null,
+  }));
   for (const facility of ungroupedFacilities) {
     const serial = pad(facility.serial, 2);
     tables.facilities.push({
@@ -1070,7 +955,7 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
     });
 
     // Touches. A touchpoint on a not_started case would fire the auto
-    // in_progress trigger (trg_case_status_on_touch) and write an unowned
+    // in_progress trigger (trg_case_status_on_touch) and write an extra
     // history row, so not_started cases only ever get notes.
     if (status === "not_started") {
       if (touchRng.chance(0.3)) {
@@ -1163,9 +1048,6 @@ export function buildLunaDataset(inputParams, { anchorDate }) {
   }
 
   return Object.freeze({
-    version: LUNA_FIXTURE_VERSION,
-    params,
-    paramsSha256: paramsDigest(params),
     anchorDate,
     orgId: LUNA_ORG_ID,
     tables,

@@ -11,8 +11,8 @@ production project and the production cluster, whatever the environment says.
 
 ## What it creates
 
-`npm run seed:luna-scale -- --dry-run` prints the plan without connecting.
-Default parameters, anchored on the apply day:
+`npm run seed:luna-scale -- --dry-run` prints the plan without connecting. It
+is one fixed dataset, with its dates anchored on the apply day:
 
 | Table                           |   Rows | Notes                                                              |
 | ------------------------------- | -----: | ------------------------------------------------------------------ |
@@ -34,8 +34,7 @@ Default parameters, anchored on the apply day:
 | `case_status_history`           | 20,498 | full chain per case, from the system seed row                      |
 | `enrollment_facts`              |  1,467 | approved, effective, not terminated                                |
 | `memberships`                   |  0 – n | only from `--member-email`                                         |
-| `audit_log`                     |      1 | one receipt per apply (and one per teardown)                       |
-| **total**                       | 64,645 | one transaction, about 19 MiB of SQL                               |
+| **total**                       | 64,644 | one transaction, about 19 MiB of SQL                               |
 
 The organization insert also fires `roster_engine_seed_org_templates`, which adds
 three `roster_templates` rows. That table is append-only by trigger.
@@ -80,8 +79,8 @@ The mix:
   - Credentialing, 2,208.
   - 35 terminated providers, which the funnel does not count.
 
-  The 4 edge-case locations are added on top of `--locations`. No case,
-  target or other provider uses them.
+  The 4 edge-case locations are added on top of the 200 group clinics. No
+  case, target or other provider uses them.
 
 - **Case status**:
   - approved 1,964 (1,550 effective, 414 awaiting an effective date);
@@ -100,11 +99,8 @@ The mix:
 - **Follow-ups** on open cases (`touches.next_follow_up_date` on the latest
   touch): 849 overdue, 250 due today, 1,334 upcoming.
 
-Every count is a flag: `--providers`, `--groups`, `--locations`, `--states`,
-`--payers`, and `--seed` (the PRNG seed). The ticket text says "one national
-group". The planning session asked for about 50 groups, so 50 is the default;
-`--groups 1` gives the single national group; it has no "under another group"
-providers, since there is no other group.
+The dataset takes no count flags. The ticket text says "one national group";
+the planning session asked for about 50 groups, so it has 50.
 
 ## What makes it safe
 
@@ -122,13 +118,12 @@ providers, since there is no other group.
     schema does not require them, but the funnel's "Profile incomplete" stage
     checks for their presence, so without them no provider could reach a later
     stage.
-- **Tagged.**
-  - Every row's id is self-certifying: its last 12 hex digits are a salted hash
-    of its first 20 (`isLunaOwnedId`, and `pg_temp.luna_owned` in SQL). The
-    teardown and the verifier recognise seed rows from the id alone.
-  - Every row also carries `org_id` = the Luna org, including the payers.
-  - The receipts carry the `minted_luna_scale_fixture` marker, the same shape
-    as the UAT fixture's `minted_uat_fixture`.
+- **Scoped to its org.**
+  - Every row carries `org_id` = the Luna org, including the payers. The
+    apply, the teardown and the verifier select rows by that id, and nothing
+    else.
+  - Row ids are deterministic, so the same dataset always has the same ids.
+  - No receipts: the seed writes nothing to `audit_log`.
 - **Nothing outside its org.**
   - The payers are org-scoped, so no other org's catalog grows.
   - No row in another organization is read or written. The isolation-gate
@@ -163,12 +158,9 @@ providers, since there is no other group.
   token the runner passes, so pasting the SQL into an editor fails before it
   writes anything.
 
-- **All or nothing.** The SQL is one transaction, and it commits only when:
-  - every table holds exactly the planned number of seed rows; and
-  - no trigger added a row the seed does not own.
-
-  It also refuses to run over a seed built from different parameters or another
-  fixture version.
+- **All or nothing.** The SQL is one transaction. It commits only when every
+  seed table holds exactly the planned number of rows in the Luna org
+  (`planCounts`), so a trigger that added a row there would abort it too.
 
 ## Why a psql transaction, not batched PostgREST writes
 
@@ -183,15 +175,12 @@ axis that matters here:
 - **No service-role key.** The REST path needs a service-role key; this only
   needs the database URL the UAT seed already uses.
 
-Inserts are batched 500 rows per statement, each well under 1 MB. Each one
-inserts only the rows whose id is missing (`WHERE NOT EXISTS`, with
-`ON CONFLICT (id) DO NOTHING` as a backstop), so a repair run takes no
-`credential_cases_case_number_seq` values for cases that already exist.
+Inserts are plain multi-row `INSERT`s, 500 rows per statement, each well under
+1 MB. The apply empties the org's seed tables first, so nothing conflicts.
 
-One cost remains: sequences never roll back. An apply that fails after the case
-insert, for example on the final count check, has still used one case number per
-case it tried to add, about 5,600 on a first apply. Case numbers stay unique; the
-range just has a gap.
+One cost: sequences never roll back. Every apply inserts the 5,610 cases afresh,
+so it uses that many `credential_cases_case_number_seq` values, even when it
+fails after the case insert. Case numbers stay unique; the range just has gaps.
 
 ## Prerequisites
 
@@ -234,24 +223,20 @@ luna seed:luna-scale -- --apply \
   --confirm "SEED LUNA SCALE ON vmznysvietfaddakkegt" \
   --member-email you@yourdomain.com
 
-# 3. Verify, strictly: read-only; every table against the regenerated plan, and no
-#    row in the org the seed did not create.
-luna verify:luna-scale -- --strict
+# 3. Verify: read-only; every seed table in the org against the planned counts.
+luna verify:luna-scale
 ```
 
 Sign in as that user and switch to **Luna Demo (synthetic)**.
 
-- **Re-running** with the same parameters is a repair. It inserts only missing
-  rows, never duplicates, and never changes rows that exist.
-- **Adding another member later**: run step 2 again with only a new
-  `--member-email`.
-- **Dates are relative to the apply day.** A re-apply does not move them. To
-  refresh the 7/30/90-day windows and the follow-up buckets, tear down and
-  apply again.
-- **Different counts, seed or fixture version**: tear down first. The apply
-  refuses to mix them. Fixture `2026-10-31.1` added the "Verified, awaiting
-  assignment" providers and the 4 edge-case locations, so a seed applied with
-  `2026-10-30.1` must be torn down before this one goes on.
+- **Re-running** step 2 rebuilds the org: in one transaction it deletes every
+  row of the Luna org from the seed tables and inserts the dataset again. That
+  also removes anything added to those tables in the Luna org through the app.
+  Members stay.
+- **Adding another member later**: run step 2 again with the new
+  `--member-email`. It rebuilds the data and adds the member.
+- **Dates are relative to the apply day**, so a re-apply also refreshes the
+  7/30/90-day windows and the follow-up buckets.
 - **The prod-to-staging catalog sync** (`docs/ops/catalog-sync-prod-to-staging.md`)
   is independent of this seed: run them in either order.
 
@@ -260,11 +245,11 @@ Sign in as that user and switch to **Luna Demo (synthetic)**.
 ```sh
 luna seed:luna-scale -- --dry-run --teardown        # what it would remove
 luna seed:luna-scale -- --teardown --confirm "TEAR DOWN LUNA SCALE ON vmznysvietfaddakkegt"
-luna verify:luna-scale -- --strict                  # only the inactive shell may remain
+luna verify:luna-scale                              # the inactive org, no rows, no members
 ```
 
-The teardown deletes only seed-owned rows (`pg_temp.luna_owned(id)`) in the Luna
-org, children first:
+The teardown deletes every row of the Luna org from these tables, children
+first:
 
 1. `enrollment_facts`, `case_status_history`, `touches`, `tasks`,
    `case_facilities`, `credential_cases`;
@@ -273,24 +258,11 @@ org, children first:
    `org_payer_assignments`, `payers`, `status_configs`;
 4. `memberships`.
 
-It then sets the organization `inactive` and writes a receipt.
-
-Before it deletes anything it checks two things, and lists what it finds:
-
-1. **Dependents: always refused.** It finds every foreign key, in any schema,
-   that points into a table the teardown deletes from (`pg_constraint`, all
-   actions: cascade, set null, set default, restrict, no action). If any row the
-   seed did not create references a seed row, the teardown refuses. A reviewer's
-   case history, upload, field verification or SSN-vault row would otherwise be
-   cascaded away or nulled out. Remove or re-point those rows first.
-   `--allow-unowned` does **not** override this. If the role cannot read a table
-   whose foreign key cascades, sets null or sets a default (no privilege, or forced
-   row security), it refuses too; a restricting foreign key blocks the delete by
-   itself, which rolls the whole teardown back.
-2. **Other rows in the org: refused unless `--allow-unowned`.** These are rows in
-   any public table with an `org_id`, whatever its key, that the seed did not
-   create and that reference no seed row (a reviewer's note, say). Review them,
-   then re-run with `--allow-unowned` to keep them and remove only seed rows.
+It then sets the organization `inactive`. The database's own foreign keys
+decide the rest: a row added through the app that cascades from Luna data goes
+with it, and one that blocks the delete stops the teardown and rolls it all
+back. The error names the table; delete those rows in the Luna org and run the
+teardown again.
 
 **What stays, by design:**
 
@@ -299,7 +271,7 @@ Before it deletes anything it checks two things, and lists what it finds:
   trigger, with `ON DELETE RESTRICT` to `organizations`, so no seed can ever
   delete an organization row once it exists. The UAT fixture's organizations
   stay for the same reason.
-- `audit_log` rows, which are never deleted.
+- Any `audit_log` rows the app wrote for the org, which are never deleted.
 
 A later apply reactivates the same org.
 
@@ -323,26 +295,19 @@ The CI job **Luna-scale seed (local Supabase)** (`luna-scale-seed` in
 2. It seeds the UAT fixture as pre-existing data, and creates a member login and
    a login that belongs to a UAT org.
 3. It fingerprints every public row outside the Luna org (`verify:luna-scale
---fingerprint outside`, one md5 per table).
-4. It runs `--dry-run`, `--apply` (with a member), and `verify:luna-scale
---strict`. The verifier regenerates the plan from the receipt's parameters
-   and fails on any per-table mismatch, and on any row in the org the seed did
-   not create.
-5. It runs a second `--apply` and checks it is a no-op repair: the
-   `--fingerprint seed` md5s are identical, and a second receipt is written.
+--fingerprint`, one md5 per table).
+4. It runs `--dry-run`, `--apply` (with a member), and `verify:luna-scale`,
+   which fails on any seed table whose row count in the org differs from the
+   plan.
+5. It runs a second `--apply` and checks that it rebuilt the org: verify
+   passes again, the cases hold new case numbers, and the member is still
+   there.
 6. It checks that a member of a UAT org is refused and that the transaction
-   rolls back (the seed fingerprint is unchanged).
-7. It runs `--teardown`, then `verify --strict`. Only the inactive org row, its
-   3 roster templates and the receipts may remain.
+   rolls back (case numbers unchanged, no membership added).
+7. It runs `--teardown`, then verify: the org is inactive with no seed rows and
+   no members.
 8. It checks that the outside fingerprint is unchanged after the applies and
    after the teardown, then re-seeds and tears down once more.
-
-There is no DB-backed Playwright step. The paging spec mocks the network by
-design. Pointing it at a real stack would need a real sign-in and session, the
-nitro `/api` routes running with a service-role key (access context, the
-Explorer), a `private.internal_staff` row for the staff Explorer, and
-network-quiet tracking from page events instead of the stand-in. That is more
-than a flag.
 
 ## Known limits
 
@@ -355,106 +320,3 @@ than a flag.
 - **The Explorer's staff report checks `private.internal_staff`.** That manifest
   is written outside this seed, so a member added here may need that row before
   the staff Explorer serves them.
-
-## Part 2: local paging checks and timings (MINT-14)
-
-The opt-in Playwright spec `e2e/luna-scale-paging.spec.ts` serves the same
-generated dataset through an in-memory PostgREST stand-in
-(`e2e/fixtures/luna-scale-postgrest.ts`) with db-max-rows 1000, `offset`/`limit`
-and `Range`, and `count=exact`. It logs every read and flags each read the cap
-cut short with no follow-up page.
-
-```sh
-LUNA_SCALE=1 npx playwright test e2e/luna-scale-paging.spec.ts   # results: test-results/luna-scale/results.json
-```
-
-It is skipped unless `LUNA_SCALE=1`, so CI time does not change. On main the
-roster, Cases list and Matrix checks fail on purpose: those are the MINT-14 gaps
-listed below.
-
-See "Results" below for the latest numbers.
-
-### Results (2026-10-31, `main` at d4be2fb0)
-
-> **Client-side, mocked network.** The reads come from the in-memory PostgREST
-> stand-in, so these times include **no database time, no network latency and
-> no server work**. They measure the browser alone: fetch, derive, render.
->
-> - **Setup:** headless system Chrome driven by Playwright on an Apple M5 Max,
->   Vite dev server, `TZ=UTC`.
-> - **Timer:** from navigation start to the later of the last response and the
->   last change to the screen's DOM metric, within ±50 ms.
-> - **Repeats:** median of 3 runs, all three listed.
-> - **Patched column:** "main + #544" is a local, uncommitted patch of PR #544's
->   `src/` changes onto `main`, applied to show which gaps it closes.
-> - **Fixture:** `2026-10-30.1` (3,465 providers on the roster, 6,106 cases).
->   Fixture `2026-10-31.1` has the same roster size, 5,610 cases and 35
->   providers with no group, so a rerun's counts differ; it has not been
->   rerun. The spec now expects those 35 rows to show no group.
-
-**Completeness**:
-
-- **Provider roster**
-  - `main`: 991 of 3,465 rows. 717 rows show no group and 751 show no license
-    (70 expected).
-  - Silently capped reads: `providers`, `provider_group_assignments`,
-    `state_licenses`.
-  - `main` + #544: 3,465 rows, 0 without a group, 70 without a license.
-- **Cases list** (Flat)
-  - `main`: the total (6,106) and the KPI are right, but 4,330 cases show
-    "Unknown provider".
-  - Silently capped reads: `providers` (the name lookup). The touchpoints
-    (Last touch), tasks, queue providers and readiness facts (the default
-    deadline sort) and touchpoints (follow-ups) are capped too.
-  - `main` + #544: 0 unknown providers. Last touch, ranking and follow-ups are
-    still capped.
-- **Matrix**
-  - `main`: 679 of 2,321 provider rows, 1,041 of 3,574 open cases.
-  - Silently capped reads: `providers` (row membership). Tasks (the
-    overdue-task flag) and touchpoints (the follow-up in the popover) are
-    capped too.
-  - `main` + #544: 2,321 rows, 3,574 open. Tasks and touches are still capped.
-- **Enrollment Explorer**
-  - `main`: 2,417 of 2,417 cohort providers over 48 pages, served by the mocked
-    `/api` route.
-  - Silently capped reads: the staff workspace's `providers` and
-    `provider_group_assignments`.
-  - `main` + #544: not rerun; #544 pages exactly those two reads.
-
-**Timings** (median of 3, ms):
-
-| Screen (navigation → complete render)                          | `main`                                    | `main` + #544                               |
-| -------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------- |
-| Cases list (Flat): all reads settled, "Showing 1–10 of 6,106"  | **665** (963, 665, 605)                   | **774** (1,112, 771, 774)                   |
-| Matrix: every section rendered                                 | **1,276** (1,321, 1,182, 1,276), 679 rows | **2,652** (2,664, 2,652, 2,626), 2,321 rows |
-| Enrollment Explorer, first 50-provider page                    | **570** (746, 570, 553)                   | n/a                                         |
-| Enrollment Explorer, all 2,417 providers (48 scripted clicks)  | **7,171** (7,621, 7,171, 7,157)           | n/a                                         |
-| Enrollment Explorer as seeded (no products), first / all pages | **547** / **7,287**                       | n/a                                         |
-
-- The Matrix on `main` is fast only because it drops 71% of its rows. At full
-  size it takes 2.7 s and mounts 12,388 cells, each a Radix popover trigger.
-  TD-52 already registers this board as past its cliff (about 500 providers,
-  8k cells); this run measured render only, not hover.
-- The Explorer "all pages" time is mostly the 48 scripted "Load next 50
-  providers" clicks.
-
-**Which open PR closes each gap:**
-
-- **#544** closes the provider list (`listProviders`, used by `useProviders`),
-  `listProviderGroupAssignments` and `listOrgStateLicenses`. That covers the
-  roster, the Cases list names, the Matrix rows and the Explorer's staff
-  workspace. The first three were verified above; the Explorer was not rerun
-  with #544, and its two capped reads are the ones #544 pages.
-- **#546** fixes `/api/cases?q=` and the open-case dropdown. Those are extension
-  routes on the nitro server, which a browser-side PostgREST stand-in cannot
-  reach, so this harness does not exercise them.
-- **No open PR** covers the rest:
-  - `getLastTouchDates` and `getLatestTouchFollowUps` (touches);
-  - `listQueueTaskRows` and `listQueueProviderRows` (the next-best-action
-    queue);
-  - `listProviderReadinessFacts`.
-
-  Commit `ca6c4b5a` on branch `claude/confident-newton-y5df7k` pages the
-  readiness reads and registers the queue reads as TD-55, but it has no PR.
-
-The real numbers need staging. After an apply, time the same screens there.
