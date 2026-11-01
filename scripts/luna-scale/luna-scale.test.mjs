@@ -190,7 +190,7 @@ function classifyFunnel(source = tables, today = ANCHOR) {
 /** The kinds of gap each scenario is built to show, in the order the funnel
  * lists them: one each, except "no group", whose two are both staff-side
  * group gaps ("No group assigned yet", then "Location … is under …, not the
- * provider's group"; #560 at bf0d3082). Ready scenarios show none. */
+ * provider's group"; #560 at 83775cfd). Ready scenarios show none. */
 const SCENARIO_GAPS = Object.freeze({
   missing_npi: ["no_npi"],
   missing_caqh: ["no_caqh"],
@@ -335,7 +335,7 @@ test("every Provider Onboarding funnel stage and gap has members, as generated",
   const total = [...funnel.values()].length;
   assert.ok(byStage.verified_awaiting_assignment / total > 0.04, "awaiting assignment > 4%");
   // The platform-default counts quoted in the README and the PR (#560 at
-  // bf0d3082: a location with no group counts for anyone, A22).
+  // 83775cfd: a location with no group counts for anyone, A22).
   assert.deepEqual(
     FUNNEL_STAGES.map((stage) => byStage[stage]),
     [420, 348, 174, 315, 2208],
