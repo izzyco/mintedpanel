@@ -127,18 +127,67 @@ describe("dedupeImportRows — five-part matching", () => {
     expect(update.conflicts).toHaveLength(0);
   });
 
-  it("blocks missing-NPI rows for manual review — matched by name or not, never merged", () => {
+  it("blocks a missing-NPI row whose name matches an existing provider — never merged", () => {
+    const out = dedupeImportRows(baseInputs([janeRow(2, { npi: null })]));
+    expect(out).toEqual([
+      expect.objectContaining({
+        kind: "blocked",
+        line: 2,
+        column: "npi",
+        reason: MISSING_NPI_MATCH_REASON,
+      }),
+    ]);
+  });
+
+  // B3 (Sowmya, Nov 1): an NPI is optional everywhere.
+  it("creates a new provider with no NPI from a missing-NPI row no one else matches by name", () => {
+    const out = dedupeImportRows(baseInputs([newProviderRow(2, { npi: null })]));
+    const create = only(out, "create");
+    expect(create).toHaveLength(1);
+    expect(create[0].npi).toBe("");
+    expect(create[0].provider.npi).toBeNull();
+    expect(create[0].groupIds).toEqual([GROUP1.id]);
+    expect(buildCommitPlan(out, {}).creates[0].provider.npi).toBeNull();
+  });
+
+  it("folds missing-NPI rows of one name into one new provider", () => {
     const out = dedupeImportRows(
       baseInputs([
-        janeRow(2, { npi: null }),
-        row(3, { provider_first_name: "Totally", provider_last_name: "Unknown", npi: null }),
+        newProviderRow(2, { npi: null }),
+        newProviderRow(3, {
+          npi: null,
+          group_name: GROUP2.name,
+          group_tin: GROUP2.tin,
+          license_state: "SC",
+          license_number: "SC-200",
+        }),
       ]),
     );
-    const blocked = only(out, "blocked");
-    expect(blocked).toHaveLength(2);
-    expect(blocked[0].reason).toBe(MISSING_NPI_MATCH_REASON);
-    expect(blocked[1].reason).toBe(MISSING_NPI_REASON);
-    expect(blocked.every((b) => b.column === "npi")).toBe(true);
+    expect(out).toHaveLength(1);
+    const [create] = only(out, "create");
+    expect(create.lines).toEqual([2, 3]);
+    expect(create.groupIds).toEqual([GROUP1.id, GROUP2.id]);
+    expect(create.licenses.map((l) => l.state)).toEqual(["NC", "SC"]);
+  });
+
+  it("blocks a missing-NPI row whose name matches a row with an NPI in the same file", () => {
+    for (const rows of [
+      [newProviderRow(2), newProviderRow(3, { npi: null })],
+      [newProviderRow(2, { npi: null }), newProviderRow(3)],
+    ]) {
+      const out = dedupeImportRows(baseInputs(rows));
+      expect(only(out, "create")).toEqual([expect.objectContaining({ npi: "1112223338" })]);
+      expect(only(out, "blocked")).toEqual([
+        expect.objectContaining({ column: "npi", reason: MISSING_NPI_MATCH_REASON }),
+      ]);
+    }
+  });
+
+  it("blocks a row with neither an NPI nor a name", () => {
+    const out = dedupeImportRows(baseInputs([row(2, { npi: null, group_name: GROUP1.name })]));
+    expect(out).toEqual([
+      expect.objectContaining({ kind: "blocked", column: "npi", reason: MISSING_NPI_REASON }),
+    ]);
   });
 
   it("treats a name match with a DIFFERENT existing NPI as a new provider, with a note", () => {
@@ -754,12 +803,13 @@ describe("summarizeImportPreview — exact reconciliation (F3.1.1)", () => {
     ];
     const out = dedupeImportRows(baseInputs(rows));
     const summary = summarizeImportPreview(out, {}, 3);
-    // rows 2+3 fold into one create; row 4+7 fold into one Jane update
-    // (group add, no conflict); rows 5+6 are blocked; 3 scan errors ride in.
-    expect(summary.createProviders).toBe(1);
+    // rows 2+3 fold into one create and row 6 (no NPI, no name match, B3) is
+    // another; row 4+7 fold into one Jane update (group add, no conflict);
+    // row 5 is blocked; 3 scan errors ride in.
+    expect(summary.createProviders).toBe(2);
     expect(summary.updateProviders).toBe(1);
     expect(summary.skippedProviders).toBe(0);
-    expect(summary.blockedRows).toBe(2 + 3);
+    expect(summary.blockedRows).toBe(1 + 3);
     expect(summary.stagedRowsCovered).toBe(rows.length);
   });
 

@@ -3,8 +3,8 @@
 // I/O-free; the Add Provider form, the roster form, the provider record's
 // inline edit, the import dedupe (new identities only), and roster export call
 // these instead of re-declaring regexes. Blank-value policy stays with each
-// caller (NPI is optional on Add Provider, required on the roster form and the
-// provider import). The DEA checksum comes with its import call (MINT-137).
+// caller (NPI is optional on Add Provider and the provider import, required on
+// the roster form). The DEA checksum comes with its import call (MINT-137).
 //
 // The checks themselves are facts about the number and never configurable.
 // What a platform or organization may configure, only ever stricter, is

@@ -495,8 +495,11 @@ describe("provider scan (TE-2/TE-6)", () => {
     ).toBe("error");
   });
 
-  it("requires first/last/npi and a parent-group key", () => {
-    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "" }).rowState).toBe("error");
+  it("requires first/last and a parent-group key; NPI is optional (B3)", () => {
+    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "" }).rowState).toBe("staged");
+    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, provider_last_name: "" }).rowState).toBe(
+      "error",
+    );
     expect(
       scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, group_tin: "", group_name: "" }).rowState,
     ).toBe("error");
