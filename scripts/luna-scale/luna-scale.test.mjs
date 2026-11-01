@@ -41,6 +41,7 @@ import {
 } from "./luna-dataset.mjs";
 import {
   INSERT_CHUNK_ROWS,
+  OUTSIDE_ROWS_REFUSAL,
   SEED_TABLES,
   TABLE_COLUMNS,
   TEARDOWN_TABLES,
@@ -668,14 +669,15 @@ test("apply SQL empties the org's seed tables, then inserts every table in chunk
   }
   // Re-apply = teardown + insert: every seed table is emptied for the org,
   // children first, before the first insert. Members and the org row stay.
-  const deletes = [
-    ...applySql.matchAll(/DELETE FROM public\.(\w+) WHERE org_id = '([0-9a-f-]+)'::uuid;/g),
-  ];
+  // Every DELETE and UPDATE in the SQL, not only the ones with a WHERE.
   assert.deepEqual(
-    deletes.map((m) => m[1]),
-    [...SEED_TABLES].reverse(),
+    [...applySql.matchAll(/DELETE\s+FROM\s+[^;]*;/gi)].map((m) => m[0]),
+    [...SEED_TABLES]
+      .reverse()
+      .map((t) => `DELETE FROM public.${t} WHERE org_id = '${LUNA_ORG_ID}'::uuid;`),
   );
-  assert.ok(deletes.every((m) => m[2] === LUNA_ORG_ID));
+  assert.deepEqual(applySql.match(/UPDATE\s+(public\.|ONLY\b)/gi), null);
+  assert.equal(applySql.match(/\bTRUNCATE\b/gi), null);
   assert.ok(
     applySql.lastIndexOf("DELETE FROM public.") <
       applySql.indexOf("INSERT INTO public.status_configs"),
@@ -729,6 +731,14 @@ test("both scripts refuse production, foreign identities and a missing confirmat
       "the identity check runs before any write",
     );
     assert.ok(sql.indexOf("confirmation token mismatch") < firstWrite);
+    const begin = sql.indexOf("\nBEGIN;\n");
+    assert.ok(begin > 0 && begin < firstWrite, "the transaction opens before any write");
+    assert.equal(sql.match(/\nBEGIN;\n/g).length, 1);
+    assert.equal(sql.match(/\bCOMMIT;/g).length, 1);
+    assert.ok(sql.lastIndexOf("COMMIT;") > sql.lastIndexOf("DELETE FROM"));
+    // The outside-rows guard runs inside the transaction, before the first delete.
+    const guard = sql.indexOf(OUTSIDE_ROWS_REFUSAL);
+    assert.ok(begin < guard && guard < sql.indexOf("DELETE FROM public."), "guard before delete");
     assert.match(sql, /\nCOMMIT;\n/);
   }
   assert.ok(applySql.includes(`IS DISTINCT FROM '${confirmationToken("apply", STAGING)}'`));
@@ -777,9 +787,18 @@ test("teardown covers every table written, child before parent, scoped to the or
   for (const [child, parent] of fks) {
     assert.ok(position(child) < position(parent), `${child} before ${parent}`);
   }
-  for (const statement of teardownSql.match(/DELETE FROM public\.\w+ WHERE [^;]+;/g)) {
-    assert.ok(statement.endsWith(`WHERE org_id = '${LUNA_ORG_ID}'::uuid;`), statement);
-  }
+  // Every DELETE and UPDATE in the SQL, not only the ones with a WHERE.
+  assert.deepEqual(
+    [...teardownSql.matchAll(/DELETE\s+FROM\s+[^;]*;/gi)].map((m) => m[0]),
+    TEARDOWN_TABLES.map((t) => `DELETE FROM public.${t} WHERE org_id = '${LUNA_ORG_ID}'::uuid;`),
+  );
+  assert.deepEqual(
+    [...teardownSql.matchAll(/UPDATE\s+[^;]*;/gi)].map((m) => m[0]),
+    [
+      `UPDATE public.organizations SET lifecycle_state = 'inactive' WHERE id = '${LUNA_ORG_ID}'::uuid;`,
+    ],
+  );
+  assert.equal(teardownSql.match(/\bTRUNCATE\b/gi), null);
   assert.doesNotMatch(teardownSql, /DELETE FROM public\.(organizations|audit_log|roster_)/);
   assert.doesNotMatch(teardownSql, /audit_log/, "no receipts");
   assert.match(
@@ -792,6 +811,34 @@ test("teardown covers every table written, child before parent, scoped to the or
   for (const table of LUNA_TABLES) {
     for (const row of tables[table])
       assert.deepEqual(Object.keys(row).sort(), Object.keys(TABLE_COLUMNS[table]).sort(), table);
+  }
+});
+
+test("before any delete, both scripts refuse rows outside the org that a cascade, set null or set default would change", () => {
+  for (const [sql, parents] of [
+    [applySql, SEED_TABLES],
+    [teardownSql, TEARDOWN_TABLES],
+  ]) {
+    const start = sql.lastIndexOf("DO $luna$", sql.indexOf(OUTSIDE_ROWS_REFUSAL));
+    const guard = sql.slice(start, sql.indexOf("$luna$;", sql.indexOf(OUTSIDE_ROWS_REFUSAL)));
+    // Every foreign key, in any schema, into a table the script deletes from.
+    assert.match(guard, /FROM pg_catalog\.pg_constraint con/);
+    assert.match(guard, /con\.contype = 'f' AND con\.confdeltype IN \('c', 'n', 'd'\)/);
+    assert.doesNotMatch(guard, /nspname/, "no schema filter on the child");
+    for (const table of parents)
+      assert.ok(guard.includes(`'public.${table}'::regclass::oid`), table);
+    // A child row outside the org: another or NULL org_id, or no org_id column.
+    assert.ok(guard.includes(`WHERE p.org_id = %L::uuid%s`));
+    assert.ok(guard.includes(`' AND d.org_id::text IS DISTINCT FROM %L', '${LUNA_ORG_ID}'`));
+    assert.match(guard, /CASE WHEN r\.has_org_id THEN .* ELSE '' END/);
+    // Only payer_contacts is exempt; hidden rows refuse.
+    assert.equal(guard.match(/to_regclass\(/g).length, 1);
+    assert.ok(guard.includes("to_regclass('public.payer_contacts')::oid"));
+    assert.match(guard, /IF NOT r\.sees_all THEN/);
+    assert.match(
+      guard,
+      /RAISE EXCEPTION 'Luna-scale refused: rows outside the Luna org reference Luna rows/,
+    );
   }
 });
 
@@ -1297,7 +1344,16 @@ test("the CI job proves the seed on local Supabase, in order, and only there", a
     'test "$(case_numbers)" = "$before"',
     'diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-after-apply.json"',
     '--teardown --local-rehearsal --confirm "TEAR DOWN LUNA SCALE ON local"',
+    // A refused apply after the teardown must leave the org inactive.
+    "--member-email ci.luna.uat-member@example.test",
+    "= inactive",
     'diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-after-teardown.json"',
+    'diff "$RUNNER_TEMP/outside-before.json" "$RUNNER_TEMP/outside-final.json"',
+    // A global portal on a Luna payer blocks both the teardown and the apply.
+    "VALUES (NULL, 'ci-luna-guard-probe', 'CI Luna guard probe', :'payer');",
+    "for action in teardown apply; do",
+    'grep -q "rows outside the Luna org reference Luna rows" <<<"$output"',
+    'test "$(probe_payer)" = "$payer"',
   ];
   let cursor = 0;
   for (const text of order) {

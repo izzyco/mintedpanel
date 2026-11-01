@@ -317,11 +317,11 @@ export function createPrng(seed) {
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function toDay(iso) {
-  if (!ISO_DATE_RE.test(iso)) throw new Error("--anchor-date must be YYYY-MM-DD");
+  if (!ISO_DATE_RE.test(iso)) throw new Error("The anchor date must be YYYY-MM-DD");
   const [year, month, day] = iso.split("-").map(Number);
   const value = Date.UTC(year, month - 1, day);
   if (new Date(value).toISOString().slice(0, 10) !== iso) {
-    throw new Error("--anchor-date must be a real calendar date");
+    throw new Error("The anchor date must be a real calendar date");
   }
   return value / 86_400_000;
 }

@@ -325,6 +325,12 @@ test("the apply inserts one row at a time, reports staging's refusal and carries
     [...src.calls, ...dst.calls].every(([kind]) => ALLOWED_CALLS.has(kind)),
     "no update, upsert, delete or rpc",
   );
+  assert.deepEqual(
+    [...new Set(src.calls.map(([kind]) => kind))].sort(),
+    ["download", "select"],
+    "production is only read, even during an apply",
+  );
+  assert.deepEqual(production, catalogFixture().production, "production rows are unchanged");
   const inserts = dst.calls.filter(([kind]) => kind === "insert");
   assert.ok(
     inserts.every(([, , ids]) => ids.length === 1),

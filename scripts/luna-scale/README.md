@@ -124,10 +124,20 @@ the planning session asked for about 50 groups, so it has 50.
     else.
   - Row ids are deterministic, so the same dataset always has the same ids.
   - No receipts: the seed writes nothing to `audit_log`.
-- **Nothing outside its org.**
+- **Nothing outside its org changes.**
   - The payers are org-scoped, so no other org's catalog grows.
-  - No row in another organization is read or written. The isolation-gate
-    expected counts (Kansas / South Park providers) are untouched.
+  - Every insert, delete and update names the Luna org's id. Before deleting,
+    the apply and the teardown refuse if any row outside the Luna org (another
+    org's, a global one, or one in a table with no `org_id`) points at a Luna
+    row through a foreign key that cascades, sets null or sets a default, since
+    the delete would change it. A foreign key that restricts blocks the delete
+    itself, and the whole transaction rolls back. The one exception is
+    `payer_contacts`, which has no `org_id` and holds only the contacts of the
+    payer it names, so a Luna payer's contacts are the Luna org's.
+  - Reads outside the org: that foreign-key check counts the referencing rows,
+    the member checks read the login's memberships, and the CI job fingerprints
+    every row outside the org. The isolation-gate expected counts (Kansas /
+    South Park providers) are untouched.
   - `--member-email` refuses the UAT personas (`@minted.invalid`) and the
     isolation-gate logins, which are hard-coded (`testkansas@minted.com`,
     `testsouthpark@minted.com`), plus `KANSAS_EMAIL`, `SPVIEW_EMAIL` and anything
@@ -230,11 +240,21 @@ luna verify:luna-scale
 Sign in as that user and switch to **Luna Demo (synthetic)**.
 
 - **Re-running** step 2 rebuilds the org: in one transaction it deletes every
-  row of the Luna org from the seed tables and inserts the dataset again. That
-  also removes anything added to those tables in the Luna org through the app.
-  Members stay.
+  row of the Luna org from the seed tables and inserts the dataset again.
+  Members stay. Anything added in the Luna org through the app goes with it:
+  - rows in the seed tables themselves;
+  - rows that cascade from them: the org's `provider_documents` (their
+    Storage files stay behind in the bucket), SSN vault entries and intake
+    invites, among others;
+  - a contract or SOP template created in the Luna org blocks the re-apply
+    instead: its foreign keys restrict the delete, so the run stops and rolls
+    back. Remove it first.
+
+  A row outside the org that points at Luna data also stops it (see "What
+  makes it safe").
+
 - **Adding another member later**: run step 2 again with the new
-  `--member-email`. It rebuilds the data and adds the member.
+  `--member-email`. It is a full rebuild of the data, then the new member.
 - **Dates are relative to the apply day**, so a re-apply also refreshes the
   7/30/90-day windows and the follow-up buckets.
 - **The prod-to-staging catalog sync** (`docs/ops/catalog-sync-prod-to-staging.md`)
@@ -258,11 +278,16 @@ first:
    `org_payer_assignments`, `payers`, `status_configs`;
 4. `memberships`.
 
-It then sets the organization `inactive`. The database's own foreign keys
-decide the rest: a row added through the app that cascades from Luna data goes
-with it, and one that blocks the delete stops the teardown and rolls it all
-back. The error names the table; delete those rows in the Luna org and run the
-teardown again.
+It then sets the organization `inactive`.
+
+- **Before it deletes anything**, it refuses if a row outside the Luna org points
+  at a Luna row through a foreign key that cascades, sets null or sets a default
+  (an untyped global portal given a Luna payer, say). The error names each
+  table and foreign key; re-point or remove those rows, then run it again.
+- **Inside the Luna org, the database's foreign keys decide:** rows that
+  cascade from Luna data go with it, the same as on a re-apply. A restricting
+  key (a Luna contract or SOP template) stops the teardown and rolls it all
+  back; its error names the table.
 
 **What stays, by design:**
 
@@ -305,9 +330,14 @@ The CI job **Luna-scale seed (local Supabase)** (`luna-scale-seed` in
 6. It checks that a member of a UAT org is refused and that the transaction
    rolls back (case numbers unchanged, no membership added).
 7. It runs `--teardown`, then verify: the org is inactive with no seed rows and
-   no members.
+   no members. A refused apply then has to leave it inactive: the apply sets
+   the org active before the member guard runs, so only a real rollback does.
 8. It checks that the outside fingerprint is unchanged after the applies and
    after the teardown, then re-seeds and tears down once more.
+9. It re-seeds, adds an untyped global portal on a Luna payer
+   (`portals.payer_id` is `ON DELETE SET NULL`), and checks that the teardown
+   and the apply both refuse, leave the portal's payer and the active org as
+   they were, and that the teardown goes through once the portal is gone.
 
 ## Known limits
 

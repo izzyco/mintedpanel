@@ -326,9 +326,69 @@ $luna$;
 
 const ORG = quote(LUNA_ORG_ID);
 
-/** DELETE every row of the Luna org from each table, in the order given. */
+export const OUTSIDE_ROWS_REFUSAL =
+  "Luna-scale refused: rows outside the Luna org reference Luna rows";
+
+/**
+ * DELETE every row of the Luna org from each table, in the order given, after
+ * a guard that keeps the delete inside the org. The guard finds every foreign
+ * key, in any schema, into one of these tables that cascades, sets null or
+ * sets a default, and refuses when a child row outside the Luna org (another
+ * org_id, a NULL one, or a table with no org_id) points at a Luna row: the
+ * delete would change it. A restricting key needs no check, since it blocks
+ * the DELETE itself and the whole transaction rolls back. payer_contacts has
+ * no org_id and only holds contacts of the payer it names, so a Luna payer's
+ * contacts are the Luna org's. A table this role sees only through row
+ * security is refused too, since its count could be short.
+ */
 function deleteOrgRows(tables) {
-  return tables.map((table) => `DELETE FROM public.${table} WHERE org_id = ${ORG}::uuid;`);
+  const parents = tables.map((table) => `'public.${table}'::regclass::oid`).join(", ");
+  const guard = `DO $luna$
+DECLARE
+  r record;
+  v_count bigint;
+  v_found text[] := '{}';
+  v_me oid := (SELECT ro.oid FROM pg_catalog.pg_roles ro WHERE ro.rolname = current_user);
+  v_bypass boolean := (SELECT ro.rolsuper OR ro.rolbypassrls FROM pg_catalog.pg_roles ro WHERE ro.rolname = current_user);
+BEGIN
+  FOR r IN
+    SELECT con.conname, con.conrelid::regclass AS child, con.confrelid::regclass AS parent,
+           NOT ch.relrowsecurity OR v_bypass OR (NOT ch.relforcerowsecurity AND ch.relowner = v_me) AS sees_all,
+           EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = con.conrelid
+                     AND a.attname = 'org_id' AND a.attnum > 0 AND NOT a.attisdropped) AS has_org_id,
+           (SELECT string_agg(format('d.%I = p.%I', ca.attname, pa.attname), ' AND ')
+              FROM unnest(con.conkey, con.confkey) AS k (child_att, parent_att)
+              JOIN pg_catalog.pg_attribute ca ON ca.attrelid = con.conrelid AND ca.attnum = k.child_att
+              JOIN pg_catalog.pg_attribute pa ON pa.attrelid = con.confrelid AND pa.attnum = k.parent_att
+           ) AS join_on
+      FROM pg_catalog.pg_constraint con
+      JOIN pg_catalog.pg_class ch ON ch.oid = con.conrelid
+     WHERE con.contype = 'f' AND con.confdeltype IN ('c', 'n', 'd')
+       AND con.confrelid = ANY (ARRAY[${parents}])
+       AND con.conrelid IS DISTINCT FROM to_regclass('public.payer_contacts')::oid
+     ORDER BY con.conrelid::regclass::text, con.conname
+  LOOP
+    IF NOT r.sees_all THEN
+      v_found := v_found || format('%s (row security hides rows from this role)', r.child);
+      CONTINUE;
+    END IF;
+    EXECUTE format('SELECT count(*) FROM %s d JOIN %s p ON %s WHERE p.org_id = %L::uuid%s',
+        r.child, r.parent, r.join_on, ${ORG},
+        CASE WHEN r.has_org_id THEN format(' AND d.org_id::text IS DISTINCT FROM %L', ${ORG}) ELSE '' END)
+      INTO v_count;
+    IF v_count > 0 THEN
+      v_found := v_found || format('%s.%s: %s row(s)', r.child, r.conname, v_count);
+    END IF;
+  END LOOP;
+  IF cardinality(v_found) > 0 THEN
+    RAISE EXCEPTION '${OUTSIDE_ROWS_REFUSAL}, so deleting would change them through a cascading, set-null or set-default foreign key: %. Re-point or remove them first; nothing was changed', array_to_string(v_found, '; ');
+  END IF;
+END
+$luna$;`;
+  return [
+    guard,
+    ...tables.map((table) => `DELETE FROM public.${table} WHERE org_id = ${ORG}::uuid;`),
+  ];
 }
 
 /** One member: refuse logins that do not exist, UAT persona org members and
@@ -363,10 +423,11 @@ $luna$;`;
 
 /**
  * The apply transaction: guards; the org row (created, or reactivated);
- * members; every seed table emptied, children first, and filled again from
- * the dataset; then each table's row count in the org checked against
- * planCounts. A re-apply is a teardown plus an insert, in one transaction.
- * Members stay until the teardown.
+ * members; every seed table emptied for the org, children first (after the
+ * outside-rows guard in deleteOrgRows), and filled again from the dataset;
+ * then each table's row count in the org checked against planCounts. A
+ * re-apply is a teardown plus an insert, in one transaction. Members stay
+ * until the teardown.
  */
 export function buildApplySql(dataset, { target, members = [], allowMultiOrgMember = false }) {
   const counts = planCounts(dataset);
@@ -403,12 +464,16 @@ $luna$;`);
 
 /**
  * The teardown transaction: guards; every row of the Luna org deleted from
- * the seed tables and memberships, children first; the org row left
- * inactive (its roster templates are append-only, so it cannot be deleted).
+ * the seed tables and memberships, children first, after the outside-rows
+ * guard in deleteOrgRows; the org row left inactive (its roster templates
+ * are append-only, so it cannot be deleted).
  */
 export function buildTeardownSql({ target }) {
   return `-- Luna-scale synthetic organization teardown (MINT-82). Generated by scripts/luna-scale/seed-luna-scale.mjs.
--- Deletes the Luna org's rows only; never another org's.
+-- Deletes the Luna org's rows from the seed tables and memberships. Refuses first if a cascading,
+-- set-null or set-default foreign key would change a row outside the Luna org; a restricting
+-- foreign key blocks the delete and rolls the whole teardown back. Luna-org rows in other tables
+-- that cascade from these go with them.
 ${preamble("teardown", target)}${deleteOrgRows(TEARDOWN_TABLES).join("\n")}
 UPDATE public.organizations SET lifecycle_state = 'inactive' WHERE id = ${ORG}::uuid;
 COMMIT;

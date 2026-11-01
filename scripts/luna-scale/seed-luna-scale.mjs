@@ -137,7 +137,9 @@ export function formatTeardownPlan(target) {
     `  Deletes every row of org ${LUNA_ORG_ID} from these tables, in this order:`,
     ...TEARDOWN_TABLES.map((table) => `    ${table}`),
     "  Then sets the organization inactive. It is never deleted: its roster_templates",
-    "  rows are append-only. A foreign key that blocks a delete rolls the whole teardown back.",
+    "  rows are append-only.",
+    "  Refuses first if a cascading, set-null or set-default foreign key would change a row",
+    "  outside the Luna org. A restricting foreign key blocks the delete and rolls it all back.",
   ].join("\n")}\n`;
 }
 
