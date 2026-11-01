@@ -135,6 +135,16 @@ describe("billing readiness evaluator", () => {
     expect(assess(snapshot)?.status).toBe("hold");
   });
 
+  it("reads a facility assignment with no start date as started (D14)", () => {
+    const snapshot = readySnapshot();
+    snapshot.facilityAssignments[0].startDate = null;
+    expect(assess(snapshot)).toMatchObject({ status: "ready", reasons: [] });
+    snapshot.facilityAssignments[0].startDate = "not a date";
+    expect(assess(snapshot)?.reasons).toEqual([
+      { severity: "hold", label: "The facility assignment start date is invalid." },
+    ]);
+  });
+
   describe("an approved, effective enrollment (MINT-76)", () => {
     const ONBOARDING_REASON =
       "Clinician is still marked Onboarding. Mark them Active once they start seeing patients.";
@@ -464,6 +474,19 @@ describe("billing change feed and digest", () => {
           event.kind === "license_expiration" && event.eventDate === TODAY && !event.recorded,
       ),
     ).toBe(true);
+  });
+
+  it("lists a license expiration at a facility whose only assignment is undated (D14)", () => {
+    const snapshot = readySnapshot();
+    snapshot.licenses[0].expirationDate = "2026-09-24";
+    const expirations = () =>
+      buildBillingFeed(snapshot, TODAY).filter((event) => event.kind === "license_expiration");
+    snapshot.facilityAssignments[0].startDate = null;
+    expect(expirations()).toEqual([
+      expect.objectContaining({ providerId: "p1", facilityId: "f1", eventDate: TODAY }),
+    ]);
+    snapshot.facilityAssignments[0].startDate = "2026-09-26";
+    expect(expirations()).toEqual([]);
   });
 
   it("applies 7/30/90-day and facility/payer filters inclusively", () => {

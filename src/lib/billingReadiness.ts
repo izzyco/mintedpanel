@@ -508,7 +508,7 @@ function providerFacilityEvidence(
       label: "Conflicting clinician-to-facility assignments are recorded.",
     });
   } else if (!assignments[0].startDate) {
-    reasons.push({ severity: "hold", label: "The facility assignment start date is missing." });
+    // No start date counts as started: it does not change readiness (D14).
   } else if (!validIsoDate(assignments[0].startDate)) {
     reasons.push({ severity: "hold", label: "The facility assignment start date is invalid." });
   } else if (assignments[0].startDate > today) {
@@ -941,9 +941,8 @@ export function buildBillingFeed(
       (row) =>
         row.providerId === license.providerId &&
         row.facilityId &&
-        row.startDate &&
-        validIsoDate(row.startDate) &&
-        row.startDate <= today,
+        // An undated assignment counts as current (D14).
+        (!row.startDate || (validIsoDate(row.startDate) && row.startDate <= today)),
     );
     for (const assignment of matchingAssignments) {
       const facility = snapshot.facilities.find((row) => row.id === assignment.facilityId);
