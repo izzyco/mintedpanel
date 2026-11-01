@@ -89,7 +89,12 @@ export interface Organization {
 // Internal-only organization lifecycle (redesign E0.0, migration
 // 20260708120000). Read-only in the app; drives the Portfolio buckets only and
 // is NEVER rendered to the Credentialing Manager as a status label (F0.0.2).
-export type LifecycleState = "prospect" | "active" | "inactive";
+// Mission Control M3: the stored value is a lifecycle stage key, and the
+// stages are configuration rows (public.lifecycle_stages: prospect,
+// onboarding, active, offboarded, more as rows), so the type is the stored
+// text. The legacy value `inactive` reads as `offboarded`; read every value
+// through normalizeLifecycle() in src/lib/lifecycle.ts.
+export type LifecycleState = string;
 
 // Cross-org Portfolio projection (redesign E0.0, enabler TE-2): the caller's
 // member orgs with their internal lifecycle_state. Bucketed into the two
@@ -113,6 +118,82 @@ export interface PlatformMetrics {
   providers: { total: number; active: number; onboarding: number; pendingVerification: number };
   cases: { total: number; open: number };
   pendingInvites: number;
+}
+
+// Mission Control › Organizations (M3). A list row read under RLS (the
+// platform-admin SELECT policy on organizations); member count from the
+// memberships embed. No PHI.
+export interface PlatformOrgListRow {
+  id: string;
+  name: string;
+  slug: string;
+  lifecycleState: LifecycleState;
+  planTier: string | null;
+  memberCount: number;
+  createdAt: string;
+}
+
+export type PlatformOrgSort = "name" | "-name" | "created" | "-created";
+
+export interface PlatformOrgListQuery {
+  search: string;
+  sort: PlatformOrgSort;
+  page: number;
+  pageSize: number;
+  includeHidden: boolean;
+}
+
+export interface PlatformOrgListPage {
+  rows: PlatformOrgListRow[];
+  total: number;
+}
+
+// platform_org_summary(p_org_id): counts and non-PHI identifiers for the
+// detail page. src/services/platformOrganizations.ts validates the jsonb.
+export interface PlatformOrgSummary {
+  orgId: string;
+  owner: { name: string; email: string | null } | null;
+  groups: Array<{
+    id: string;
+    name: string;
+    tinLast4: string | null;
+    npi: string | null;
+    active: boolean;
+  }>;
+  providers: {
+    total: number;
+    onboarding: number;
+    pendingVerification: number;
+    active: number;
+    inCredentialing: number;
+    terminated: number;
+  };
+  cases: {
+    open: number;
+    byStatus: Record<
+      "not_started" | "in_progress" | "submitted" | "in_review" | "action_required",
+      number
+    >;
+  };
+  members: number;
+  pendingInvites: number;
+  lastActivityAt: string | null;
+}
+
+export interface PlatformOrgMember {
+  userId: string;
+  role: AppRole;
+  fullName: string | null;
+  email: string | null;
+  joinedAt: string;
+}
+
+export interface PlatformOrgInvite {
+  id: string;
+  email: string;
+  role: AppRole;
+  fullName: string | null;
+  createdAt: string;
 }
 
 // Party model (redesign Stage 0, canonical E0.3 §5). One reusable record per

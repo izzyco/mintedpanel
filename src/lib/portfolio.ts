@@ -10,6 +10,8 @@
 // (F0.0.2); the UI shows only the business framing ("Prospects" / "In motion").
 import type { LifecycleState, PortfolioOrg } from "@/types";
 
+import { DEFAULT_LIFECYCLE_STAGES, lifecycleStage, type LifecycleStage } from "@/lib/lifecycle";
+
 export interface PortfolioBuckets {
   /** Orgs with active work (lifecycle_state 'active'). */
   inMotion: PortfolioOrg[];
@@ -30,10 +32,19 @@ export interface PortfolioBuckets {
   allInactive: boolean;
 }
 
-export function splitPortfolio(orgs: PortfolioOrg[]): PortfolioBuckets {
-  const inMotion = orgs.filter((o) => o.lifecycleState === "active");
-  const prospects = orgs.filter((o) => o.lifecycleState === "prospect");
-  const inactive = orgs.filter((o) => o.lifecycleState === "inactive");
+// Mission Control M3: lifecycle_state is a configured stage key. Each org is
+// bucketed by its stage's switcher group, read through normalizeLifecycle():
+// 'prospects' (prospect, onboarding) -> Prospects; any other group (active)
+// -> In motion; no group (offboarded, and the legacy inactive) -> the
+// suppressed bucket, still named `inactive` here and in the UI.
+export function splitPortfolio(
+  orgs: PortfolioOrg[],
+  stages: readonly LifecycleStage[] = DEFAULT_LIFECYCLE_STAGES,
+): PortfolioBuckets {
+  const groupOf = (o: PortfolioOrg) => lifecycleStage(o.lifecycleState, stages).switcherGroup;
+  const inMotion = orgs.filter((o) => groupOf(o) !== null && groupOf(o) !== "prospects");
+  const prospects = orgs.filter((o) => groupOf(o) === "prospects");
+  const inactive = orgs.filter((o) => groupOf(o) === null);
   const isEmpty = inMotion.length === 0 && prospects.length === 0;
   return {
     inMotion,
@@ -66,7 +77,7 @@ export function stateBreakdown(
 ): StateCount[] {
   const counts = new Map<string, number>();
   for (const o of orgs) {
-    if (o.lifecycleState === "inactive") continue;
+    if (lifecycleStage(o.lifecycleState).switcherGroup === null) continue;
     const s = (o.state ?? "").trim().toUpperCase() || UNKNOWN_STATE;
     counts.set(s, (counts.get(s) ?? 0) + 1);
   }

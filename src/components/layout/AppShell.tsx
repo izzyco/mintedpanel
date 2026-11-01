@@ -10,6 +10,7 @@ import { Menu, X, BarChart3, Search } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { Sidebar } from "./Sidebar";
 import { GlobalProviderSearchDialog } from "@/components/search/GlobalProviderSearchDialog";
+import { OffboardedBanner } from "@/components/org/OffboardedBanner";
 import { useActiveMembership } from "@/lib/auth-store";
 
 interface AppShellProps {
@@ -105,7 +106,10 @@ export function AppShell({ children }: AppShellProps) {
           </Link>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4">{children}</main>
+        <main className="flex-1 overflow-y-auto p-4">
+          <OffboardedBanner />
+          {children}
+        </main>
       </div>
       <GlobalProviderSearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
     </div>

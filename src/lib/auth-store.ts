@@ -295,12 +295,11 @@ export const useAuthStore = create<AuthState>()(
             orgId: row.org_id as string,
             orgName: org?.name ?? "Organization",
             role: row.role as AppRole,
-            // Anything other than the three known states coerces to 'active' (only
-            // 'inactive' changes selection); the DB CHECK guarantees one of three.
-            lifecycleState: (org?.lifecycle_state === "prospect" ||
-            org?.lifecycle_state === "inactive"
-              ? org.lifecycle_state
-              : "active") as LifecycleState,
+            // The stored lifecycle stage key, as is (Mission Control M3: the
+            // stages are configuration, and the legacy 'inactive' stays
+            // 'inactive' here). Readers go through normalizeLifecycle(); a
+            // missing value is the column default.
+            lifecycleState: (org?.lifecycle_state?.trim() || "active") as LifecycleState,
             createdAt: org?.created_at ?? "",
           };
         });

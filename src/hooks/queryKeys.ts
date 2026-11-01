@@ -147,6 +147,17 @@ export const queryKeys = {
   // belong to none. The org switch's removeQueries() clears it anyway, and the
   // hook only runs for a platform admin.
   platformMetrics: () => ["platform", "metrics"] as const,
+  // Mission Control › Organizations (M3). Under the same "platform" prefix, so
+  // one invalidation after a platform write refreshes the list, the detail
+  // page and the Home tiles together.
+  platformOrgs: (query: unknown) => ["platform", "organizations", query] as const,
+  platformOrg: (orgId: string) => ["platform", "organization", orgId] as const,
+  platformOrgSummary: (orgId: string) => ["platform", "organization", orgId, "summary"] as const,
+  platformOrgMembers: (orgId: string) => ["platform", "organization", orgId, "members"] as const,
+  platformOrgInvites: (orgId: string) => ["platform", "organization", orgId, "invites"] as const,
+  // The organization lifecycle stage objects (configuration, one platform
+  // vocabulary): read by the switcher, the Portfolio and the write gate.
+  lifecycleStages: () => ["lifecycle-stages"] as const,
   // Reporting Center (redesign E0.6). CROSS-org (renders without an active org):
   // per-org geography for the state breakdown, and the caller's shares per report.
   orgStates: () => ["org-states"] as const,

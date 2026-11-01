@@ -14,12 +14,11 @@ import { currentUserId } from "@/lib/audit";
 import { readCompletePages } from "@/lib/completePages";
 import type { LifecycleState, PortfolioOrg } from "@/types";
 
-const LIFECYCLE_STATES: readonly LifecycleState[] = ["prospect", "active", "inactive"];
-
-// Defensive narrowing: the DB CHECK guarantees one of the three values, but the
-// column is typed `string`, so coerce anything unexpected to 'active'.
+// The stored lifecycle stage key, as is (Mission Control M3: the stages are
+// configuration rows; readers go through normalizeLifecycle()). Anything that
+// is not a non-blank string reads as the column default.
 function toLifecycleState(value: unknown): LifecycleState {
-  return LIFECYCLE_STATES.includes(value as LifecycleState) ? (value as LifecycleState) : "active";
+  return typeof value === "string" && value.trim() ? value.trim() : "active";
 }
 
 interface PortfolioOrgRow {
