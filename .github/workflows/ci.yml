@@ -386,14 +386,14 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
-        run: node scripts/security/verify-portal-field-map-learning.mjs
-
       # MINT-91 U8: a contact saves with a blank office phone (create org,
       # capture link, /contact lead), and every other required field is still
       # refused. Rollback-only; any failed check raises.
       - name: Run MINT-91 contact phone SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint91-contact-phone-optional.sql
+
+      - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
+        run: node scripts/security/verify-portal-field-map-learning.mjs
 
   # Gate 0.5 — Playwright smoke skeleton. Boots the app via the Vite dev server
   # with dummy Supabase env vars (unauthenticated paths make no network call).
