@@ -13,15 +13,16 @@
 // gets nothing (A16, Oct 31).
 //
 // When it goes out, and what "today" is (digestSlot). The job is called
-// every hour. How often an org's digest goes out is its effective frequency
-// (A8, Oct 31; resolveNotificationSequence: Minted's per-org setting, else
-// Minted's default, daily; Addendum 10):
+// every hour. How often and when an org's digest goes out is its schedule
+// (A8, Oct 31; resolveNotificationSequence): the frequency, weekday, send
+// hour, zone and second send hour that Minted sets on the org's row, all five
+// together (A10). There is no default schedule (G2, Nov 1): an org Minted has
+// not set up has none, and is not due.
 //   * daily: once, from the send hour;
-//   * weekly: once, from the send hour, on the weekly weekday (Monday by
-//     default) in the org's zone;
-//   * twice a day: from the send hour, and again from the second send hour
-//     (2 pm by default), both in the org's zone.
-// The send hour, zone, second send hour and weekday are platform-managed.
+//   * weekly: once, from the send hour, on the weekly weekday in the org's
+//     zone;
+//   * twice a day: from the send hour, and again from the second send hour,
+//     both in the org's zone.
 // Each scheduled send is due from its hour ("at or after", so a missed or
 // failed run catches up later; never before it) until the next send's hour,
 // or for the day's last send until the catch-up cut-off
@@ -71,10 +72,9 @@
 import { isCaseStatus, isOpenCaseStatus } from "./caseStatus";
 import { followUpStatus, resolveActiveFollowUp, type FollowUpTouch } from "./followUps";
 import {
-  DEFAULT_NOTIFICATION_POLICY_RULES,
-  isDigestFrequency,
+  digestScheduleOf,
   isIanaTimeZone,
-  isIsoWeekday,
+  type DigestScheduleSettings,
 } from "./notificationSequences";
 import type { DigestFrequency } from "@/types";
 
@@ -358,47 +358,36 @@ export function zonedDateHour(now: Date, timeZone: string): ZonedDateHour {
 }
 
 /**
- * An org's effective digest schedule (resolveNotificationSequence). A missing
- * or unknown frequency is daily; a missing or unknown weekday is Monday (the
- * decided defaults, DEFAULT_NOTIFICATION_POLICY_RULES); a twice-a-day second
- * hour that is missing or not later than the send hour leaves one send a day.
+ * An org's effective digest schedule (resolveNotificationSequence): all five
+ * values from the org's own row, set together by Minted (A10), or all null
+ * when Minted has not set the digest up for the org (G2: there is no default
+ * schedule). Not set up means not due: digestSlot returns null, and the job
+ * passes the org by quietly. digestScheduleOf is the one test of "set up".
  */
 export interface DigestSchedule {
   sendHour: number | null;
   sendTimeZone: string | null;
-  digestFrequency?: DigestFrequency | null;
-  digestWeekday?: number | null;
-  secondSendHour?: number | null;
-}
-
-function isWholeHour(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 23;
-}
-
-function frequencyOf(schedule: DigestSchedule): DigestFrequency {
-  return isDigestFrequency(schedule.digestFrequency)
-    ? schedule.digestFrequency
-    : DEFAULT_NOTIFICATION_POLICY_RULES.digestFrequency;
+  digestFrequency: DigestFrequency | null;
+  digestWeekday: number | null;
+  secondSendHour: number | null;
 }
 
 /** The hours of the day's scheduled sends, in order: one, or two for twice a day. */
-function sendHours(schedule: DigestSchedule & { sendHour: number }): number[] {
-  const second = schedule.secondSendHour;
-  return frequencyOf(schedule) === "twice_daily" &&
-    isWholeHour(second) &&
-    second > schedule.sendHour
-    ? [schedule.sendHour, second]
+function sendHours(schedule: DigestScheduleSettings): number[] {
+  return schedule.digestFrequency === "twice_daily"
+    ? [schedule.sendHour, schedule.secondSendHour]
     : [schedule.sendHour];
 }
 
 /**
  * The hour of the day's last scheduled send: the second send hour for twice
  * a day, else the send hour. The catch-up cut-off must be after it
- * (catchUpRuleProblem). Null when the send hour is unusable.
+ * (catchUpRuleProblem). Null when the org's digest is not set up.
  */
 export function lastDigestSendHour(schedule: Partial<DigestSchedule>): number | null {
-  if (!isWholeHour(schedule.sendHour)) return null;
-  const hours = sendHours({ sendTimeZone: null, ...schedule, sendHour: schedule.sendHour });
+  const set = digestScheduleOf(schedule);
+  if (!set) return null;
+  const hours = sendHours(set);
   return hours[hours.length - 1];
 }
 
@@ -449,24 +438,24 @@ export interface DigestSlot {
  * DEFAULT_FOLLOW_UP_DIGEST_RULES). A weekly digest is scheduled only on its
  * weekday in the org's zone. Each scheduled send is due from its hour until
  * the next send's hour, and the day's last until the catch-up cut-off, local
- * midnight by default. Null when the send time is unusable: no hour, an hour
- * outside 0 to 23, or a zone this runtime cannot format in.
+ * midnight by default. Null when the org's digest is not set up (G2: no
+ * schedule on its row, or one this runtime cannot use).
  */
 export function digestSlot(
   schedule: DigestSchedule,
   now: Date,
   rules: Pick<FollowUpDigestRules, "catchUpUntilLocalHour"> = DEFAULT_FOLLOW_UP_DIGEST_RULES,
 ): DigestSlot | null {
-  const { sendHour, sendTimeZone } = schedule;
-  if (!isWholeHour(sendHour)) return null;
-  if (!sendTimeZone || !isIanaTimeZone(sendTimeZone)) return null;
+  const set = digestScheduleOf(schedule);
+  if (!set) return null;
+  const { sendTimeZone } = set;
   let local: ZonedDateHour;
   try {
     local = zonedDateHour(now, sendTimeZone);
   } catch {
     return null;
   }
-  const hours = sendHours({ ...schedule, sendHour });
+  const hours = sendHours(set);
   const at = (state: DigestSlotState, index: number): DigestSlot => {
     const send = index === 0 ? 1 : 2;
     return {
@@ -480,11 +469,8 @@ export function digestSlot(
     };
   };
 
-  if (frequencyOf(schedule) === "weekly") {
-    const weekday = isIsoWeekday(schedule.digestWeekday)
-      ? schedule.digestWeekday
-      : DEFAULT_NOTIFICATION_POLICY_RULES.digestWeekday;
-    if (isoWeekday(local.date) !== weekday) return at("not_today", 0);
+  if (set.digestFrequency === "weekly" && isoWeekday(local.date) !== set.digestWeekday) {
+    return at("not_today", 0);
   }
 
   // The send whose window holds this hour: the last one at or before it. Its

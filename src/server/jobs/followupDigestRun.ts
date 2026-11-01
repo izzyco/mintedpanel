@@ -8,11 +8,13 @@
 //      (listEnabledNotificationSequences). resolveNotificationSequence gives
 //      each org's effective sequence: its frequency (daily, weekly or twice a
 //      day, A8), send hour, time zone, second send hour, weekday and step.
-//   2. The hour gate (digestSlot, src/lib/followUpDigest.ts): an org is due
-//      while one of its scheduled sends is open: from that send's hour until
-//      the next send's hour, or for the day's last send until the catch-up
-//      cut-off (FollowUpDigestRules; local midnight by default, D77). A
-//      weekly digest is scheduled only on its weekday, in the org's zone.
+//   2. The hour gate (digestSlot, src/lib/followUpDigest.ts): an org whose
+//      digest Minted has not set up (no schedule on its row; G2, no default)
+//      is not due. Otherwise it is due while one of its scheduled sends is
+//      open: from that send's hour until the next send's hour, or for the
+//      day's last send until the catch-up cut-off (FollowUpDigestRules; local
+//      midnight by default, D77). A weekly digest is scheduled only on its
+//      weekday, in the org's zone.
 //      The local date is the digest's "today"; the scheduled send's slot is
 //      that date, or `date:2` for twice a day's second send. An org not due
 //      is counted and nothing of it is read.
@@ -131,12 +133,6 @@ export class FollowUpDigestTemplateError extends Error {
  *  default for that rule instead. */
 export class FollowUpDigestRulesError extends Error {
   override name = "FollowUpDigestRulesError";
-}
-/** Only for a send time the resolver should never return: since #561 the
- *  zone always falls back to a usable one, and the database keeps the hour in
- *  0 to 23 and the default's hour set. Kept as a cheap guard. */
-export class FollowUpDigestSendTimeError extends Error {
-  override name = "FollowUpDigestSendTimeError";
 }
 export class NotificationSendFinishLostError extends Error {
   override name = "NotificationSendFinishLostError";
@@ -443,10 +439,9 @@ export async function runFollowUpDigest(
       ctx.log.error(`org_rules_${rulesProblem}`, new FollowUpDigestRulesError());
     }
     if (!slot) {
-      // Unreachable through data since #561 (see FollowUpDigestSendTimeError),
-      // so it is logged every run rather than once per scheduled send.
-      counts.orgs_skipped_send_time += 1;
-      ctx.log.error("org_skipped_send_time", new FollowUpDigestSendTimeError());
+      // Not set up: Minted has not set this org's digest schedule (G2, there
+      // is no default), so it is not due. Nothing to log.
+      counts.orgs_not_due += 1;
     } else if (slot.state === "past_catch_up") {
       counts.orgs_past_catch_up += 1;
     } else if (!slot.due) {

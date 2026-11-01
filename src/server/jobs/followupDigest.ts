@@ -40,8 +40,8 @@ export const FOLLOWUP_DIGEST_COUNT_KEYS = [
   "orgs_enabled",
   /** Of those, orgs with a scheduled send open (at or after its hour). */
   "orgs_due",
-  /** Orgs before their day's first send hour, or a weekly digest on another
-   *  day: nothing read. */
+  /** Orgs before their day's first send hour, a weekly digest on another
+   *  day, or a digest Minted has not set up (no schedule, G2): nothing read. */
   "orgs_not_due",
   /** Orgs past their catch-up cut-off for the local date (FollowUpDigestRules):
    *  nothing read. Always 0 with the default (until local midnight). */
@@ -54,8 +54,6 @@ export const FOLLOWUP_DIGEST_COUNT_KEYS = [
   "orgs_already_completed",
   /** Orgs whose open scheduled send was settled on this attempt. */
   "orgs_completed",
-  /** Orgs skipped because their effective send hour or time zone is unusable. */
-  "orgs_skipped_send_time",
   /** Orgs skipped because their step's template fails the catalog check. */
   "orgs_skipped_template",
   /** Due orgs whose reads failed; the next hourly run tries them again. */

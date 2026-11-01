@@ -19,6 +19,7 @@ import {
   zonedDateHour,
   type DigestCase,
   type DigestMember,
+  type DigestSchedule,
   type DigestSlot,
   type DigestSlotState,
   type DigestTouchpoint,
@@ -85,7 +86,12 @@ function plan(overrides: Partial<FollowUpDigestPlanInput>) {
   });
 }
 
-const CHICAGO = { sendHour: 8, sendTimeZone: "America/Chicago" };
+/** A daily schedule as Minted sets it on an org's row: all five together (A10, G2). */
+function daily(sendHour: number | null, sendTimeZone: string | null): DigestSchedule {
+  return { digestFrequency: "daily", digestWeekday: 1, sendHour, sendTimeZone, secondSendHour: 23 };
+}
+
+const CHICAGO = daily(8, "America/Chicago");
 const at = (iso: string) => new Date(iso);
 
 /** A once-a-day slot (daily, or weekly on its day): its one send, keyed by the local date. */
@@ -169,7 +175,7 @@ describe("digestSlot: the hour gate", () => {
     );
     expect(digestSlot(CHICAGO, at("2026-11-01T14:00:00Z"))).toEqual(once("due", "2026-11-01", 8));
     // A 1 am send hour is due in both 1 am hours, for the same local date.
-    const oneAm = { sendHour: 1, sendTimeZone: "America/Chicago" };
+    const oneAm = daily(1, "America/Chicago");
     expect(digestSlot(oneAm, at("2026-11-01T06:00:00Z"))).toMatchObject({
       due: true,
       localDate: "2026-11-01",
@@ -187,7 +193,7 @@ describe("digestSlot: the hour gate", () => {
       due: true,
       localHour: 8,
     });
-    const twoAm = { sendHour: 2, sendTimeZone: "America/Chicago" };
+    const twoAm = daily(2, "America/Chicago");
     expect(digestSlot(twoAm, at("2027-03-14T07:00:00Z"))).toMatchObject({
       due: false,
       localHour: 1,
@@ -195,28 +201,38 @@ describe("digestSlot: the hour gate", () => {
     expect(digestSlot(twoAm, at("2027-03-14T08:00:00Z"))).toEqual(once("due", "2027-03-14", 3, 2));
   });
 
-  it("uses whichever hour and zone it is given (an org override or Minted's default)", () => {
+  it("uses the org's own hour and zone, as Minted set them", () => {
     const now = at("2026-10-31T15:30:00Z");
-    expect(digestSlot({ sendHour: 8, sendTimeZone: "America/Los_Angeles" }, now)).toEqual(
-      once("due", "2026-10-31", 8),
-    );
-    expect(digestSlot({ sendHour: 11, sendTimeZone: "America/New_York" }, now)).toEqual(
+    expect(digestSlot(daily(8, "America/Los_Angeles"), now)).toEqual(once("due", "2026-10-31", 8));
+    expect(digestSlot(daily(11, "America/New_York"), now)).toEqual(
       once("due", "2026-10-31", 11, 11),
     );
-    expect(digestSlot({ sendHour: 12, sendTimeZone: "America/New_York" }, now)).toMatchObject({
+    expect(digestSlot(daily(12, "America/New_York"), now)).toMatchObject({
       due: false,
     });
-    expect(digestSlot({ sendHour: 0, sendTimeZone: "UTC" }, now)).toMatchObject({ due: true });
+    expect(digestSlot(daily(0, "UTC"), now)).toMatchObject({ due: true });
   });
 
-  it("is null for a send time it cannot use", () => {
+  it("is null when the digest is not set up: no schedule, a partial one, or one it cannot use (G2)", () => {
     const now = at("2026-10-31T13:00:00Z");
-    expect(digestSlot({ sendHour: null, sendTimeZone: "America/Chicago" }, now)).toBeNull();
-    expect(digestSlot({ sendHour: 8, sendTimeZone: null }, now)).toBeNull();
-    expect(digestSlot({ sendHour: 24, sendTimeZone: "America/Chicago" }, now)).toBeNull();
-    expect(digestSlot({ sendHour: -1, sendTimeZone: "America/Chicago" }, now)).toBeNull();
-    expect(digestSlot({ sendHour: 7.5, sendTimeZone: "America/Chicago" }, now)).toBeNull();
-    expect(digestSlot({ sendHour: 8, sendTimeZone: "Mars/Olympus" }, now)).toBeNull();
+    const none: DigestSchedule = {
+      digestFrequency: null,
+      digestWeekday: null,
+      sendHour: null,
+      sendTimeZone: null,
+      secondSendHour: null,
+    };
+    // No default: an org Minted has not set up is not due, at any hour.
+    expect(digestSlot(none, now)).toBeNull();
+    expect(digestSlot({ ...CHICAGO, digestFrequency: null }, now)).toBeNull();
+    expect(digestSlot({ ...CHICAGO, digestWeekday: null }, now)).toBeNull();
+    expect(digestSlot({ ...CHICAGO, secondSendHour: null }, now)).toBeNull();
+    expect(digestSlot(daily(null, "America/Chicago"), now)).toBeNull();
+    expect(digestSlot(daily(8, null), now)).toBeNull();
+    expect(digestSlot(daily(24, "America/Chicago"), now)).toBeNull();
+    expect(digestSlot(daily(-1, "America/Chicago"), now)).toBeNull();
+    expect(digestSlot(daily(7.5, "America/Chicago"), now)).toBeNull();
+    expect(digestSlot(daily(8, "Mars/Olympus"), now)).toBeNull();
   });
 });
 
@@ -545,7 +561,9 @@ describe("validateFollowUpDigestRules", () => {
     expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 18 })).toEqual([]);
     expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 24 })).toEqual([]);
     expect(validateFollowUpDigestRules({ unassignedFollowUps: null })).toEqual([]);
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 9 }, { sendHour: 8 })).toEqual([]);
+    expect(
+      validateFollowUpDigestRules({ catchUpUntilLocalHour: 9 }, daily(8, "America/Chicago")),
+    ).toEqual([]);
   });
 
   it("names every unknown or invalid value in plain language", () => {
@@ -566,15 +584,17 @@ describe("validateFollowUpDigestRules", () => {
   });
 
   it("refuses a cut-off at or before the org's send hour: the digest would never go out", () => {
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 8 }, { sendHour: 8 })).toEqual([
+    expect(
+      validateFollowUpDigestRules({ catchUpUntilLocalHour: 8 }, daily(8, "America/Chicago")),
+    ).toEqual([
       "The catch-up cut-off (8:00) must be after the send hour (8:00), or the digest never goes out.",
     ]);
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 6 }, { sendHour: 8 })).toHaveLength(
-      1,
-    );
-    expect(validateFollowUpDigestRules({ catchUpUntilLocalHour: 24 }, { sendHour: 23 })).toEqual(
-      [],
-    );
+    expect(
+      validateFollowUpDigestRules({ catchUpUntilLocalHour: 6 }, daily(8, "America/Chicago")),
+    ).toHaveLength(1);
+    expect(
+      validateFollowUpDigestRules({ catchUpUntilLocalHour: 24 }, daily(23, "America/Chicago")),
+    ).toEqual([]);
   });
 });
 
@@ -620,7 +640,7 @@ describe("catch-up cut-off edges (review)", () => {
   ])(
     "lets 1 am stand in for a midnight send hour that DST start skips in %s",
     (zone, dayBefore, dstStart, weekLater) => {
-      const midnight = { sendHour: 0, sendTimeZone: zone };
+      const midnight = daily(0, zone);
       const cutAtOne = { catchUpUntilLocalHour: 1 };
       // This runtime's tzdata has the transition the test is about.
       expect(zonedDateHour(at(`${dstStart}T03:00:00Z`), zone)).toEqual({
@@ -662,7 +682,7 @@ describe("catch-up cut-off edges (review)", () => {
   });
 
   it("lets the first hour after a send hour DST skips stand in for it, past a cut-off", () => {
-    const twoAm = { sendHour: 2, sendTimeZone: "America/Chicago" };
+    const twoAm = daily(2, "America/Chicago");
     const cutAtThree = { catchUpUntilLocalHour: 3 };
     // Mar 14 2027: 1:59 am CST, then 3:00 am CDT.
     expect(digestSlot(twoAm, at("2027-03-14T07:07:00Z"), cutAtThree)).toEqual(
@@ -690,18 +710,20 @@ const TWICE = { ...CHICAGO, digestFrequency: "twice_daily" as const, secondSendH
 const SLOT_RE = /^[0-9A-Za-z:_-]{1,64}$/;
 
 describe("digestSlot: daily, weekly or twice a day (A8)", () => {
-  it("treats daily, a missing frequency and an unknown one alike: one send from the send hour", () => {
+  it("sends daily once from the send hour; a missing or unknown frequency is not set up (G2)", () => {
+    expect(digestSlot(CHICAGO, at("2026-10-31T12:00:00Z"))).toEqual(
+      once("not_yet", "2026-10-31", 7),
+    );
+    expect(digestSlot(CHICAGO, at("2026-10-31T13:00:00Z"))).toEqual(once("due", "2026-10-31", 8));
     for (const iso of ["2026-10-31T12:00:00Z", "2026-10-31T13:00:00Z", "2026-11-01T04:59:00Z"]) {
-      const plain = digestSlot(CHICAGO, at(iso));
-      expect(digestSlot({ ...CHICAGO, digestFrequency: "daily" }, at(iso))).toEqual(plain);
-      expect(digestSlot({ ...CHICAGO, digestFrequency: null }, at(iso))).toEqual(plain);
+      expect(digestSlot({ ...CHICAGO, digestFrequency: null }, at(iso))).toBeNull();
       expect(
         digestSlot({ ...CHICAGO, digestFrequency: "hourly" as unknown as "daily" }, at(iso)),
-      ).toEqual(plain);
+      ).toBeNull();
     }
   });
 
-  it("sends weekly only on Monday by default, from the send hour to local midnight", () => {
+  it("sends weekly only on its day (Monday here), from the send hour to local midnight", () => {
     // Nov 2 2026 is a Monday; DST has ended, so 8 am Central is 14:00 UTC.
     expect(digestSlot(WEEKLY, at("2026-11-02T13:59:00Z"))).toEqual(
       once("not_yet", "2026-11-02", 7),
@@ -716,11 +738,9 @@ describe("digestSlot: daily, weekly or twice a day (A8)", () => {
       const now = new Date(Date.UTC(2026, 10, day, 15));
       expect(digestSlot(WEEKLY, now)?.state).toBe("not_today");
     }
-    // Minted's day stands in for a missing or unknown one.
-    expect(digestSlot({ ...WEEKLY, digestWeekday: null }, at("2026-11-02T14:00:00Z"))?.due).toBe(
-      true,
-    );
-    expect(digestSlot({ ...WEEKLY, digestWeekday: 9 }, at("2026-11-02T14:00:00Z"))?.due).toBe(true);
+    // There is no default day (G2): a missing or unknown one is not set up.
+    expect(digestSlot({ ...WEEKLY, digestWeekday: null }, at("2026-11-02T14:00:00Z"))).toBeNull();
+    expect(digestSlot({ ...WEEKLY, digestWeekday: 9 }, at("2026-11-02T14:00:00Z"))).toBeNull();
   });
 
   it("reads the weekday off the org's own wall clock, not UTC's", () => {
@@ -778,11 +798,9 @@ describe("digestSlot: daily, weekly or twice a day (A8)", () => {
     }
   });
 
-  it("sends once a day when twice a day has no usable second hour", () => {
+  it("is not set up when the second hour is missing, unusable or not after the send hour", () => {
     for (const secondSendHour of [null, 8, 6, 24]) {
-      expect(digestSlot({ ...TWICE, secondSendHour }, at("2026-10-31T19:00:00Z"))).toEqual(
-        once("due", "2026-10-31", 14),
-      );
+      expect(digestSlot({ ...TWICE, secondSendHour }, at("2026-10-31T19:00:00Z"))).toBeNull();
     }
   });
 
@@ -855,9 +873,10 @@ describe("the schedule's helpers", () => {
     expect(lastDigestSendHour(CHICAGO)).toBe(8);
     expect(lastDigestSendHour(WEEKLY)).toBe(8);
     expect(lastDigestSendHour(TWICE)).toBe(14);
-    expect(lastDigestSendHour({ ...TWICE, secondSendHour: null })).toBe(8);
+    // Not set up (G2): no last send hour.
+    expect(lastDigestSendHour({ ...TWICE, secondSendHour: null })).toBeNull();
     expect(lastDigestSendHour({ ...CHICAGO, secondSendHour: 14 })).toBe(8);
-    expect(lastDigestSendHour({ sendHour: null, sendTimeZone: null })).toBeNull();
+    expect(lastDigestSendHour(daily(null, null))).toBeNull();
   });
 
   it("reads ISO weekdays and keys the second send apart", () => {

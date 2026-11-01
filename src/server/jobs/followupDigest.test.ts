@@ -36,7 +36,9 @@ import type { JobContext } from "./types";
 // MINT-108 job tests against an in-memory PostgREST (rows come back whole,
 // unranged reads stop at 1,000) and a stub mailer. SendGrid is never called.
 //
-// Minted's default digest goes out at 8 am America/Chicago. On Oct 31, 2026
+// There is no default digest schedule (G2): an org gets the digest only once
+// Minted sets all five schedule fields on its row. The orgs here that send
+// are set up daily at 8 am America/Chicago (schedule()). On Oct 31, 2026
 // Chicago is on CDT (UTC-5), so 8 am is 13:00 UTC; DST ends at 2 am on Nov 1,
 // after which 8 am CST is 14:00 UTC.
 const SITE = { method: "GET", route: "/api/jobs/followup-digest" };
@@ -74,7 +76,8 @@ const SENTINELS = [SENTINEL_NOTE, SENTINEL_DOB, SENTINEL_SSN, "SENTINEL"];
 
 const STAMP = { created_at: "2026-10-30T00:00:00Z", updated_at: "2026-10-30T00:00:00Z" };
 
-/** Minted's platform defaults, as migration 20261031051500 seeds them. */
+/** Minted's platform defaults, as migration 20261031051500 seeds them. The
+ *  digest default has no schedule (G2): no frequency, weekday, hour or zone. */
 function defaultTables(): Record<string, FakeRow[]> {
   return {
     notification_sequence_defaults: [
@@ -84,11 +87,6 @@ function defaultTables(): Record<string, FakeRow[]> {
         target_days_to_ready: 14,
         bounce_escalation_step: 1,
         digest_cc_allowed: null,
-        digest_frequency: null,
-        digest_weekday: null,
-        send_hour: null,
-        send_time_zone: null,
-        second_send_hour: null,
         ...STAMP,
       },
       {
@@ -97,11 +95,6 @@ function defaultTables(): Record<string, FakeRow[]> {
         target_days_to_ready: null,
         bounce_escalation_step: null,
         digest_cc_allowed: false,
-        digest_frequency: "daily",
-        digest_weekday: 1,
-        send_hour: 8,
-        send_time_zone: "America/Chicago",
-        second_send_hour: 14,
         ...STAMP,
       },
     ],
@@ -129,6 +122,30 @@ function defaultTables(): Record<string, FakeRow[]> {
   };
 }
 
+/** An org's digest schedule as Minted sets it: all five fields together
+ *  (A10, G2). Daily at 8 am Central unless a test says otherwise. */
+function schedule(overrides: Partial<FakeRow> = {}): FakeRow {
+  return {
+    digest_frequency: "daily",
+    digest_weekday: 1,
+    send_hour: 8,
+    send_time_zone: "America/Chicago",
+    second_send_hour: 14,
+    ...overrides,
+  };
+}
+
+/** Not set up: no schedule on the row (G2: there is no default). */
+const NO_SCHEDULE: FakeRow = {
+  digest_frequency: null,
+  digest_weekday: null,
+  send_hour: null,
+  send_time_zone: null,
+  second_send_hour: null,
+};
+
+/** An org's digest row, set up by Minted (schedule()); pass NO_SCHEDULE for
+ *  one Minted has not set up. */
 function sequenceRow(orgId: string, enabled: boolean, overrides: Partial<FakeRow> = {}): FakeRow {
   return {
     id: `seq-${orgId}`,
@@ -138,13 +155,7 @@ function sequenceRow(orgId: string, enabled: boolean, overrides: Partial<FakeRow
     stop_conditions: null,
     target_days_to_ready: null,
     bounce_escalation_step: null,
-    // Null: Minted's default (daily).
-    digest_frequency: null,
-    // Null: Minted's (8, America/Chicago, 2 pm; Monday). Set together (A10).
-    send_hour: null,
-    send_time_zone: null,
-    second_send_hour: null,
-    digest_weekday: null,
+    ...schedule(),
     digest_cc_allowed: null,
     revision: 1,
     updated_by: null,
@@ -269,7 +280,11 @@ function world(options: WorldOptions = {}): World {
       ...defaultTables(),
       notification_sequences: [
         sequenceRow(ORG_A, true, options.a),
-        { ...sequenceRow(ORG_A, true), id: "seq-intake-a", purpose: "intake_reminder" },
+        {
+          ...sequenceRow(ORG_A, true, NO_SCHEDULE),
+          id: "seq-intake-a",
+          purpose: "intake_reminder",
+        },
         sequenceRow(ORG_B, true, options.b),
         sequenceRow(ORG_OFF, false),
       ],
@@ -557,7 +572,7 @@ describe("followup-digest: the per-org send hour", () => {
     );
   });
 
-  it("uses each org's own send hour and zone when Minted set one, the default otherwise", async () => {
+  it("uses each org's own send hour and zone, as Minted set them", async () => {
     fake = createFollowUpDigestFakeDb(world({ b: sendTime(10, "America/Los_Angeles") }).tables);
     // 13:00 UTC: 8 am Central (A due), 6 am Pacific (B not yet).
     const first = await runFollowUpDigest(ctx(), deps());
@@ -589,36 +604,46 @@ describe("followup-digest: the per-org send hour", () => {
     expect(fake.sends.find((r) => r.recipient_user_id === BILL)?.slot).toBe(TODAY);
   });
 
-  it("falls back to Minted's whole send time for an org zone this runtime cannot use (#561, A10), and sends", async () => {
-    // Org A's own hour is 10 am: with its zone unusable, Minted's whole 8 am
-    // Central stands, not 10 am in Minted's zone.
-    fake = createFollowUpDigestFakeDb(world({ a: sendTime(10, "Mars/Olympus") }).tables);
+  it("passes by an enabled org Minted has not set up: no schedule, not due, nothing logged (G2)", async () => {
+    // Org B is switched on but has no schedule: there is no default to send on.
+    fake = createFollowUpDigestFakeDb(world({ b: NO_SCHEDULE }).tables);
     const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(BASELINE);
-    expect(result.orgs_skipped_send_time).toBe(0);
+    expect(result).toEqual(
+      counts({
+        orgs_enabled: 2,
+        orgs_due: 1,
+        orgs_not_due: 1,
+        orgs_completed: 1,
+        digests_sent: 2,
+        unassigned_follow_ups: 1,
+      }),
+    );
+    expect(recipients()).toEqual(["jane@example.test", "omar@example.test"]);
+    expect(logged()).toBe("");
+    // At any hour of the day.
+    for (const now of hours("2026-10-31T05:00:00Z", 24)) {
+      await runFollowUpDigest(ctx(now), deps());
+    }
+    expect(recipients()).not.toContain("bill@example.test");
+    expect(logged()).toBe("");
   });
 
-  it("takes an org's send time whole from one layer: a partial row uses Minted's group (A10)", async () => {
-    // The database refuses an hour without its zone and second hour; a row
-    // that has one anyway gets none of it.
-    fake = createFollowUpDigestFakeDb(world({ b: { send_hour: 10 } }).tables);
-    // 8 am Central: org B is due on Minted's 8 am, not its own 10.
-    expect(await runFollowUpDigest(ctx(), deps())).toEqual(BASELINE);
-  });
-
-  it("never skips for the send time: an unusable default still sends at the last resort, 8 am Central", async () => {
-    // A default with no hour is refused by the database
-    // (notification_sequence_defaults CHECKs); since A10 the resolver falls
-    // back whole, so org_skipped_send_time stays a guard the data cannot reach.
-    const w = world({ b: sendTime(8) });
-    const digestDefault = w.tables.notification_sequence_defaults.find(
-      (r) => r.purpose === "followup_digest",
-    ) as FakeRow;
-    digestDefault.send_hour = null;
-    fake = createFollowUpDigestFakeDb(w.tables);
-    const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(BASELINE);
-    expect(logged()).not.toContain("org_skipped_send_time");
+  it("treats a schedule this runtime cannot use, or a partial one, as not set up (A10, G2)", async () => {
+    // A zone tzdata no longer has: the database checked it on write, but the
+    // runtime cannot format in it. No fallback: not due, quietly.
+    fake = createFollowUpDigestFakeDb(
+      world({ a: schedule({ send_time_zone: "Mars/Olympus" }) }).tables,
+    );
+    expect(await runFollowUpDigest(ctx(), deps())).toEqual(
+      counts({ orgs_enabled: 2, orgs_due: 1, orgs_not_due: 1, orgs_completed: 1, digests_sent: 1 }),
+    );
+    // The database refuses an hour without the rest of the schedule; a row
+    // that has one anyway is not set up.
+    sent = [];
+    fake = createFollowUpDigestFakeDb(world({ b: { ...NO_SCHEDULE, send_hour: 8 } }).tables);
+    expect((await runFollowUpDigest(ctx(), deps())).orgs_not_due).toBe(1);
+    expect(recipients()).toEqual(["jane@example.test", "omar@example.test"]);
+    expect(logged()).toBe("");
   });
 });
 
