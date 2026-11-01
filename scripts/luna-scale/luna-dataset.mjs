@@ -148,12 +148,14 @@ const CITIES = Object.freeze(["Testville", "Sampleton", "Mockford", "Demoburg", 
 // every scenario is guaranteed at least one provider when there are enough of
 // them.
 //
-// Group and location (#560). A location counts toward Ready only when it is
-// under a group the provider is a current member of (facilities.group_id), so
-// every provider outside the assignment scenarios belongs to the group that
-// owns their locations. "Verified, awaiting assignment" holds verified
-// providers whose only gaps are assignment ones; the five scenarios cover each
-// reason the funnel gives.
+// Group and location (#560, Addendum 8). Ready needs a current group
+// membership and a location that counts: one under a group the provider is a
+// current member of (facilities.group_id), or one under no group at all (an
+// in-home address counts for any provider, A22). Every provider outside the
+// assignment scenarios belongs to the group that owns their locations.
+// "Verified, awaiting assignment" holds verified providers whose only gaps are
+// assignment ones. A missing group is listed as a staff-side gap of its own
+// ("No group assigned yet", A23), next to any location reason it causes.
 //
 // The assignment scenarios come after `terminated` on purpose: the slot
 // shuffle is positional, so the earlier scenarios keep the same providers.
@@ -170,7 +172,10 @@ export const PROVIDER_SCENARIOS = Object.freeze([
   { key: "pending_verification", stage: "submitted", weight: 0.025 },
   { key: "ready", stage: "ready_for_credentialing", weight: 0.08 },
   { key: "terminated", stage: "terminated", weight: 0.01 },
-  // "Needs a group": works at one of a group's clinics, membership not recorded.
+  // "No group assigned yet": works at one of a group's clinics, membership not
+  // recorded. With no current group that clinic does not count either, so the
+  // row also says "Location … is under …, not the provider's group": two
+  // reasons, one fix (record the membership).
   { key: "no_group", stage: "verified_awaiting_assignment", weight: 0.01 },
   // "Needs a location": in a group, clinic not chosen yet.
   { key: "no_location", stage: "verified_awaiting_assignment", weight: 0.02 },
@@ -182,8 +187,11 @@ export const PROVIDER_SCENARIOS = Object.freeze([
     weight: 0.015,
     minGroups: 2,
   },
-  // "Location … has no group": works at a clinic not linked to any group.
-  { key: "location_no_group", stage: "verified_awaiting_assignment", weight: 0.01 },
+  // Works only at a clinic linked to no group, with a group membership of
+  // their own. A location with no group counts for any provider (A22), so
+  // they are Ready. (With ungroupedLocationCounts off, the funnel would hold
+  // them with "Location … has no group".)
+  { key: "location_no_group", stage: "ready_for_credentialing", weight: 0.01 },
   // "Location has no valid state on record": a second clinic of their group
   // was added without an address.
   { key: "location_no_state", stage: "verified_awaiting_assignment", weight: 0.005 },

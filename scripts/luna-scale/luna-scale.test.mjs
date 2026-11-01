@@ -90,9 +90,10 @@ const dayDiff = (from, to) =>
   Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 
 /** The Provider Onboarding funnel rules (MINT-81's onboardingFunnel.ts as
- * reworked in #560, default rules), restated from its header comment, plus the
- * gaps that put the provider there. Inputs mirror getOnboardingFunnelInput's
- * filters: active, non-reference locations; memberships in active groups. */
+ * reworked in #560 through Addendum 8, platform-default configuration),
+ * restated from its header comment, plus the gaps that put the provider there.
+ * Inputs mirror getOnboardingFunnelInput's filters: active, non-reference
+ * locations; memberships in active groups that have not ended. */
 function classifyFunnel(source = tables, today = ANCHOR) {
   const validState = (state) => typeof state === "string" && /^[A-Z]{2}$/.test(state);
   const licensesBy = new Map();
@@ -141,9 +142,9 @@ function classifyFunnel(source = tables, today = ANCHOR) {
       result.set(p.id, { stage: "profile_incomplete", gaps });
       continue;
     }
-    // A stateless location holds, so with any location only the valid work
-    // states are judged; with none, every license on file.
-    for (const state of locations.length > 0 ? work : [...licenseStates]) {
+    // Licenses are judged for the valid states of their active locations;
+    // with no valid working state, every license on file.
+    for (const state of work.length > 0 ? work : [...licenseStates]) {
       const best = licenses
         .filter((l) => l.state === state)
         .sort(
@@ -159,16 +160,17 @@ function classifyFunnel(source = tables, today = ANCHOR) {
     const age = attested ? dayDiff(attested, today) : null;
     if (age === null || age < 0 || age > 120) gaps.push("caqh_stale");
     if (p.verification_state === "pending_verification") gaps.push("pending_verification");
-    // Verified is not enough: Ready needs a group and a location in it.
+    // Verified is not enough: Ready needs a current group, and a location
+    // that counts: under one of their current groups, or under no group at
+    // all (an in-home address counts for anyone, A22). The missing group is a
+    // staff-side gap of its own (A23), listed next to the location reasons.
     const groups = groupsBy.get(p.id) ?? new Set();
     const holds = [];
-    if (groups.size === 0 && locations.length === 0) holds.push("needs_group_and_location");
-    else if (groups.size === 0) holds.push("needs_group");
-    else if (locations.length === 0) holds.push("needs_location");
-    else if (!locations.some((l) => l.group_id && groups.has(l.group_id)))
-      for (const l of locations)
-        holds.push(l.group_id ? "location_other_group" : "location_no_group");
+    if (locations.length === 0) holds.push("needs_location");
+    else if (locations.every((l) => l.group_id !== null && !groups.has(l.group_id)))
+      holds.push("location_other_group");
     if (locations.some((l) => !validState(l.state))) holds.push("location_no_state");
+    if (groups.size === 0) holds.push("no_group_assigned");
     if (gaps.length > 0) result.set(p.id, { stage: "submitted", gaps: [...gaps, ...holds] });
     else if (holds.length > 0)
       result.set(p.id, { stage: "verified_awaiting_assignment", gaps: holds });
@@ -177,24 +179,34 @@ function classifyFunnel(source = tables, today = ANCHOR) {
   return result;
 }
 
-/** The one gap each scenario is built to show. */
-const SCENARIO_GAP = Object.freeze({
-  missing_npi: "no_npi",
-  missing_caqh: "no_caqh",
-  missing_dob: "no_dob",
-  missing_ssn_last4: "no_ssn_last4",
-  no_license: "no_license",
-  missing_work_state_license: "no_work_state_license",
-  license_unverified: "license_unverified",
-  license_expired: "license_expired",
-  caqh_stale: "caqh_stale",
-  pending_verification: "pending_verification",
-  no_group: "needs_group",
-  no_location: "needs_location",
-  location_other_group: "location_other_group",
-  location_no_group: "location_no_group",
-  location_no_state: "location_no_state",
+/** The kinds of gap each scenario is built to show: one each, except "no
+ * group", whose group's clinic stops counting too. Ready scenarios show none. */
+const SCENARIO_GAPS = Object.freeze({
+  missing_npi: ["no_npi"],
+  missing_caqh: ["no_caqh"],
+  missing_dob: ["no_dob"],
+  missing_ssn_last4: ["no_ssn_last4"],
+  no_license: ["no_license"],
+  missing_work_state_license: ["no_work_state_license"],
+  license_unverified: ["license_unverified"],
+  license_expired: ["license_expired"],
+  caqh_stale: ["caqh_stale"],
+  pending_verification: ["pending_verification"],
+  no_group: ["location_other_group", "no_group_assigned"],
+  no_location: ["needs_location"],
+  location_other_group: ["location_other_group"],
+  location_no_group: [],
+  location_no_state: ["location_no_state"],
 });
+
+/** The scenarios that change a provider's group or location. */
+const ASSIGNMENT_SCENARIOS = Object.freeze([
+  "no_group",
+  "no_location",
+  "location_other_group",
+  "location_no_group",
+  "location_no_state",
+]);
 
 function allRows() {
   return LUNA_TABLES.flatMap((table) => tables[table].map((row) => ({ table, row })));
@@ -285,9 +297,10 @@ test("every Provider Onboarding funnel stage and gap has members, as generated",
     "credentialing",
   ]);
   for (const stage of FUNNEL_STAGES) assert.ok(byStage[stage] > 0, `${stage} has members`);
-  for (const gap of Object.values(SCENARIO_GAP)) assert.ok(gaps.has(gap), `gap ${gap} occurs`);
+  for (const gap of Object.values(SCENARIO_GAPS).flat())
+    assert.ok(gaps.has(gap), `gap ${gap} occurs`);
   // The independent classifier agrees with the scenario every provider was
-  // given, and each one shows exactly the gap it was built for.
+  // given, and each one shows exactly the kinds of gap it was built for.
   const stageOf = Object.fromEntries(PROVIDER_SCENARIOS.map(({ key, stage }) => [key, stage]));
   for (const [providerId, scenario] of dataset.providerScenario) {
     if (scenario === "terminated") {
@@ -297,8 +310,8 @@ test("every Provider Onboarding funnel stage and gap has members, as generated",
     const row = funnel.get(providerId);
     assert.equal(row.stage, stageOf[scenario] ?? "credentialing", scenario);
     assert.deepEqual(
-      [...new Set(row.gaps)],
-      SCENARIO_GAP[scenario] ? [SCENARIO_GAP[scenario]] : [],
+      [...new Set(row.gaps)].sort(),
+      [...(SCENARIO_GAPS[scenario] ?? [])].sort(),
       scenario,
     );
   }
@@ -307,6 +320,12 @@ test("every Provider Onboarding funnel stage and gap has members, as generated",
   // A realistic share: every stage is a visible slice, credentialing the bulk.
   const total = [...funnel.values()].length;
   assert.ok(byStage.verified_awaiting_assignment / total > 0.04, "awaiting assignment > 4%");
+  // The platform-default counts quoted in the README and the PR (#560 at
+  // 209c1dfd: a location with no group counts for anyone, A22).
+  assert.deepEqual(
+    FUNNEL_STAGES.map((stage) => byStage[stage]),
+    [420, 348, 174, 315, 2208],
+  );
   assert.ok(byStage.credentialing / total > 0.5, "credentialing is the majority");
 });
 
@@ -321,10 +340,18 @@ test("providers outside the assignment scenarios work only at clinics of their o
       ...(locationsOf.get(a.provider_id) ?? []),
       facilityById.get(a.facility_id),
     ]);
-  const assignment = new Set(
-    PROVIDER_SCENARIOS.filter((s) => s.stage === "verified_awaiting_assignment").map((s) => s.key),
+  const assignment = new Set(ASSIGNMENT_SCENARIOS);
+  assert.deepEqual(
+    PROVIDER_SCENARIOS.filter((s) => s.stage === "verified_awaiting_assignment")
+      .map((s) => s.key)
+      .sort(),
+    ["location_no_state", "location_other_group", "no_group", "no_location"],
   );
-  assert.equal(assignment.size, 5);
+  assert.equal(
+    PROVIDER_SCENARIOS.find((s) => s.key === "location_no_group").stage,
+    "ready_for_credentialing",
+    "a location with no group counts for anyone (A22)",
+  );
   for (const p of tables.providers) {
     const scenario = dataset.providerScenario.get(p.id);
     if (assignment.has(scenario)) continue;

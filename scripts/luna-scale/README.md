@@ -42,32 +42,38 @@ three `roster_templates` rows. That table is append-only by trigger.
 
 The mix:
 
-- **Provider Onboarding funnel** (MINT-81, with #560's stages and group rule),
-  **under the platform-default funnel configuration**: the default stage list
-  and rules. The funnel's stages and rules are configuration, so an
-  organization or platform override can place these providers differently.
-  Under the default, every stage it shows without intake data has members, and
-  each provider in a held stage shows exactly one kind of gap:
+- **Provider Onboarding funnel** (MINT-81, with #560's stages and group rules
+  through Addendum 8), **under the platform-default funnel configuration**: the
+  default stage list and rules. The funnel's stages and rules are
+  configuration, so an organization or platform override can place these
+  providers differently. Under the default, every stage it shows without
+  intake data has members. Each held provider shows one kind of gap, except
+  the 35 with no group, who show two (below):
   - Profile incomplete, 420: 70 each with no NPI, no CAQH ID, no date of birth,
     no SSN last 4, no license, and no license for the state they work in.
   - Submitted, 348: 87 each with an unverified license, an expired
     license (status still `active`), CAQH attested more than 120 days ago, and a
     record pending verification.
-  - Verified, awaiting assignment, 209: verified, held only by an assignment
-    gap.
-    - Needs a group, 35: they work at a group's clinic, but no membership is
-      recorded.
+  - Verified, awaiting assignment, 174: verified, held only by assignment gaps.
+    - No group, 35: they work at a group's clinic, but no membership is
+      recorded. Each row lists two reasons, "No group assigned yet" and
+      "Location … is under …, not the provider's group", because with no
+      current group that clinic does not count either. Recording the
+      membership clears both.
     - Needs a location, 70: in a group, no clinic yet.
     - "Location … is under …, not the provider's group", 52: their clinic
       belongs to one group, their membership is in the next one.
-    - "Location … has no group", 35: they work at one of the 2 _Luna Demo
-      Unassigned Clinic_ locations, which belong to no group.
     - "Location has no valid state on record", 17: they work at a clinic of
       their group and at one of the 2 _Luna Demo New Clinic_ locations, which
       groups 01 and 02 added before entering an address (no street, state,
       ZIP or go-live date).
-  - Ready for credentialing, 280: every one works only at clinics of their own
-    group, as does every provider outside the five assignment scenarios.
+  - Ready for credentialing, 315:
+    - 280 work only at clinics of their own group, as does every provider
+      outside the five assignment scenarios;
+    - 35 are in a group and work only at one of the 2 _Luna Demo Unassigned
+      Clinic_ locations, which belong to no group. A location with no group
+      counts for any provider (#560, A22), so they are Ready. With that rule
+      turned off, they would be held with "Location … has no group".
   - Credentialing, 2,208.
   - 35 terminated providers, which the funnel does not count.
 

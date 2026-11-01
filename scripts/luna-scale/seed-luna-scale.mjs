@@ -151,8 +151,8 @@ export function formatPlan(dataset, { target, members, sqlBytes }) {
     "Provider Onboarding funnel (under the platform-default funnel configuration):",
     `  profile incomplete ${n(summary.funnel.profile_incomplete)} (no NPI ${summary.scenarios.missing_npi ?? 0}, no CAQH ID ${summary.scenarios.missing_caqh ?? 0}, no DOB ${summary.scenarios.missing_dob ?? 0}, no SSN last 4 ${summary.scenarios.missing_ssn_last4 ?? 0}, no license ${summary.scenarios.no_license ?? 0}, no working-state license ${summary.scenarios.missing_work_state_license ?? 0})`,
     `  submitted ${n(summary.funnel.submitted)} (unverified license ${summary.scenarios.license_unverified ?? 0}, expired license ${summary.scenarios.license_expired ?? 0}, CAQH > 120 days ${summary.scenarios.caqh_stale ?? 0}, pending verification ${summary.scenarios.pending_verification ?? 0})`,
-    `  verified, awaiting assignment ${n(summary.funnel.verified_awaiting_assignment)} (no group ${summary.scenarios.no_group ?? 0}, no location ${summary.scenarios.no_location ?? 0}, location under another group ${summary.scenarios.location_other_group ?? 0}, location with no group ${summary.scenarios.location_no_group ?? 0}, location with no state ${summary.scenarios.location_no_state ?? 0})`,
-    `  ready for credentialing ${n(summary.funnel.ready_for_credentialing)} · credentialing ${n(summary.funnel.credentialing)} · terminated (not counted) ${n(summary.funnel.terminated_excluded)}`,
+    `  verified, awaiting assignment ${n(summary.funnel.verified_awaiting_assignment)} (no group ${summary.scenarios.no_group ?? 0}, no location ${summary.scenarios.no_location ?? 0}, location under another group ${summary.scenarios.location_other_group ?? 0}, location with no state ${summary.scenarios.location_no_state ?? 0})`,
+    `  ready for credentialing ${n(summary.funnel.ready_for_credentialing)} (${summary.scenarios.location_no_group ?? 0} of them at a location with no group) · credentialing ${n(summary.funnel.credentialing)} · terminated (not counted) ${n(summary.funnel.terminated_excluded)}`,
     "",
     "Cases by status:",
     `  ${Object.entries(summary.caseStatus)
@@ -170,7 +170,7 @@ export function formatPlan(dataset, { target, members, sqlBytes }) {
     "",
     `Follow-ups on open cases: overdue ${n(summary.followUps.overdue)} · due today ${n(summary.followUps.dueToday)} · upcoming ${n(summary.followUps.upcoming)}`,
     `States with a location: ${summary.states}`,
-    `Locations: ${n(summary.locations.grouped)} under a group, plus ${summary.locations.noGroup} with no group and ${summary.locations.noState} with no state (the funnel's assignment holds)`,
+    `Locations: ${n(summary.locations.grouped)} under a group, plus ${summary.locations.noGroup} with no group and ${summary.locations.noState} with no state (edge cases for the funnel's group and location rules)`,
   ];
   return `${lines.join("\n")}\n`;
 }
