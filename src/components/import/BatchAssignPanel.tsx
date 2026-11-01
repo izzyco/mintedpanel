@@ -20,8 +20,7 @@ import {
 import { DatePicker } from "@/components/DatePicker";
 import { useApplyBatchAssignment, useProviderAssignmentsForRun } from "@/hooks/useImportRuns";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
-import { useAddProviderRules } from "@/hooks/useProviders";
-import { blankAssignmentStartDate } from "@/lib/addProviderRules";
+import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
 import { localCalendarDate } from "@/lib/systemTokens";
 import { planBatchAssignment } from "@/lib/importDedupe";
 import type { ImportRun } from "@/types";
@@ -33,14 +32,14 @@ export function BatchAssignPanel({ run }: { run: ImportRun }) {
   const facilitiesQ = useFacilities();
   const applyMut = useApplyBatchAssignment();
   const runProviders = useProviderAssignmentsForRun(run);
-  const addProviderRules = useAddProviderRules();
 
   const [groupId, setGroupId] = useState<string>(NONE);
   const [facilityIds, setFacilityIds] = useState<string[]>([]);
-  // Opens with the Add Provider rule's date (MINT-116): the local today by
-  // default, or blank; the batch saves what the field shows.
+  // Opens with the Add Provider rule's date (MINT-116; resolved as
+  // commitImportRun does): the local today by default, or blank. The batch
+  // saves what the field shows.
   const [startDate, setStartDate] = useState<string>(
-    () => blankAssignmentStartDate(addProviderRules, localCalendarDate(new Date())) ?? "",
+    () => blankAssignmentStartDate(resolveAddProviderRules(), localCalendarDate(new Date())) ?? "",
   );
 
   const activeGroups = (groupsQ.data ?? []).filter((g) => g.isActive);
