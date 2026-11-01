@@ -119,7 +119,7 @@ function Page() {
         ? [{ groupId: form.groupId, isPrimary: true as const }]
         : undefined;
       // The same dates the Review step showed (addProviderStartDates).
-      const { assignmentStartDate, assignmentStartDateDefaulted } = addProviderStartDates(
+      const { assignmentStartDate } = addProviderStartDates(
         addProviderRules,
         form.startDate,
         localCalendarDate(new Date()),
@@ -130,7 +130,6 @@ function Page() {
         facilityIds: form.facilityIds,
         groupAssignments,
         assignmentStartDate,
-        assignmentStartDateDefaulted,
       });
       if (result.warnings.length > 0) {
         for (const w of result.warnings) toast.error(w);
