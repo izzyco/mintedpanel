@@ -1,5 +1,6 @@
-// The NPI Registry part of a provider form's review step — MINT-110 (A30b,
-// A35). Shared by Add Provider's Review step and the roster form's review.
+// The NPI Registry part of Add Provider's Review step — MINT-110 (A30b, A35).
+// Add Provider is the only form with a review step (A30c): the roster form
+// and the record page save directly and show the quiet note instead.
 //
 // It says what the registry check found — "Checking the NPI Registry…" while
 // it runs, updated in place — and lists every advisory the policy shows on the

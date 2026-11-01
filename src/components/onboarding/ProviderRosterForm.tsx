@@ -6,7 +6,7 @@
 // full-SSN vault is R6/R7). No status picker — new providers default to
 // `onboarding`. Work history / disclosures are NOT captured (CAQH
 // attestation is the proxy). Licenses + PSV ride the same save.
-import { useEffect, useId, useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -45,8 +45,6 @@ import { ENROLLMENT_GUARD_TEXT } from "@/components/providers/EnrollmentsPanel";
 import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
 import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
-import { NpiRegistryReview } from "@/components/providers/NpiRegistryReview";
-import type { NpiReviewAdvisory, NpiReviewFixTarget } from "@/lib/npiRegistryReview";
 import { applyRosterNpiPick, rosterNpiError } from "@/components/onboarding/rosterNpi";
 import {
   identityFieldChanged,
@@ -58,11 +56,9 @@ import {
   npiOffersOnForm,
   npiRegistrySourceLabel,
   npiRegistrySourcedFields,
-  touchNpiRowOrigin,
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
-import type { NpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import {
   ProviderSaveError,
@@ -232,24 +228,17 @@ function FormBody({
   );
   const npiPolicy = useNpiRegistryPolicy();
   const recordNpiAdvisories = useRecordNpiAdvisoriesAfterSave();
-  // MINT-110 (A30, A30b): the registry check never holds up the save. It runs
-  // for a new provider, or when the NPI or the name changed (a stored NPI
-  // under a new name can stop matching); then the review step lists what it
-  // found before the save. A plain edit that changes neither saves directly.
+  // MINT-110 (A30, A30c): the registry check never holds up the save, and the
+  // roster form has no review step (only Add Provider does): Save saves, and
+  // the answer is the quiet note under the NPI. The check runs for a new
+  // provider, or when the NPI or the name changed (a stored NPI under a new
+  // name can stop matching). After the save every advisory, the credentials,
+  // taxonomy and license differences included, goes to the backend capture.
   const nameChanged =
     !provider ||
     form.firstName.trim() !== initialForm.firstName.trim() ||
     form.lastName.trim() !== initialForm.lastName.trim();
   const registryVerify = npiChanged || nameChanged;
-  const needsReview = !provider || npiChanged || nameChanged;
-  const [reviewing, setReviewing] = useState(false);
-  const [npiConfirmed, setNpiConfirmed] = useState<ReadonlySet<string>>(() => new Set());
-  const [focusId, setFocusId] = useState<string | null>(null);
-  useEffect(() => {
-    if (!focusId || reviewing) return;
-    document.getElementById(focusId)?.focus();
-    setFocusId(null);
-  }, [focusId, reviewing]);
 
   // MINT-110: the last NPI Registry pick (its summary, and what it wrote so a
   // second pick can replace it). Picking never adds a license row; staff add
@@ -280,7 +269,8 @@ function FormBody({
   };
 
   // A35: values a pick filled, untouched, say "From NPI Registry, <date>"
-  // until the review step's save confirms them.
+  // until staff edit them. A roster save confirms nothing: there is no review
+  // step to confirm on (A30c).
   const npiSourced = npiRegistrySourcedFields(npiPick, {
     credentials: form.credentials,
     credentialsTouched: npiTouched.credentials,
@@ -293,60 +283,20 @@ function FormBody({
     })),
   });
   const npiSourceLabel = npiPick ? npiRegistrySourceLabel(npiPick.pulledAt) : null;
-  const reviewEntered = {
-    credentials: form.credentials,
-    taxonomyCode: form.taxonomyCode,
-    licenses: licenses.map((draft) => ({ state: draft.state, number: draft.licenseNumber })),
-  };
   const recordAfterSave = (recordId: string) =>
     recordNpiAdvisories({
       recordId,
       npi: npiDigits,
       verify: registryVerify,
       typed: { firstName: form.firstName, lastName: form.lastName },
-      entered: reviewEntered,
-      confirmed: npiConfirmed,
+      entered: {
+        credentials: form.credentials,
+        taxonomyCode: form.taxonomyCode,
+        licenses: licenses.map((draft) => ({ state: draft.state, number: draft.licenseNumber })),
+      },
+      confirmed: new Set(),
       policy: npiPolicy,
     });
-  // A review-step fix: back to the form, then focus on the field.
-  const fixOnReview = (target: NpiReviewFixTarget) => {
-    setReviewing(false);
-    setFocusId(
-      target.field === "licenseNumber"
-        ? `lic-${target.row}-number`
-        : target.field === "firstName"
-          ? "prov-first"
-          : target.field === "credentials"
-            ? "prov-credentials"
-            : target.field === "taxonomyCode"
-              ? "prov-taxonomy"
-              : "prov-npi",
-    );
-  };
-  // Choose the registry's value (A35): staff chose it, so it is theirs.
-  const chooseRegistryValue = (advisory: NpiReviewAdvisory, value: string) => {
-    const fix = advisory.fix;
-    if (!advisory.registryValues.includes(value) || !fix || fix === "retry") return;
-    if (fix.field === "credentials") {
-      set({ credentials: value });
-      setNpiTouched((touched) => ({ ...touched, credentials: true }));
-    } else if (fix.field === "taxonomyCode") {
-      set({ taxonomyCode: value });
-      setNpiTouched((touched) => ({ ...touched, taxonomyCode: true }));
-    } else if (fix.field === "licenseNumber") {
-      setLicenses((rows) =>
-        rows.map((draft, index) =>
-          index === fix.row
-            ? {
-                ...draft,
-                licenseNumber: value,
-                npiOrigin: touchNpiRowOrigin(draft.npiOrigin, { number: true }),
-              }
-            : draft,
-        ),
-      );
-    }
-  };
 
   const reload = async () => {
     if (!onReload) return;
@@ -370,7 +320,7 @@ function FormBody({
     // unchanged stored NPI is not re-checked, so legacy data never blocks an
     // unrelated edit (recheckStoredOnEdit). MINT-110: only separators are
     // stripped, so other junk still fails. The NPI Registry check never
-    // refuses a save (it is listed on the review step).
+    // refuses a save (its answer is a note, then a backend advisory).
     const npiNeedsCheck = identityFieldNeedsCheck(
       form.npi,
       provider ? initialForm.npi : undefined,
@@ -393,15 +343,7 @@ function FormBody({
 
     setErrors(next);
     setLicenseErrors(licErrs);
-    if (Object.keys(next).length > 0 || Object.keys(licErrs).length > 0) {
-      setReviewing(false);
-      return;
-    }
-    // The review step first, when it applies; its Save saves.
-    if (needsReview && !reviewing) {
-      setReviewing(true);
-      return;
-    }
+    if (Object.keys(next).length > 0 || Object.keys(licErrs).length > 0) return;
 
     const onError = (e: unknown) => {
       const message = e instanceof Error ? e.message : "Couldn't save the provider";
@@ -502,7 +444,7 @@ function FormBody({
 
   return (
     <>
-      <div className="space-y-4 py-2" hidden={reviewing}>
+      <div className="space-y-4 py-2">
         {readError ? (
           <p role="alert" className="text-[13px] text-[#B91C1C]">
             {readError}
@@ -899,27 +841,6 @@ function FormBody({
           </div>
         ) : null}
       </div>
-      {reviewing ? (
-        <RosterReview
-          form={form}
-          licenses={licenses}
-          npi={npiDigits}
-          verify={registryVerify}
-          entered={reviewEntered}
-          npiPolicy={npiPolicy}
-          confirmed={npiConfirmed}
-          onToggleConfirm={(id) =>
-            setNpiConfirmed((ids) => {
-              const next = new Set(ids);
-              if (!next.delete(id)) next.add(id);
-              return next;
-            })
-          }
-          onFix={fixOnReview}
-          onUseRegistryValue={chooseRegistryValue}
-          sourced={npiSourced.lines}
-        />
-      ) : null}
       {saveError ? (
         <p role="alert" className="text-[13px] text-[#B91C1C]">
           {saveError}
@@ -934,11 +855,6 @@ function FormBody({
         <Button variant="outline" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        {reviewing ? (
-          <Button variant="outline" onClick={() => setReviewing(false)} disabled={pending}>
-            Back to edit
-          </Button>
-        ) : null}
         {(requiresReload || readError) && onReload ? (
           <Button variant="outline" disabled={pending || reloading} onClick={() => void reload()}>
             Reload saved data
@@ -953,82 +869,6 @@ function FormBody({
         </Button>
       </DialogFooter>
     </>
-  );
-}
-
-// MINT-110 (A30b): the roster form's review step — what will be saved, and
-// what the NPI Registry check found, with one-click fix / use / confirm.
-// Nothing here stops the save.
-function RosterReview({
-  form,
-  licenses,
-  npi,
-  verify,
-  entered,
-  npiPolicy,
-  confirmed,
-  onToggleConfirm,
-  onFix,
-  onUseRegistryValue,
-  sourced,
-}: {
-  form: RosterFormState;
-  licenses: LicenseDraft[];
-  npi: string;
-  verify: boolean;
-  entered: {
-    credentials: string;
-    taxonomyCode: string;
-    licenses: { state: string; number: string }[];
-  };
-  npiPolicy: NpiRegistryPolicy;
-  confirmed: ReadonlySet<string>;
-  onToggleConfirm: (id: string) => void;
-  onFix: (target: NpiReviewFixTarget) => void;
-  onUseRegistryValue: (advisory: NpiReviewAdvisory, value: string) => void;
-  sourced: { label: string; values: string[] }[];
-}) {
-  const rows = licenses.filter((draft) => draft.state.trim());
-  const show = (value: string) => value.trim() || "—";
-  return (
-    <div className="space-y-3 py-2">
-      <section aria-label="Review before saving" className="rounded-md border border-[#E8E5E0] p-3">
-        <h3 className="text-[13px] font-semibold text-foreground">Review before saving</h3>
-        <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[13px]">
-          <dt className="text-muted-foreground">Name</dt>
-          <dd>{show(`${form.firstName} ${form.lastName}`)}</dd>
-          <dt className="text-muted-foreground">Type 1 NPI</dt>
-          <dd className="font-mono">{show(npi)}</dd>
-          <dt className="text-muted-foreground">Credentials</dt>
-          <dd>{show(form.credentials)}</dd>
-          <dt className="text-muted-foreground">Taxonomy code</dt>
-          <dd className="font-mono">{show(form.taxonomyCode)}</dd>
-          <dt className="text-muted-foreground">Licenses</dt>
-          <dd>
-            {rows.length === 0
-              ? "—"
-              : rows.map((draft, index) => (
-                  <span key={draft.id ?? `new-${index}`} className="block">
-                    {draft.state} · {show(draft.licenseNumber)}
-                  </span>
-                ))}
-          </dd>
-        </dl>
-      </section>
-      <NpiRegistryReview
-        npi={npi}
-        verify={verify}
-        firstName={form.firstName}
-        lastName={form.lastName}
-        entered={entered}
-        policy={npiPolicy}
-        confirmed={confirmed}
-        onToggleConfirm={onToggleConfirm}
-        onFix={onFix}
-        onUseRegistryValue={onUseRegistryValue}
-        sourced={sourced}
-      />
-    </div>
   );
 }
 
