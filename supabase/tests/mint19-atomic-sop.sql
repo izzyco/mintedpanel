@@ -1,9 +1,21 @@
--- MINT-19 authorization, idempotency, termination, and rollback checks.
+-- MINT-19 authorization, idempotency, termination, and rollback checks, with
+-- MINT-75's completion and termination days.
 -- Run only after the disposable migration runner has applied the full schema.
 \set ON_ERROR_STOP on
 \pset format unaligned
 \pset tuples_only on
 BEGIN;
+-- Hosted Supabase grants authenticated USAGE on the auth schema; CI's plain
+-- PostgreSQL seed does not. Every authenticated call below reaches auth.uid()
+-- through the SECURITY INVOKER RPC body, the MINT-8 audit actor trigger and
+-- the profiles_select_self policy, so mirror the hosted grant here. It is
+-- transaction-local and rolls back with the final ROLLBACK (the same pattern
+-- as mint58-exact-fill-submission.sql). anon and service_role need no such
+-- grant: anon appears only in privilege checks, and the RPC's service_role
+-- branch skips auth.uid(); the triggers it fires reach auth.uid() only through
+-- SECURITY DEFINER functions, which run as their owner. auth.role() and
+-- auth.jwt() are not called anywhere on this path.
+GRANT USAGE ON SCHEMA auth TO authenticated;
 SET LOCAL client_min_messages = warning;
 
 CREATE TEMP TABLE mint19_results (
@@ -167,6 +179,33 @@ INSERT INTO public.tasks (id, org_id, case_id, title, status, sop_content) VALUE
    '59000000-0000-4000-8000-000000000002', 'MINT-75 local date UTC-2', 'not_started',
    '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb);
 
+-- MINT-75 termination tasks whose last step sets the case's
+-- termination_date. One case per day case (UTC-1, UTC+1, omitted, UTC-30), each
+-- with no termination_date yet, plus one whose termination_date is already set.
+INSERT INTO public.credential_cases (id, org_id, provider_id, payer_id, state, termination_date) VALUES
+  ('59000000-0000-4000-8000-000000000004', '19000000-0000-4000-8000-000000000001', '39000000-0000-4000-8000-000000000001', '49000000-0000-4000-8000-000000000001', 'NC', NULL),
+  ('59000000-0000-4000-8000-000000000005', '19000000-0000-4000-8000-000000000001', '39000000-0000-4000-8000-000000000001', '49000000-0000-4000-8000-000000000001', 'SC', NULL),
+  ('59000000-0000-4000-8000-000000000006', '19000000-0000-4000-8000-000000000001', '39000000-0000-4000-8000-000000000001', '49000000-0000-4000-8000-000000000001', 'UT', NULL),
+  ('59000000-0000-4000-8000-000000000007', '19000000-0000-4000-8000-000000000001', '39000000-0000-4000-8000-000000000001', '49000000-0000-4000-8000-000000000001', 'NM', NULL),
+  ('59000000-0000-4000-8000-000000000008', '19000000-0000-4000-8000-000000000001', '39000000-0000-4000-8000-000000000001', '49000000-0000-4000-8000-000000000001', 'WY', '2026-01-15');
+
+INSERT INTO public.tasks (id, org_id, case_id, title, status, sop_content) VALUES
+  ('69000000-0000-4000-8000-000000000012', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000004', 'Submit termination MINT-75 local day UTC-1', 'not_started',
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000013', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000005', 'Submit termination MINT-75 local day UTC+1', 'not_started',
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000014', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000006', 'Submit termination MINT-75 omitted day', 'not_started',
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000015', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000007', 'Submit termination MINT-75 backdated day', 'not_started',
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000016', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000008', 'Submit termination MINT-75 already terminated', 'not_started',
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb);
+
 -- The UTC day the RPC falls back to (clock_timestamp may cross midnight after
 -- the transaction's now(), so either day is accepted).
 CREATE FUNCTION pg_temp.mint75_is_utc_day(p_value text)
@@ -260,6 +299,130 @@ SELECT pg_temp.mint19_assert(
   ) -> 'task' -> 'completed_date') = 'null'::jsonb
 );
 RESET ROLE;
+
+-- MINT-75 (20261030200000): the last step of a termination task sets
+-- termination_date to the task's completed_date, so the caller's local day
+-- when it is within one day of UTC's, else UTC's day. Each RPC call is its own
+-- statement: a later statement is what sees its writes.
+SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000001';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination step (UTC-1) completes',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000012',
+    'only-step',
+    '29000000-0000-4000-8000-000000000001',
+    'panel',
+    (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::date - 1
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination step (UTC+1) completes',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000013',
+    'only-step',
+    '29000000-0000-4000-8000-000000000001',
+    'panel',
+    (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::date + 1
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination step with no day completes',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000014',
+    'only-step',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination step with a backdated day completes',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000015',
+    'only-step',
+    '29000000-0000-4000-8000-000000000001',
+    'panel',
+    (pg_catalog.now() AT TIME ZONE 'UTC')::date - 30
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination step on an already terminated case completes',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000016',
+    'only-step',
+    '29000000-0000-4000-8000-000000000001',
+    'panel',
+    (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::date - 1
+  ) ->> 'kind') = 'ok'
+);
+RESET ROLE;
+
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination takes the local day passed (UTC-1), the same as completed_date',
+  (SELECT c.termination_date = (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::date - 1
+          AND c.termination_date = t.completed_date
+     FROM public.tasks AS t
+     JOIN public.credential_cases AS c ON c.id = t.case_id
+    WHERE t.id = '69000000-0000-4000-8000-000000000012')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination takes the local day passed (UTC+1), the same as completed_date',
+  (SELECT c.termination_date = (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::date + 1
+          AND c.termination_date = t.completed_date
+     FROM public.tasks AS t
+     JOIN public.credential_cases AS c ON c.id = t.case_id
+    WHERE t.id = '69000000-0000-4000-8000-000000000013')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination with no day passed falls back to the UTC day',
+  (SELECT pg_temp.mint75_is_utc_day(c.termination_date::text)
+          AND c.termination_date = t.completed_date
+     FROM public.tasks AS t
+     JOIN public.credential_cases AS c ON c.id = t.case_id
+    WHERE t.id = '69000000-0000-4000-8000-000000000014')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 termination with a day outside the one-day window falls back to the UTC day',
+  (SELECT pg_temp.mint75_is_utc_day(c.termination_date::text)
+          AND c.termination_date = t.completed_date
+     FROM public.tasks AS t
+     JOIN public.credential_cases AS c ON c.id = t.case_id
+    WHERE t.id = '69000000-0000-4000-8000-000000000015')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-75 an existing termination_date is never overwritten',
+  (SELECT c.termination_date = DATE '2026-01-15'
+          AND t.completed_date = (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC')::date - 1
+     FROM public.tasks AS t
+     JOIN public.credential_cases AS c ON c.id = t.case_id
+    WHERE t.id = '69000000-0000-4000-8000-000000000016')
+);
+SELECT pg_temp.mint19_assert(
+  'completion RPC stays executable by authenticated and service_role only',
+  pg_catalog.has_function_privilege(
+    'authenticated', 'public.complete_sop_task_step(uuid,uuid,text,uuid,text,date)', 'EXECUTE'
+  )
+  AND pg_catalog.has_function_privilege(
+    'service_role', 'public.complete_sop_task_step(uuid,uuid,text,uuid,text,date)', 'EXECUTE'
+  )
+  AND NOT pg_catalog.has_function_privilege(
+    'anon', 'public.complete_sop_task_step(uuid,uuid,text,uuid,text,date)', 'EXECUTE'
+  )
+  AND NOT pg_catalog.has_function_privilege(
+    'public', 'public.complete_sop_task_step(uuid,uuid,text,uuid,text,date)', 'EXECUTE'
+  )
+);
+SELECT pg_temp.mint19_assert(
+  'completion RPC stays SECURITY INVOKER with an empty search_path',
+  (SELECT NOT p.prosecdef AND p.proconfig = ARRAY['search_path=""']::text[]
+     FROM pg_catalog.pg_proc AS p
+    WHERE p.oid = 'public.complete_sop_task_step(uuid,uuid,text,uuid,text,date)'::regprocedure)
+);
 
 SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000001';
 SET LOCAL ROLE authenticated;

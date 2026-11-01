@@ -10,8 +10,12 @@
 -- PATCH /api/tasks/:id/steps route and record_typed_enrollment_submission),
 -- the RPC keeps its UTC behaviour. It never raises over the date.
 --
--- Unchanged on purpose: credential_cases.termination_date (still the UTC day),
--- each step's completedAt (a UTC instant, not a calendar day) and updated_at.
+-- When that last step completes a termination task, the case's
+-- termination_date takes the same day as completed_date (Sowmya, Oct 31,
+-- Addendum 8 A6). An existing termination_date is still never overwritten.
+--
+-- Unchanged on purpose: each step's completedAt (a UTC instant, not a calendar
+-- day) and updated_at.
 --
 -- Same-name replacement with one defaulted parameter. CREATE OR REPLACE alone
 -- would leave two overloads that PostgREST cannot choose between, so the old
@@ -20,7 +24,8 @@
 -- 20261003120000). Existing positional 5-argument callers resolve to the new
 -- signature through the default. Everything else (SECURITY INVOKER,
 -- search_path, row locks, step ordering, audit, grants, comment) is copied
--- verbatim from 20261006143000_mint19_atomic_sop_step_completion.sql.
+-- verbatim from 20261006143000_mint19_atomic_sop_step_completion.sql, apart
+-- from the two days above.
 --
 -- Deploy order: either. An older Panel keeps working against this function
 -- (the argument defaults to NULL). A newer Panel against the old 5-argument
@@ -256,7 +261,7 @@ BEGIN
      AND v_task.case_id IS NOT NULL
      AND pg_catalog.lower(v_task.title) LIKE 'submit termination%' THEN
     UPDATE public.credential_cases AS c
-       SET termination_date = COALESCE(c.termination_date, (v_now AT TIME ZONE 'UTC')::date)
+       SET termination_date = COALESCE(c.termination_date, v_completed_date)
      WHERE c.id = v_task.case_id
        AND c.org_id = p_org_id
        AND c.termination_date IS NULL;

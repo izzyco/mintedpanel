@@ -389,6 +389,11 @@ jobs:
       - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
         run: node scripts/security/verify-portal-field-map-learning.mjs
 
+      # MINT-19 + MINT-75 SOP step completion: authorization, completion and
+      # termination days, rollback. Rollback-only; any failed check raises.
+      - name: Run MINT-19 / MINT-75 SOP step completion SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint19-atomic-sop.sql
+
   # Gate 0.5 — Playwright smoke skeleton. Boots the app via the Vite dev server
   # with dummy Supabase env vars (unauthenticated paths make no network call).
   # Two specs run (login render, dashboard redirect); three write scenarios are
