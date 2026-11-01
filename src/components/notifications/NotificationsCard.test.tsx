@@ -23,11 +23,13 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "intake_reminder",
   stopConditions: ["submitted", "paused", "withdrawn", "provider_replied"],
   targetDaysToReady: 14,
-  compressTowardStartDate: false,
   bounceEscalationStep: 1,
   digestCcAllowed: null,
+  digestFrequency: null,
+  digestWeekday: null,
   sendHour: null,
   sendTimeZone: null,
+  secondSendHour: null,
   createdAt: "",
   updatedAt: "",
   steps: [1, 2, 3].map((offsetDays, i) => ({
@@ -45,11 +47,13 @@ const DIGEST_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "followup_digest",
   stopConditions: null,
   targetDaysToReady: null,
-  compressTowardStartDate: null,
   bounceEscalationStep: null,
   digestCcAllowed: false,
+  digestFrequency: "daily",
+  digestWeekday: 1,
   sendHour: 8,
   sendTimeZone: "America/Chicago",
+  secondSendHour: 14,
   createdAt: "",
   updatedAt: "",
   steps: [
@@ -120,9 +124,11 @@ function intakeConfig(over: Partial<NotificationSequenceConfig> = {}): Notificat
     stopConditions: ["submitted", "withdrawn"],
     targetDaysToReady: 14,
     bounceEscalationStep: null,
-    compressTowardStartDate: null,
+    digestFrequency: null,
     sendHour: null,
     sendTimeZone: null,
+    secondSendHour: null,
+    digestWeekday: null,
     digestCcAllowed: null,
     revision: 2,
     createdAt: "2026-10-30T00:00:00Z",
@@ -185,10 +191,10 @@ type EditorOverrides = Partial<
 /** An intake draft with its own steps (Minted's, customized) and settings. */
 function ownIntake(): SequenceDraft & { steps: StepDraft[] } {
   return {
-    enabled: false,
     stopConditions: ["submitted", "paused", "withdrawn", "provider_replied"],
     targetDaysToReady: 14,
     bounceEscalationStep: null,
+    digestFrequency: null,
     steps: stepsFromDefault(INTAKE_DEFAULT),
   };
 }
@@ -238,13 +244,13 @@ describe("NotificationsCard: admin", () => {
     const html = renderToStaticMarkup(<NotificationsCard />);
     expect(html).toContain("Notifications");
     expect(html).toContain("Provider intake reminders");
-    expect(html).toContain("Daily follow-up digest");
+    expect(html).toContain("Follow-up digest");
     expect(html.match(/>Set up</g)).toHaveLength(2);
     expect(html).toContain(
-      "Set up starts you with Minted&#x27;s default: 3 emails, on day 1, day 2 and day 3 after the invite, cc&#x27;ing no one, switched off until you turn it on. You can change any of it before you save.",
+      "Set up starts you with Minted&#x27;s default: 3 emails, on day 1, day 2 and day 3 after the invite, cc&#x27;ing no one. Minted switches it on at kickoff. You can change any of it before you save.",
     );
     expect(html).toContain(
-      "Set up starts you with Minted&#x27;s default: one email a day to each coordinator, switched off until you turn it on.",
+      "Set up starts you with Minted&#x27;s default: one email a day to each coordinator. Minted switches it on at kickoff.",
     );
     expect(html.match(/Not set up/g)).toHaveLength(2);
     expect(html).not.toContain("<input");
@@ -257,16 +263,15 @@ describe("NotificationsCard: admin", () => {
     expect(html).toContain('aria-label="Step 1 days after invite"');
     expect(html).toContain('value="2"');
     expect(html).toContain('value="7"');
-    expect(html).toContain("Send intake reminders");
+    // A9: on/off is Minted's, shown read-only.
+    expect(html).toContain("On. Minted switched these on for your organization.");
     expect(html).toContain("Target days from invite to ready");
     expect(html).toContain('value="14"');
     expect(html).toContain("Minted&#x27;s default is 14 days. Clear the box to use it.");
     expect(html).toContain("Stop reminders when");
-    // Answer 4: compression is Minted's, shown read-only, never a switch.
-    expect(html).not.toContain("Move reminders closer together");
-    expect(html).not.toContain("notifications-intake_reminder-compress");
-    expect(html.match(/role="switch"/g)).toHaveLength(1);
-    expect(html).toContain("Near a start date: reminders keep their days. Minted sets this.");
+    // A13: compression is gone; A9: no on/off switch for an org admin.
+    expect(html).not.toContain("Near a start date");
+    expect(html).not.toContain('role="switch"');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Save<\/button>/);
     expect(html).toContain("Discard changes");
     expect(html).toContain(">On<");
@@ -331,7 +336,7 @@ describe("NotificationsCard: other members", () => {
     expect(html).toContain("Cc: Jane Doe, then All admins");
     expect(html).toContain("14 days from invite to ready<");
     expect(html).toContain("the provider submits the intake form; the provider withdraws<");
-    expect(html).toContain("reminders keep their days. Minted sets this.");
+    expect(html).not.toContain("Near a start date");
     expect(html).toContain("Only admins can change notifications.");
     expect(html).not.toContain("<input");
     expect(html).not.toContain("<button");
@@ -360,7 +365,7 @@ describe("NotificationsCard: other members", () => {
     expect(html).toContain(
       "the provider submits the intake form; onboarding is paused; the provider withdraws; the provider replies (Minted&#x27;s default)",
     );
-    expect(html).toContain("Step 1 · once a day · Email · Daily follow-up digest");
+    expect(html).toContain("Step 1 · once a day · Email · Follow-up digest");
     expect(html).toContain("Sent around 8 am Central time. Minted sets this.");
     expect(html).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
     // Intake's three steps carry a cc line; the digest's step does not.
@@ -373,14 +378,16 @@ describe("NotificationsCard: other members", () => {
       purpose: "followup_digest",
       sendHour: 6,
       sendTimeZone: "Gone/Zone",
+      secondSendHour: 15,
     };
     state.sequences = { followup_digest: digestRow };
+    // A10: the whole send time comes from one layer, so Minted's stands in.
     const summary = renderToStaticMarkup(<NotificationsCard />);
-    expect(summary).toContain("Sent around 6 am Central time. Minted sets this.");
+    expect(summary).toContain("Sent around 8 am Central time. Minted sets this.");
     expect(summary).not.toContain("Gone/Zone");
     state.isAdmin = true;
     const editor = renderToStaticMarkup(<NotificationsCard />);
-    expect(editor).toContain("Sent around 6 am Central time. Minted sets this.");
+    expect(editor).toContain("Sent around 8 am Central time. Minted sets this.");
     expect(editor).not.toContain("Gone/Zone");
   });
 
@@ -391,6 +398,7 @@ describe("NotificationsCard: other members", () => {
         purpose: "followup_digest",
         sendHour: 6,
         sendTimeZone: "America/New_York",
+        secondSendHour: 15,
       },
     };
     expect(renderToStaticMarkup(<NotificationsCard />)).toContain(
@@ -451,7 +459,7 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
         })}
       />,
     );
-    expect(html).toContain("Step 1 · once a day · Email · Daily follow-up digest");
+    expect(html).toContain("Step 1 · once a day · Email · Follow-up digest");
     expect(html).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
     expect(html).toContain("Sent around 8 am Central time. Minted sets this.");
     expect(html).not.toContain("Add someone to cc");
@@ -462,9 +470,11 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     expect(html).not.toContain("+ Add step");
     expect(html).not.toContain('aria-label="Move step 1 up"');
     expect(html).not.toContain('type="number"');
-    expect(html).not.toContain('role="combobox"');
-    // The only control besides Save and Cancel is the on/off switch.
-    expect(html.match(/role="switch"/g)).toHaveLength(1);
+    // The only control besides Save and Cancel is how often (A8); on/off is
+    // Minted's (A9).
+    expect(html.match(/role="combobox"/g)).toHaveLength(1);
+    expect(html).toContain('aria-label="How often"');
+    expect(html).not.toContain('role="switch"');
   });
 });
 
@@ -855,5 +865,63 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
     const off = renderToStaticMarkup(<NotificationsCard />);
     expect(off).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
     expect(off).not.toContain("Cc: ");
+  });
+});
+
+describe("Addendum 8 in the card (Answered Oct 31)", () => {
+  it("lets an admin choose how often the digest goes out, and describes it (A8)", () => {
+    const draft = starterDraft();
+    const props = editorProps({
+      purpose: "followup_digest",
+      draft,
+      issues: [],
+      platformDefault: DIGEST_DEFAULT,
+    });
+    const select = findAll(
+      NotificationSequenceEditor(props),
+      (e) => e.props.value === "default",
+    )[0];
+    (select.props.onValueChange as (value: string) => void)("weekly");
+    expect((props.onChange.mock.calls[0][0] as SequenceDraft).digestFrequency).toBe("weekly");
+    const weekly = renderToStaticMarkup(
+      <NotificationSequenceEditor
+        {...editorProps({
+          purpose: "followup_digest",
+          draft: { ...draft, digestFrequency: "weekly" },
+          issues: [],
+          platformDefault: DIGEST_DEFAULT,
+          dirty: true,
+        })}
+      />,
+    );
+    expect(weekly).toContain(
+      "Sent on Mondays around 8 am Central time. Minted sets the day and time.",
+    );
+    expect(weekly).toContain("Step 1 · once a week · Email · Follow-up digest");
+    const twice = renderToStaticMarkup(
+      <NotificationSequenceEditor
+        {...editorProps({
+          purpose: "followup_digest",
+          draft: { ...draft, digestFrequency: "twice_daily" },
+          issues: [],
+          platformDefault: DIGEST_DEFAULT,
+        })}
+      />,
+    );
+    expect(twice).toContain("Sent around 8 am and 2 pm Central time. Minted sets these times.");
+  });
+
+  it("shows on/off read-only: off until Minted switches it on (A9)", () => {
+    const off = renderToStaticMarkup(<NotificationSequenceEditor {...editorProps()} />);
+    expect(off).toContain("Off. Minted switches notifications on at kickoff.");
+    expect(off).not.toContain('role="switch"');
+  });
+
+  it("refuses an empty stop list and blocks Save (A11)", () => {
+    const draft = { ...ownIntake(), stopConditions: [] };
+    const props = editorProps({ draft, dirty: true });
+    const html = renderToStaticMarkup(<NotificationSequenceEditor {...props} />);
+    expect(html).toContain("Choose at least one stop condition, or use Minted&#x27;s default.");
+    expect(byText(NotificationSequenceEditor(props), "Save").props.disabled).toBe(true);
   });
 });

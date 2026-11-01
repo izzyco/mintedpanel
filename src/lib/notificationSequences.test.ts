@@ -17,13 +17,16 @@ import {
   ccRecipientLabel,
   defaultStepsCcNote,
   describeCcList,
+  describeDigestSchedule,
   describeOffsets,
   describeSendTime,
   describeStep,
   draftBounceEscalationStep,
   draftFromSequence,
   draftsEqual,
+  enabledStatusNote,
   isBounceEscalationStep,
+  isDigestFrequency,
   isIanaTimeZone,
   moveCcRecipient,
   moveStep,
@@ -34,6 +37,7 @@ import {
   removeStep,
   resolveNotificationPolicyRules,
   resolveNotificationSequence,
+  resolveSendTime,
   saveErrorMessage,
   scheduleSequenceSends,
   starterDraft,
@@ -43,6 +47,7 @@ import {
   updateStep,
   validateDraft,
   validateNotificationPolicyRules,
+  validateSendTime,
   type NotificationSequenceConfig,
   type NotificationSequenceDefaultConfig,
   type SequenceDraft,
@@ -59,11 +64,13 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "intake_reminder",
   stopConditions: [...ALL_STOPS],
   targetDaysToReady: 14,
-  compressTowardStartDate: false,
   bounceEscalationStep: 1,
   digestCcAllowed: null,
+  digestFrequency: null,
+  digestWeekday: null,
   sendHour: null,
   sendTimeZone: null,
+  secondSendHour: null,
   createdAt: "",
   updatedAt: "",
   steps: [
@@ -87,11 +94,13 @@ const DIGEST_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "followup_digest",
   stopConditions: null,
   targetDaysToReady: null,
-  compressTowardStartDate: null,
   bounceEscalationStep: null,
   digestCcAllowed: false,
+  digestFrequency: "daily",
+  digestWeekday: 1,
   sendHour: 8,
   sendTimeZone: "America/Chicago",
+  secondSendHour: 14,
   createdAt: "",
   updatedAt: "",
   steps: [
@@ -113,10 +122,10 @@ type OwnStepsDraft = SequenceDraft & { steps: StepDraft[] };
 /** An intake draft with its own steps (Minted's, customized) and its own settings. */
 function intake(): OwnStepsDraft {
   return {
-    enabled: false,
     stopConditions: [...ALL_STOPS],
     targetDaysToReady: 14,
     bounceEscalationStep: null,
+    digestFrequency: null,
     steps: stepsFromDefault(INTAKE_DEFAULT),
   };
 }
@@ -124,10 +133,10 @@ function intake(): OwnStepsDraft {
 /** A digest draft with its own single step. */
 function digest(): OwnStepsDraft {
   return {
-    enabled: false,
     stopConditions: null,
     targetDaysToReady: null,
     bounceEscalationStep: null,
+    digestFrequency: null,
     steps: stepsFromDefault(DIGEST_DEFAULT),
   };
 }
@@ -151,9 +160,11 @@ function orgRow(over: Partial<NotificationSequenceConfig> = {}): NotificationSeq
     stopConditions: null,
     targetDaysToReady: null,
     bounceEscalationStep: null,
-    compressTowardStartDate: null,
+    digestFrequency: null,
     sendHour: null,
     sendTimeZone: null,
+    secondSendHour: null,
+    digestWeekday: null,
     digestCcAllowed: null,
     revision: 1,
     createdAt: "",
@@ -185,12 +196,12 @@ function orgStep(
 }
 
 describe("starter and Minted's default steps", () => {
-  it("starts switched off with every setting left to Minted's default", () => {
+  it("starts with every setting left to Minted's default, and no on/off (A9)", () => {
     expect(starterDraft()).toEqual({
-      enabled: false,
       stopConditions: null,
       targetDaysToReady: null,
       bounceEscalationStep: null,
+      digestFrequency: null,
       steps: null,
     });
     expect(validateDraft("intake_reminder", starterDraft())).toEqual([]);
@@ -306,7 +317,7 @@ describe("validateDraft: steps", () => {
     ).toContain("Choose a channel for step 1.");
     expect(
       messages(validateDraft("followup_digest", updateStep(digest(), 0, { channel: "sms" }))),
-    ).toEqual(['"Daily follow-up digest" has no text message version.']);
+    ).toEqual(['"Follow-up digest" has no text message version.']);
   });
 });
 
@@ -396,8 +407,14 @@ describe("validateDraft: intake settings", () => {
         }),
       ),
     ).toEqual(["Choose stop conditions from the list."]);
-    // Every condition is optional, "submitted" included (answer 1).
-    expect(validateDraft("intake_reminder", { ...intake(), stopConditions: [] })).toEqual([]);
+    // Each condition is optional, "submitted" included (answer 1), but at
+    // least one is required (A11).
+    expect(messages(validateDraft("intake_reminder", { ...intake(), stopConditions: [] }))).toEqual(
+      ["Choose at least one stop condition, or use Minted's default."],
+    );
+    expect(
+      validateDraft("intake_reminder", { ...intake(), stopConditions: ["withdrawn"] }),
+    ).toEqual([]);
     expect(
       validateDraft("intake_reminder", {
         ...intake(),
@@ -511,7 +528,7 @@ describe("stop conditions over Minted's default", () => {
 
 describe("payload building", () => {
   it("builds the RPC payload in snake_case, in position order, cc order kept", () => {
-    const draft = updateStep({ ...intake(), enabled: true }, 2, {
+    const draft = updateStep(intake(), 2, {
       ccRecipients: [
         { kind: "user", userId: USER_B },
         { kind: "role", role: "admin" },
@@ -520,7 +537,6 @@ describe("payload building", () => {
     expect(
       buildSavePayload("intake_reminder", draft, 3, { memberUserIds: new Set([USER_B]) }),
     ).toEqual({
-      enabled: true,
       stop_conditions: [...ALL_STOPS],
       target_days_to_ready: 14,
       expected_revision: 3,
@@ -551,8 +567,7 @@ describe("payload building", () => {
   });
 
   it("sends null for every setting left to Minted's default, steps included", () => {
-    expect(buildSavePayload("intake_reminder", { ...starterDraft(), enabled: true }, 4)).toEqual({
-      enabled: true,
+    expect(buildSavePayload("intake_reminder", starterDraft(), 4)).toEqual({
       stop_conditions: null,
       target_days_to_ready: null,
       expected_revision: 4,
@@ -560,14 +575,13 @@ describe("payload building", () => {
     });
   });
 
-  it("never carries a platform-managed setting (answers 4 and 5)", () => {
+  it("never carries a platform-managed setting, on/off included (A9)", () => {
     for (const payload of [
       buildSavePayload("intake_reminder", intake(), null),
       buildSavePayload("intake_reminder", starterDraft(), null),
       buildSavePayload("followup_digest", digest(), null),
     ]) {
       expect(Object.keys(payload).sort()).toEqual([
-        "enabled",
         "expected_revision",
         "steps",
         "stop_conditions",
@@ -584,15 +598,14 @@ describe("payload building", () => {
     const payload = buildSavePayload("intake_reminder", draft, null);
     expect(payload.stop_conditions).toEqual(["submitted", "provider_replied"]);
     expect(payload.expected_revision).toBeNull();
-    // [] is a real choice (never stop early), not "use the default".
-    expect(
+    // An empty list is refused (A11), never sent.
+    expect(() =>
       buildSavePayload("intake_reminder", { ...intake(), stopConditions: [] }, null),
-    ).toMatchObject({ stop_conditions: [] });
+    ).toThrow(/at least one stop condition/);
   });
 
   it("sends no intake settings and no cc for the digest", () => {
     expect(buildSavePayload("followup_digest", digest(), null)).toEqual({
-      enabled: false,
       stop_conditions: null,
       target_days_to_ready: null,
       expected_revision: null,
@@ -606,7 +619,6 @@ describe("payload building", () => {
       ],
     });
     expect(buildSavePayload("followup_digest", starterDraft(), 2)).toEqual({
-      enabled: false,
       stop_conditions: null,
       target_days_to_ready: null,
       expected_revision: 2,
@@ -626,7 +638,7 @@ describe("round trip", () => {
     const config = orgRow({
       stopConditions: ["submitted"],
       targetDaysToReady: 10,
-      compressTowardStartDate: true,
+      sendHour: null,
       revision: 2,
       updatedBy: USER_A,
       steps: [
@@ -642,11 +654,12 @@ describe("round trip", () => {
     expect(own(draft).map((s) => s.offsetDays)).toEqual([1, 5]);
     expect(draft.stopConditions).toEqual(["submitted"]);
     expect(draft.targetDaysToReady).toBe(10);
-    // The platform-managed override is not in the draft: the card cannot send
-    // it. The bounce escalation step is the org's own, so it is.
+    // The platform-managed settings (on/off included) are not in the draft:
+    // the card cannot send them. The bounce step and the digest frequency
+    // are the org's own, so they are.
     expect(Object.keys(draft).sort()).toEqual([
       "bounceEscalationStep",
-      "enabled",
+      "digestFrequency",
       "steps",
       "stopConditions",
       "targetDaysToReady",
@@ -671,7 +684,7 @@ describe("round trip", () => {
 
   it("drafts an org row with no own steps or settings as inheriting them", () => {
     const draft = draftFromSequence(orgRow());
-    expect(draft).toEqual({ ...starterDraft(), enabled: true });
+    expect(draft).toEqual(starterDraft());
     expect(draftsEqual(draftFromSequence(orgRow({ enabled: false })), starterDraft())).toBe(true);
   });
 
@@ -717,18 +730,20 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
       targetDaysToReady: 14,
       bounceEscalationStep: 1,
       ccAllowed: true,
-      compressTowardStartDate: false,
+      digestFrequency: null,
+      digestWeekday: null,
       sendHour: null,
       sendTimeZone: null,
+      secondSendHour: null,
       inherited: {
         steps: true,
         stopConditions: true,
         targetDaysToReady: true,
         bounceEscalationStep: true,
         digestCcAllowed: false,
-        compressTowardStartDate: true,
-        sendHour: false,
-        sendTimeZone: false,
+        digestFrequency: false,
+        digestWeekday: false,
+        sendTime: false,
       },
     });
   });
@@ -788,38 +803,59 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
     expect(effective.steps[0].ccRecipients).toEqual([{ kind: "user", userId: USER_A }]);
   });
 
-  it("keeps compression off unless Minted sets it (answer 4)", () => {
-    expect(
-      resolveNotificationSequence("intake_reminder", orgRow(), INTAKE_DEFAULT)
-        .compressTowardStartDate,
-    ).toBe(false);
-    // A Mission Control override, written with the service key.
-    const overridden = resolveNotificationSequence(
-      "intake_reminder",
-      orgRow({ compressTowardStartDate: true }),
-      INTAKE_DEFAULT,
-    );
-    expect(overridden.compressTowardStartDate).toBe(true);
-    expect(overridden.inherited.compressTowardStartDate).toBe(false);
+  it("has no compression at all (A13, supersedes D56)", () => {
+    const effective = resolveNotificationSequence("intake_reminder", orgRow(), INTAKE_DEFAULT);
+    expect("compressTowardStartDate" in effective).toBe(false);
+    expect(Object.keys(effective.inherited)).not.toContain("compressTowardStartDate");
   });
 
-  it("gives the digest 8 am Central from Minted, an org override field by field, and no cc (answers 2 and 5)", () => {
+  it("gives the digest 8 am Central from Minted, an org's send time whole, and no cc (A10)", () => {
     const inherited = resolveNotificationSequence("followup_digest", undefined, DIGEST_DEFAULT);
     expect(inherited).toMatchObject({
       sendHour: 8,
       sendTimeZone: "America/Chicago",
+      secondSendHour: 14,
+      digestFrequency: "daily",
+      digestWeekday: 1,
       stopConditions: [],
       targetDaysToReady: null,
-      compressTowardStartDate: false,
-      inherited: { sendHour: true, sendTimeZone: true, stopConditions: false },
+      inherited: { sendTime: true, digestFrequency: true, stopConditions: false },
     });
-    const zoneOnly = resolveNotificationSequence(
+    const own = resolveNotificationSequence(
       "followup_digest",
-      orgRow({ purpose: "followup_digest", sendTimeZone: "America/New_York" }),
+      orgRow({
+        purpose: "followup_digest",
+        sendHour: 6,
+        sendTimeZone: "America/New_York",
+        secondSendHour: 15,
+      }),
       DIGEST_DEFAULT,
     );
-    expect([zoneOnly.sendHour, zoneOnly.sendTimeZone]).toEqual([8, "America/New_York"]);
-    expect(zoneOnly.inherited).toMatchObject({ sendHour: true, sendTimeZone: false });
+    expect([own.sendHour, own.sendTimeZone, own.secondSendHour]).toEqual([
+      6,
+      "America/New_York",
+      15,
+    ]);
+    expect(own.inherited.sendTime).toBe(false);
+    // A layer that sets one without the others is not a send time: Minted's
+    // whole group applies (no separate inheritance).
+    for (const partial of [
+      { sendTimeZone: "America/New_York" },
+      { sendHour: 6 },
+      { sendHour: 6, sendTimeZone: "America/New_York" },
+    ]) {
+      const effective = resolveNotificationSequence(
+        "followup_digest",
+        orgRow({ purpose: "followup_digest", ...partial }),
+        DIGEST_DEFAULT,
+      );
+      expect([effective.sendHour, effective.sendTimeZone, effective.secondSendHour]).toEqual([
+        8,
+        "America/Chicago",
+        14,
+      ]);
+      expect(effective.inherited.sendTime).toBe(true);
+    }
     // A digest step is never passed on with a cc, whatever the row says.
     const leaky = resolveNotificationSequence(
       "followup_digest",
@@ -837,48 +873,59 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
     expect(leaky.steps[0].ccRecipients).toEqual([]);
   });
 
-  it("falls back to Minted's zone when the org's zone cannot be used, and says so", () => {
+  it("falls back to Minted's whole send time when the org's zone cannot be used", () => {
     for (const zone of ["Gone/Zone", "Mars/Olympus_Mons", "america/chicago", "CST", ""]) {
       const effective = resolveNotificationSequence(
         "followup_digest",
-        orgRow({ purpose: "followup_digest", sendHour: 6, sendTimeZone: zone }),
+        orgRow({ purpose: "followup_digest", sendHour: 6, sendTimeZone: zone, secondSendHour: 9 }),
         DIGEST_DEFAULT,
       );
-      expect([effective.sendHour, effective.sendTimeZone]).toEqual([6, "America/Chicago"]);
-      expect(effective.inherited).toMatchObject({ sendHour: false, sendTimeZone: true });
+      expect([effective.sendHour, effective.sendTimeZone, effective.secondSendHour]).toEqual([
+        8,
+        "America/Chicago",
+        14,
+      ]);
+      expect(effective.inherited.sendTime).toBe(true);
       expect(describeSendTime(effective.sendHour, effective.sendTimeZone)).toBe(
-        "6 am Central time",
+        "8 am Central time",
       );
     }
-    // A usable org zone stays the org's own.
-    const own = resolveNotificationSequence(
+    // A second hour not after the first makes the org group unusable too.
+    const backwards = resolveNotificationSequence(
       "followup_digest",
-      orgRow({ purpose: "followup_digest", sendTimeZone: "Europe/Paris" }),
+      orgRow({
+        purpose: "followup_digest",
+        sendHour: 15,
+        sendTimeZone: "Europe/Paris",
+        secondSendHour: 9,
+      }),
       DIGEST_DEFAULT,
     );
-    expect([own.sendTimeZone, own.inherited.sendTimeZone]).toEqual(["Europe/Paris", false]);
+    expect([backwards.sendHour, backwards.inherited.sendTime]).toEqual([8, true]);
   });
 
   it("falls back to the last-resort zone when Minted's default zone cannot be used either", () => {
     expect(LAST_RESORT_TIME_ZONE).toBe("America/Chicago");
     const broken = { ...DIGEST_DEFAULT, sendTimeZone: "Gone/Zone" };
-    for (const org of [
-      undefined,
-      orgRow({ purpose: "followup_digest" }),
-      orgRow({ purpose: "followup_digest", sendTimeZone: "Also/Gone" }),
-    ]) {
+    for (const org of [undefined, orgRow({ purpose: "followup_digest" })]) {
       const effective = resolveNotificationSequence("followup_digest", org, broken);
-      expect(effective.sendTimeZone).toBe(LAST_RESORT_TIME_ZONE);
-      expect(effective.inherited.sendTimeZone).toBe(true);
-      expect(describeSendTime(effective.sendHour, effective.sendTimeZone)).toBe(
-        "8 am Central time",
-      );
+      expect([effective.sendHour, effective.sendTimeZone, effective.secondSendHour]).toEqual([
+        8,
+        LAST_RESORT_TIME_ZONE,
+        14,
+      ]);
+      expect(effective.inherited.sendTime).toBe(true);
     }
-    // A usable org zone still wins over a broken default.
+    // A complete, usable org group still wins over a broken default.
     expect(
       resolveNotificationSequence(
         "followup_digest",
-        orgRow({ purpose: "followup_digest", sendTimeZone: "America/Denver" }),
+        orgRow({
+          purpose: "followup_digest",
+          sendHour: 7,
+          sendTimeZone: "America/Denver",
+          secondSendHour: 12,
+        }),
         broken,
       ).sendTimeZone,
     ).toBe("America/Denver");
@@ -906,16 +953,13 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
     ).toThrow(RangeError);
   });
 
-  it("feeds the schedule: Minted's default ignores a near start date while compression is off", () => {
+  it("feeds the schedule: Minted's default steps go out on days 1, 2 and 3", () => {
     const effective = resolveNotificationSequence("intake_reminder", orgRow(), INTAKE_DEFAULT);
     const result = scheduleSequenceSends({
       offsets: effective.steps.map((s) => s.offsetDays),
       inviteDate: "2026-11-02",
-      startDate: "2026-11-10",
       targetDaysToReady: effective.targetDaysToReady ?? 0,
-      compressTowardStartDate: effective.compressTowardStartDate,
     });
-    expect(result.compressed).toBe(false);
     expect(result.sends.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
   });
 
@@ -996,7 +1040,19 @@ describe("read-only step lines", () => {
         channel: "email",
         templateKey: "followup_digest_daily",
       }),
-    ).toBe("Step 1 · once a day · Email · Daily follow-up digest");
+    ).toBe("Step 1 · once a day · Email · Follow-up digest");
+    const digestStep = {
+      position: 1,
+      offsetDays: 0,
+      channel: "email" as const,
+      templateKey: "followup_digest_daily",
+    };
+    expect(describeStep("followup_digest", digestStep, "weekly")).toBe(
+      "Step 1 · once a week · Email · Follow-up digest",
+    );
+    expect(describeStep("followup_digest", digestStep, "twice_daily")).toBe(
+      "Step 1 · twice a day · Email · Follow-up digest",
+    );
   });
 });
 
@@ -1029,99 +1085,29 @@ describe("bounce rule (decision 4)", () => {
   });
 });
 
-describe("scheduleSequenceSends (start-date compression)", () => {
-  // Spread-out offsets exercise the scaling; an org could save these. Minted's
-  // own default (days 1, 2 and 3) is pinned in the test after these.
-  const base = {
-    offsets: [2, 4, 7],
-    inviteDate: "2026-11-02",
-    targetDaysToReady: 14,
-    compressTowardStartDate: true,
-  };
-  const days = (result: ReturnType<typeof scheduleSequenceSends>) =>
-    result.sends.map((send) => send.sendOn);
-
-  it("sends on the configured offsets when there is no start date", () => {
-    const result = scheduleSequenceSends({ ...base, startDate: null });
-    expect(result.compressed).toBe(false);
-    expect(days(result)).toEqual(["2026-11-04", "2026-11-06", "2026-11-09"]);
-    expect(result.readyBy).toBe("2026-11-16");
-    expect(result.skipped).toEqual([]);
-  });
-
-  it("ignores the start date when compression is off", () => {
+describe("scheduleSequenceSends (no compression: A13)", () => {
+  it("sends each step on its offset after the invite, and is ready by the target", () => {
     const result = scheduleSequenceSends({
-      ...base,
-      compressTowardStartDate: false,
-      startDate: "2026-11-05",
+      offsets: [2, 4, 7],
+      inviteDate: "2026-11-02",
+      targetDaysToReady: 14,
     });
-    expect(result.compressed).toBe(false);
-    expect(days(result)).toEqual(["2026-11-04", "2026-11-06", "2026-11-09"]);
-    expect(result.readyBy).toBe("2026-11-16");
-  });
-
-  it("leaves the schedule alone when the start date is past the schedule's span", () => {
-    // Start on day 20: the last useful day (19) is beyond the 14-day span.
-    const result = scheduleSequenceSends({ ...base, startDate: "2026-11-22" });
-    expect(result.compressed).toBe(false);
-    expect(days(result)).toEqual(["2026-11-04", "2026-11-06", "2026-11-09"]);
-    expect(result.readyBy).toBe("2026-11-16");
-  });
-
-  it("scales the offsets into the days before a near start date", () => {
-    // Start on day 8 → last useful day 7 → scale by 7/14.
-    const result = scheduleSequenceSends({ ...base, startDate: "2026-11-10" });
-    expect(result.compressed).toBe(true);
-    expect(result.sends.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
-    expect(days(result)).toEqual(["2026-11-03", "2026-11-04", "2026-11-05"]);
-    expect(result.readyBy).toBe("2026-11-09");
-    expect(result.sends.map((s) => s.configuredOffsetDays)).toEqual([2, 4, 7]);
-  });
-
-  it("keeps each step at least a day after the previous one, skipping what no longer fits", () => {
-    // Start on day 3 → last useful day 2: steps land on days 1 and 2; step 3 is skipped.
-    const result = scheduleSequenceSends({ ...base, startDate: "2026-11-05" });
-    expect(result.sends.map((s) => s.offsetDays)).toEqual([1, 2]);
-    expect(result.skipped).toEqual([
-      { position: 3, configuredOffsetDays: 7, reason: "start_date_reached" },
+    expect(result.sends.map((send) => send.sendOn)).toEqual([
+      "2026-11-04",
+      "2026-11-06",
+      "2026-11-09",
     ]);
-    expect(result.readyBy).toBe("2026-11-04");
+    expect(result.sends.map((send) => send.position)).toEqual([1, 2, 3]);
+    expect(result.readyBy).toBe("2026-11-16");
+    expect(Object.keys(result).sort()).toEqual(["readyBy", "sends"]);
   });
 
-  it("skips everything when the start date is tomorrow, today or already past", () => {
-    for (const startDate of ["2026-11-03", "2026-11-02", "2026-10-30"]) {
-      const result = scheduleSequenceSends({ ...base, startDate });
-      expect(result.sends).toEqual([]);
-      expect(result.skipped.map((s) => s.position)).toEqual([1, 2, 3]);
-      expect(result.readyBy).toBe("2026-11-02");
-    }
-  });
-
-  it("scales by the last offset when the schedule runs past the target", () => {
-    // Offsets 3/10/20 with a 14-day target: span 20. Start on day 11 → D = 10.
-    const result = scheduleSequenceSends({
-      ...base,
-      offsets: [3, 10, 20],
-      startDate: "2026-11-13",
-    });
-    expect(result.sends.map((s) => s.offsetDays)).toEqual([1, 5, 10]);
-    expect(result.readyBy).toBe("2026-11-12");
-  });
-
-  it("works across a month boundary and a DST change in date-only UTC math", () => {
-    const result = scheduleSequenceSends({
-      ...base,
-      inviteDate: "2026-10-30",
-      startDate: null,
-    });
-    expect(days(result)).toEqual(["2026-11-01", "2026-11-03", "2026-11-06"]);
-  });
-
-  it("rejects bad input instead of guessing", () => {
-    expect(() => scheduleSequenceSends({ ...base, offsets: [4, 2] })).toThrow(RangeError);
-    expect(() => scheduleSequenceSends({ ...base, inviteDate: "2026-02-30" })).toThrow(RangeError);
-    expect(() => scheduleSequenceSends({ ...base, inviteDate: "11/02/2026" })).toThrow(RangeError);
+  it("refuses an invite-day step (A12), out-of-order offsets, a bad target or date", () => {
+    const base = { offsets: [1, 2, 3], inviteDate: "2026-11-02", targetDaysToReady: 14 };
+    expect(() => scheduleSequenceSends({ ...base, offsets: [0, 2] })).toThrow(/day 1 or later/);
+    expect(() => scheduleSequenceSends({ ...base, offsets: [2, 2] })).toThrow(/strictly increase/);
     expect(() => scheduleSequenceSends({ ...base, targetDaysToReady: 0 })).toThrow(RangeError);
+    expect(() => scheduleSequenceSends({ ...base, inviteDate: "2026-02-30" })).toThrow(RangeError);
   });
 });
 
@@ -1231,7 +1217,7 @@ describe("concurrent editors (reconcileWithServer)", () => {
       reconcileWithServer({
         base: undefined,
         saved: v2,
-        draft: { ...starterDraft(), enabled: true },
+        draft: { ...starterDraft(), targetDaysToReady: 20 },
         ownSavedRevision: null,
       }),
     ).toBe("keep_draft");
@@ -1323,6 +1309,8 @@ describe("notification policy rules: decided defaults", () => {
     expect(DEFAULT_NOTIFICATION_POLICY_RULES).toEqual({
       bounceEscalationStep: 1,
       digestCcAllowed: false,
+      digestFrequency: "daily",
+      digestWeekday: 1,
     });
     expect(Object.isFrozen(DEFAULT_NOTIFICATION_POLICY_RULES)).toBe(true);
     expect(BOUNCE_ESCALATION_OFF).toBe(0);
@@ -1334,10 +1322,10 @@ describe("notification policy rules: decided defaults", () => {
       "utf8",
     );
     expect(migration).toMatch(
-      /\(purpose, stop_conditions, target_days_to_ready, compress_toward_start_date,\s+bounce_escalation_step\)[\s\S]*?14, false, 1\)/,
+      /\(purpose, stop_conditions, target_days_to_ready, bounce_escalation_step\)[\s\S]*?14, 1\)/,
     );
     expect(migration).toMatch(
-      /\(purpose, send_hour, send_time_zone, digest_cc_allowed\)\s+VALUES \('followup_digest', 8, 'America\/Chicago', false\)/,
+      /\(purpose, send_hour, send_time_zone, second_send_hour, digest_frequency, digest_weekday,\s+digest_cc_allowed\)\s+VALUES \('followup_digest', 8, 'America\/Chicago', 14, 'daily', 1, false\)/,
     );
   });
 
@@ -1360,10 +1348,14 @@ describe("resolveNotificationPolicyRules: org over platform over default, field 
   it("takes the platform over the default, and the org over the platform", () => {
     expect(
       resolveNotificationPolicyRules({ bounceEscalationStep: 2, digestCcAllowed: true }),
-    ).toEqual({ bounceEscalationStep: 2, digestCcAllowed: true });
+    ).toEqual({
+      ...DEFAULT_NOTIFICATION_POLICY_RULES,
+      bounceEscalationStep: 2,
+      digestCcAllowed: true,
+    });
     expect(
       resolveNotificationPolicyRules({ bounceEscalationStep: 2 }, { bounceEscalationStep: 3 }),
-    ).toEqual({ bounceEscalationStep: 3, digestCcAllowed: false });
+    ).toEqual({ ...DEFAULT_NOTIFICATION_POLICY_RULES, bounceEscalationStep: 3 });
     expect(
       resolveNotificationPolicyRules({ bounceEscalationStep: 2 }, { bounceEscalationStep: 0 }),
     ).toMatchObject({ bounceEscalationStep: BOUNCE_ESCALATION_OFF });
@@ -1375,7 +1367,7 @@ describe("resolveNotificationPolicyRules: org over platform over default, field 
         { bounceEscalationStep: 2, digestCcAllowed: null },
         { bounceEscalationStep: null },
       ),
-    ).toEqual({ bounceEscalationStep: 2, digestCcAllowed: false });
+    ).toEqual({ ...DEFAULT_NOTIFICATION_POLICY_RULES, bounceEscalationStep: 2 });
     expect(resolveNotificationPolicyRules({ bounceEscalationStep: undefined }, {})).toEqual(
       DEFAULT_NOTIFICATION_POLICY_RULES,
     );
@@ -1422,7 +1414,7 @@ describe("validateNotificationPolicyRules", () => {
     ]);
     expect(validateNotificationPolicyRules({ bounceEscalationStep: "1" })).toHaveLength(1);
     expect(validateNotificationPolicyRules({ digestCcAllowed: "yes" })).toEqual([
-      "Whether the daily digest may cc anyone must be on or off.",
+      "Whether the digest may cc anyone must be on or off.",
     ]);
     expect(validateNotificationPolicyRules({ ccEveryone: true })).toEqual([
       '"ccEveryone" is not a notification policy setting.',
@@ -1435,7 +1427,7 @@ describe("validateNotificationPolicyRules", () => {
 
   it("refuses digestCcAllowed from an org admin; Minted may set it as a default or org override", () => {
     expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "org_admin")).toEqual([
-      "Only Minted decides whether the daily digest may cc anyone.",
+      "Only Minted decides whether the digest may cc anyone.",
     ]);
     expect(validateNotificationPolicyRules({ digestCcAllowed: true }, "platform_admin")).toEqual(
       [],
@@ -1730,7 +1722,7 @@ describe("draftsEqual", () => {
       bounceEscalationStep: null,
       targetDaysToReady: a.targetDaysToReady,
       stopConditions: a.stopConditions,
-      enabled: a.enabled,
+      digestFrequency: null,
     };
     expect(draftsEqual(a, reordered)).toBe(true);
     const legacy = { ...a } as Partial<SequenceDraft>;
@@ -1753,32 +1745,182 @@ describe("Minted's intake default: days 1, 2 and 3 (Sowmya, Oct 31)", () => {
     expect(migration).not.toMatch(/\('intake_reminder', 3, 7, 'email'/);
   });
 
-  it("sends on days 1, 2 and 3 after the invite, by email, with compression off", () => {
+  it("sends on days 1, 2 and 3 after the invite, by email, never on the invite day (A12)", () => {
     expect(offsets).toEqual([1, 2, 3]);
     expect(INTAKE_DEFAULT.steps.every((s) => s.channel === "email")).toBe(true);
     const result = scheduleSequenceSends({
       offsets,
       inviteDate: "2026-11-02",
-      startDate: "2026-11-04",
       targetDaysToReady: 14,
-      compressTowardStartDate: false,
     });
     expect(result.sends.map((s) => s.sendOn)).toEqual(["2026-11-03", "2026-11-04", "2026-11-05"]);
     expect(result.readyBy).toBe("2026-11-16");
   });
+});
 
-  it("would keep its days under compression unless the start date is within three days", () => {
-    const at = (startDate: string) =>
-      scheduleSequenceSends({
-        offsets,
-        inviteDate: "2026-11-02",
-        startDate,
-        targetDaysToReady: 14,
-        compressTowardStartDate: true,
-      });
-    expect(at("2026-11-10").sends.map((s) => s.offsetDays)).toEqual([1, 2, 3]);
-    const near = at("2026-11-04");
-    expect(near.sends.map((s) => s.offsetDays)).toEqual([1]);
-    expect(near.skipped.map((s) => s.position)).toEqual([2, 3]);
+/* ---------------- Addendum 8 (Answered Oct 31, A8 to A13) ---------------- */
+
+describe("digest frequency (A8): daily, weekly or twice a day, per org", () => {
+  const digestOrg = (over: Partial<NotificationSequenceConfig> = {}) =>
+    orgRow({ purpose: "followup_digest", ...over });
+
+  it("defaults to daily from Minted, and takes the org's own choice", () => {
+    expect(
+      resolveNotificationSequence("followup_digest", digestOrg(), DIGEST_DEFAULT),
+    ).toMatchObject({ digestFrequency: "daily", inherited: { digestFrequency: true } });
+    for (const digestFrequency of ["weekly", "twice_daily"] as const) {
+      expect(
+        resolveNotificationSequence(
+          "followup_digest",
+          digestOrg({ digestFrequency }),
+          DIGEST_DEFAULT,
+        ),
+      ).toMatchObject({ digestFrequency, inherited: { digestFrequency: false } });
+    }
+    // A default row read without the column still gives the decided daily.
+    expect(
+      resolveNotificationSequence("followup_digest", digestOrg(), {
+        ...DIGEST_DEFAULT,
+        digestFrequency: null,
+        digestWeekday: null,
+      }),
+    ).toMatchObject({ digestFrequency: "daily", digestWeekday: 1 });
+    expect(isDigestFrequency("hourly")).toBe(false);
+  });
+
+  it("goes weekly on Monday by default, or on Minted's chosen day", () => {
+    expect(
+      resolveNotificationSequence("followup_digest", digestOrg(), DIGEST_DEFAULT).digestWeekday,
+    ).toBe(1);
+    expect(
+      resolveNotificationSequence(
+        "followup_digest",
+        digestOrg({ digestWeekday: 5 }),
+        DIGEST_DEFAULT,
+      ).digestWeekday,
+    ).toBe(5);
+  });
+
+  it("round-trips the frequency through the draft and the payload, sent only when set", () => {
+    const draft = draftFromSequence(digestOrg({ digestFrequency: "weekly" }));
+    expect(draft.digestFrequency).toBe("weekly");
+    expect(buildSavePayload("followup_digest", draft, 1)).toMatchObject({
+      digest_frequency: "weekly",
+    });
+    expect("digest_frequency" in buildSavePayload("followup_digest", digest(), null)).toBe(false);
+  });
+
+  it("refuses an unknown frequency, and any frequency on intake", () => {
+    expect(
+      messages(
+        validateDraft("followup_digest", {
+          ...digest(),
+          digestFrequency: "hourly" as unknown as "daily",
+        }),
+      ),
+    ).toEqual(["Choose daily, weekly or twice a day, or Minted's default."]);
+    expect(
+      messages(validateDraft("intake_reminder", { ...intake(), digestFrequency: "weekly" })),
+    ).toEqual(["Intake reminders follow their steps, not a frequency."]);
+  });
+
+  it("lets an org admin choose the frequency but not the weekday", () => {
+    expect(validateNotificationPolicyRules({ digestFrequency: "weekly" }, "org_admin")).toEqual([]);
+    expect(validateNotificationPolicyRules({ digestWeekday: 3 }, "org_admin")).toEqual([
+      "Only Minted sets the weekly digest's day.",
+    ]);
+    expect(validateNotificationPolicyRules({ digestWeekday: 8 })).toEqual([
+      "The weekly digest's day must be Monday (1) to Sunday (7).",
+    ]);
+    expect(validateNotificationPolicyRules({ digestFrequency: "hourly" })).toEqual([
+      "The digest goes out daily, weekly or twice a day.",
+    ]);
+  });
+
+  it("describes each schedule from its settings", () => {
+    const base = {
+      digestWeekday: 1,
+      sendHour: 8,
+      sendTimeZone: "America/Chicago",
+      secondSendHour: 14,
+    };
+    expect(describeDigestSchedule({ ...base, digestFrequency: "daily" })).toBe(
+      "Sent around 8 am Central time. Minted sets this.",
+    );
+    expect(describeDigestSchedule({ ...base, digestFrequency: null })).toBe(
+      "Sent around 8 am Central time. Minted sets this.",
+    );
+    expect(describeDigestSchedule({ ...base, digestFrequency: "weekly" })).toBe(
+      "Sent on Mondays around 8 am Central time. Minted sets the day and time.",
+    );
+    expect(describeDigestSchedule({ ...base, digestFrequency: "weekly", digestWeekday: 5 })).toBe(
+      "Sent on Fridays around 8 am Central time. Minted sets the day and time.",
+    );
+    expect(describeDigestSchedule({ ...base, digestFrequency: "twice_daily" })).toBe(
+      "Sent around 8 am and 2 pm Central time. Minted sets these times.",
+    );
+    expect(
+      describeDigestSchedule({ ...base, sendTimeZone: "Gone/Zone", digestFrequency: null }),
+    ).toBeNull();
+  });
+});
+
+describe("send time is one group per layer (A10)", () => {
+  it("takes hour, zone and second hour from the same layer", () => {
+    const fallback = { sendHour: 8, sendTimeZone: "America/Chicago", secondSendHour: 14 };
+    expect(
+      resolveSendTime({ sendHour: 6, sendTimeZone: "Europe/Paris", secondSendHour: 12 }, fallback),
+    ).toEqual({ sendHour: 6, sendTimeZone: "Europe/Paris", secondSendHour: 12, inherited: false });
+    for (const partial of [
+      { sendHour: 6 },
+      { sendTimeZone: "Europe/Paris" },
+      { sendHour: 6, sendTimeZone: "Europe/Paris" },
+      { sendHour: 6, sendTimeZone: "Europe/Paris", secondSendHour: 6 },
+    ]) {
+      expect(resolveSendTime(partial, fallback)).toEqual({ ...fallback, inherited: true });
+    }
+    expect(resolveSendTime(undefined, fallback)).toEqual({ ...fallback, inherited: true });
+  });
+
+  it("refuses a layer that sets one without the others, in plain language", () => {
+    expect(validateSendTime({})).toEqual([]);
+    expect(
+      validateSendTime({ sendHour: 8, sendTimeZone: "America/Chicago", secondSendHour: 14 }),
+    ).toEqual([]);
+    expect(validateSendTime({ sendHour: 8 })).toEqual([
+      "Set the send hour, the time zone and the second send hour together, or leave all three to Minted's default.",
+    ]);
+    expect(validateSendTime({ sendTimeZone: "America/Chicago" })).toHaveLength(1);
+    expect(
+      validateSendTime({ sendHour: 15, sendTimeZone: "America/Chicago", secondSendHour: 9 }),
+    ).toEqual(["The second send hour must be later than the first."]);
+    expect(validateSendTime({ sendHour: 24, sendTimeZone: "CST", secondSendHour: 25 })).toEqual([
+      "The send hour must be a whole hour from 0 to 23.",
+      "The time zone must be an IANA zone such as America/Chicago.",
+      "The second send hour must be a whole hour from 0 to 23.",
+    ]);
+  });
+});
+
+describe("notifications stay off until Minted turns them on (A9)", () => {
+  it("has no on/off in the draft or the payload, and says who switches it", () => {
+    expect("enabled" in starterDraft()).toBe(false);
+    expect("enabled" in buildSavePayload("intake_reminder", intake(), null)).toBe(false);
+    expect(enabledStatusNote(false)).toBe("Off. Minted switches notifications on at kickoff.");
+    expect(enabledStatusNote(true)).toBe("On. Minted switched these on for your organization.");
+    // The org's row still decides on/off; a default never switches anyone on.
+    expect(
+      resolveNotificationSequence("intake_reminder", orgRow({ enabled: true }), INTAKE_DEFAULT)
+        .enabled,
+    ).toBe(true);
+  });
+});
+
+describe("nothing goes out on the invite day (A12)", () => {
+  it("refuses an intake step on day 0, from the card's validation", () => {
+    expect(
+      messages(validateDraft("intake_reminder", updateStep(intake(), 0, { offsetDays: 0 }))),
+    ).toEqual(["Step 1 must be between day 1 and day 90."]);
+    expect(PURPOSE_RULES.intake_reminder.minOffsetDays).toBe(1);
   });
 });

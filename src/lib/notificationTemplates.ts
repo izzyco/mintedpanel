@@ -160,7 +160,8 @@ export const NOTIFICATION_TEMPLATES: readonly NotificationTemplateEntry[] = [
   {
     key: "followup_digest_daily",
     purpose: "followup_digest",
-    label: "Daily follow-up digest",
+    // One body for every frequency (A8: daily, weekly or twice a day).
+    label: "Follow-up digest",
     description: "Lists the follow-ups due today and the overdue ones, with a link to Work.",
     // A list of follow-ups does not fit in a text, so the digest has no SMS
     // body. Adding one is a catalog change, not a migration.

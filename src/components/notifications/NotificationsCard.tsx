@@ -50,13 +50,13 @@ function starterSummary(
   platformDefault: NotificationSequenceDefaultConfig,
 ): string {
   if (purpose === "followup_digest") {
-    return `Set up starts you with ${PLATFORM_DEFAULT_LABEL}: one email a day to each coordinator, switched off until you turn it on.`;
+    return `Set up starts you with ${PLATFORM_DEFAULT_LABEL}: one email a day to each coordinator. Minted switches it on at kickoff.`;
   }
   const steps = [...platformDefault.steps].sort((a, b) => a.position - b.position);
   const allEmail = steps.every((s) => s.channel === "email");
   const noun = allEmail ? (steps.length === 1 ? "email" : "emails") : "messages";
   const offsets = steps.map((s) => s.offsetDays);
-  return `Set up starts you with ${PLATFORM_DEFAULT_LABEL}: ${steps.length} ${noun}, on ${describeOffsets(offsets)} after the invite, cc'ing no one, switched off until you turn it on. You can change any of it before you save.`;
+  return `Set up starts you with ${PLATFORM_DEFAULT_LABEL}: ${steps.length} ${noun}, on ${describeOffsets(offsets)} after the invite, cc'ing no one. Minted switches it on at kickoff. You can change any of it before you save.`;
 }
 
 function AdminSequence({

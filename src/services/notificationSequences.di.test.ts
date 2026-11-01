@@ -23,7 +23,6 @@ const SEQUENCE_ROW = {
   enabled: true,
   stop_conditions: ["submitted", "withdrawn"],
   target_days_to_ready: 14,
-  compress_toward_start_date: null,
   send_hour: null,
   send_time_zone: null,
   revision: 3,
@@ -38,7 +37,6 @@ const DEFAULT_ROWS = [
     purpose: "intake_reminder",
     stop_conditions: ["submitted", "paused", "withdrawn", "provider_replied"],
     target_days_to_ready: 14,
-    compress_toward_start_date: false,
     send_hour: null,
     send_time_zone: null,
     created_at: "2026-10-31T00:00:00Z",
@@ -48,7 +46,6 @@ const DEFAULT_ROWS = [
     purpose: "followup_digest",
     stop_conditions: null,
     target_days_to_ready: null,
-    compress_toward_start_date: null,
     send_hour: 8,
     send_time_zone: "America/Chicago",
     created_at: "2026-10-31T00:00:00Z",
@@ -168,7 +165,6 @@ describe("notification sequences service", () => {
       revision: 3,
       stopConditions: ["submitted", "withdrawn"],
       targetDaysToReady: 14,
-      compressTowardStartDate: null,
       sendHour: null,
       sendTimeZone: null,
     });
@@ -195,7 +191,6 @@ describe("notification sequences service", () => {
       purpose: "intake_reminder",
       stopConditions: ["submitted", "paused", "withdrawn", "provider_replied"],
       targetDaysToReady: 14,
-      compressTowardStartDate: false,
       sendHour: null,
       sendTimeZone: null,
     });
@@ -208,7 +203,6 @@ describe("notification sequences service", () => {
       sendHour: 8,
       sendTimeZone: "America/Chicago",
       stopConditions: null,
-      compressTowardStartDate: null,
     });
     expect(listed.defaults.followup_digest.steps.map((s) => s.templateKey)).toEqual([
       "followup_digest_daily",
@@ -228,6 +222,9 @@ describe("notification sequences service", () => {
           target_days_to_ready: null,
           send_hour: 6,
           send_time_zone: "America/New_York",
+          second_send_hour: 15,
+          digest_frequency: "weekly",
+          digest_weekday: 3,
         },
       ],
       notification_sequence_steps: [],
@@ -242,6 +239,9 @@ describe("notification sequences service", () => {
     expect(listed.sequences.followup_digest).toMatchObject({
       sendHour: 6,
       sendTimeZone: "America/New_York",
+      secondSendHour: 15,
+      digestFrequency: "weekly",
+      digestWeekday: 3,
     });
   });
 
@@ -397,7 +397,7 @@ describe("notification sequences service", () => {
   });
 
   it("saves 'use Minted's default' as nulls, with no platform-managed key", async () => {
-    const payload = buildSavePayload("intake_reminder", { ...starterDraft(), enabled: true }, 3);
+    const payload = buildSavePayload("intake_reminder", starterDraft(), 3);
     const rpc = vi.fn().mockResolvedValue({
       data: {
         sequence: {
@@ -415,7 +415,6 @@ describe("notification sequences service", () => {
       ctxFor({ rpc }),
     );
     expect(rpc.mock.calls[0][1].p_payload).toEqual({
-      enabled: true,
       stop_conditions: null,
       target_days_to_ready: null,
       expected_revision: 3,
@@ -475,7 +474,7 @@ describe("notification sequences service", () => {
   it("sends the org's own bounce escalation step through the RPC", async () => {
     const payload = buildSavePayload(
       "intake_reminder",
-      { ...starterDraft(), enabled: true, bounceEscalationStep: 2 },
+      { ...starterDraft(), bounceEscalationStep: 2 },
       3,
     );
     const rpc = vi.fn().mockResolvedValue({

@@ -1,14 +1,14 @@
 // MINT-107 — the Org Detail Notifications card over the mock harness. An
 // admin sets up intake reminders from Minted's default, customizes the steps,
 // edits an offset, fills and orders step 1's cc list, moves a step from the
-// keyboard, switches it on and saves; the spec asserts the exact
+// keyboard and saves (on/off stays Minted's: A9); the spec asserts the exact
 // save_notification_sequence payload, not just the UI: settings left alone
 // go as null (Minted's default) and nothing platform-managed is ever sent.
 // An admin overrides a default and goes back to it. Another admin saving
 // under an open draft keeps the edits and makes the save a 409 conflict. A
 // specialist sees the schedule read-only, the digest with Minted's send time
-// and no cc, and before the migration is applied the card says the feature
-// is not switched on yet.
+// and no cc, an admin picks how often the digest goes out (A8), and before
+// the migration is applied the card says the feature is not switched on yet.
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
 
 const AUTH_KEY = "sb-example-auth-token";
@@ -80,7 +80,6 @@ function fixtures(role: "admin" | "specialist"): Rows {
         purpose: "intake_reminder",
         stop_conditions: ["submitted", "paused", "withdrawn", "provider_replied"],
         target_days_to_ready: 14,
-        compress_toward_start_date: false,
         send_hour: null,
         send_time_zone: null,
         created_at: "2026-10-31T00:00:00Z",
@@ -90,7 +89,9 @@ function fixtures(role: "admin" | "specialist"): Rows {
         purpose: "followup_digest",
         stop_conditions: null,
         target_days_to_ready: null,
-        compress_toward_start_date: null,
+        digest_frequency: "daily",
+        digest_weekday: 1,
+        second_send_hour: 14,
         send_hour: 8,
         send_time_zone: "America/Chicago",
         created_at: "2026-10-31T00:00:00Z",
@@ -150,7 +151,6 @@ function savedIntake(rows: Rows, over: Record<string, unknown> = {}) {
       enabled: true,
       stop_conditions: ["submitted", "withdrawn"],
       target_days_to_ready: null,
-      compress_toward_start_date: null,
       send_hour: null,
       send_time_zone: null,
       revision: 4,
@@ -180,8 +180,9 @@ interface SaveCall {
   p_org_id: string;
   p_purpose: string;
   p_payload: {
-    enabled: boolean;
     expected_revision: number | null;
+    digest_frequency?: string;
+    bounce_escalation_step?: number;
     stop_conditions: string[] | null;
     target_days_to_ready: number | null;
     steps: Array<{
@@ -193,7 +194,14 @@ interface SaveCall {
   };
 }
 
-const PLATFORM_KEYS = ["compress_toward_start_date", "send_hour", "send_time_zone"];
+const PLATFORM_KEYS = [
+  "enabled",
+  "send_hour",
+  "send_time_zone",
+  "second_send_hour",
+  "digest_weekday",
+  "digest_cc_allowed",
+];
 
 function makeHandler(rows: Rows, options: { missingTables?: boolean } = {}) {
   const saves: SaveCall[] = [];
@@ -231,10 +239,12 @@ function makeHandler(rows: Rows, options: { missingTables?: boolean } = {}) {
         id,
         org_id: call.p_org_id,
         purpose: call.p_purpose,
-        enabled: call.p_payload.enabled,
+        // On/off is Minted's (A9): a save never changes it, and a new row is off.
+        enabled: existing?.enabled ?? false,
         stop_conditions: call.p_payload.stop_conditions,
         target_days_to_ready: call.p_payload.target_days_to_ready,
-        compress_toward_start_date: existing?.compress_toward_start_date ?? null,
+        bounce_escalation_step: call.p_payload.bounce_escalation_step ?? null,
+        digest_frequency: call.p_payload.digest_frequency ?? null,
         send_hour: existing?.send_hour ?? null,
         send_time_zone: existing?.send_time_zone ?? null,
         revision: existing ? (existing.revision as number) + 1 : 1,
@@ -352,11 +362,10 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
     "placeholder",
     "14",
   );
-  // Compression is Minted's: no switch, just what it does (answer 4).
-  await expect(intake.getByRole("switch")).toHaveCount(1);
-  await expect(
-    intake.getByText("Near a start date: reminders keep their days. Minted sets this."),
-  ).toBeVisible();
+  // On/off is Minted's (A9): read-only, no switch. Compression is gone (A13).
+  await expect(intake.getByRole("switch")).toHaveCount(0);
+  await expect(intake.getByText("Off. Minted switches notifications on at kickoff.")).toBeVisible();
+  await expect(intake.getByText(/Near a start date/)).toHaveCount(0);
 
   await intake.getByRole("button", { name: "Customize steps" }).click();
   await expect(intake.getByLabel("Step 1 days after invite")).toHaveValue("1");
@@ -388,7 +397,6 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
   await expect(intake.getByRole("button", { name: "Move step 1 down" })).toBeFocused();
   await expect(live).toHaveText("Moved to step 1");
 
-  await intake.getByRole("switch", { name: "Send intake reminders" }).click();
   await intake.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Provider intake reminders saved")).toBeVisible();
 
@@ -399,7 +407,6 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
     p_org_id: ORG_ID,
     p_purpose: "intake_reminder",
     p_payload: {
-      enabled: true,
       stop_conditions: null,
       target_days_to_ready: null,
       expected_revision: null,
@@ -429,12 +436,13 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
     },
   });
 
-  // The refetch shows the saved row: on, nothing left to save.
-  await expect(intake.getByText("On", { exact: true })).toBeVisible();
+  // The refetch shows the saved row: still off (Minted switches it on), with
+  // nothing left to save.
+  await expect(intake.getByText("Off", { exact: true })).toBeVisible();
   await expect(intake.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await expect(intake.getByRole("button", { name: "Discard changes" })).toBeDisabled();
   // The digest was never touched.
-  const digest = page.getByRole("region", { name: "Daily follow-up digest" });
+  const digest = page.getByRole("region", { name: "Follow-up digest" });
   await expect(digest.getByText("Not set up")).toBeVisible();
 });
 
@@ -449,7 +457,6 @@ test("MINT-107: a specialist sees the saved schedule read-only", async ({ contex
     enabled: true,
     stop_conditions: null,
     target_days_to_ready: null,
-    compress_toward_start_date: null,
     send_hour: null,
     send_time_zone: null,
     revision: 1,
@@ -474,10 +481,8 @@ test("MINT-107: a specialist sees the saved schedule read-only", async ({ contex
   await expect(intake.getByRole("textbox")).toHaveCount(0);
   await expect(intake.getByRole("spinbutton")).toHaveCount(0);
   await expect(intake.getByRole("button")).toHaveCount(0);
-  const digest = page.getByRole("region", { name: "Daily follow-up digest" });
-  await expect(
-    digest.getByText("Step 1 · once a day · Email · Daily follow-up digest"),
-  ).toBeVisible();
+  const digest = page.getByRole("region", { name: "Follow-up digest" });
+  await expect(digest.getByText("Step 1 · once a day · Email · Follow-up digest")).toBeVisible();
   // Answers 2 and 5: coordinators only, at the hour Minted sets.
   await expect(digest.getByText("Sent around 8 am Central time. Minted sets this.")).toBeVisible();
   await expect(digest.getByText(/^Cc:/)).toHaveCount(0);
@@ -507,19 +512,24 @@ test("MINT-107: another admin's save keeps an open draft, and saving it is a con
   rows.notification_sequences[0].revision = 5;
   rows.notification_sequence_steps[0].offset_days = 3;
 
-  // Saving the digest refetches both purposes. The digest has nothing to
-  // edit but on/off: no cc picker, and Minted's send time read-only.
-  const digest = page.getByRole("region", { name: "Daily follow-up digest" });
-  await digest.getByRole("button", { name: "Set up daily follow-up digest" }).click();
-  await expect(digest.getByRole("combobox")).toHaveCount(0);
+  // Saving the digest refetches both purposes. The digest's only org
+  // setting is how often (A8): no cc picker, Minted's send time read-only.
+  const digest = page.getByRole("region", { name: "Follow-up digest" });
+  await digest.getByRole("button", { name: "Set up follow-up digest" }).click();
+  await expect(digest.getByRole("combobox")).toHaveCount(1);
   await expect(digest.getByText("Sent around 8 am Central time. Minted sets this.")).toBeVisible();
+  await digest.getByRole("combobox", { name: "How often" }).click();
+  await page.getByRole("option", { name: "Weekly" }).click();
+  await expect(
+    digest.getByText("Sent on Mondays around 8 am Central time. Minted sets the day and time."),
+  ).toBeVisible();
   await digest.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Daily follow-up digest saved")).toBeVisible();
+  await expect(page.getByText("Follow-up digest saved")).toBeVisible();
   expect(saves.at(-1)).toEqual({
     p_org_id: ORG_ID,
     p_purpose: "followup_digest",
     p_payload: {
-      enabled: false,
+      digest_frequency: "weekly",
       stop_conditions: null,
       target_days_to_ready: null,
       expected_revision: null,
@@ -585,7 +595,6 @@ test("MINT-107: an admin overrides Minted's defaults and goes back to them", asy
       p_org_id: ORG_ID,
       p_purpose: "intake_reminder",
       p_payload: {
-        enabled: true,
         stop_conditions: null,
         target_days_to_ready: null,
         expected_revision: 4,

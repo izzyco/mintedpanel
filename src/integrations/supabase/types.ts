@@ -1917,10 +1917,12 @@ export type Database = {
       notification_sequence_defaults: {
         Row: {
           bounce_escalation_step: number | null;
-          compress_toward_start_date: boolean | null;
           created_at: string;
           digest_cc_allowed: boolean | null;
+          digest_frequency: string | null;
+          digest_weekday: number | null;
           purpose: string;
+          second_send_hour: number | null;
           send_hour: number | null;
           send_time_zone: string | null;
           stop_conditions: string[] | null;
@@ -1929,10 +1931,12 @@ export type Database = {
         };
         Insert: {
           bounce_escalation_step?: number | null;
-          compress_toward_start_date?: boolean | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
+          digest_frequency?: string | null;
+          digest_weekday?: number | null;
           purpose: string;
+          second_send_hour?: number | null;
           send_hour?: number | null;
           send_time_zone?: string | null;
           stop_conditions?: string[] | null;
@@ -1941,10 +1945,12 @@ export type Database = {
         };
         Update: {
           bounce_escalation_step?: number | null;
-          compress_toward_start_date?: boolean | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
+          digest_frequency?: string | null;
+          digest_weekday?: number | null;
           purpose?: string;
+          second_send_hour?: number | null;
           send_hour?: number | null;
           send_time_zone?: string | null;
           stop_conditions?: string[] | null;
@@ -2003,14 +2009,16 @@ export type Database = {
       notification_sequences: {
         Row: {
           bounce_escalation_step: number | null;
-          compress_toward_start_date: boolean | null;
           created_at: string;
           digest_cc_allowed: boolean | null;
+          digest_frequency: string | null;
+          digest_weekday: number | null;
           enabled: boolean;
           id: string;
           org_id: string;
           purpose: string;
           revision: number;
+          second_send_hour: number | null;
           send_hour: number | null;
           send_time_zone: string | null;
           stop_conditions: string[] | null;
@@ -2020,14 +2028,16 @@ export type Database = {
         };
         Insert: {
           bounce_escalation_step?: number | null;
-          compress_toward_start_date?: boolean | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
+          digest_frequency?: string | null;
+          digest_weekday?: number | null;
           enabled?: boolean;
           id?: string;
           org_id: string;
           purpose: string;
           revision?: number;
+          second_send_hour?: number | null;
           send_hour?: number | null;
           send_time_zone?: string | null;
           stop_conditions?: string[] | null;
@@ -2037,14 +2047,16 @@ export type Database = {
         };
         Update: {
           bounce_escalation_step?: number | null;
-          compress_toward_start_date?: boolean | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
+          digest_frequency?: string | null;
+          digest_weekday?: number | null;
           enabled?: boolean;
           id?: string;
           org_id?: string;
           purpose?: string;
           revision?: number;
+          second_send_hour?: number | null;
           send_hour?: number | null;
           send_time_zone?: string | null;
           stop_conditions?: string[] | null;

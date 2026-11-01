@@ -28,6 +28,7 @@ import {
   NOTIFICATION_PURPOSES,
   PURPOSE_RULES,
   STOP_CONDITIONS,
+  isDigestFrequency,
   parseCcRecipients,
   saveErrorMessage,
   type NotificationSequenceConfig,
@@ -35,6 +36,7 @@ import {
   type SaveSequencePayload,
 } from "@/lib/notificationSequences";
 import type {
+  DigestFrequency,
   NotificationChannel,
   NotificationPurpose,
   NotificationSequenceDefaultStep,
@@ -52,11 +54,11 @@ function browserCtx(): NotificationSequenceServiceCtx {
 }
 
 const SEQUENCE_COLUMNS =
-  "id, org_id, purpose, enabled, stop_conditions, target_days_to_ready, bounce_escalation_step, compress_toward_start_date, send_hour, send_time_zone, digest_cc_allowed, revision, created_at, updated_at, updated_by";
+  "id, org_id, purpose, enabled, stop_conditions, target_days_to_ready, bounce_escalation_step, digest_frequency, send_hour, send_time_zone, second_send_hour, digest_weekday, digest_cc_allowed, revision, created_at, updated_at, updated_by";
 const STEP_COLUMNS =
   "id, sequence_id, org_id, position, offset_days, channel, template_key, cc_recipients, created_at, updated_at";
 const DEFAULT_COLUMNS =
-  "purpose, stop_conditions, target_days_to_ready, bounce_escalation_step, digest_cc_allowed, compress_toward_start_date, send_hour, send_time_zone, created_at, updated_at";
+  "purpose, stop_conditions, target_days_to_ready, bounce_escalation_step, digest_cc_allowed, digest_frequency, digest_weekday, send_hour, send_time_zone, second_send_hour, created_at, updated_at";
 const DEFAULT_STEP_COLUMNS =
   "id, purpose, position, offset_days, channel, template_key, created_at, updated_at";
 
@@ -69,9 +71,11 @@ type SequenceRow = Pick<
   | "stop_conditions"
   | "target_days_to_ready"
   | "bounce_escalation_step"
-  | "compress_toward_start_date"
+  | "digest_frequency"
   | "send_hour"
   | "send_time_zone"
+  | "second_send_hour"
+  | "digest_weekday"
   | "digest_cc_allowed"
   | "revision"
   | "created_at"
@@ -96,6 +100,11 @@ type DefaultStepRow = Database["public"]["Tables"]["notification_sequence_defaul
 
 function isPurpose(value: string): value is NotificationPurpose {
   return (NOTIFICATION_PURPOSES as readonly string[]).includes(value);
+}
+
+/** Unknown or missing reads as unset (Minted's default). */
+function toFrequency(value: string | null | undefined): DigestFrequency | null {
+  return isDigestFrequency(value) ? value : null;
 }
 
 function toChannel(value: string): NotificationChannel {
@@ -136,9 +145,11 @@ function toConfig(row: SequenceRow, steps: StepRow[]): NotificationSequenceConfi
     targetDaysToReady: row.target_days_to_ready,
     // A row read without the column (a stub, an older reader) inherits.
     bounceEscalationStep: row.bounce_escalation_step ?? null,
-    compressTowardStartDate: row.compress_toward_start_date,
+    digestFrequency: toFrequency(row.digest_frequency),
     sendHour: row.send_hour,
     sendTimeZone: row.send_time_zone,
+    secondSendHour: row.second_send_hour ?? null,
+    digestWeekday: row.digest_weekday ?? null,
     digestCcAllowed: row.digest_cc_allowed ?? null,
     revision: row.revision,
     createdAt: row.created_at,
@@ -201,9 +212,11 @@ function toDefaults(rows: DefaultRow[], steps: DefaultStepRow[]): NotificationSe
       // Missing reads as unset; the resolver then uses the decided value.
       bounceEscalationStep: row.bounce_escalation_step ?? null,
       digestCcAllowed: row.digest_cc_allowed ?? null,
-      compressTowardStartDate: row.compress_toward_start_date,
+      digestFrequency: toFrequency(row.digest_frequency),
+      digestWeekday: row.digest_weekday ?? null,
       sendHour: row.send_hour,
       sendTimeZone: row.send_time_zone,
+      secondSendHour: row.second_send_hour ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       steps: steps
