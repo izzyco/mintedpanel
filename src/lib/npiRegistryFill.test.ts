@@ -568,6 +568,42 @@ describe("planNpiRegistryFill — rows added from the previous pick's offers", (
     expect(next.summary.kept).toEqual([]);
   });
 
+  it("adds the same rows whatever order the registry lists its licenses in", () => {
+    const taxonomy = (license: string, primary = false) => ({
+      code: "225100000X",
+      description: null,
+      primary,
+      license,
+      licenseState: "CO",
+    });
+    // A's untouched CO PT-1111 is on the form; B lists PT-2222 and PT-1111.
+    const outcome = (licenses: string[]) => {
+      const next = plan(
+        record({ taxonomies: licenses.map((license, i) => taxonomy(license, i === 0)) }),
+        afterAdd,
+        "blank_fields",
+        lastPick,
+      );
+      return {
+        removeRows: next.removeRows,
+        addLicenses: next.addLicenses,
+        offers: next.summary.licenseOffers,
+        kept: next.summary.kept,
+        rows: applied(afterAdd, next).licenses.map((r) => `${r.state} ${r.number}`),
+      };
+    };
+    const newFirst = outcome(["PT-2222", "PT-1111"]);
+    expect(newFirst).toEqual(outcome(["PT-1111", "PT-2222"]));
+    // A's row is B's too, so it stays; CO has a row, so PT-2222 is offered.
+    expect(newFirst).toEqual({
+      removeRows: [],
+      addLicenses: [],
+      offers: [{ state: "CO", number: "PT-2222", added: false }],
+      kept: [],
+      rows: ["CO PT-1111"],
+    });
+  });
+
   it("never calls a row of the last pick's that B also lists staff's", () => {
     const taxonomy = (license: string, primary = false) => ({
       code: "225100000X",

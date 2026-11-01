@@ -488,20 +488,30 @@ export function planNpiRegistryFill(
   if (taxonomyChanged) (trace.taxonomyCode ? filled : cleared).push(NPI_FILL_FIELD.taxonomyCode);
 
   const notAdded: string[] = [];
-  for (const license of registryLicenses(record)) {
+  const licenses = registryLicenses(record);
+  // First, the licenses already on the form: an added row this match also
+  // lists stays. Marked before anything is filled or added, so what a pick
+  // adds never depends on the order the registry lists its licenses in.
+  const held = new Set<number>();
+  if (fillBlanks) {
+    licenses.forEach((license, index) => {
+      const holding = rows.findIndex(
+        (row) => row.state === license.state && sameLicense(row, license),
+      );
+      if (holding < 0) return;
+      rows[holding].removable = false;
+      rows[holding].stale = false;
+      held.add(index);
+    });
+  }
+  for (const [index, license] of licenses.entries()) {
     const line = `${license.state} ${license.number}`;
     if (!fillBlanks) {
       notAdded.push(line);
       continue;
     }
+    if (held.has(index)) continue;
     const inState = rows.flatMap((row, i) => (row.state === license.state ? [i] : []));
-    const holding = inState.find((i) => sameLicense(rows[i], license));
-    if (holding !== undefined) {
-      // Already on the form; an added row this match also lists stays.
-      rows[holding].removable = false;
-      rows[holding].stale = false;
-      continue;
-    }
     const blankRow = inState.find(
       (i) => !rows[i].removable && !rows[i].numberLocked && isBlankField(rows[i].number),
     );
