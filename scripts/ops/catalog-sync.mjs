@@ -45,68 +45,37 @@ export function planAdds(source, target, key = (r) => r.id) {
   return source.filter((r) => !have.has(key(r)));
 }
 
-/** An org-owned row can only go where the owning org exists. */
+/** The sync copies the global catalog, plus rows of orgs that exist on
+ * staging; it never creates an org. */
 export function splitByOrg(rows, targetOrgIds) {
   const ok = [];
   const skipped = [];
   for (const r of rows) {
     if (r.org_id == null || targetOrgIds.has(r.org_id)) ok.push(r);
-    else skipped.push({ row: r, reason: "org not on target" });
+    else skipped.push({ row: r, reason: `org ${r.org_id} is not on staging` });
   }
   return { ok, skipped };
 }
 
 /**
- * Forms need their payer and template on the target, and a storage file.
- * `have` carries the ids that exist (or will exist) on the target.
- * `skippedTemplates` (id -> reason) names the templates this run holds back or
- * staging refused, so a form says which template it is waiting for and why.
+ * Forms need their payer and template on staging before their file is
+ * uploaded, so a form that cannot go in leaves no file behind. `have` holds
+ * the ids on staging (in a dry run, plus the rows the run would add).
  */
-export function splitForms(forms, have, skippedTemplates = new Map()) {
+export function splitForms(forms, have) {
   const ok = [];
   const skipped = [];
   for (const f of forms) {
     if (f.payer_id && !have.payers.has(f.payer_id))
-      skipped.push({ row: f, reason: "payer not on target" });
-    else if (f.template_id && skippedTemplates.has(f.template_id))
-      skipped.push({ row: f, reason: skippedTemplates.get(f.template_id) });
+      skipped.push({ row: f, reason: `payer ${f.payer_id} is not on staging` });
     else if (f.template_id && !have.templates.has(f.template_id))
-      skipped.push({ row: f, reason: "template not on target" });
+      skipped.push({ row: f, reason: `template ${f.template_id} is not on staging` });
     else ok.push(f);
   }
   return { ok, skipped };
 }
 
-// ---------- precondition 1: a NULL case type is reported, never defaulted ----------
-
-/** Quoted in every skip it causes; the runbook's "Before you run", step 1. */
-export const CASE_TYPE_PRECONDITION =
-  "case_type is NULL on production. Set its case type on production first (runbook: Before you run, step 1); the sync never supplies one";
-
-/**
- * Templates the sync can insert, and the ones precondition 1 holds back.
- * Staging's insert guard refuses a NULL case type (sop_case_type_required),
- * and choosing a production template's business purpose is a decision, not a
- * copy, so the row is skipped as it is and the reason says what to do.
- */
-export function splitTemplatesByCaseType(templates) {
-  const ok = [];
-  const skipped = [];
-  for (const t of templates) {
-    if (t.case_type == null) skipped.push({ row: t, reason: CASE_TYPE_PRECONDITION });
-    else ok.push(t);
-  }
-  return { ok, skipped };
-}
-
 // ---------- portals the sync creates (catalog-sync-created-portals.mjs) ----------
-
-const HIDDEN_PORTAL_PREFIX = "[hidden] ";
-
-/** A hidden portal (left(name, 9) = '[hidden] ') never binds. */
-export function isHiddenPortal(portal) {
-  return String(portal?.name ?? "").slice(0, 9) === HIDDEN_PORTAL_PREFIX;
-}
 
 /** The guard's comparison: lower(btrim(portal_key)). btrim with no second
  * argument trims spaces only. */
@@ -129,205 +98,19 @@ export function templatePortalKeys(template) {
   return keys;
 }
 
-/** A payer a GLOBAL portal can bind to: active, not archived, not merged. */
-export function isBindablePayer(payer) {
-  return (
-    Boolean(payer) &&
-    payer.status === "active" &&
-    payer.archived_at == null &&
-    payer.merged_into_id == null
-  );
-}
-
-// ---------- staging's template insert guards, restated ----------
-
-/** Everything on public.sop_templates that can refuse an insert, as the repo's
- * migrations leave it: its triggers and its foreign keys. stagingRefusal
- * covers each one (the seed-version trigger only adds a row; the update guard
- * never fires on an insert). A test rebuilds this from supabase/migrations
- * and fails when it changes. */
-export const SOP_TEMPLATE_INSERT_SURFACE = Object.freeze({
-  triggers: Object.freeze([
-    "sop_templates_guard_typed_insert",
-    "sop_templates_guard_typed_update",
-    "sop_templates_seed_version",
-  ]),
-  foreignKeys: Object.freeze({
-    group_id: "provider_groups",
-    org_id: "organizations",
-    payer_id: "payers",
-  }),
-});
-
-/** The migrations whose function bodies templateRefusal restates. A test
- * fails when a later migration redefines either function. */
-export const TEMPLATE_GUARD_MIGRATIONS = Object.freeze({
-  guard_typed_sop_template: "20261003120000_mint44_typed_sops.sql",
-  validate_sop_template_portal_bindings: "20261006164500_mint44_org_portal_binding_precedence.sql",
-});
-
-const STEP_TYPES = new Set(["draft_email", "online_form", "pdf", "fax", "phone", "mail", "custom"]);
-const FALLBACK_SOP_ID = "00000000-0000-4000-a000-00000000e17b";
-
-/** jsonb ->> text: NULL for a missing key or JSON null, the text otherwise. */
-const jsonText = (value) =>
-  value === undefined || value === null
-    ? null
-    : typeof value === "string"
-      ? value
-      : JSON.stringify(value);
-
 /**
- * Why staging's sop_templates INSERT guards would refuse a template, or null
- * when they would accept it: guard_typed_sop_template, then
- * validate_sop_template_portal_bindings (TEMPLATE_GUARD_MIGRATIONS). An org
- * row shadows the global row with the same key; a "[hidden] " row never
- * binds; the selected row needs the template's case type and payer; a global
- * row also needs an active payer.
- *
- * @param portals     staging's portals plus the rows this run adds
- * @param payersById  staging's payers plus the rows this run adds
- * @returns {{ code: string, key: string | null, message: string } | null}
- */
-export function templateRefusal(template, { portals, payersById }) {
-  const refuse = (code, message, key = null) => ({ code, key, message });
-  if (template.case_type == null) return refuse("sop_case_type_required", "sop_case_type_required");
-  if (template.id === FALLBACK_SOP_ID && template.case_type !== "enrollment")
-    return refuse("fallback_sop_case_type_invalid", "fallback_sop_case_type_invalid");
-  const tasks = template.task_definitions;
-  if (!Array.isArray(tasks))
-    return refuse("task_definitions_invalid", "task_definitions must be a json array");
-  const orgId = template.org_id ?? null;
-  const payerId = template.payer_id ?? null;
-  for (const task of tasks) {
-    const isObject = task !== null && typeof task === "object" && !Array.isArray(task);
-    // jsonb `task ? 'steps'`: a key of an object, a string element of an
-    // array, or the string itself. Only an object can then carry an array.
-    const hasSteps = isObject
-      ? Object.hasOwn(task, "steps")
-      : Array.isArray(task)
-        ? task.includes("steps")
-        : task === "steps";
-    if (hasSteps && !(isObject && Array.isArray(task.steps)))
-      return refuse("sop_task_steps_invalid", "sop_task_steps_invalid");
-    const steps = isObject && Array.isArray(task.steps) ? task.steps : [];
-    for (const step of steps) {
-      const type = jsonText(step?.stepType);
-      if (type !== null && type.replace(/^ +| +$/g, "") !== "" && !STEP_TYPES.has(type))
-        return refuse("sop_step_type_invalid", "sop_step_type_invalid");
-      if ((type === null || type === "" ? "online_form" : type) === "online_form") {
-        if (normalizePortalKey(jsonText(step?.portalKey)) === "")
-          return refuse(
-            "sop_portal_binding_required",
-            "sop_portal_binding_required: every online-form step must select a portal configuration",
-          );
-      }
-    }
-    const keys = new Set(steps.map((step) => normalizePortalKey(jsonText(step?.portalKey))));
-    keys.delete("");
-    for (const key of keys) {
-      const visible = portals.filter(
-        (p) => normalizePortalKey(p.portal_key) === key && !isHiddenPortal(p),
-      );
-      let selected = null;
-      if (orgId !== null) {
-        const own = visible.filter((p) => p.org_id === orgId);
-        if (own.length > 1)
-          return refuse(
-            "sop_portal_binding_ambiguous",
-            `sop_portal_binding_ambiguous: portal key "${key}" has multiple visible organization configurations`,
-            key,
-          );
-        selected = own[0] ?? null;
-      }
-      if (selected === null) {
-        const global = visible.filter((p) => p.org_id == null);
-        if (global.length > 1)
-          return refuse(
-            "sop_portal_binding_ambiguous",
-            `sop_portal_binding_ambiguous: portal key "${key}" has multiple visible global configurations`,
-            key,
-          );
-        selected = global[0] ?? null;
-      }
-      if (
-        selected === null ||
-        (selected.case_type ?? null) !== template.case_type ||
-        (selected.payer_id ?? null) !== payerId ||
-        (selected.org_id == null && !isBindablePayer(payersById.get(selected.payer_id)))
-      )
-        return refuse(
-          "sop_portal_binding_ineligible",
-          `sop_portal_binding_ineligible: portal key "${key}" has no compatible case type, payer, or owner scope`,
-          key,
-        );
-    }
-  }
-  return null;
-}
-
-/**
- * Why staging would refuse to insert a template, or null: the insert guards
- * above, then the three foreign keys in SOP_TEMPLATE_INSERT_SURFACE (an org,
- * a group or a payer that is not on staging). Groups are org-owned rows the
- * sync never copies, so a production group is often missing on staging.
- *
- * @param targetOrgIds    organizations on staging
- * @param targetGroupIds  provider_groups on staging
- * @param payersById      staging's payers plus the rows this run adds
- */
-export function stagingRefusal(
-  template,
-  { portals, payersById, targetOrgIds, targetGroupIds = new Set() },
-) {
-  const fk = (code, column, table, value) => ({
-    code,
-    key: null,
-    message: `${column.replace(/_id$/, "")} ${value} is not on staging (sop_templates_${column}_fkey -> ${table})`,
-  });
-  const keyRefusal =
-    template.org_id != null && !targetOrgIds.has(template.org_id)
-      ? fk("org_not_on_target", "org_id", "organizations", template.org_id)
-      : template.group_id != null && !targetGroupIds.has(template.group_id)
-        ? fk("group_not_on_target", "group_id", "provider_groups", template.group_id)
-        : template.payer_id != null && !payersById.has(template.payer_id)
-          ? fk("payer_not_on_target", "payer_id", "payers", template.payer_id)
-          : null;
-  // The BEFORE INSERT guards fire before the foreign keys are checked, so
-  // their refusal is the one staging reports. A missing org, group or payer
-  // is added to the message, since fixing only the first would not be enough.
-  const guard = templateRefusal(template, { portals, payersById });
-  if (guard && keyRefusal)
-    return { ...guard, message: `${guard.message}; also ${keyRefusal.message}` };
-  return guard ?? keyRefusal;
-}
-
-export function splitTemplatesByGuard(templates, context) {
-  const ok = [];
-  const refused = [];
-  for (const t of templates) {
-    const refusal = stagingRefusal(t, context);
-    if (refusal) refused.push({ row: t, refusal });
-    else ok.push(t);
-  }
-  return { ok, refused };
-}
-
-/**
- * The portals to create for the named entries, and the entries that need none
- * or cannot have one. Only an entry's own template, being added in this run,
- * makes a portal; nothing else does.
+ * The portals to create for the named entries, and the entries that need
+ * none. An entry makes its portal only when exactly one template with its
+ * name and key is missing on staging (so this run adds it), and staging has
+ * no portal with that key in the template's scope. The row takes the
+ * template's org, payer and case type. Whether staging then accepts the
+ * template is staging's call, reported with the template.
  *
  * @param entries        SYNC_CREATED_PORTALS
- * @param templates      the templates this run will insert (after precondition 1)
+ * @param templates      the templates missing on staging
  * @param targetPortals  staging's portals plus the ones this run copies
- * @param targetOrgIds   the organizations on staging
- * @param payersById     staging's payers plus the ones this run copies
  */
-export function planCreatedPortals(
-  entries,
-  { templates, targetPortals, targetOrgIds, targetGroupIds = new Set(), payersById },
-) {
+export function planCreatedPortals(entries, { templates, targetPortals }) {
   const create = [];
   const skipped = [];
   for (const entry of entries) {
@@ -336,43 +119,27 @@ export function planCreatedPortals(
     const matches = templates.filter(
       (t) => t.name === entry.templateName && templatePortalKeys(t).has(key),
     );
-    if (matches.length === 0) {
+    if (matches.length !== 1) {
       skip(
-        `not needed: no template named "${entry.templateName}" that uses this key is being added in this run`,
-      );
-      continue;
-    }
-    if (matches.length > 1) {
-      skip(
-        `${matches.length} templates named "${entry.templateName}" use this key; fix the entry before creating anything`,
+        matches.length === 0
+          ? `not needed: no template named "${entry.templateName}" that uses this key is missing on staging`
+          : `${matches.length} templates named "${entry.templateName}" use this key; fix the entry before creating anything`,
       );
       continue;
     }
     const [template] = matches;
     const orgId = template.org_id ?? null;
-    if (!template.payer_id) {
-      skip(`template ${template.id} has no payer, and a typed portal needs one`);
+    if (!template.payer_id || !template.case_type) {
+      skip(
+        `template ${template.id} has no payer or no case type to give the portal; nothing created`,
+      );
       continue;
     }
-    if (orgId !== null && !targetOrgIds.has(orgId)) {
-      skip(`template ${template.id} belongs to org ${orgId}, which is not on staging`);
-      continue;
-    }
-    const sameKey = targetPortals.filter((p) => normalizePortalKey(p.portal_key) === key);
-    const sameScope = sameKey.find((p) => (p.org_id ?? null) === orgId);
-    const visibleGlobal = sameKey.find(
-      (p) => p.org_id == null && !String(p.name ?? "").startsWith(HIDDEN_PORTAL_PREFIX),
+    const existing = targetPortals.find(
+      (p) => normalizePortalKey(p.portal_key) === key && (p.org_id ?? null) === orgId,
     );
-    if (sameScope || (orgId !== null && visibleGlobal)) {
-      skip(
-        `already on staging (portal ${(sameScope ?? visibleGlobal).id ?? "?"}); nothing created`,
-      );
-      continue;
-    }
-    if (orgId === null && !isBindablePayer(payersById.get(template.payer_id))) {
-      skip(
-        `payer ${template.payer_id} is not active on staging, so the global template would still be refused; nothing created`,
-      );
+    if (existing) {
+      skip(`already on staging (portal ${existing.id ?? "?"}); nothing created`);
       continue;
     }
     create.push({
@@ -388,32 +155,6 @@ export function planCreatedPortals(
       },
     });
   }
-  // A portal is created only if its template would then be accepted: every
-  // other key it names must bind too. Otherwise the portal would sit unused,
-  // and an insert-only sync could never take it back. Dropping one candidate
-  // can strand another, so repeat until nothing changes.
-  for (let changed = true; changed;) {
-    changed = false;
-    for (const candidate of [...create]) {
-      // The same check the templates themselves get (splitTemplatesByGuard).
-      const refusal = stagingRefusal(candidate.template, {
-        portals: [...targetPortals, ...create.map((c) => c.row)],
-        payersById,
-        targetOrgIds,
-        targetGroupIds,
-      });
-      if (!refusal) continue;
-      create.splice(create.indexOf(candidate), 1);
-      skipped.push({
-        id: candidate.row.portal_key,
-        label: candidate.entry.name,
-        reason: `template ${candidate.template.id} would still be refused: ${
-          refusal.key ? `key "${refusal.key}" (${refusal.code})` : refusal.message
-        }; nothing created`,
-      });
-      changed = true;
-    }
-  }
   return { create, skipped };
 }
 
@@ -425,17 +166,25 @@ export function describeCreatedPortal({ template, row }, { apply }) {
 
 // ---------- report ----------
 
-export function formatSkip(s) {
-  return `${s.id ?? "?"}${s.label ? ` "${s.label}"` : ""}: ${s.reason}`;
+/** One report line: `id "label"`, plus `: reason` for a row not added. */
+export function formatRow(id, label, reason) {
+  return `${id ?? "?"}${label ? ` "${label}"` : ""}${reason ? `: ${reason}` : ""}`;
 }
 
-/** The text the CLI prints: one block per table, every skip with its reason. */
+/**
+ * The text the CLI prints: one block per table, its count, then every row.
+ * A dry run lists the rows missing on staging (`+`) and the ones the sync
+ * holds back (`-`, with the reason). An apply lists the rows it added and
+ * the ones it did not, with staging's own error for each refusal.
+ */
 export function formatReport(report, { apply }) {
   const lines = [apply ? "APPLIED" : "DRY RUN (pass --apply to write)"];
   for (const r of report) {
-    lines.push(`${r.table}: ${r.added} ${apply ? "added" : "would add"}, ${r.skipped} skipped`);
-    for (const line of r.lines ?? []) lines.push(`  + ${line}`);
-    for (const reason of r.reasons) lines.push(`  - ${reason}`);
+    lines.push(
+      `${r.table}: ${r.added.length} ${apply ? "added" : "missing on staging"}, ${r.skipped.length} ${apply ? "not added" : "held back"}`,
+    );
+    for (const line of r.added) lines.push(`  + ${line}`);
+    for (const line of r.skipped) lines.push(`  - ${line}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -531,10 +280,4 @@ export function orderForms(forms) {
  * which storage-js reports as `status`, or as the body's `statusCode`. */
 export function isStorageConflict(error) {
   return Boolean(error) && (Number(error.status) === 409 || String(error.statusCode) === "409");
-}
-
-export function chunk(items, size) {
-  const out = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
 }

@@ -1,18 +1,14 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import { SYNC_CREATED_PORTALS } from "./catalog-sync-created-portals.mjs";
 import {
-  CASE_TYPE_PRECONDITION,
   PROD_REF,
-  SOP_TEMPLATE_INSERT_SURFACE,
   STAGING_REF,
-  TEMPLATE_GUARD_MIGRATIONS,
   assertClientDirection,
   assertDirection,
-  chunk,
   clientUrl,
   describeCreatedPortal,
+  formatReport,
   isStorageConflict,
   normalizePortalKey,
   orderForms,
@@ -23,15 +19,12 @@ import {
   projectRef,
   splitByOrg,
   splitForms,
-  splitTemplatesByCaseType,
-  splitTemplatesByGuard,
-  stagingRefusal,
   stripUserColumns,
   templatePortalKeys,
-  templateRefusal,
 } from "./catalog-sync.mjs";
 
 const url = (ref) => `https://${ref}.supabase.co`;
+const AETNA_KEY = "aetna-direct-contract-contract-1f94bf43c4c0";
 
 test("only prod -> staging is allowed", () => {
   assert.doesNotThrow(() => assertDirection(url(PROD_REF), url(STAGING_REF)));
@@ -83,7 +76,7 @@ test("org rows need their org on the target", () => {
   );
 });
 
-test("forms need payer and template on the target", () => {
+test("forms need payer and template on staging", () => {
   const have = { payers: new Set(["p"]), templates: new Set(["t"]) };
   const forms = [
     { id: 1, payer_id: "p", template_id: "t" },
@@ -97,60 +90,9 @@ test("forms need payer and template on the target", () => {
   );
   assert.deepEqual(
     skipped.map((s) => s.reason),
-    ["payer not on target", "template not on target"],
+    ["payer x is not on staging", "template x is not on staging"],
   );
 });
-
-test("chunk splits evenly", () => {
-  assert.deepEqual(chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
-});
-
-// ---------- precondition 1: legacy templates with no case type ----------
-
-const LEGACY_NULL_CASE_TYPE = ["Anthem BCBS CO", "Medcost - NC", "Trinity Health System"];
-const AETNA_KEY = "aetna-direct-contract-contract-1f94bf43c4c0";
-
-test("a template with a NULL case type is skipped with the precondition, never defaulted", () => {
-  const templates = [
-    ...LEGACY_NULL_CASE_TYPE.map((name, i) => ({ id: `t${i}`, name, case_type: null })),
-    { id: "t9", name: "Aetna - Direct", case_type: "contract" },
-  ];
-  const { ok, skipped } = splitTemplatesByCaseType(templates);
-  assert.deepEqual(
-    ok.map((t) => t.id),
-    ["t9"],
-  );
-  assert.deepEqual(
-    skipped.map((s) => s.row.name),
-    LEGACY_NULL_CASE_TYPE,
-  );
-  for (const s of skipped) {
-    assert.equal(s.reason, CASE_TYPE_PRECONDITION);
-    assert.equal(s.row.case_type, null, "the row is reported as it is, with no case type supplied");
-  }
-  assert.match(CASE_TYPE_PRECONDITION, /NULL on production/);
-  assert.match(CASE_TYPE_PRECONDITION, /Before you run, step 1/);
-  assert.match(CASE_TYPE_PRECONDITION, /never supplies one/);
-});
-
-test("a form waiting on a held-back template names it and the reason", () => {
-  const have = { payers: new Set(["p"]), templates: new Set(["t"]) };
-  const held = new Map([["x", 'template x "Medcost - NC" is skipped: case_type is NULL']]);
-  const { skipped } = splitForms(
-    [
-      { id: 1, payer_id: "p", template_id: "x" },
-      { id: 2, payer_id: "p", template_id: "y" },
-    ],
-    have,
-    held,
-  );
-  assert.deepEqual(
-    skipped.map((s) => s.reason),
-    ['template x "Medcost - NC" is skipped: case_type is NULL', "template not on target"],
-  );
-});
-
-// ---------- the one portal the sync creates ----------
 
 test("the created-portal list is one named, reviewable entry: Aetna - Direct", () => {
   assert.equal(SYNC_CREATED_PORTALS.length, 1);
@@ -187,20 +129,8 @@ const aetnaTemplate = (overrides = {}) => ({
   ],
   ...overrides,
 });
-const activePayer = {
-  id: "payer-aetna",
-  status: "active",
-  archived_at: null,
-  merged_into_id: null,
-};
-const planFor = (templates, extra = {}) =>
-  planCreatedPortals(SYNC_CREATED_PORTALS, {
-    templates,
-    targetPortals: [],
-    targetOrgIds: new Set(),
-    payersById: new Map([[activePayer.id, activePayer]]),
-    ...extra,
-  });
+const planFor = (templates, targetPortals = []) =>
+  planCreatedPortals(SYNC_CREATED_PORTALS, { templates, targetPortals });
 
 test("the Aetna portal row takes scope, payer and case type from its template, and nothing else", () => {
   const plan = planFor([aetnaTemplate()]);
@@ -220,214 +150,48 @@ test("the Aetna portal row takes scope, payer and case type from its template, a
   );
   assert.match(describeCreatedPortal(plan.create[0], { apply: true }), /^created portal /);
   // An org template gets an org portal in the same org.
-  const org = planFor([aetnaTemplate({ org_id: "org-1" })], { targetOrgIds: new Set(["org-1"]) });
-  assert.equal(org.create[0].row.org_id, "org-1");
+  assert.equal(planFor([aetnaTemplate({ org_id: "org-1" })]).create[0].row.org_id, "org-1");
 });
 
-test("no portal is created when the template is not in this run, or the key is already there", () => {
+test("no portal is created when the template is not missing, or the key is already there", () => {
   assert.match(planFor([]).skipped[0].reason, /^not needed/);
   assert.match(
     planFor([aetnaTemplate({ name: "Aetna - Direct (renamed)" })]).skipped[0].reason,
     /^not needed/,
   );
   const existing = [{ id: "portal-1", org_id: null, portal_key: AETNA_KEY.toUpperCase() }];
-  const again = planFor([aetnaTemplate()], { targetPortals: existing });
+  const again = planFor([aetnaTemplate()], existing);
   assert.equal(again.create.length, 0);
   assert.match(again.skipped[0].reason, /already on staging \(portal portal-1\)/);
-  // An org template already sees a visible global row with the key.
-  const shadowed = planFor([aetnaTemplate({ org_id: "org-1" })], {
-    targetOrgIds: new Set(["org-1"]),
-    targetPortals: existing,
-  });
-  assert.equal(shadowed.create.length, 0);
-});
-
-test("no portal is created that its template still could not use", () => {
-  const archivedPayer = { ...activePayer, archived_at: "2026-10-01T00:00:00Z" };
-  const cases = [
-    [planFor([aetnaTemplate({ payer_id: null })]), /has no payer/],
-    [planFor([aetnaTemplate({ org_id: "org-gone" })]), /not on staging/],
-    [
-      planFor([aetnaTemplate()], { payersById: new Map([[activePayer.id, archivedPayer]]) }),
-      /is not active on staging/,
-    ],
-    [planFor([aetnaTemplate()], { payersById: new Map() }), /is not active on staging/],
-    [planFor([aetnaTemplate(), aetnaTemplate({ id: "tpl-aetna-2" })]), /2 templates named/],
-  ];
-  for (const [plan, reason] of cases) {
-    assert.equal(plan.create.length, 0);
-    assert.match(plan.skipped[0].reason, reason);
-  }
-});
-
-test("a template naming any other missing portal gets no portal: the list is not a rule", () => {
+  // The same key in another scope does not count.
+  assert.equal(planFor([aetnaTemplate({ org_id: "org-1" })], existing).create.length, 1);
+  assert.match(
+    planFor([aetnaTemplate(), aetnaTemplate({ id: "tpl-aetna-2" })]).skipped[0].reason,
+    /2 templates named "Aetna - Direct"/,
+  );
+  assert.match(
+    planFor([aetnaTemplate({ case_type: null })]).skipped[0].reason,
+    /no payer or no case type/,
+  );
+  // Any other missing portal is never created: the list is not a rule.
   const other = aetnaTemplate({
     id: "tpl-other",
-    name: "Aetna - Direct",
-    task_definitions: [{ steps: [{ portalKey: "some-other-missing-portal" }] }],
+    name: "Other",
+    task_definitions: [{ steps: [{ portalKey: "other-missing" }] }],
   });
-  const plan = planFor([other]);
-  assert.equal(plan.create.length, 0);
-  assert.match(plan.skipped[0].reason, /^not needed/);
+  assert.deepEqual(planFor([other]).create, []);
 });
 
-test("a created portal is dropped when another key on its template would still be refused", () => {
-  const twoKeys = aetnaTemplate({
-    task_definitions: [
-      { steps: [{ portalKey: AETNA_KEY }, { stepType: "online_form", portalKey: "aetna-other" }] },
-    ],
-  });
-  const plan = planFor([twoKeys]);
-  assert.equal(plan.create.length, 0);
+test("the report lists every row: + missing or added, - held back or refused", () => {
+  const report = [
+    { table: "payers", added: ['p1 "Aetna"'], skipped: [] },
+    { table: "sop_templates", added: [], skipped: ['t1 "Anthem BCBS CO": sop_case_type_required'] },
+  ];
   assert.equal(
-    plan.skipped[0].reason,
-    'template tpl-aetna would still be refused: key "aetna-other" (sop_portal_binding_ineligible); nothing created',
+    formatReport(report, { apply: false }),
+    'DRY RUN (pass --apply to write)\npayers: 1 missing on staging, 0 held back\n  + p1 "Aetna"\nsop_templates: 0 missing on staging, 1 held back\n  - t1 "Anthem BCBS CO": sop_case_type_required\n',
   );
-  // With the other key bound on staging, the portal is created.
-  const bound = planFor([twoKeys], {
-    targetPortals: [
-      {
-        id: "p2",
-        org_id: null,
-        portal_key: "aetna-other",
-        name: "Other",
-        payer_id: "payer-aetna",
-        case_type: "contract",
-      },
-    ],
-  });
-  assert.equal(bound.create.length, 1);
-});
-
-// ---------- staging's template insert guards, restated ----------
-
-const portal = (overrides = {}) => ({
-  id: "portal-1",
-  org_id: null,
-  portal_key: "k",
-  name: "Portal",
-  payer_id: "payer-aetna",
-  case_type: "contract",
-  ...overrides,
-});
-const typed = (overrides = {}) =>
-  aetnaTemplate({ task_definitions: [{ steps: [{ portalKey: "k" }] }], ...overrides });
-const refusalOf = (template, portals, payers = [activePayer]) =>
-  templateRefusal(template, {
-    portals,
-    payersById: new Map(payers.map((p) => [p.id, p])),
-  })?.code ?? null;
-
-test("the binding check accepts exactly one visible row with the template's type and payer", () => {
-  assert.equal(refusalOf(typed(), [portal()]), null);
-  assert.equal(refusalOf(typed(), [portal({ portal_key: "  K " })]), null, "lower(btrim()) match");
-  assert.equal(refusalOf(typed(), []), "sop_portal_binding_ineligible");
-  assert.equal(
-    refusalOf(typed(), [portal({ case_type: "enrollment" })]),
-    "sop_portal_binding_ineligible",
-  );
-  assert.equal(
-    refusalOf(typed(), [portal({ payer_id: "payer-x" })]),
-    "sop_portal_binding_ineligible",
-  );
-  assert.equal(
-    refusalOf(typed(), [portal({ name: "[hidden] Portal" })]),
-    "sop_portal_binding_ineligible",
-    "a hidden row never binds",
-  );
-  assert.equal(
-    refusalOf(typed(), [portal(), portal({ id: "portal-2" })]),
-    "sop_portal_binding_ambiguous",
-  );
-});
-
-test("a global row needs an active payer; an org row does not", () => {
-  const archived = { ...activePayer, archived_at: "2026-10-01T00:00:00Z" };
-  const merged = { ...activePayer, merged_into_id: "payer-other" };
-  const retired = { ...activePayer, status: "retired" };
-  for (const payer of [archived, merged, retired])
-    assert.equal(refusalOf(typed(), [portal()], [payer]), "sop_portal_binding_ineligible");
-  assert.equal(refusalOf(typed(), [portal()], []), "sop_portal_binding_ineligible");
-  const orgTemplate = typed({ org_id: "org-1" });
-  assert.equal(refusalOf(orgTemplate, [portal({ org_id: "org-1" })], [archived]), null);
-});
-
-test("an org row shadows the global row with the same key, even an unusable one", () => {
-  const orgTemplate = typed({ org_id: "org-1" });
-  assert.equal(refusalOf(orgTemplate, [portal()]), null, "no org row: the global row serves");
-  assert.equal(
-    refusalOf(orgTemplate, [
-      portal(),
-      portal({ id: "portal-org", org_id: "org-1", case_type: "enrollment" }),
-    ]),
-    "sop_portal_binding_ineligible",
-  );
-  assert.equal(
-    refusalOf(orgTemplate, [
-      portal(),
-      portal({ id: "portal-org", org_id: "org-1", name: "[hidden] x" }),
-    ]),
-    null,
-    "a hidden org row does not shadow",
-  );
-  assert.equal(
-    refusalOf(typed(), [portal({ org_id: "org-1" })]),
-    "sop_portal_binding_ineligible",
-    "a global template never sees org rows",
-  );
-});
-
-test("step rules: an online form needs a portal, a step type must be known, steps must be a list", () => {
-  const withSteps = (steps) => typed({ task_definitions: [{ steps }] });
-  assert.equal(
-    refusalOf(withSteps([{ stepType: "online_form" }]), []),
-    "sop_portal_binding_required",
-  );
-  assert.equal(
-    refusalOf(withSteps([{}]), []),
-    "sop_portal_binding_required",
-    "no type = online form",
-  );
-  assert.equal(refusalOf(withSteps([{ stepType: "phone" }]), []), null);
-  assert.equal(refusalOf(withSteps([{ stepType: "carrier_pigeon" }]), []), "sop_step_type_invalid");
-  assert.equal(
-    refusalOf(typed({ task_definitions: [{ steps: {} }] }), []),
-    "sop_task_steps_invalid",
-  );
-  assert.equal(refusalOf(typed({ task_definitions: {} }), []), "task_definitions_invalid");
-  assert.equal(refusalOf(typed({ case_type: null }), []), "sop_case_type_required");
-  assert.equal(
-    refusalOf(typed({ id: "00000000-0000-4000-a000-00000000e17b", task_definitions: [] }), []),
-    "fallback_sop_case_type_invalid",
-  );
-  const split = splitTemplatesByGuard([typed(), typed({ id: "t-org", org_id: "org-gone" })], {
-    portals: [portal()],
-    payersById: new Map([[activePayer.id, activePayer]]),
-    targetOrgIds: new Set(),
-  });
-  assert.deepEqual(
-    split.ok.map((t) => t.id),
-    ["tpl-aetna"],
-  );
-  assert.equal(split.refused[0].refusal.code, "org_not_on_target");
-});
-
-test("the restated guards are the latest definitions in supabase/migrations", async () => {
-  const dir = new URL("../../supabase/migrations/", import.meta.url);
-  const files = (await readdir(dir)).filter((name) => name.endsWith(".sql")).sort();
-  for (const [fn, expected] of Object.entries(TEMPLATE_GUARD_MIGRATIONS)) {
-    const defining = [];
-    const definition = new RegExp(`CREATE (OR REPLACE )?FUNCTION public\\.${fn}\\(`);
-    for (const name of files) {
-      if (definition.test(await readFile(new URL(name, dir), "utf8"))) defining.push(name);
-    }
-    assert.ok(defining.length > 0, `${fn} is defined somewhere`);
-    assert.equal(
-      defining.at(-1),
-      expected,
-      `${fn} was redefined after ${expected}: update templateRefusal, then this pin`,
-    );
-  }
+  assert.match(formatReport(report, { apply: true }), /^APPLIED\npayers: 1 added, 0 not added\n/);
 });
 
 // ---------- order, conflicts, direction ----------
@@ -474,111 +238,7 @@ test("the client direction check reads each client's own project URL", () => {
   assert.throws(() => clientUrl(null), /cannot tell which project/);
 });
 
-// ---------- re-review: foreign keys, the insert surface, field maps ----------
-
-test("a missing org, group or payer refuses a template; the guard's message comes first", () => {
-  const context = {
-    portals: [portal()],
-    payersById: new Map([[activePayer.id, activePayer]]),
-    targetOrgIds: new Set(["org-1"]),
-    targetGroupIds: new Set(["group-1"]),
-  };
-  const codeOf = (template) => stagingRefusal(template, context)?.code ?? null;
-  assert.equal(codeOf(typed()), null);
-  assert.equal(codeOf(typed({ group_id: "group-1" })), null);
-  assert.equal(codeOf(typed({ group_id: "group-gone" })), "group_not_on_target");
-  assert.equal(codeOf(typed({ org_id: "org-gone" })), "org_not_on_target");
-  assert.equal(
-    codeOf(typed({ payer_id: "payer-gone", task_definitions: [] })),
-    "payer_not_on_target",
-  );
-  assert.equal(
-    stagingRefusal(typed({ group_id: "group-gone" }), context).message,
-    "group group-gone is not on staging (sop_templates_group_id_fkey -> provider_groups)",
-  );
-  // Both kinds: the guard's refusal, with the missing group added.
-  const both = stagingRefusal(typed({ group_id: "group-gone" }), { ...context, portals: [] });
-  assert.equal(both.code, "sop_portal_binding_ineligible");
-  assert.match(both.message, /; also group group-gone is not on staging/);
-  // The split and the created-portal planner use the same check.
-  const split = splitTemplatesByGuard([typed({ group_id: "group-gone" })], context);
-  assert.equal(split.refused[0].refusal.code, "group_not_on_target");
-  const plan = planFor([aetnaTemplate({ group_id: "group-gone" })], { targetGroupIds: new Set() });
-  assert.equal(plan.create.length, 0);
-  assert.match(
-    plan.skipped[0].reason,
-    /would still be refused: group group-gone is not on staging \(sop_templates_group_id_fkey -> provider_groups\); nothing created$/,
-  );
-  assert.equal(
-    planFor([aetnaTemplate({ group_id: "group-1" })], { targetGroupIds: new Set(["group-1"]) })
-      .create.length,
-    1,
-  );
-});
-
-test("everything on sop_templates that can refuse an insert is pinned to the migrations", async () => {
-  const dir = new URL("../../supabase/migrations/", import.meta.url);
-  const files = (await readdir(dir)).filter((name) => name.endsWith(".sql")).sort();
-  const triggers = new Set();
-  const foreignKeys = new Map();
-  const target = String.raw`(?:public\.)?sop_templates\b`;
-  for (const name of files) {
-    const text = await readFile(new URL(name, dir), "utf8");
-    const events = [];
-    for (const m of text.matchAll(
-      new RegExp(
-        String.raw`CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\s+(\w+)\s[^;]*?\bON\s+${target}`,
-        "gi",
-      ),
-    ))
-      events.push([m.index, "trigger+", m[1]]);
-    for (const m of text.matchAll(
-      new RegExp(String.raw`DROP\s+TRIGGER\s+(?:IF\s+EXISTS\s+)?(\w+)\s+ON\s+${target}`, "gi"),
-    ))
-      events.push([m.index, "trigger-", m[1]]);
-    for (const m of text.matchAll(
-      new RegExp(
-        String.raw`ALTER\s+TABLE\s+(?:ONLY\s+)?(?:IF\s+EXISTS\s+)?${target}([^;]*);`,
-        "gi",
-      ),
-    )) {
-      const body = m[1];
-      for (const fk of body.matchAll(
-        /ADD\s+CONSTRAINT\s+\w+\s+FOREIGN\s+KEY\s*\((\w+)\)\s*REFERENCES\s+(?:public\.)?(\w+)/gi,
-      ))
-        events.push([m.index, "fk+", fk[1], fk[2]]);
-      for (const col of body.matchAll(
-        /ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)[^,]*?\bREFERENCES\s+(?:public\.)?(\w+)/gi,
-      ))
-        events.push([m.index, "fk+", col[1], col[2]]);
-      for (const drop of body.matchAll(
-        /DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?sop_templates_(\w+)_fkey/gi,
-      ))
-        events.push([m.index, "fk-", drop[1]]);
-    }
-    for (const [, kind, a, b] of events.sort((x, y) => x[0] - y[0])) {
-      if (kind === "trigger+") triggers.add(a);
-      else if (kind === "trigger-") triggers.delete(a);
-      else if (kind === "fk+") foreignKeys.set(a, b);
-      else foreignKeys.delete(a);
-    }
-  }
-  assert.deepEqual(
-    [...triggers].sort(),
-    [...SOP_TEMPLATE_INSERT_SURFACE.triggers],
-    "sop_templates triggers changed: restate the new one in stagingRefusal, then update the pin",
-  );
-  assert.deepEqual(
-    Object.fromEntries([...foreignKeys].sort()),
-    { ...SOP_TEMPLATE_INSERT_SURFACE.foreignKeys },
-    "sop_templates foreign keys changed: check them in stagingRefusal, then update the pin",
-  );
-  assert.equal(
-    triggers.has("trg_sop_template_state_overlap"),
-    false,
-    "the overlap trigger is gone",
-  );
-});
+// ---------- field maps ----------
 
 test("field maps: own org and key, plus org overrides of a new global portal", () => {
   const added = [
