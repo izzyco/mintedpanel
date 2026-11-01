@@ -125,7 +125,6 @@ function intake(): OwnStepsDraft {
     stopConditions: [...ALL_STOPS],
     targetDaysToReady: 14,
     bounceEscalationStep: null,
-    digestFrequency: null,
     steps: stepsFromDefault(INTAKE_DEFAULT),
   };
 }
@@ -136,7 +135,6 @@ function digest(): OwnStepsDraft {
     stopConditions: null,
     targetDaysToReady: null,
     bounceEscalationStep: null,
-    digestFrequency: null,
     steps: stepsFromDefault(DIGEST_DEFAULT),
   };
 }
@@ -201,7 +199,6 @@ describe("starter and Minted's default steps", () => {
       stopConditions: null,
       targetDaysToReady: null,
       bounceEscalationStep: null,
-      digestFrequency: null,
       steps: null,
     });
     expect(validateDraft("intake_reminder", starterDraft())).toEqual([]);
@@ -657,12 +654,11 @@ describe("round trip", () => {
     expect(own(draft).map((s) => s.offsetDays)).toEqual([1, 5]);
     expect(draft.stopConditions).toEqual(["submitted"]);
     expect(draft.targetDaysToReady).toBe(10);
-    // The platform-managed settings (on/off included) are not in the draft:
-    // the card cannot send them. The bounce step and the digest frequency
-    // are the org's own, so they are.
+    // The platform-managed settings (on/off and the digest frequency
+    // included) are not in the draft: the card cannot send them. The bounce
+    // step is the org's own, so it is.
     expect(Object.keys(draft).sort()).toEqual([
       "bounceEscalationStep",
-      "digestFrequency",
       "steps",
       "stopConditions",
       "targetDaysToReady",
@@ -1725,7 +1721,6 @@ describe("draftsEqual", () => {
       bounceEscalationStep: null,
       targetDaysToReady: a.targetDaysToReady,
       stopConditions: a.stopConditions,
-      digestFrequency: null,
     };
     expect(draftsEqual(a, reordered)).toBe(true);
     const legacy = { ...a } as Partial<SequenceDraft>;
@@ -1763,11 +1758,11 @@ describe("Minted's intake default: days 1, 2 and 3 (Sowmya, Oct 31)", () => {
 
 /* ---------------- Addendum 8 (Answered Oct 31, A8 to A13) ---------------- */
 
-describe("digest frequency (A8): daily, weekly or twice a day, per org", () => {
+describe("digest frequency (A8): daily, weekly or twice a day, per org, set by Minted", () => {
   const digestOrg = (over: Partial<NotificationSequenceConfig> = {}) =>
     orgRow({ purpose: "followup_digest", ...over });
 
-  it("defaults to daily from Minted, and takes the org's own choice", () => {
+  it("defaults to daily from Minted, and takes the per-org value Minted set", () => {
     expect(
       resolveNotificationSequence("followup_digest", digestOrg(), DIGEST_DEFAULT),
     ).toMatchObject({ digestFrequency: "daily", inherited: { digestFrequency: true } });
@@ -1804,31 +1799,23 @@ describe("digest frequency (A8): daily, weekly or twice a day, per org", () => {
     ).toBe(5);
   });
 
-  it("round-trips the frequency through the draft and the payload, sent only when set", () => {
-    const draft = draftFromSequence(digestOrg({ digestFrequency: "weekly" }));
-    expect(draft.digestFrequency).toBe("weekly");
-    expect(buildSavePayload("followup_digest", draft, 1)).toMatchObject({
-      digest_frequency: "weekly",
-    });
+  it("keeps the frequency out of the draft and the payload (Addendum 10)", () => {
+    const weekly = digestOrg({ digestFrequency: "weekly" });
+    const draft = draftFromSequence(weekly);
+    expect("digestFrequency" in draft).toBe(false);
+    expect("digest_frequency" in buildSavePayload("followup_digest", draft, 1)).toBe(false);
     expect("digest_frequency" in buildSavePayload("followup_digest", digest(), null)).toBe(false);
+    // Minted changing the frequency leaves an open draft clean: nothing to save.
+    expect(draftsEqual(draft, draftFromSequence(digestOrg({ digestFrequency: "daily" })))).toBe(
+      true,
+    );
   });
 
-  it("refuses an unknown frequency, and any frequency on intake", () => {
-    expect(
-      messages(
-        validateDraft("followup_digest", {
-          ...digest(),
-          digestFrequency: "hourly" as unknown as "daily",
-        }),
-      ),
-    ).toEqual(["Choose daily, weekly or twice a day, or Minted's default."]);
-    expect(
-      messages(validateDraft("intake_reminder", { ...intake(), digestFrequency: "weekly" })),
-    ).toEqual(["Intake reminders follow their steps, not a frequency."]);
-  });
-
-  it("lets an org admin choose the frequency but not the weekday", () => {
-    expect(validateNotificationPolicyRules({ digestFrequency: "weekly" }, "org_admin")).toEqual([]);
+  it("leaves the frequency and the weekday to Minted", () => {
+    expect(validateNotificationPolicyRules({ digestFrequency: "weekly" }, "org_admin")).toEqual([
+      "Only Minted sets how often the digest goes out.",
+    ]);
+    expect(validateNotificationPolicyRules({ digestFrequency: "weekly" })).toEqual([]);
     expect(validateNotificationPolicyRules({ digestWeekday: 3 }, "org_admin")).toEqual([
       "Only Minted sets the weekly digest's day.",
     ]);
@@ -1840,7 +1827,7 @@ describe("digest frequency (A8): daily, weekly or twice a day, per org", () => {
     ]);
   });
 
-  it("describes each schedule from its settings", () => {
+  it("describes each schedule from its settings, naming how often", () => {
     const base = {
       digestWeekday: 1,
       sendHour: 8,
@@ -1848,19 +1835,19 @@ describe("digest frequency (A8): daily, weekly or twice a day, per org", () => {
       secondSendHour: 14,
     };
     expect(describeDigestSchedule({ ...base, digestFrequency: "daily" })).toBe(
-      "Sent around 8 am Central time. Minted sets this.",
+      "Sent once a day, around 8 am Central time. Minted sets this.",
     );
     expect(describeDigestSchedule({ ...base, digestFrequency: null })).toBe(
-      "Sent around 8 am Central time. Minted sets this.",
+      "Sent once a day, around 8 am Central time. Minted sets this.",
     );
     expect(describeDigestSchedule({ ...base, digestFrequency: "weekly" })).toBe(
-      "Sent on Mondays around 8 am Central time. Minted sets the day and time.",
+      "Sent once a week, on Mondays around 8 am Central time. Minted sets this.",
     );
     expect(describeDigestSchedule({ ...base, digestFrequency: "weekly", digestWeekday: 5 })).toBe(
-      "Sent on Fridays around 8 am Central time. Minted sets the day and time.",
+      "Sent once a week, on Fridays around 8 am Central time. Minted sets this.",
     );
     expect(describeDigestSchedule({ ...base, digestFrequency: "twice_daily" })).toBe(
-      "Sent around 8 am and 2 pm Central time. Minted sets these times.",
+      "Sent twice a day, around 8 am and 2 pm Central time. Minted sets this.",
     );
     expect(
       describeDigestSchedule({ ...base, sendTimeZone: "Gone/Zone", digestFrequency: null }),

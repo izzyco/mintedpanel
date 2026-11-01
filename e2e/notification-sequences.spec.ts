@@ -7,8 +7,9 @@
 // An admin overrides a default and goes back to it. Another admin saving
 // under an open draft keeps the edits and makes the save a 409 conflict. A
 // specialist sees the schedule read-only, the digest with Minted's send time
-// and no cc, an admin picks how often the digest goes out (A8), and before
-// the migration is applied the card says the feature is not switched on yet.
+// and no cc, an admin sees how often the digest goes out read-only (Minted
+// sets it, Addendum 10), and before the migration is applied the card says
+// the feature is not switched on yet.
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
 
 const AUTH_KEY = "sb-example-auth-token";
@@ -181,7 +182,6 @@ interface SaveCall {
   p_purpose: string;
   p_payload: {
     expected_revision: number | null;
-    digest_frequency?: string;
     bounce_escalation_step?: number;
     stop_conditions: string[] | null;
     target_days_to_ready: number | null;
@@ -196,6 +196,7 @@ interface SaveCall {
 
 const PLATFORM_KEYS = [
   "enabled",
+  "digest_frequency",
   "send_hour",
   "send_time_zone",
   "second_send_hour",
@@ -244,7 +245,8 @@ function makeHandler(rows: Rows, options: { missingTables?: boolean } = {}) {
         stop_conditions: call.p_payload.stop_conditions,
         target_days_to_ready: call.p_payload.target_days_to_ready,
         bounce_escalation_step: call.p_payload.bounce_escalation_step ?? null,
-        digest_frequency: call.p_payload.digest_frequency ?? null,
+        // Minted's (Addendum 10): a save never changes it.
+        digest_frequency: existing?.digest_frequency ?? null,
         send_hour: existing?.send_hour ?? null,
         send_time_zone: existing?.send_time_zone ?? null,
         revision: existing ? (existing.revision as number) + 1 : 1,
@@ -484,7 +486,9 @@ test("MINT-107: a specialist sees the saved schedule read-only", async ({ contex
   const digest = page.getByRole("region", { name: "Follow-up digest" });
   await expect(digest.getByText("Step 1 · once a day · Email · Follow-up digest")).toBeVisible();
   // Answers 2 and 5: coordinators only, at the hour Minted sets.
-  await expect(digest.getByText("Sent around 8 am Central time. Minted sets this.")).toBeVisible();
+  await expect(
+    digest.getByText("Sent once a day, around 8 am Central time. Minted sets this."),
+  ).toBeVisible();
   await expect(digest.getByText(/^Cc:/)).toHaveCount(0);
   await expect(digest.getByRole("button")).toHaveCount(0);
   await expect(page.getByText("Only admins can change notifications.")).toBeVisible();
@@ -512,16 +516,14 @@ test("MINT-107: another admin's save keeps an open draft, and saving it is a con
   rows.notification_sequences[0].revision = 5;
   rows.notification_sequence_steps[0].offset_days = 3;
 
-  // Saving the digest refetches both purposes. The digest's only org
-  // setting is how often (A8): no cc picker, Minted's send time read-only.
+  // Saving the digest refetches both purposes. The digest has no org
+  // setting: no cc picker, and how often and when are Minted's, read-only
+  // (Addendum 10).
   const digest = page.getByRole("region", { name: "Follow-up digest" });
   await digest.getByRole("button", { name: "Set up follow-up digest" }).click();
-  await expect(digest.getByRole("combobox")).toHaveCount(1);
-  await expect(digest.getByText("Sent around 8 am Central time. Minted sets this.")).toBeVisible();
-  await digest.getByRole("combobox", { name: "How often" }).click();
-  await page.getByRole("option", { name: "Weekly" }).click();
+  await expect(digest.getByRole("combobox")).toHaveCount(0);
   await expect(
-    digest.getByText("Sent on Mondays around 8 am Central time. Minted sets the day and time."),
+    digest.getByText("Sent once a day, around 8 am Central time. Minted sets this."),
   ).toBeVisible();
   await digest.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Follow-up digest saved")).toBeVisible();
@@ -529,7 +531,6 @@ test("MINT-107: another admin's save keeps an open draft, and saving it is a con
     p_org_id: ORG_ID,
     p_purpose: "followup_digest",
     p_payload: {
-      digest_frequency: "weekly",
       stop_conditions: null,
       target_days_to_ready: null,
       expected_revision: null,
@@ -563,6 +564,22 @@ test("MINT-107: an admin overrides Minted's defaults and goes back to them", asy
 }) => {
   const rows = fixtures("admin");
   savedIntake(rows, { target_days_to_ready: 21 });
+  // Minted set this org's digest to weekly (Addendum 10).
+  rows.notification_sequences.push({
+    id: "seq-digest",
+    org_id: ORG_ID,
+    purpose: "followup_digest",
+    enabled: true,
+    stop_conditions: null,
+    target_days_to_ready: null,
+    digest_frequency: "weekly",
+    send_hour: null,
+    send_time_zone: null,
+    revision: 1,
+    created_at: "2026-10-30T00:00:00Z",
+    updated_at: "2026-10-30T00:00:00Z",
+    updated_by: USER_ID,
+  });
   const { handler, saves } = makeHandler(rows);
   await context.route(/\/(rest|auth)\/v1\//, handler);
   await seedAuth(context);
@@ -571,6 +588,15 @@ test("MINT-107: an admin overrides Minted's defaults and goes back to them", asy
   await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible({
     timeout: 30000,
   });
+  // The admin sees Minted's frequency read-only: no control for it.
+  const digest = page.getByRole("region", { name: "Follow-up digest" });
+  await expect(
+    digest.getByText("Sent once a week, on Mondays around 8 am Central time. Minted sets this."),
+  ).toBeVisible();
+  await expect(digest.getByText("Step 1 · once a week · Email · Follow-up digest")).toBeVisible();
+  await expect(digest.getByRole("combobox")).toHaveCount(0);
+  await expect(digest.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+
   const intake = page.getByRole("region", { name: "Provider intake reminders" });
   const target = intake.getByLabel("Target days from invite to ready");
   await expect(target).toHaveValue("21");
@@ -602,9 +628,13 @@ test("MINT-107: an admin overrides Minted's defaults and goes back to them", asy
       },
     },
   ]);
-  // The refetch shows the org now inheriting everything.
+  // The refetch shows the org now inheriting everything, and Minted's
+  // weekly digest untouched.
   await expect(intake.getByRole("button", { name: "Customize steps" })).toBeVisible();
   await expect(intake.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(
+    digest.getByText("Sent once a week, on Mondays around 8 am Central time. Minted sets this."),
+  ).toBeVisible();
 });
 
 test("MINT-107: before the migration is applied the card says it is not switched on yet", async ({

@@ -194,7 +194,6 @@ function ownIntake(): SequenceDraft & { steps: StepDraft[] } {
     stopConditions: ["submitted", "paused", "withdrawn", "provider_replied"],
     targetDaysToReady: 14,
     bounceEscalationStep: null,
-    digestFrequency: null,
     steps: stepsFromDefault(INTAKE_DEFAULT),
   };
 }
@@ -366,7 +365,7 @@ describe("NotificationsCard: other members", () => {
       "the provider submits the intake form; onboarding is paused; the provider withdraws; the provider replies (Minted&#x27;s default)",
     );
     expect(html).toContain("Step 1 · once a day · Email · Follow-up digest");
-    expect(html).toContain("Sent around 8 am Central time. Minted sets this.");
+    expect(html).toContain("Sent once a day, around 8 am Central time. Minted sets this.");
     expect(html).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
     // Intake's three steps carry a cc line; the digest's step does not.
     expect(html.match(/Cc: /g)).toHaveLength(3);
@@ -383,11 +382,11 @@ describe("NotificationsCard: other members", () => {
     state.sequences = { followup_digest: digestRow };
     // A10: the whole send time comes from one layer, so Minted's stands in.
     const summary = renderToStaticMarkup(<NotificationsCard />);
-    expect(summary).toContain("Sent around 8 am Central time. Minted sets this.");
+    expect(summary).toContain("Sent once a day, around 8 am Central time. Minted sets this.");
     expect(summary).not.toContain("Gone/Zone");
     state.isAdmin = true;
     const editor = renderToStaticMarkup(<NotificationsCard />);
-    expect(editor).toContain("Sent around 8 am Central time. Minted sets this.");
+    expect(editor).toContain("Sent once a day, around 8 am Central time. Minted sets this.");
     expect(editor).not.toContain("Gone/Zone");
   });
 
@@ -402,7 +401,7 @@ describe("NotificationsCard: other members", () => {
       },
     };
     expect(renderToStaticMarkup(<NotificationsCard />)).toContain(
-      "Sent around 6 am Eastern time. Minted sets this.",
+      "Sent once a day, around 6 am Eastern time. Minted sets this.",
     );
   });
 });
@@ -461,7 +460,7 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     );
     expect(html).toContain("Step 1 · once a day · Email · Follow-up digest");
     expect(html).toContain("Goes to each coordinator only. No one is cc&#x27;d.");
-    expect(html).toContain("Sent around 8 am Central time. Minted sets this.");
+    expect(html).toContain("Sent once a day, around 8 am Central time. Minted sets this.");
     expect(html).not.toContain("Add someone to cc");
     expect(html).not.toContain("People cc&#x27;d on a step");
     expect(html).not.toContain("Customize steps");
@@ -470,10 +469,10 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
     expect(html).not.toContain("+ Add step");
     expect(html).not.toContain('aria-label="Move step 1 up"');
     expect(html).not.toContain('type="number"');
-    // The only control besides Save and Cancel is how often (A8); on/off is
-    // Minted's (A9).
-    expect(html.match(/role="combobox"/g)).toHaveLength(1);
-    expect(html).toContain('aria-label="How often"');
+    // No control besides Save and Cancel: how often (Addendum 10), when and
+    // on/off (A9) are Minted's.
+    expect(html).not.toContain('role="combobox"');
+    expect(html).not.toContain("How often");
     expect(html).not.toContain('role="switch"');
   });
 });
@@ -869,46 +868,42 @@ describe("Policy settings in the card (bounce escalation step, digest audience)"
 });
 
 describe("Addendum 8 in the card (Answered Oct 31)", () => {
-  it("lets an admin choose how often the digest goes out, and describes it (A8)", () => {
-    const draft = starterDraft();
-    const props = editorProps({
-      purpose: "followup_digest",
-      draft,
-      issues: [],
-      platformDefault: DIGEST_DEFAULT,
+  it("shows how often the digest goes out read-only, as Minted set it (Addendum 10)", () => {
+    const digestRow = (digestFrequency: NotificationSequenceConfig["digestFrequency"]) => ({
+      ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+      id: "seq-digest",
+      purpose: "followup_digest" as const,
+      digestFrequency,
     });
-    const select = findAll(
-      NotificationSequenceEditor(props),
-      (e) => e.props.value === "default",
-    )[0];
-    (select.props.onValueChange as (value: string) => void)("weekly");
-    expect((props.onChange.mock.calls[0][0] as SequenceDraft).digestFrequency).toBe("weekly");
     const weekly = renderToStaticMarkup(
       <NotificationSequenceEditor
         {...editorProps({
           purpose: "followup_digest",
-          draft: { ...draft, digestFrequency: "weekly" },
+          draft: starterDraft(),
           issues: [],
           platformDefault: DIGEST_DEFAULT,
-          dirty: true,
+          saved: digestRow("weekly"),
         })}
       />,
     );
     expect(weekly).toContain(
-      "Sent on Mondays around 8 am Central time. Minted sets the day and time.",
+      "Sent once a week, on Mondays around 8 am Central time. Minted sets this.",
     );
     expect(weekly).toContain("Step 1 · once a week · Email · Follow-up digest");
-    const twice = renderToStaticMarkup(
-      <NotificationSequenceEditor
-        {...editorProps({
-          purpose: "followup_digest",
-          draft: { ...draft, digestFrequency: "twice_daily" },
-          issues: [],
-          platformDefault: DIGEST_DEFAULT,
-        })}
-      />,
+    expect(weekly).not.toContain('role="combobox"');
+    // An admin's card and a member's summary say the same, with no control.
+    state.sequences = { followup_digest: digestRow("twice_daily") };
+    const admin = renderToStaticMarkup(<NotificationsCard />);
+    expect(admin).toContain(
+      "Sent twice a day, around 8 am and 2 pm Central time. Minted sets this.",
     );
-    expect(twice).toContain("Sent around 8 am and 2 pm Central time. Minted sets these times.");
+    expect(admin).toContain("Step 1 · twice a day · Email · Follow-up digest");
+    expect(admin).not.toContain("How often");
+    state.isAdmin = false;
+    const member = renderToStaticMarkup(<NotificationsCard />);
+    expect(member).toContain(
+      "Sent twice a day, around 8 am and 2 pm Central time. Minted sets this.",
+    );
   });
 
   it("shows on/off read-only: off until Minted switches it on (A9)", () => {
