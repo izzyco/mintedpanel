@@ -16,7 +16,7 @@ import {
   type IdentityValidationRules,
 } from "@/lib/providerIdentity";
 
-const RECHECK: IdentityValidationRules = { recheckStoredOnEdit: true, deaLastNameLetter: "off" };
+const RECHECK: IdentityValidationRules = { recheckStoredOnEdit: true };
 
 // 1093817465 fails the CMS check digit; 1234567893 and 1112223338 pass it.
 const LEGACY = {

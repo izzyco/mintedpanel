@@ -8,12 +8,10 @@ import type { BrowserContext } from "@playwright/test";
 
 export interface ServedIdentityValidationRules {
   recheckStoredOnEdit: boolean;
-  deaLastNameLetter: "off";
 }
 
 export const RECHECK_STORED_RULES: ServedIdentityValidationRules = {
   recheckStoredOnEdit: true,
-  deaLastNameLetter: "off",
 };
 
 export async function serveIdentityValidationRules(
