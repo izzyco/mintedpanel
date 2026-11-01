@@ -22,8 +22,11 @@
 // page (2026-08-16). It pointed at Org Detail only while no personal settings
 // page existed; /admin/settings itself remains a redirect stub.
 //
-// Focus on the dark rail uses a white-alpha ring — the app's soft green ring
-// is invisible on forest. Renders in both the desktop rail and mobile drawer.
+// Rail colors read the --mp-sidebar-* tokens (styles.css): ink steps whose
+// defaults are today's white alphas, so the forest rail is pixel-identical and
+// the Mission Control surface swaps the palette by overriding tokens on <html>.
+// Focus on the rail uses its own ring token — the app's soft green ring is
+// invisible on forest. Renders in both the desktop rail and mobile drawer.
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
@@ -76,20 +79,20 @@ function initialsOf(name: string | null, email: string | null): string {
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "U";
 }
 
-// Nav focus uses a white-alpha ring — the global soft green ring is invisible
-// on the forest rail (F0.9.3, preserved by E6.1).
+// Nav focus uses the rail's own ring token (white-alpha on forest; F0.9.3,
+// preserved by E6.1) — the global soft green ring is invisible on forest.
 const navFocus =
-  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-[rgba(255,255,255,0.35)]";
+  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--mp-sidebar-focus)]";
 
 const navItemClass = (activeItem: boolean) =>
   `flex items-center gap-3 px-3 py-2 rounded-[var(--mp-radius-control)] text-[13px] transition-colors ${navFocus} ${
     activeItem
-      ? "bg-white/10 text-white font-medium shadow-[inset_2px_0_0_#C8DBD4]"
-      : "text-white/60 hover:text-white hover:bg-white/5"
+      ? "bg-mp-sidebar-ink/10 text-mp-sidebar-ink font-medium shadow-[inset_2px_0_0_var(--mp-sidebar-accent)]"
+      : "text-mp-sidebar-ink-60 hover:text-mp-sidebar-ink hover:bg-mp-sidebar-ink/5"
   }`;
 
 const sectionLabelClass =
-  "px-3 pb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-white/35";
+  "px-3 pb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-mp-sidebar-ink-35";
 
 // Open cases = case_status outside the terminal bucket (E6.0's unified field
 // still riding the legacy mirror for status-config consumers); status-less
@@ -112,7 +115,7 @@ function CountChip({ count, label }: { count: number; label: string }) {
   return (
     <span
       aria-label={label}
-      className="inline-flex min-w-[18px] h-[18px] items-center justify-center rounded-full bg-white/[0.14] px-[5px] text-[11px] font-semibold tabular-nums text-white"
+      className="inline-flex min-w-[18px] h-[18px] items-center justify-center rounded-full bg-mp-sidebar-ink/[0.14] px-[5px] text-[11px] font-semibold tabular-nums text-mp-sidebar-ink"
     >
       {count}
     </span>
@@ -205,7 +208,7 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
       {/* Logo — untouched branding (F6.1.1 AC) */}
       <div className="px-5 pt-4 pb-2.5 flex items-center gap-2">
         <img src={logoWhite} alt="Minted Panel" className="w-6 h-6 object-contain" />
-        <span className="text-[14px] font-semibold text-white">Minted Panel</span>
+        <span className="text-[14px] font-semibold text-mp-sidebar-ink">Minted Panel</span>
       </div>
 
       {/* Cross-org provider lookup. A button, not a nav link — the six primary
@@ -215,11 +218,11 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
           type="button"
           onClick={onOpenSearch}
           aria-label="Find a provider"
-          className={`flex h-9 w-full items-center gap-2 rounded-[var(--mp-radius-control)] border border-white/10 bg-white/[0.06] px-3 text-[13px] text-white/70 hover:bg-white/10 hover:text-white ${navFocus}`}
+          className={`flex h-9 w-full items-center gap-2 rounded-[var(--mp-radius-control)] border border-mp-sidebar-ink/10 bg-mp-sidebar-ink/[0.06] px-3 text-[13px] text-mp-sidebar-ink-70 hover:bg-mp-sidebar-ink/10 hover:text-mp-sidebar-ink ${navFocus}`}
         >
           <Search className="h-4 w-4 flex-none" />
           <span className="flex-1 text-left">Find a provider</span>
-          <kbd className="text-[11px] text-white/40">{shortcut}</kbd>
+          <kbd className="text-[11px] text-mp-sidebar-ink-40">{shortcut}</kbd>
         </button>
       </div>
 
@@ -250,7 +253,7 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
       </div>
 
       {/* Generous break + divider before the org zone */}
-      <div className="mx-3 mt-10 border-t border-white/10" />
+      <div className="mx-3 mt-10 border-t border-mp-sidebar-ink/10" />
 
       {/* Org zone — the switcher tile IS the header; children are the three
           org-scoped journey entries (F6.1.1). */}
@@ -262,17 +265,17 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
                 <button
                   type="button"
                   aria-label={`Active organization: ${active.orgName}. Switch organization`}
-                  className={`w-full flex items-center gap-2.5 rounded-[var(--mp-radius-sm)] border border-white/[0.08] bg-white/[0.06] px-3 py-[9px] mb-1.5 text-left hover:bg-white/10 transition-colors ${navFocus}`}
+                  className={`w-full flex items-center gap-2.5 rounded-[var(--mp-radius-sm)] border border-mp-sidebar-ink/[0.08] bg-mp-sidebar-ink/[0.06] px-3 py-[9px] mb-1.5 text-left hover:bg-mp-sidebar-ink/10 transition-colors ${navFocus}`}
                 >
                   <span className="flex-1 min-w-0 flex flex-col gap-px">
-                    <span className="text-[9.5px] font-semibold uppercase tracking-[0.08em] text-white/40">
+                    <span className="text-[9.5px] font-semibold uppercase tracking-[0.08em] text-mp-sidebar-ink-40">
                       Organization
                     </span>
-                    <span className="truncate text-[14px] font-semibold text-white">
+                    <span className="truncate text-[14px] font-semibold text-mp-sidebar-ink">
                       {active.orgName}
                     </span>
                   </span>
-                  <ChevronDown className="w-4 h-4 flex-none text-white/50" />
+                  <ChevronDown className="w-4 h-4 flex-none text-mp-sidebar-ink-50" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-64 p-0">
@@ -317,7 +320,7 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
                             {m.orgName}
                           </span>
                           {m.orgId === activeOrgId ? (
-                            <Check className="w-3.5 h-3.5 text-primary" />
+                            <Check className="w-3.5 h-3.5 text-[var(--mp-brand-ink)]" />
                           ) : null}
                         </DropdownMenuItem>
                       ))}
@@ -332,7 +335,7 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
                 <div className="border-t border-[var(--mp-border-subtle)]">
                   <DropdownMenuItem
                     onSelect={() => navigate({ to: "/onboarding" })}
-                    className="gap-2 px-3 py-[9px] font-medium text-primary"
+                    className="gap-2 px-3 py-[9px] font-medium text-[var(--mp-brand-ink)]"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Add organization
@@ -357,7 +360,7 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
           </>
         ) : (
           // No org selected → dashed-border prompt tile (F0.9.3).
-          <div className="rounded-[var(--mp-radius-sm)] border border-dashed border-white/[0.22] px-3 py-3 text-[12px] leading-normal text-white/50">
+          <div className="rounded-[var(--mp-radius-sm)] border border-dashed border-mp-sidebar-ink/[0.22] px-3 py-3 text-[12px] leading-normal text-mp-sidebar-ink-50">
             Select an organization to see its details.
           </div>
         )}
@@ -365,26 +368,26 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
 
       {/* User footer (F6.1.1). Settings lands on /account — personal name and
           title; org-level management stays on Org Detail in the nav above. */}
-      <div className="border-t border-white/10 p-3">
+      <div className="border-t border-mp-sidebar-ink/10 p-3">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
               aria-label="Account menu"
-              className={`w-full flex items-center gap-2.5 rounded-[var(--mp-radius-sm)] px-2 py-2 text-left bg-white/5 hover:bg-white/10 transition-colors ${navFocus}`}
+              className={`w-full flex items-center gap-2.5 rounded-[var(--mp-radius-sm)] px-2 py-2 text-left bg-mp-sidebar-ink/5 hover:bg-mp-sidebar-ink/10 transition-colors ${navFocus}`}
             >
-              <div className="w-7 h-7 rounded-full bg-white/10 border border-white/15 flex items-center justify-center text-[11px] font-medium text-white flex-shrink-0">
+              <div className="w-7 h-7 rounded-full bg-mp-sidebar-ink/10 border border-mp-sidebar-ink/15 flex items-center justify-center text-[11px] font-medium text-mp-sidebar-ink flex-shrink-0">
                 {initialsOf(fullName, user?.email ?? null)}
               </div>
               <div className="flex-1 min-w-0">
-                <div className="truncate text-[13px] font-medium text-white">
+                <div className="truncate text-[13px] font-medium text-mp-sidebar-ink">
                   {fullName ?? user?.email ?? "Signed in"}
                 </div>
-                <div className="truncate text-[11px] text-white/50">
+                <div className="truncate text-[11px] text-mp-sidebar-ink-50">
                   {active ? (ROLE_LABELS[active.role] ?? active.role) : ""}
                 </div>
               </div>
-              <ChevronDown className="w-4 h-4 text-white/40" />
+              <ChevronDown className="w-4 h-4 text-mp-sidebar-ink-40" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="top" className="w-[230px]">

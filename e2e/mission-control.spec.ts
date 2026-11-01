@@ -14,11 +14,12 @@ import {
 // Covers:
 //   (a) a platform admin hard-loads /mission-control: breadcrumb (Home is the
 //       only section, so no section strip), the six tiles with the fixture
-//       numbers, the sidebar entry; a Mission Control path with no page is
-//       the generic not-found view
+//       numbers, the sidebar entry, the surface palette (data-surface on
+//       <html>, mint rail) that a workspace route does not carry; a Mission
+//       Control path with no page is the generic not-found view
 //   (b) a non-admin hard-load gets the generic not-found view (identical to an
-//       unknown URL) and no sidebar entry; a client-side navigation is
-//       redirected back to /
+//       unknown URL, forest rail, no surface attribute) and no sidebar entry;
+//       a client-side navigation is redirected back to /
 //   (c) an is_platform_admin() error behaves exactly like false
 //   (d) a platform admin with zero memberships reaches Mission Control (and
 //       lands there from /) without the first-run NoOrgScreen
@@ -48,6 +49,11 @@ const SESSION = {
     created_at: "2026-07-09T00:00:00Z",
   },
 };
+
+// Computed rail backgrounds: the forest --mp-sidebar (#0C2A1D) everywhere, and
+// the Mission Control surface's mint (#CFF3E3, styles.css) for a platform admin.
+const FOREST_RAIL = "rgb(12, 42, 29)";
+const MINT_RAIL = "rgb(207, 243, 227)";
 
 const METRICS = {
   generatedAt: "2026-10-30T13:15:00.000Z",
@@ -242,10 +248,23 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
   expect(rpcCalls).toContain("is_platform_admin");
   expect(rpcCalls).toContain("platform_metrics");
 
+  // The admin surface carries its own palette: the attribute on <html> and the
+  // mint rail (the shade is the proposal in styles.css and adjustable there).
+  await expect(page.locator('html[data-surface="mission-control"]')).toHaveCount(1);
+  await expect(sidebar(page)).toHaveCSS("background-color", MINT_RAIL);
+
   // A Mission Control path with no page yet is an ordinary unknown URL, even
   // for a platform admin: no placeholder page ships.
   await page.goto("/mission-control/organizations");
   await expectNotFound(page);
+
+  // A workspace route for the same admin is the ordinary forest rail.
+  await page.goto("/cases");
+  await expect(sidebar(page).getByText("Workspace", { exact: true })).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(page.locator("html[data-surface]")).toHaveCount(0);
+  await expect(sidebar(page)).toHaveCSS("background-color", FOREST_RAIL);
 });
 
 test("(b) a non-admin gets the generic not-found view, no sidebar entry, and client navigation lands on /", async ({
@@ -263,6 +282,10 @@ test("(b) a non-admin gets the generic not-found view, no sidebar entry, and cli
   await expectNotFound(page);
   expect(await page.locator("main").innerText()).toBe(unknownText);
   await expect(page.getByText(/mission control/i)).toHaveCount(0);
+  // The rail is the ordinary forest too: the palette never hints that the
+  // route exists.
+  await expect(page.locator("html[data-surface]")).toHaveCount(0);
+  await expect(sidebar(page)).toHaveCSS("background-color", FOREST_RAIL);
 
   await expect(sidebar(page).getByText("Workspace", { exact: true })).toBeVisible();
   await expect(sidebar(page).getByRole("link", { name: "Mission Control" })).toHaveCount(0);

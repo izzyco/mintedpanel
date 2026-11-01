@@ -108,8 +108,20 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 });
 
 function RootShell({ children }: { children: ReactNode }) {
+  // Mission Control is the one surface with its own palette (styles.css,
+  // `:root[data-surface="mission-control"]`). The attribute lives on <html>
+  // because the AppShell and Sidebar render above the layout route, and it is
+  // set only once the store KNOWS the caller is a platform admin: a non-admin
+  // on /mission-control must see exactly what an unknown URL shows, rail color
+  // included, so the path alone never selects the palette. The app renders
+  // only "Loading..." until the store is initialized, and the flag lands in
+  // that same load, so the rail's first paint already carries the palette.
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isPlatformAdmin = useAuthStore((s) => s.isPlatformAdmin);
+  const surface =
+    isPlatformAdmin === true && isMissionControlPath(pathname) ? "mission-control" : undefined;
   return (
-    <html lang="en">
+    <html lang="en" data-surface={surface}>
       <head>
         <HeadContent />
       </head>
