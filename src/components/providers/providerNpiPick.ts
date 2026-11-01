@@ -13,6 +13,7 @@ import {
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import type { NpiFillOnPick } from "@/lib/npiRegistryPolicy";
+import { PROVIDER_GENDER_OPTIONS } from "@/lib/providerGender";
 import {
   emptyLicenseRow,
   type LicenseRow,
@@ -31,7 +32,7 @@ export interface ProviderNpiPickContext {
   /** Staff edited the field since the last pick wrote it (or at all), from
    * user input only. A taxonomy staff never chose is the preset, a default
    * nobody chose. */
-  touched: { credentials: boolean; taxonomyCode: boolean };
+  touched: { credentials: boolean; taxonomyCode: boolean; gender?: boolean; phone?: boolean };
   /** What the last pick wrote, or null before the first pick. */
   lastPick: NpiPickTrace | null;
   /** The preset taxonomy the form applied for its group (A32). While the
@@ -45,8 +46,9 @@ export interface ProviderNpiPickContext {
  * The NPI is set; at "blank_fields" credentials, the taxonomy and the number
  * of a license row whose state matches fill when blank. Blank includes the
  * untouched preset taxonomy and whatever the last pick wrote or added that
- * staff left alone; an untouched row added from the last pick's offer goes.
- * No license row is added: licenses not on the form come back as offers. */
+ * staff left alone; an untouched row the last pick added, or staff added
+ * from its offer, goes. A license for a state with no row is added the way
+ * staff add an offer (A37); one that can't be comes back as an offer. */
 export function applyNpiRegistryPick(
   form: ProviderFormState,
   record: NpiRegistryRecord,
@@ -71,9 +73,29 @@ export function applyNpiRegistryPick(
       })),
       // Add Provider saves a license row with any subset of its fields.
       licenseRowSaveable: true,
+      gender: {
+        value: form.gender,
+        options: PROVIDER_GENDER_OPTIONS.map((option) => option.value),
+      },
+      phone: form.phone,
+      genderTouched: context.touched.gender,
+      phoneTouched: context.touched.phone,
     },
     fillOnPick,
     context.lastPick,
+  );
+  const licenses = plan.addLicenses.reduce(
+    (rows, license) => addNpiLicenseOffer(rows, license, context.pulledAt).licenses,
+    applyNpiLicenseRows(
+      form.licenses,
+      plan,
+      (row, number, origin) => ({
+        ...row,
+        number,
+        npiOrigin: origin ? { ...origin, pulledAt: origin.pulledAt ?? context.pulledAt } : null,
+      }),
+      emptyLicenseRow,
+    ),
   );
   return {
     form: {
@@ -81,23 +103,18 @@ export function applyNpiRegistryPick(
       npi: plan.npi,
       credentials: plan.credentials ?? form.credentials,
       taxonomyCode: plan.taxonomyCode ?? form.taxonomyCode,
-      licenses: applyNpiLicenseRows(
-        form.licenses,
-        plan,
-        (row, number, origin) => ({
-          ...row,
-          number,
-          npiOrigin: origin ? { ...origin, pulledAt: origin.pulledAt ?? context.pulledAt } : null,
-        }),
-        emptyLicenseRow,
-      ),
+      // A36: a Gender or Phone used from the last pick, taken back.
+      gender: plan.gender ?? form.gender,
+      phone: plan.phone ?? form.phone,
+      licenses,
     },
     summary: plan.summary,
     trace: plan.trace,
   };
 }
 
-/** Staff added an offered registry license: it fills the untouched empty row
+/** A registry license added as a row — by a pick, for a state with no row
+ * (A37), or by staff from a pick's offer: it fills the untouched empty row
  * when there is one, or a new row, marked as added from the pick (so the next
  * pick can take it back while it is untouched). Type and dates stay blank
  * (NPPES has no expiration date). When a row already holds that license

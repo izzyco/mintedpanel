@@ -404,10 +404,6 @@ test("TS-33: first provider — CAQH baseline + group assignment → Complete + 
   await dialog.locator("#prov-npi").fill("1234567893");
   await dialog.locator("#prov-caqh").fill("16224897");
   await dialog.getByRole("button", { name: "Save provider" }).click();
-  // MINT-110 (A30b): a new provider is reviewed before the save; Save again
-  // saves.
-  await expect(dialog.getByRole("region", { name: "Review before saving" })).toBeVisible();
-  await dialog.getByRole("button", { name: "Save provider" }).click();
 
   await expect(card).toContainText("Complete", { timeout: 15000 });
   await expect(card).toContainText("Nathan Scott");
@@ -458,8 +454,6 @@ test("TS-34: two-TIN provider — both groups assigned, first primary; last-assi
   await expect(dialog).toContainText("NPI check digit is invalid");
   expect(fixtures.providers!).toHaveLength(0);
   await dialog.locator("#prov-npi").fill("1093817462");
-  await dialog.getByRole("button", { name: "Save provider" }).click();
-  // MINT-110 (A30b): the review step, then the save.
   await dialog.getByRole("button", { name: "Save provider" }).click();
 
   await expect(card).toContainText("Quinn James", { timeout: 15000 });
@@ -1157,12 +1151,8 @@ test("MINT-129: under recheckStoredOnEdit, the roster form checks the stored NPI
   await expect(dialog).toContainText("NPI check digit is invalid");
   expect(providerPatches).toEqual([]);
 
-  // Correcting the NPI saves both edits (after the review step a changed NPI
-  // gets, MINT-110 A30b).
+  // Correcting the NPI saves both edits.
   await dialog.locator("#prov-npi").fill("1093817462");
-  await dialog.getByRole("button", { name: "Save changes" }).click();
-  await expect(dialog.getByRole("region", { name: "Review before saving" })).toBeVisible();
-  expect(providerPatches).toEqual([]);
   await dialog.getByRole("button", { name: "Save changes" }).click();
   await expect(dialog).toHaveCount(0);
   expect(providerPatches).toEqual([
@@ -1184,4 +1174,45 @@ test("MINT-129: under recheckStoredOnEdit, the roster form passes a valid stored
   expect(providerPatches).toEqual([
     expect.objectContaining({ phone: "252-555-0142", npi: "109-381-7462" }),
   ]);
+});
+
+test("MINT-110: a name-only roster edit does not check the stored NPI against the NPI Registry", async ({
+  context,
+  page,
+}) => {
+  const fixtures = p03Fixtures();
+  (fixtures.providers as Record<string, unknown>[])[0].npi = "1093817462";
+  const handler = makeHandler(fixtures);
+  const providerPatches: Record<string, unknown>[] = [];
+  await context.route(/\/(rest|auth)\/v1\//, (route) => {
+    const req = route.request();
+    if (req.method() === "PATCH" && new URL(req.url()).pathname.endsWith("/rest/v1/providers"))
+      providerPatches.push(JSON.parse(req.postData() ?? "{}") as Record<string, unknown>);
+    return handler(route);
+  });
+  const registryCalls: unknown[] = [];
+  await context.route(/\/api\/npi-registry\//, async (route) => {
+    registryCalls.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { record: null }, error: null, meta: null }),
+    });
+  });
+  const dialog = await openP03Roster(context, page);
+  await expect(dialog.locator("#prov-npi")).toHaveValue("1093817462");
+
+  // Addendum 10: only an NPI that is new or changed is checked; a new name
+  // alone leaves the stored NPI unchecked, on the form and after the save.
+  await dialog.locator("#prov-first").fill("Renamed");
+  await expect(
+    dialog.getByText(/in the NPI Registry|Checking the NPI Registry|NPI Registry is unavailable/),
+  ).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(providerPatches).toEqual([
+    expect.objectContaining({ first_name: "Renamed", npi: "1093817462" }),
+  ]);
+  await page.waitForTimeout(500);
+  expect(registryCalls).toEqual([]);
 });

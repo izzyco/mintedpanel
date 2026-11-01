@@ -12,21 +12,33 @@
 // typed, chose, or loaded from the record is never replaced; when it differs
 // from the registry the summary says so ("Kept yours").
 //
-// A pick never adds a license row. A registry license the form has no row for
-// is offered, and staff add it with one click: a row feeds the provider's
-// state footprint and readiness, NPPES has no expiration date, and NPPES
-// licenses are self-reported. A row added from an offer, and a number a pick
-// wrote, carry an NpiRowOrigin so the next pick can take them back. A license
-// row whose verification is recorded is never given a registry number.
+// A registry license for a state with no row on the form is added as a new
+// row (A37): unverified, the registry's state and number, no expiration date
+// (NPPES has none; the provider supplies it later, and a blank one never
+// blocks a save). A license that can't be added that way — a second number in
+// a state that has a row, or a state whose only row is verified or failed — is
+// offered, and staff add it with one click. A row a pick added, a row added
+// from an offer, and a number a pick wrote carry an NpiRowOrigin, so the next
+// pick takes them back while untouched. A license row whose verification is
+// recorded is never given a registry number.
 // Registry data with no field on the form is listed read-only and never
 // saved. At "npi_only" nothing but the NPI is set, and everything else is
 // listed.
+//
+// Gender and Phone are never filled by a pick (A36). The registry's sex (when
+// it maps to one of the form's Gender options) and its primary practice
+// location's US phone are offered as candidates, one "Use" each, when they
+// differ from what the field holds; nothing is preselected. A value staff
+// used is the pick's, like a field it filled (the form records it in the
+// trace): the next pick takes it back while untouched, unless that match
+// lists the same value.
 //
 // The form adapters (providerFormShared.ts for Add Provider, rosterNpi.ts for
 // the roster form) describe their fields with NpiFillForm, keep the last
 // pick's NpiPickTrace and the touched flags, and apply the plan; this module
 // decides.
 import { fmtDate } from "@/lib/format";
+import { providerGenderLabel } from "@/lib/providerGender";
 import { stripNpiSeparators } from "@/lib/providerIdentity";
 import { isKnownTaxonomyCode, normalizeTaxonomyCode } from "@/lib/providerTaxonomy";
 import { US_STATES } from "@/lib/usStates";
@@ -75,8 +87,15 @@ export interface NpiFillForm {
   licenses: NpiFillLicenseRow[];
   /** Whether the form saves a license row that holds only a state and a
    * number. NPPES has no expiration date, so when a row needs more, registry
-   * licenses the form has no row for are listed and never offered. */
+   * licenses the form has no row for are listed, never added or offered. */
   licenseRowSaveable: boolean;
+  /** A36: the form's Gender value and the values its Gender options offer,
+   * and its Phone. Left out, nothing is offered for that field. */
+  gender?: { value: string; options: readonly string[] };
+  phone?: string;
+  /** Staff edited Gender / Phone since using a candidate (or at all). */
+  genderTouched?: boolean;
+  phoneTouched?: boolean;
 }
 
 /** One value a pick wrote, and what the field held before it. */
@@ -90,6 +109,10 @@ export interface NpiPickWrite {
 export interface NpiPickTrace {
   credentials: NpiPickWrite | null;
   taxonomyCode: NpiPickWrite | null;
+  /** A36: a registry candidate staff used for Gender or Phone (set by the
+   * form, npiPickWithCandidate; a pick never writes these itself). */
+  gender?: NpiPickWrite | null;
+  phone?: NpiPickWrite | null;
 }
 
 /** A registry license the form has no row for. */
@@ -111,6 +134,19 @@ export interface NpiRegistryDetail {
   lines: string[];
 }
 
+/** A36: a registry value staff may put into a field a pick never fills. */
+export interface NpiFieldCandidate {
+  field: "gender" | "phone";
+  /** The form's label for the field. */
+  label: string;
+  /** What goes into the field: a Gender option's value, or the phone. */
+  value: string;
+  /** What the registry lists, in its own terms: "sex: Female". */
+  registryText: string;
+  /** The field holds it (derived from the form: npiCandidatesOnForm). */
+  inUse: boolean;
+}
+
 export interface NpiFillSummary {
   /** The form labels of what the pick filled: the NPI, then credentials,
    * taxonomy and license numbers. */
@@ -126,11 +162,15 @@ export interface NpiFillSummary {
    * and numbers it filled into rows staff have since verified or failed.
    * Theirs to remove if they don't apply. */
   staleRows: string[];
-  /** Licenses the form has no row for, for staff to add. */
+  /** Rows this pick added, "WY WY-0099": a state with no row (A37). */
+  addedRows: string[];
+  /** Licenses the pick could not add, for staff to add. */
   licenseOffers: NpiLicenseOffer[];
   /** Several taxonomies and none flagged primary (A35): a pick list for the
    * one-value taxonomy field, nothing preselected — never the first. */
   taxonomyChoices: { code: string; description: string | null }[];
+  /** Registry values for Gender and Phone, for staff to use (A36). */
+  candidates: NpiFieldCandidate[];
   /** Registry data no field on the form holds. Shown, never saved. */
   details: NpiRegistryDetail[];
 }
@@ -140,6 +180,10 @@ export interface NpiFillPlan {
   /** The value to set, or null to leave the field as it is. */
   credentials: string | null;
   taxonomyCode: string | null;
+  /** A36: a candidate used from the last pick, taken back (a pick only offers
+   * Gender and Phone, never sets a new value). */
+  gender: string | null;
+  phone: string | null;
   /** Rows whose number or origin changes; every other row is untouched. ""
    * clears a number the previous pick wrote. */
   licenseRows: { rowIndex: number; number: string; origin: NpiRowOrigin | null }[];
@@ -149,6 +193,9 @@ export interface NpiFillPlan {
   /** Rows to return to the form's empty row: like removeRows, for an added
    * row that had filled the form's untouched empty row. */
   resetRows: number[];
+  /** Licenses to add as rows (A37), after the other row changes: each the
+   * way staff add an offer (the untouched empty row, else a new row). */
+  addLicenses: { state: string; number: string }[];
   /** What this pick wrote; pass it to the next pick. */
   trace: NpiPickTrace;
   summary: NpiFillSummary;
@@ -170,7 +217,14 @@ export const NPI_FILL_FIELD = {
   npi: "NPI",
   credentials: "Credentials",
   taxonomyCode: "Taxonomy code",
+  gender: "Gender",
+  phone: "Phone",
 } as const;
+
+// The Gender option each registry sex maps to directly (A36). NPPES records
+// sex; the form asks gender, so nothing else is offered.
+const SEX_GENDER = { F: "female", M: "male" } as const;
+const SEX_WORD = { F: "Female", M: "Male" } as const;
 
 const STATE_SET: ReadonlySet<string> = new Set(US_STATES);
 
@@ -248,6 +302,57 @@ export function formatRegistryAddress(address: NpiRegistryAddress): string {
   return [place || null, address.phone].filter(Boolean).join(" · ");
 }
 
+/** "303-555-0199": a ten-digit US phone as the provider records hold it, or
+ * null for anything else (letters, an extension, a country code). */
+export function usPhoneCandidate(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!/^[\d\s().-]+$/.test(trimmed)) return null;
+  const digits = trimmed.replace(/\D/g, "");
+  if (!/^\d{10}$/.test(digits)) return null;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+function phoneDigits(value: string): string {
+  return value.replace(/\D/g, "");
+}
+
+// The registry's values for Gender and Phone (A36), whatever the form holds:
+// the sex when it maps to one of the form's Gender options, and the primary
+// practice location's phone (never the mailing address's), US only.
+function registryCandidates(record: NpiRegistryRecord, form: NpiFillForm): NpiFieldCandidate[] {
+  const candidates: NpiFieldCandidate[] = [];
+  const sex = record.sex;
+  if (form.gender && (sex === "F" || sex === "M")) {
+    const value = SEX_GENDER[sex];
+    if (form.gender.options.includes(value)) {
+      candidates.push({
+        field: "gender",
+        label: NPI_FILL_FIELD.gender,
+        value,
+        registryText: `sex: ${SEX_WORD[sex]}`,
+        inUse: false,
+      });
+    }
+  }
+  const practice = record.practiceAddress;
+  const us = !practice?.countryCode || practice.countryCode === "US";
+  const phone = us ? usPhoneCandidate(practice?.phone) : null;
+  if (form.phone !== undefined && phone) {
+    candidates.push({
+      field: "phone",
+      label: NPI_FILL_FIELD.phone,
+      value: phone,
+      registryText: `practice phone: ${phone}`,
+      inUse: false,
+    });
+  }
+  return candidates;
+}
+
+function sameFieldValue(field: NpiFieldCandidate["field"], left: string, right: string): boolean {
+  return field === "phone" ? phoneDigits(left) === phoneDigits(right) : left === right;
+}
+
 function nameLine(name: NpiRegistryName): string {
   const full = [name.firstName, name.middleName, name.lastName].filter(Boolean).join(" ");
   return name.type ? `${full} (${name.type})` : full;
@@ -272,9 +377,9 @@ function registryLicenses(record: NpiRegistryRecord): { state: string; number: s
 
 /** What a pick of `record` does to a form holding `form`, given what the last
  * pick wrote (null before the first pick). Never replaces a value of staff's,
- * never adds a license row, never fills a row whose verification is recorded,
- * and never leaves the form unsaveable: a taxonomy outside the form's list is
- * listed instead. At "npi_only" only the NPI is set. */
+ * adds a row only for a state with none, never fills a row whose verification
+ * is recorded, and never leaves the form unsaveable: a taxonomy outside the
+ * form's list is listed instead. At "npi_only" only the NPI is set. */
 export function planNpiRegistryFill(
   record: NpiRegistryRecord,
   form: NpiFillForm,
@@ -287,6 +392,7 @@ export function planNpiRegistryFill(
   const kept: NpiFillKept[] = [];
   const staleRows: string[] = [];
   const offers: NpiLicenseOffer[] = [];
+  const addLicenses: NpiFillPlan["addLicenses"] = [];
   const details: NpiRegistryDetail[] = [];
   const trace: NpiPickTrace = { credentials: null, taxonomyCode: null };
 
@@ -400,20 +506,30 @@ export function planNpiRegistryFill(
   if (taxonomyChanged) (trace.taxonomyCode ? filled : cleared).push(NPI_FILL_FIELD.taxonomyCode);
 
   const notAdded: string[] = [];
-  for (const license of registryLicenses(record)) {
+  const licenses = registryLicenses(record);
+  // First, the licenses already on the form: an added row this match also
+  // lists stays. Marked before anything is filled or added, so what a pick
+  // adds never depends on the order the registry lists its licenses in.
+  const held = new Set<number>();
+  if (fillBlanks) {
+    licenses.forEach((license, index) => {
+      const holding = rows.findIndex(
+        (row) => row.state === license.state && sameLicense(row, license),
+      );
+      if (holding < 0) return;
+      rows[holding].removable = false;
+      rows[holding].stale = false;
+      held.add(index);
+    });
+  }
+  for (const [index, license] of licenses.entries()) {
     const line = `${license.state} ${license.number}`;
     if (!fillBlanks) {
       notAdded.push(line);
       continue;
     }
+    if (held.has(index)) continue;
     const inState = rows.flatMap((row, i) => (row.state === license.state ? [i] : []));
-    const holding = inState.find((i) => sameLicense(rows[i], license));
-    if (holding !== undefined) {
-      // Already on the form; an added row this match also lists stays.
-      rows[holding].removable = false;
-      rows[holding].stale = false;
-      continue;
-    }
     const blankRow = inState.find(
       (i) => !rows[i].removable && !rows[i].numberLocked && isBlankField(rows[i].number),
     );
@@ -423,12 +539,23 @@ export function planNpiRegistryFill(
       rows[blankRow].filledHere = true;
       continue;
     }
-    // A number staff entered in that state is kept and named.
+    // A37: no row of that state stays on the form (an untouched row of the
+    // last pick's goes) and this pick added none: add one.
+    const stateHasRow =
+      inState.some((i) => !rows[i].removable) ||
+      addLicenses.some((added) => added.state === license.state);
+    if (!stateHasRow && STATE_SET.has(license.state) && form.licenseRowSaveable) {
+      addLicenses.push({ state: license.state, number: license.number });
+      continue;
+    }
+    // A number staff entered in that state is kept and named; a row of a
+    // pick's is not staff's.
     const staffNumber = inState.some(
       (i) =>
         !rows[i].removable &&
         !rows[i].filledHere &&
         !rows[i].lockedPickNumber &&
+        rows[i].origin?.kind !== "added" &&
         !isBlankField(rows[i].number),
     );
     if (staffNumber) {
@@ -521,21 +648,53 @@ export function planNpiRegistryFill(
   });
   if (identifiers.length > 0) details.push({ label: "Other identifiers", lines: identifiers });
 
+  // 4. Gender and Phone (A36), offered under blank_fields like license offers
+  // and taxonomy choices, when they differ from the field. A candidate used
+  // from the last pick, untouched since, is the last pick's: kept, and still
+  // marked, when this match lists the same value; else taken back to what
+  // the field held before.
+  const offered = fillBlanks ? registryCandidates(record, form) : [];
+  const candidates: NpiFieldCandidate[] = [];
+  const takenBack: { gender: string | null; phone: string | null } = { gender: null, phone: null };
+  for (const field of ["gender", "phone"] as const) {
+    const current = field === "gender" ? form.gender?.value : form.phone;
+    if (current === undefined) continue;
+    const touched = field === "gender" ? form.genderTouched : form.phoneTouched;
+    const candidate = offered.find((item) => item.field === field);
+    const write = lastPick?.[field];
+    let value = current;
+    if (write && !touched && current === write.written) {
+      if (candidate && sameFieldValue(field, candidate.value, write.written)) {
+        trace[field] = write;
+      } else {
+        value = write.previous;
+        takenBack[field] = value;
+        cleared.push(NPI_FILL_FIELD[field]);
+      }
+    }
+    if (candidate && !sameFieldValue(field, candidate.value, value)) candidates.push(candidate);
+  }
+
   return {
     npi: record.npi,
     credentials: credentials !== form.credentials ? credentials : null,
     taxonomyCode: taxonomyChanged ? taxonomy : null,
+    gender: takenBack.gender,
+    phone: takenBack.phone,
     licenseRows,
     removeRows,
     resetRows,
+    addLicenses,
     trace,
     summary: {
       filled,
       cleared,
       kept,
       staleRows,
+      addedRows: addLicenses.map((added) => `${added.state} ${added.number}`),
       licenseOffers: offers,
       taxonomyChoices,
+      candidates,
       details,
     },
   };
@@ -589,11 +748,53 @@ export function npiOffersOnForm(
   };
 }
 
+/** The candidates with `inUse` worked out from what the fields hold now, so a
+ * used one reads "On the form" and comes back if staff change the field. */
+export function npiCandidatesOnForm(
+  summary: NpiFillSummary,
+  form: { gender: string; phone: string },
+): NpiFillSummary {
+  return {
+    ...summary,
+    candidates: summary.candidates.map((candidate) => ({
+      ...candidate,
+      inUse:
+        candidate.field === "gender"
+          ? form.gender === candidate.value
+          : phoneDigits(form.phone) === phoneDigits(candidate.value),
+    })),
+  };
+}
+
+/** The pick after staff use one of its candidates (A36): the trace keeps what
+ * the field held, so the value is marked as the registry's until staff edit
+ * it, and the next pick takes it back unless that match lists it too. */
+export function npiPickWithCandidate(
+  pick: NpiPickState,
+  candidate: Pick<NpiFieldCandidate, "field" | "value">,
+  previous: string,
+): NpiPickState {
+  return {
+    ...pick,
+    trace: { ...pick.trace, [candidate.field]: { written: candidate.value, previous } },
+  };
+}
+
 /** "Filled from the NPI Registry: NPI, Credentials." */
 export function npiFillFilledText(summary: NpiFillSummary): string {
   return summary.filled.length > 0
     ? `Filled from the NPI Registry: ${summary.filled.join(", ")}.`
     : "Nothing blank to fill from the NPI Registry.";
+}
+
+/** "Added a license row from the NPI Registry: WY WY-0099, with no
+ * expiration date." (A37) */
+export function npiFillAddedText(summary: NpiFillSummary): string | null {
+  const rows = summary.addedRows;
+  if (rows.length === 0) return null;
+  return rows.length === 1
+    ? `Added a license row from the NPI Registry: ${rows[0]}, with no expiration date.`
+    : `Added license rows from the NPI Registry: ${rows.join(", ")}, with no expiration dates.`;
 }
 
 /** "Cleared from the previous pick: Credentials, CO license row." */
@@ -626,22 +827,36 @@ export function npiFillOffersText(summary: NpiFillSummary): string | null {
     : `The registry lists ${count} licenses that are not on the form.`;
 }
 
+/** "The registry also lists sex: Female and practice phone: 303-555-0199." */
+export function npiFillCandidatesText(summary: NpiFillSummary): string | null {
+  if (summary.candidates.length === 0) return null;
+  return `The registry also lists ${summary.candidates.map((c) => c.registryText).join(" and ")}.`;
+}
+
 /** What the polite live region says after a pick. */
 export function npiFillAnnouncement(summary: NpiFillSummary): string {
+  const offers = summary.licenseOffers.length > 0;
+  const candidates = summary.candidates.length > 0;
   const more =
     summary.taxonomyChoices.length > 0
       ? "The registry lists several taxonomies and none as primary; choose one below."
-      : summary.licenseOffers.length > 0
-        ? "Add them below if they apply."
-        : summary.details.length > 0
-          ? "More registry details are listed below."
-          : null;
+      : offers && candidates
+        ? "Add or use them below if they apply."
+        : offers
+          ? "Add them below if they apply."
+          : candidates
+            ? "Use them below if they apply."
+            : summary.details.length > 0
+              ? "More registry details are listed below."
+              : null;
   return [
     npiFillFilledText(summary),
+    npiFillAddedText(summary),
     npiFillClearedText(summary),
     npiFillKeptText(summary),
     npiFillStaleText(summary),
     npiFillOffersText(summary),
+    npiFillCandidatesText(summary),
     more,
   ]
     .filter(Boolean)
@@ -668,16 +883,28 @@ export function npiRegistrySourcedFields(
     taxonomyCode: string;
     taxonomyTouched: boolean;
     licenses: { state: string; number: string; origin: NpiRowOrigin | null | undefined }[];
+    /** A36: a used candidate (in the pick's trace) is the registry's while
+     * the field holds it and staff have not edited the field since. */
+    gender?: { value: string; touched: boolean };
+    phone?: { value: string; touched: boolean };
   },
 ): {
   credentials: boolean;
   taxonomyCode: boolean;
+  gender: boolean;
+  phone: boolean;
   lines: { label: string; values: string[] }[];
 } {
   const holds = (write: NpiPickWrite | null | undefined, value: string, touched: boolean) =>
     Boolean(write) && !touched && value === write?.written;
   const credentials = holds(pick?.trace.credentials, form.credentials, form.credentialsTouched);
   const taxonomyCode = holds(pick?.trace.taxonomyCode, form.taxonomyCode, form.taxonomyTouched);
+  const gender = Boolean(
+    form.gender && holds(pick?.trace.gender, form.gender.value, form.gender.touched),
+  );
+  const phone = Boolean(
+    form.phone && holds(pick?.trace.phone, form.phone.value, form.phone.touched),
+  );
   const lines: { label: string; values: string[] }[] = [];
   const put = (pulledAt: string, value: string) => {
     const label = npiRegistrySourceLabel(pulledAt);
@@ -686,11 +913,13 @@ export function npiRegistrySourcedFields(
     else lines.push({ label, values: [value] });
   };
   if (pick && credentials) put(pick.pulledAt, `Credentials ${form.credentials}`);
+  if (pick && gender) put(pick.pulledAt, `Gender ${providerGenderLabel(form.gender?.value)}`);
+  if (pick && phone) put(pick.pulledAt, `Phone ${form.phone?.value}`);
   if (pick && taxonomyCode) put(pick.pulledAt, `Taxonomy code ${form.taxonomyCode}`);
   for (const row of form.licenses) {
     const origin = row.origin;
     if (!origin || origin.touched || !origin.pulledAt || !row.number.trim()) continue;
     put(origin.pulledAt, `${row.state} license ${row.number}`);
   }
-  return { credentials, taxonomyCode, lines };
+  return { credentials, taxonomyCode, gender, phone, lines };
 }

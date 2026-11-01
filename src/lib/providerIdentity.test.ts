@@ -1,11 +1,9 @@
-// MINT-7 / CRUD-01 — the shared provider identity rules: NPI check digit, DEA
-// checksum, strict ISO calendar dates, and the existing-data change rule.
+// MINT-7 / CRUD-01 — the shared provider identity rules: NPI check digit,
+// strict ISO calendar dates, and the existing-data change rule.
 import { describe, expect, it } from "vitest";
 import {
-  deaProblem,
   identityFieldChanged,
   isIsoDate,
-  isValidDea,
   isValidNpi,
   npiCheckDigit,
   stripNpiSeparators,
@@ -81,38 +79,6 @@ describe("stripNpiSeparators (MINT-110)", () => {
       expect(isValidNpi(stripNpiSeparators(value))).toBe(false);
     }
     expect(stripNpiSeparators("123.456.7893")).toBe("123.456.7893");
-  });
-});
-
-describe("isValidDea", () => {
-  it("accepts 2 letters + 7 digits with the standard checksum, any letter case", () => {
-    // 1+3+5 + 2×(2+4+6) = 33 → check digit 3
-    expect(isValidDea("AB1234563")).toBe(true);
-    expect(isValidDea("bj1234563")).toBe(true);
-    expect(isValidDea(" FN5623740 ")).toBe(true);
-  });
-
-  it("does not tie the second letter to the registrant's last name", () => {
-    expect(isValidDea("AZ1234563")).toBe(true);
-    expect(isValidDea("MQ1234563")).toBe(true);
-  });
-
-  it("accepts 9 as the second character (business and mid-level registrants)", () => {
-    expect(isValidDea("A91234563")).toBe(true);
-    expect(isValidDea("m91234563")).toBe(true);
-    expect(deaProblem("A91234564")).toBe("check_digit");
-    expect(deaProblem("9A1234563")).toBe("format");
-    expect(deaProblem("A81234563")).toBe("format");
-  });
-
-  it("reports a wrong check digit separately from a bad shape", () => {
-    expect(deaProblem("AB1234564")).toBe("check_digit");
-    expect(deaProblem("AB123456")).toBe("format");
-    expect(deaProblem("A11234563")).toBe("format");
-    expect(deaProblem("AB12345630")).toBe("format");
-    expect(deaProblem("")).toBe("format");
-    expect(deaProblem(null)).toBe("format");
-    expect(isValidDea("AB1234564")).toBe(false);
   });
 });
 

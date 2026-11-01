@@ -1,19 +1,23 @@
 // MINT-110 — what picking an NPI Registry match fills: every blank field (an
 // untouched preset and the previous pick's untouched data — fields, numbers
-// and rows added from its offers — count as blank), never a value staff
-// touched, a license number only into an unverified row of that state, and no
-// license row added — licenses not on the form are offered. Synthetic data.
+// and rows it or its offers added — count as blank), never a value staff
+// touched, a license number only into an unverified row of that state, a row
+// for a license in a state with none (A37), and an offer for the rest.
+// Synthetic data.
 import { describe, expect, it } from "vitest";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import {
   applyNpiLicenseRows,
   formatRegistryAddress,
+  npiCandidatesOnForm,
   npiFillAnnouncement,
   npiOffersOnForm,
+  npiPickWithCandidate,
   npiRegistrySourceLabel,
   npiRegistrySourcedFields,
   planNpiRegistryFill,
   touchNpiRowOrigin,
+  usPhoneCandidate,
   type NpiPickState,
   type NpiFillForm,
   type NpiFillLicenseRow,
@@ -143,12 +147,16 @@ function applied(form: NpiFillForm, next: ReturnType<typeof planNpiRegistryFill>
     credentials: next.credentials ?? form.credentials,
     credentialsTouched: next.trace.credentials ? false : form.credentialsTouched,
     taxonomyCode: next.taxonomyCode ?? form.taxonomyCode,
-    licenses: applyNpiLicenseRows(
-      form.licenses,
-      next,
-      (r, number, origin) => ({ ...r, number, origin }),
-      () => row(""),
-    ),
+    licenses: [
+      ...applyNpiLicenseRows(
+        form.licenses,
+        next,
+        (r, number, origin) => ({ ...r, number, origin }),
+        () => row(""),
+      ),
+      // The forms add these the way staff add an offer; appended here.
+      ...next.addLicenses.map((license) => row(license.state, license.number, ADDED)),
+    ],
   };
 }
 
@@ -206,9 +214,11 @@ describe("planNpiRegistryFill — blank fields", () => {
       cleared: [],
       kept: [],
       staleRows: [],
+      addedRows: [],
       licenseOffers: [],
       details: [],
       taxonomyChoices: [],
+      candidates: [],
     });
   });
 });
@@ -291,14 +301,33 @@ describe("planNpiRegistryFill — never overwrite staff's values", () => {
 });
 
 describe("planNpiRegistryFill — license rows", () => {
-  it("never adds a row: a license the form has no row for is offered", () => {
+  it("adds a row for each license in a state with no row (A37), and lists it as added", () => {
     const next = plan(record(), blankForm({ licenses: [row("")] }));
     expect(next.licenseRows).toEqual([]);
-    expect(next.summary.filled).toEqual(["NPI", "Credentials", "Taxonomy code"]);
-    expect(next.summary.licenseOffers).toEqual([
-      { state: "CO", number: "PT-4471", added: false },
-      { state: "WY", number: "WY-0099", added: false },
+    expect(next.addLicenses).toEqual([
+      { state: "CO", number: "PT-4471" },
+      { state: "WY", number: "WY-0099" },
     ]);
+    expect(next.summary.filled).toEqual(["NPI", "Credentials", "Taxonomy code"]);
+    expect(next.summary.addedRows).toEqual(["CO PT-4471", "WY WY-0099"]);
+    expect(next.summary.licenseOffers).toEqual([]);
+  });
+
+  it("adds the first number in a state with no row and offers the second", () => {
+    const taxonomy = (license: string, primary = false) => ({
+      code: "225X00000X",
+      description: null,
+      primary,
+      license,
+      licenseState: "CO",
+    });
+    const next = plan(
+      record({ taxonomies: [taxonomy("A-1", true), taxonomy("B-2")] }),
+      blankForm(),
+    );
+    expect(next.addLicenses).toEqual([{ state: "CO", number: "A-1" }]);
+    expect(next.summary.licenseOffers).toEqual([{ state: "CO", number: "B-2", added: false }]);
+    expect(next.summary.kept).toEqual([]);
   });
 
   it("fills a blank number in a row of that state, whatever its case or spacing", () => {
@@ -376,7 +405,11 @@ describe("planNpiRegistryFill — license rows", () => {
   });
 
   it("reads whether an offer is on the form from the rows, so a removed one comes back", () => {
-    const { summary } = plan(record(), blankForm());
+    // Verified rows with no number: each license is offered, not added.
+    const { summary } = plan(
+      record(),
+      blankForm({ licenses: [row("CO", "", null, true), row("WY", "", null, true)] }),
+    );
     const withRow = npiOffersOnForm(summary, [{ state: "wy", number: "wy 0099" }]);
     expect(withRow.licenseOffers).toEqual([
       { state: "CO", number: "PT-4471", added: false },
@@ -415,7 +448,11 @@ describe("planNpiRegistryFill — a second pick replaces the first pick's data",
       npi: "1902833742",
       credentials: "DPT",
       taxonomyCode: "2251X0800X",
-      licenses: [{ state: "CO", number: "PT-4471" }],
+      // B's WY license has no row: added (A37).
+      licenses: [
+        { state: "CO", number: "PT-4471" },
+        { state: "WY", number: "WY-0099" },
+      ],
     });
     expect(second.summary.kept).toEqual([]);
     expect(second.summary.filled).toEqual([
@@ -516,17 +553,75 @@ describe("planNpiRegistryFill — rows added from the previous pick's offers", (
     taxonomyCode: null,
   };
 
-  it("removes an untouched added row when B has a different license in that state", () => {
+  it("removes an untouched added row when B has a different license in that state, and adds B's", () => {
     const next = plan(record(), afterAdd, "blank_fields", lastPick);
     expect(next.removeRows).toEqual([0]);
-    expect(applied(afterAdd, next).licenses).toEqual([]);
+    expect(next.addLicenses).toEqual([
+      { state: "CO", number: "PT-4471" },
+      { state: "WY", number: "WY-0099" },
+    ]);
+    expect(applied(afterAdd, next).licenses).toEqual([
+      row("CO", "PT-4471", ADDED),
+      row("WY", "WY-0099", ADDED),
+    ]);
     expect(next.summary.cleared).toEqual(["CO license row"]);
-    expect(next.summary.licenseOffers).toContainEqual({
-      state: "CO",
-      number: "PT-4471",
-      added: false,
-    });
+    expect(next.summary.licenseOffers).toEqual([]);
     expect(next.summary.kept).toEqual([]);
+  });
+
+  it("adds the same rows whatever order the registry lists its licenses in", () => {
+    const taxonomy = (license: string, primary = false) => ({
+      code: "225100000X",
+      description: null,
+      primary,
+      license,
+      licenseState: "CO",
+    });
+    // A's untouched CO PT-1111 is on the form; B lists PT-2222 and PT-1111.
+    const outcome = (licenses: string[]) => {
+      const next = plan(
+        record({ taxonomies: licenses.map((license, i) => taxonomy(license, i === 0)) }),
+        afterAdd,
+        "blank_fields",
+        lastPick,
+      );
+      return {
+        removeRows: next.removeRows,
+        addLicenses: next.addLicenses,
+        offers: next.summary.licenseOffers,
+        kept: next.summary.kept,
+        rows: applied(afterAdd, next).licenses.map((r) => `${r.state} ${r.number}`),
+      };
+    };
+    const newFirst = outcome(["PT-2222", "PT-1111"]);
+    expect(newFirst).toEqual(outcome(["PT-1111", "PT-2222"]));
+    // A's row is B's too, so it stays; CO has a row, so PT-2222 is offered.
+    expect(newFirst).toEqual({
+      removeRows: [],
+      addLicenses: [],
+      offers: [{ state: "CO", number: "PT-2222", added: false }],
+      kept: [],
+      rows: ["CO PT-1111"],
+    });
+  });
+
+  it("never calls a row of the last pick's that B also lists staff's", () => {
+    const taxonomy = (license: string, primary = false) => ({
+      code: "225100000X",
+      description: null,
+      primary,
+      license,
+      licenseState: "CO",
+    });
+    const next = plan(
+      record({ taxonomies: [taxonomy("PT-1111", true), taxonomy("PT-2222")] }),
+      afterAdd,
+      "blank_fields",
+      lastPick,
+    );
+    expect(next.removeRows).toEqual([]);
+    expect(next.summary.kept).toEqual([]);
+    expect(next.summary.licenseOffers).toEqual([{ state: "CO", number: "PT-2222", added: false }]);
   });
 
   it("removes it when B has no license in that state", () => {
@@ -588,7 +683,10 @@ describe("planNpiRegistryFill — after staff verify or fail a row a pick filled
     };
     const second = plan(record(), failed, "blank_fields", first.trace);
     // Never a verified or failed row with no number.
-    expect(applied(failed, second).licenses).toEqual([row("CO", "PT-1111", null, true)]);
+    expect(applied(failed, second).licenses).toEqual([
+      row("CO", "PT-1111", null, true),
+      row("WY", "WY-0099", ADDED),
+    ]);
     expect(second.summary.cleared).not.toContain("CO license number");
     expect(second.summary.staleRows).toEqual(["CO PT-1111"]);
     expect(second.summary.kept).toEqual([]);
@@ -620,7 +718,12 @@ describe("planNpiRegistryFill — an added row that filled the empty starting ro
     const next = plan(record(), afterAdd, "blank_fields", null);
     expect(next.resetRows).toEqual([0]);
     expect(next.removeRows).toEqual([]);
-    expect(applied(afterAdd, next).licenses).toEqual([row("")]);
+    expect(applied(afterAdd, next).licenses).toEqual([
+      row(""),
+      // (The forms put the first added row into that empty row.)
+      row("CO", "PT-4471", ADDED),
+      row("WY", "WY-0099", ADDED),
+    ]);
     expect(next.summary.cleared).toEqual(["CO license row"]);
   });
 });
@@ -709,9 +812,16 @@ describe("npiFillAnnouncement", () => {
     );
     expect(npiFillAnnouncement(next.summary)).toBe(
       "Filled from the NPI Registry: NPI, Taxonomy code, CO license number. " +
+        "Added a license row from the NPI Registry: WY WY-0099, with no expiration date. " +
         "Kept yours: Credentials — registry has DPT. " +
-        "The registry lists 1 license that is not on the form. " +
-        "Add them below if they apply.",
+        "More registry details are listed below.",
+    );
+    const offered = plan(
+      record(),
+      blankForm({ licenses: [row("CO", "PT-4471"), row("WY", "", null, true)] }),
+    );
+    expect(npiFillAnnouncement(offered.summary)).toContain(
+      "The registry lists 1 license that is not on the form. Add them below if they apply.",
     );
   });
 
@@ -722,11 +832,183 @@ describe("npiFillAnnouncement", () => {
         cleared: [],
         kept: [],
         staleRows: [],
+        addedRows: [],
         licenseOffers: [],
         details: [],
         taxonomyChoices: [],
+        candidates: [],
       }),
     ).toBe("Nothing blank to fill from the NPI Registry.");
+  });
+
+  it("says the registry's sex and practice phone are there to use (A36)", () => {
+    const next = plan(
+      record({ sex: "F", taxonomies: [] }),
+      blankForm({
+        credentials: "DPT",
+        taxonomyCode: "2251X0800X",
+        gender: { value: "", options: GENDERS },
+        phone: "",
+      }),
+    );
+    expect(npiFillAnnouncement(next.summary)).toBe(
+      "Filled from the NPI Registry: NPI. " +
+        "The registry also lists sex: Female and practice phone: 303-555-0199. " +
+        "Use them below if they apply.",
+    );
+  });
+});
+
+// A36: Gender and Phone are never filled by a pick; the registry's sex and
+// practice phone are candidates staff may use, nothing preselected.
+const GENDERS = ["female", "male", "nonbinary", "prefer_not_to_say"];
+describe("planNpiRegistryFill — Gender and Phone candidates (A36)", () => {
+  const withFields = (gender: string, phone: string, over: Partial<NpiFillForm> = {}) =>
+    blankForm({ gender: { value: gender, options: GENDERS }, phone, ...over });
+
+  it("offers the sex that maps to a Gender option and the practice phone, filling neither", () => {
+    const next = plan(record({ sex: "F" }), withFields("", ""));
+    expect(next.summary.candidates).toEqual([
+      {
+        field: "gender",
+        label: "Gender",
+        value: "female",
+        registryText: "sex: Female",
+        inUse: false,
+      },
+      {
+        field: "phone",
+        label: "Phone",
+        value: "303-555-0199",
+        registryText: "practice phone: 303-555-0199",
+        inUse: false,
+      },
+    ]);
+    expect(next.summary.filled).not.toContain("Gender");
+    expect(next.summary.filled).not.toContain("Phone");
+    expect(plan(record({ sex: "M" }), withFields("", "")).summary.candidates[0]).toMatchObject({
+      value: "male",
+      registryText: "sex: Male",
+    });
+  });
+
+  it("offers nothing a field already holds, a sex with no option, or a form without the field", () => {
+    expect(
+      plan(record({ sex: "F" }), withFields("female", "(303) 555-0199")).summary.candidates,
+    ).toEqual([]);
+    expect(
+      plan(
+        record({ sex: "F" }),
+        blankForm({ gender: { value: "", options: ["nonbinary"] }, phone: "303-555-0199" }),
+      ).summary.candidates,
+    ).toEqual([]);
+    expect(plan(record({ sex: null }), blankForm()).summary.candidates).toEqual([]);
+    // A value staff typed differs: the registry's is offered, never put in.
+    const typed = plan(record({ sex: "F" }), withFields("male", "252-555-0142"));
+    expect(typed.summary.candidates.map((candidate) => candidate.value)).toEqual([
+      "female",
+      "303-555-0199",
+    ]);
+  });
+
+  it("takes the primary practice location's phone, never the mailing one, and only a US number", () => {
+    const practice = record().practiceAddress!;
+    const phoneOf = (over: Partial<NpiRegistryRecord>) =>
+      plan(record(over), withFields("", "")).summary.candidates.map((c) => c.value);
+    expect(
+      phoneOf({
+        practiceAddress: { ...practice, phone: null },
+        mailingAddress: { ...practice, phone: "303-555-0100" },
+      }),
+    ).toEqual([]);
+    expect(phoneOf({ practiceAddress: { ...practice, countryCode: "CA" } })).toEqual([]);
+    for (const phone of ["+44 20 7946 0958", "303-555-019", "303-555-0199 x12", "1-303-555-0199"]) {
+      expect(phoneOf({ practiceAddress: { ...practice, phone } })).toEqual([]);
+    }
+    expect(phoneOf({ practiceAddress: { ...practice, phone: "(303) 555 0199" } })).toEqual([
+      "303-555-0199",
+    ]);
+    expect(usPhoneCandidate("3035550199")).toBe("303-555-0199");
+  });
+
+  it("takes back what staff used from the last pick when the next match lists other values", () => {
+    // Pick A offered sex F and its practice phone; staff used both.
+    const first = plan(record({ sex: "F" }), withFields("", "252-555-0142"));
+    const afterUse = withFields("female", "303-555-0199");
+    const lastPick: NpiPickTrace = {
+      ...first.trace,
+      gender: { written: "female", previous: "" },
+      phone: { written: "303-555-0199", previous: "252-555-0142" },
+    };
+    // Pick B lists neither: both go back, said in the summary.
+    const bare = record({ npi: "1234567893", sex: null, practiceAddress: null });
+    const second = plan(bare, afterUse, "blank_fields", lastPick);
+    expect(second).toMatchObject({ gender: "", phone: "252-555-0142" });
+    expect(second.summary.cleared).toEqual(["Gender", "Phone"]);
+    expect(second.trace.gender).toBeUndefined();
+    expect(second.summary.candidates).toEqual([]);
+    // B lists other values: taken back, and B's are offered against that.
+    const other = record({
+      npi: "1234567893",
+      sex: "M",
+      practiceAddress: { ...record().practiceAddress!, phone: "720-555-0100" },
+    });
+    const third = plan(other, afterUse, "blank_fields", lastPick);
+    expect(third).toMatchObject({ gender: "", phone: "252-555-0142" });
+    expect(third.summary.candidates.map((candidate) => candidate.value)).toEqual([
+      "male",
+      "720-555-0100",
+    ]);
+  });
+
+  it("keeps a used value, still marked, when the next match lists the same one", () => {
+    const afterUse = withFields("female", "303-555-0199");
+    const lastPick: NpiPickTrace = {
+      credentials: null,
+      taxonomyCode: null,
+      gender: { written: "female", previous: "" },
+      phone: { written: "(303) 555-0199", previous: "" },
+    };
+    const next = plan(
+      record({ sex: "F" }),
+      { ...afterUse, phone: "(303) 555-0199" },
+      "blank_fields",
+      lastPick,
+    );
+    expect(next).toMatchObject({ gender: null, phone: null });
+    expect(next.summary.cleared).toEqual([]);
+    expect(next.summary.candidates).toEqual([]);
+    expect(next.trace).toMatchObject({ gender: lastPick.gender, phone: lastPick.phone });
+  });
+
+  it("never takes back a used value staff edited since", () => {
+    const next = plan(
+      record({ npi: "1234567893", sex: null, practiceAddress: null }),
+      { ...withFields("female", "303-555-0199"), genderTouched: true, phoneTouched: true },
+      "blank_fields",
+      {
+        credentials: null,
+        taxonomyCode: null,
+        gender: { written: "female", previous: "" },
+        phone: { written: "303-555-0199", previous: "" },
+      },
+    );
+    expect(next).toMatchObject({ gender: null, phone: null });
+    expect(next.summary.cleared).toEqual([]);
+  });
+
+  it("offers nothing under npi_only", () => {
+    expect(plan(record({ sex: "F" }), withFields("", ""), "npi_only").summary.candidates).toEqual(
+      [],
+    );
+  });
+
+  it("reads whether a candidate is on the form from the field, so one staff change comes back", () => {
+    const { summary } = plan(record({ sex: "F" }), withFields("", ""));
+    const used = npiCandidatesOnForm(summary, { gender: "female", phone: "303 555 0199" });
+    expect(used.candidates.map((candidate) => candidate.inUse)).toEqual([true, true]);
+    const changed = npiCandidatesOnForm(summary, { gender: "male", phone: "" });
+    expect(changed.candidates.map((candidate) => candidate.inUse)).toEqual([false, false]);
   });
 });
 
@@ -916,7 +1198,50 @@ describe("registry-sourced values (A35)", () => {
     expect(npiRegistrySourcedFields(null, { ...form, licenses: [] })).toEqual({
       credentials: false,
       taxonomyCode: false,
+      gender: false,
+      phone: false,
       lines: [],
     });
+  });
+
+  it("marks a used Gender or Phone candidate until staff edit the field (A36)", () => {
+    const base = pick();
+    const withCandidates = npiPickWithCandidate(
+      npiPickWithCandidate(base, { field: "gender", value: "female" }, ""),
+      { field: "phone", value: "303-555-0199" },
+      "",
+    );
+    expect(withCandidates.trace).toMatchObject({
+      gender: { written: "female", previous: "" },
+      phone: { written: "303-555-0199", previous: "" },
+    });
+    const used = npiRegistrySourcedFields(withCandidates, {
+      ...form,
+      licenses: [],
+      gender: { value: "female", touched: false },
+      phone: { value: "303-555-0199", touched: false },
+    });
+    expect(used).toMatchObject({ gender: true, phone: true });
+    expect(used.lines[0].values).toEqual([
+      "Credentials DPT",
+      "Gender Female",
+      "Phone 303-555-0199",
+      "Taxonomy code 2251X0800X",
+    ]);
+    // Edited, or holding something else: staff's. Never used: not marked.
+    expect(
+      npiRegistrySourcedFields(withCandidates, {
+        ...form,
+        gender: { value: "female", touched: true },
+        phone: { value: "252-555-0142", touched: false },
+      }),
+    ).toMatchObject({ gender: false, phone: false });
+    expect(
+      npiRegistrySourcedFields(base, {
+        ...form,
+        gender: { value: "female", touched: false },
+        phone: { value: "303-555-0199", touched: false },
+      }),
+    ).toMatchObject({ gender: false, phone: false });
   });
 });

@@ -86,15 +86,18 @@ const NO_FILL: NpiFillSummary = {
   cleared: [],
   kept: [],
   staleRows: [],
+  addedRows: [],
   licenseOffers: [],
   details: [],
   taxonomyChoices: [],
+  candidates: [],
 };
 // What the stepper hands the Credentials step.
 const NO_PICK = {
   npiPick: null,
-  touched: { credentials: false, taxonomyCode: false },
+  touched: { credentials: false, taxonomyCode: false, gender: false, phone: false },
   applyNpi: () => undefined,
+  applyCandidate: () => undefined,
   taxonomyPreset: "225100000X",
   registrySource: null,
 };
@@ -129,6 +132,7 @@ function renderAssist(props: Partial<Parameters<typeof NpiRegistryAssist>[0]> = 
       onPick={() => undefined}
       onAddLicense={() => "added"}
       onChooseTaxonomy={() => undefined}
+      onUseCandidate={() => undefined}
       noticeId="npi-note"
       policy={DEFAULT_NPI_REGISTRY_POLICY}
       {...props}
@@ -333,6 +337,7 @@ describe("NpiRegistryPickSummary", () => {
     cleared: ["Taxonomy code"],
     kept: [{ field: "Credentials", registryValue: "DPT" }],
     staleRows: ["NM NM-7"],
+    addedRows: [],
     licenseOffers: [
       { state: "WY", number: "WY-0099", added: false },
       { state: "MT", number: "MT-12", added: true },
@@ -342,6 +347,7 @@ describe("NpiRegistryPickSummary", () => {
       { label: "Other identifiers", lines: ["MEDICAID CO-MCD-77 (CO)", "OTHER 55 (WY)"] },
     ],
     taxonomyChoices: [],
+    candidates: [],
   };
   const text = (html: string) =>
     html
@@ -377,6 +383,23 @@ describe("NpiRegistryPickSummary", () => {
     expect(html.match(/<button[^>]*>/g)).toHaveLength(2);
     expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>On the form/);
     expect(html).not.toMatch(/<button[^>]*disabled=""/);
+  });
+
+  it("says which rows the pick added, after what it filled (A37)", () => {
+    const one = renderToStaticMarkup(
+      <NpiRegistryPickSummary
+        summary={{ ...NO_FILL, filled: ["NPI"], addedRows: ["WY WY-0099"] }}
+      />,
+    );
+    expect(text(one)).toContain(
+      "|Filled from the NPI Registry: NPI.|Added a license row from the NPI Registry: WY WY-0099, with no expiration date.|",
+    );
+    const two = renderToStaticMarkup(
+      <NpiRegistryPickSummary summary={{ ...NO_FILL, addedRows: ["CO PT-4471", "WY WY-0099"] }} />,
+    );
+    expect(text(two)).toContain(
+      "Added license rows from the NPI Registry: CO PT-4471, WY WY-0099, with no expiration dates.",
+    );
   });
 
   it("lists offers without buttons when the form cannot add them", () => {
@@ -515,6 +538,8 @@ describe("Add Provider credentials step", () => {
             label: "From NPI Registry, Oct 31, 2026",
             credentials: false,
             taxonomyCode: true,
+            gender: false,
+            phone: false,
           },
         }}
       />,
@@ -529,10 +554,28 @@ describe("Add Provider credentials step", () => {
           label: "From NPI Registry, Oct 31, 2026",
           credentials: true,
           taxonomyCode: false,
+          gender: false,
+          phone: false,
         }}
       />,
     );
     expect(personal).toContain("From NPI Registry, Oct 31, 2026");
+    // A36: a Gender and Phone staff took from the registry are marked too.
+    const both = renderToStaticMarkup(
+      <PersonalSection
+        form={{ ...emptyProviderFormState, gender: "female", phone: "303-555-0199" }}
+        errors={{}}
+        update={() => undefined}
+        registrySource={{
+          label: "From NPI Registry, Oct 31, 2026",
+          credentials: false,
+          taxonomyCode: false,
+          gender: true,
+          phone: true,
+        }}
+      />,
+    );
+    expect(both.match(/From NPI Registry, Oct 31, 2026/g)).toHaveLength(2);
     expect(
       renderToStaticMarkup(
         <PersonalSection
@@ -603,6 +646,47 @@ describe("Field puts the error on the control itself", () => {
     const genderTrigger = /<button[^>]*aria-label="Gender"[^>]*>/.exec(html)?.[0] ?? "";
     // No error on Gender: nothing is marked invalid there.
     expect(genderTrigger).not.toContain("aria-invalid");
+  });
+});
+
+describe("NpiRegistryPickSummary Gender and Phone candidates (A36)", () => {
+  const summary: NpiFillSummary = {
+    ...NO_FILL,
+    candidates: [
+      {
+        field: "gender",
+        label: "Gender",
+        value: "female",
+        registryText: "sex: Female",
+        inUse: false,
+      },
+      {
+        field: "phone",
+        label: "Phone",
+        value: "303-555-0199",
+        registryText: "practice phone: 303-555-0199",
+        inUse: true,
+      },
+    ],
+  };
+
+  it("offers each with one Use button, nothing chosen; a used one stays focusable", () => {
+    const html = renderToStaticMarkup(
+      <NpiRegistryPickSummary summary={summary} onUseCandidate={() => undefined} />,
+    );
+    expect(html).toContain("NPI Registry lists sex: Female");
+    expect(html).toContain("NPI Registry lists practice phone: 303-555-0199");
+    expect(html).toMatch(/<button[^>]*>Use for Gender<\/button>/);
+    expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>On the form/);
+    expect(html).toContain('<span class="sr-only"> for Phone</span>');
+    expect(html).not.toContain("aria-pressed");
+    expect(html).not.toMatch(/<button[^>]*disabled=""/);
+  });
+
+  it("lists them without buttons when the form cannot use them", () => {
+    const html = renderToStaticMarkup(<NpiRegistryPickSummary summary={summary} />);
+    expect(html).toContain("NPI Registry lists sex: Female");
+    expect(html).not.toContain("<button");
   });
 });
 

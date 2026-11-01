@@ -154,7 +154,9 @@ describe("selectImportNpiChecks", () => {
       ["skip", 4],
       ["update", 5],
       ["blocked", 6],
-      ["blocked", 7],
+      // B3 (Nov 1): a row with no NPI imports as a new provider, and has no NPI
+      // to check.
+      ["create", 7],
       ["update", 8],
     ]);
     expect(DEFAULT_NPI_REGISTRY_POLICY.importVerifyScope).toBe("new_providers");

@@ -7,8 +7,9 @@
 //
 // Every registry check is advisory (Sowmya's standing rule, Oct 31): a save
 // always goes through, at once, and the check finishes in the background. A
-// check's answer becomes an advisory — listed on the form's review step, or
-// kept for Mission Control only — and is handed to the advisory-capture seam
+// check's answer becomes an advisory — shown on the form (Add Provider's
+// review step, the note under the NPI field), or kept for Mission Control
+// only — and is handed to the advisory-capture seam
 // (src/services/advisoryCapture.ts). The registry never marks an NPI verified
 // unless it really matched.
 //
@@ -46,10 +47,12 @@ export const NPI_REGISTRY_CHECKS = [
 export type NpiRegistryCheck = NpiRegistryOutcome | NpiRegistryFieldCheck;
 
 export const NPI_ADVISORY_DISPLAYS = ["review_step", "backend_only"] as const;
-/** "review_step": listed on the form's review step (and the note under the
- * NPI field), where staff fix or confirm it in one click. "backend_only":
- * kept for Mission Control and not shown on the form. Either way the save
- * goes through and the advisory is handed to the capture seam. */
+/** "review_step": shown on the form — listed on Add Provider's Review step,
+ * where staff fix or confirm it in one click, and, for an answer about the
+ * NPI, in the note under the NPI field (the roster form and the record page
+ * have the note only; A30c). "backend_only": kept for Mission Control and not
+ * shown on the form. Either way the save goes through and the advisory is
+ * handed to the capture seam. */
 export type NpiAdvisoryDisplay = (typeof NPI_ADVISORY_DISPLAYS)[number];
 
 export const NPI_FILL_ON_PICK = ["blank_fields", "npi_only"] as const;

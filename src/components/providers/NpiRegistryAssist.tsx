@@ -11,8 +11,10 @@
 //      supply (the form decides, via src/lib/npiRegistryFill.ts); a value of
 //      staff's is never replaced, and a second pick replaces the first pick's
 //      data. What was filled, cleared and kept, the licenses staff may add,
-//      and the registry data no field holds are shown under the search and
-//      announced once. The form owns the pick, so it outlives a step change.
+//      the registry's sex and practice phone to use for Gender and Phone
+//      (A36), and the registry data no field holds are shown under the search
+//      and announced once. The form owns the pick, so it outlives a step
+//      change.
 // Used by Add Provider (ProviderFormSections) and the roster form; the check
 // note alone (NpiRegistryCheckNote) is also on the provider record's inline
 // edit. Composition of stock primitives, logged in DESIGN-DEBT.md.
@@ -26,12 +28,14 @@ import {
   usePrimeNpiRegistryLookup,
 } from "@/hooks/useNpiRegistry";
 import {
+  npiFillAddedText,
   npiFillAnnouncement,
   npiFillClearedText,
   npiFillFilledText,
   npiFillKeptText,
   npiFillOffersText,
   npiFillStaleText,
+  type NpiFieldCandidate,
   type NpiFillSummary,
   type NpiLicenseOffer,
   type NpiPickState,
@@ -47,6 +51,7 @@ import {
   type NpiVerificationView,
 } from "@/lib/npiRegistry";
 import type { NpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
+import { providerGenderLabel } from "@/lib/providerGender";
 import { cn } from "@/lib/utils";
 
 /** The verification line. Not a live region: the NPI input points at it with
@@ -255,6 +260,7 @@ export function NpiRegistryPickSummary({
   summary,
   onAddLicense,
   onChooseTaxonomy,
+  onUseCandidate,
 }: {
   summary: NpiFillSummary;
   /** Staff add an offered license; without it the offers are listed only. */
@@ -262,8 +268,12 @@ export function NpiRegistryPickSummary({
   /** Staff choose one of several taxonomies (A35); without it they are
    * listed only. */
   onChooseTaxonomy?: (code: string) => void;
+  /** Staff use the registry's sex or practice phone (A36); without it they
+   * are listed only. */
+  onUseCandidate?: (candidate: NpiFieldCandidate) => void;
 }) {
   const titleId = useId();
+  const added = npiFillAddedText(summary);
   const cleared = npiFillClearedText(summary);
   const kept = npiFillKeptText(summary);
   const stale = npiFillStaleText(summary);
@@ -277,6 +287,7 @@ export function NpiRegistryPickSummary({
         From the NPI Registry
       </p>
       <p>{npiFillFilledText(summary)}</p>
+      {added ? <p>{added}</p> : null}
       {cleared ? <p>{cleared}</p> : null}
       {kept ? <p>{kept}</p> : null}
       {stale ? <p>{stale}</p> : null}
@@ -317,6 +328,34 @@ export function NpiRegistryPickSummary({
             ))}
           </ul>
         </>
+      ) : null}
+      {summary.candidates.length > 0 ? (
+        <ul className="space-y-1">
+          {summary.candidates.map((candidate) => (
+            <li key={candidate.field} className="flex items-center gap-2">
+              <span>NPI Registry lists {candidate.registryText}</span>
+              {onUseCandidate ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className={cn("h-7 px-2 text-[12px]", candidate.inUse && "opacity-60")}
+                  // aria-disabled, as for an added license: focus stays.
+                  aria-disabled={candidate.inUse || undefined}
+                  onClick={() => onUseCandidate(candidate)}
+                >
+                  {candidate.inUse ? (
+                    <>
+                      On the form<span className="sr-only"> for {candidate.label}</span>
+                    </>
+                  ) : (
+                    `Use for ${candidate.label}`
+                  )}
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
       {summary.taxonomyChoices.length > 0 ? (
         <>
@@ -390,6 +429,9 @@ export interface NpiRegistryAssistProps {
   onAddLicense: (offer: NpiLicenseOffer) => "added" | "exists";
   /** Staff choose one of several taxonomies the pick listed (A35). */
   onChooseTaxonomy: (code: string) => void;
+  /** Staff use a registry candidate for Gender or Phone (A36): the field
+   * takes its value. */
+  onUseCandidate: (candidate: NpiFieldCandidate) => void;
   /** The verification note's id; the NPI input names it in aria-describedby. */
   noticeId: string;
   /** The resolved NPI Registry policy (useNpiRegistryPolicy): where each
@@ -406,6 +448,7 @@ export function NpiRegistryAssist({
   onPick,
   onAddLicense,
   onChooseTaxonomy,
+  onUseCandidate,
   noticeId,
   policy,
 }: NpiRegistryAssistProps) {
@@ -486,6 +529,21 @@ export function NpiRegistryAssist({
     });
   };
 
+  const takeCandidate = (candidate: NpiFieldCandidate) => {
+    if (!candidate.inUse) onUseCandidate(candidate);
+    const next = addCount + 1;
+    setAddCount(next);
+    const shown =
+      candidate.field === "gender" ? providerGenderLabel(candidate.value) : candidate.value;
+    setAnnouncement({
+      key: `add:${next}`,
+      text: candidate.inUse
+        ? `${candidate.label} already holds ${shown}.`
+        : `${candidate.label} set to ${shown}.`,
+      withCheck: false,
+    });
+  };
+
   const addLicense = (offer: NpiLicenseOffer) => {
     const result = offer.added ? "exists" : onAddLicense(offer);
     const next = addCount + 1;
@@ -549,6 +607,7 @@ export function NpiRegistryAssist({
           summary={pick.summary}
           onAddLicense={addLicense}
           onChooseTaxonomy={chooseTaxonomy}
+          onUseCandidate={takeCandidate}
         />
       ) : null}
     </div>

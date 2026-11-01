@@ -254,6 +254,13 @@ function otherNames(value: unknown): NpiRegistryName[] {
     .slice(0, NPPES_OTHER_NAMES_MAX);
 }
 
+// The sex NPPES records for an individual: `basic.sex`, or `basic.gender` in
+// older replies. Only "F" and "M" are carried (A36); anything else is null.
+function sex(basic: Record<string, unknown>): "F" | "M" | null {
+  const value = (text(basic.sex) ?? text(basic.gender))?.toUpperCase();
+  return value === "F" || value === "M" ? value : null;
+}
+
 /** One registry result narrowed to public fields; null when it is not a
  * well-formed NPI-1 or NPI-2 record. */
 export function toNpiRegistryRecord(raw: unknown): NpiRegistryRecord | null {
@@ -282,6 +289,7 @@ export function toNpiRegistryRecord(raw: unknown): NpiRegistryRecord | null {
     enumerationDate: enumerationDate && isIsoDate(enumerationDate) ? enumerationDate : null,
     otherNames: type === "NPI-1" ? otherNames(raw.other_names) : [],
     suffix: type === "NPI-1" ? text(basic.name_suffix) : null,
+    sex: type === "NPI-1" ? sex(basic) : null,
     taxonomies: taxonomies(raw.taxonomies),
     practiceAddress: practice,
     mailingAddress: address(addresses.find((row) => row.address_purpose === "MAILING")),

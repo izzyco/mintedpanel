@@ -67,11 +67,11 @@ export function isBlankLicenseDraft(draft: LicenseDraft): boolean {
   );
 }
 
-/** MINT-110: staff added a registry license offered after an NPI Registry
- * pick. It fills the untouched empty row when there is one, or a new row with
- * the editor's defaults, marked as added from the pick (so the next pick can
- * take it back while it is untouched); dates stay blank (NPPES has no
- * expiration date). When a row already holds that license nothing is added —
+/** MINT-110: a registry license added as a row — by a pick, for a state with
+ * no row (A37), or by staff from a pick's offer. It fills the untouched empty
+ * row when there is one, or a new row with the editor's defaults (Unverified),
+ * marked as added from the pick (so the next pick can take it back while it
+ * is untouched); dates stay blank (NPPES has no expiration date). When a row already holds that license nothing is added —
  * a second row would break uq_state_licenses_provider_state_number — and
  * `existing` names it. */
 export function addRegistryLicenseDraft(

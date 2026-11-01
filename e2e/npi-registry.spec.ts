@@ -2,39 +2,51 @@
 // mock harness. /api/npi-registry/* is mocked at the browser: no request
 // reaches our server's registry route, and nothing reaches NPPES.
 // Announcements are counted from every live-region change (recordAnnouncements).
-// No registry answer blocks or delays a save (A30): each is an advisory on the
-// form's review step (A30b), and nothing is shown as found unless it matched.
+// No registry answer blocks or delays a save (A30): each is an advisory, listed
+// on Add Provider's Review step (A30b) — the only review step (A30c): the
+// roster form saves directly and shows the note under the NPI. Nothing is
+// shown as found unless it matched.
 //   1. Add Provider (/providers/new): a typed dashed NPI is stripped and
 //      verified; a name search (plus state) lists matches; staff pick the
-//      wrong Jane and add her offered license, then pick the right one by
-//      keyboard: the added row goes, the untouched preset taxonomy is
-//      replaced, the typed credentials are kept, and her licenses are
-//      offered; adding one twice adds one row; removing it makes the offer
-//      available again; the summary survives a step change; each pick and add
+//      wrong Jane, whose CO license is added as a row (A37), then pick the
+//      right one by keyboard: the first Jane's row goes, the untouched preset
+//      taxonomy is replaced, the typed credentials are kept, a row is added
+//      for each state with none, and her second CO number is offered; adding
+//      it twice adds one row; removing it makes the offer available again; the summary survives a step change; each pick and add
 //      is announced once. Filled values say "From NPI Registry, <date>" (A35).
+//      The registry's sex and practice phone are offered for Gender and Phone,
+//      never filled; using them marks them too (A36).
 //      The Review step lists the credentials mismatch with one-click fixes;
 //      the provider is created without confirming it.
 //   2. Roster form (/onboarding/wizard → Add provider): a name that differs
 //      and a registry outage are both warnings; a name fix is not announced;
 //      a failed name search can be retried; pick A (the wrong Jane) then
 //      pick B (the right one) leaves nothing of A, keeps the taxonomy staff
-//      chose in between, fills the blank CO license number and adds no row;
-//      a pasted label, dots or letters still fail. Save shows the review
-//      step: the taxonomy mismatch is listed, "Go to Taxonomy code" goes back
-//      to the field, and the provider saves without confirming it.
-//   3. A check still running: the review step says "Checking the NPI
-//      Registry…" and the same live region then says what the registry found
-//      — in Add Provider (not found) and the roster form (a name mismatch) —
-//      and never "Found" for an NPI that did not match. The save goes
-//      through either way, and the roster form saves at once while the
-//      check is still running.
-//   4. A check the policy keeps backend only says nothing on the form or the
-//      review step, and never "Found".
-//   5. A confirmation sticks to what staff confirmed: a name mismatch
-//      confirmed for one NPI is unconfirmed for the next, and a confirmed
-//      license row keeps its confirmation when another row is removed, giving
-//      none away. An NPI typed before the name says "name not checked yet".
-import { test, expect, type BrowserContext, type Route } from "./fixtures/legacy-access-context";
+//      chose in between, fills the blank CO license number, adds a WY row
+//      (A37) and offers the second CO number;
+//      a pasted label, dots or letters still fail. Save saves at once, with
+//      no review step and no taxonomy mismatch on the form.
+//   3. A check still running: Add Provider's Review step says "Checking the
+//      NPI Registry…" and the same live region then says not found; the
+//      roster form's note does the same for a name mismatch. Never "Found"
+//      for an NPI that did not match. The save goes through either way, and
+//      the roster form saves at once while the check is still running.
+//   4. A check the policy keeps backend only says nothing on the form, and
+//      never "Found".
+//   5. On Add Provider's Review step a confirmation sticks to what staff
+//      confirmed: a name mismatch confirmed for one NPI is unconfirmed for the
+//      next, and a confirmed license row keeps its confirmation when another
+//      row is removed, giving none away. In the roster form an NPI typed
+//      before the name says "name not checked yet".
+//   6. An NPI is optional (Addendum 11, B3): the roster form saves a provider
+//      with none, and nothing is asked of the registry.
+import {
+  test,
+  expect,
+  type BrowserContext,
+  type Page,
+  type Route,
+} from "./fixtures/legacy-access-context";
 import {
   announcements,
   recordAnnouncements,
@@ -288,6 +300,7 @@ const BOULDER_JANE = registryRecord({
   npi: "1902833742",
   middleName: "M",
   credential: "DPT",
+  sex: "F",
   primaryTaxonomy: { code: "2251X0800X", description: "Physical Therapist, Orthopedic" },
   practiceCity: "BOULDER",
   taxonomies: [
@@ -304,6 +317,13 @@ const BOULDER_JANE = registryRecord({
       primary: false,
       license: "WY-0099",
       licenseState: "WY",
+    },
+    {
+      code: "225100000X",
+      description: "Physical Therapist",
+      primary: false,
+      license: "CO-2002",
+      licenseState: "CO",
     },
   ],
   practiceAddress: {
@@ -434,15 +454,14 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     body: { firstName: "Jane", lastName: "Doe", state: "CO" },
   });
 
-  // Pick A: the Denver Jane. Its CO license is offered, and staff add it.
+  // Pick A: the Denver Jane. No license row has a state yet, so her CO
+  // license is added as a row (A37), into the empty starting row.
   const matches = page.getByRole("list", { name: "NPI Registry matches" });
   await matches.getByRole("button", { name: /^JANE DOE, PT NPI 1234567893/ }).click();
   const summary = page.getByRole("region", { name: "From the NPI Registry" });
-  await summary.getByRole("button", { name: "Add license row for CO PT-1001" }).click();
-  await expect(summary.getByRole("button", { name: "On the form for CO PT-1001" })).toBeFocused();
-  await expect
-    .poll(() => announcements(page, "Added a CO license row with number PT-1001."))
-    .toBe(1);
+  const addedA = "Added a license row from the NPI Registry: CO PT-1001, with no expiration date.";
+  await expect(summary.getByText(addedA, { exact: true })).toBeVisible();
+  await expect.poll(() => announcements(page, addedA)).toBe(1);
 
   // Pick B by keyboard: focus the list, arrow to the second match, Enter.
   await page.getByRole("button", { name: "Search NPI Registry" }).click();
@@ -464,23 +483,28 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
   // The picked records seed the check: no further lookup call.
   expect(registry.calls.filter((call) => call.path === "lookup")).toHaveLength(1);
 
-  // Filled: the preset taxonomy nobody chose. Cleared: the row staff added
-  // from A's offer and left alone. Kept: the typed credentials. B's licenses
-  // are offered, not added. Announced once, with the check the pick caused.
+  // Filled: the preset taxonomy nobody chose. Added: B's CO and WY licenses
+  // (no row in either state once A's untouched row goes). Cleared: A's row.
+  // Kept: the typed credentials. Offered: B's second CO number. Announced
+  // once, with the check the pick caused.
   const filledText = "Filled from the NPI Registry: NPI, Taxonomy code.";
+  const addedText =
+    "Added license rows from the NPI Registry: CO PT-4471, WY WY-0099, with no expiration dates.";
   const clearedText = "Cleared from the previous pick: CO license row.";
   const keptText = "Kept yours: Credentials — registry has DPT.";
-  const offersText = "The registry lists 2 licenses that are not on the form.";
+  const offersText = "The registry lists 1 license that is not on the form.";
   await expect
     .poll(() =>
       announcements(
         page,
-        `${filledText} ${clearedText} ${keptText} ${offersText} Add them below if they apply. ` +
-          "Found in the NPI Registry. JANE M DOE, DPT",
+        `${filledText} ${addedText} ${clearedText} ${keptText} ${offersText} ` +
+          "The registry also lists sex: Female and practice phone: 303-555-0199. " +
+          "Add or use them below if they apply. Found in the NPI Registry. JANE M DOE, DPT",
       ),
     )
     .toBe(1);
   await expect(summary.getByText(filledText, { exact: true })).toBeVisible();
+  await expect(summary.getByText(addedText, { exact: true })).toBeVisible();
   await expect(summary.getByText(clearedText, { exact: true })).toBeVisible();
   await expect(summary.getByText(keptText, { exact: true })).toBeVisible();
   await expect(summary).toContainText(
@@ -493,45 +517,63 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
   // credentials staff typed do not.
   await expect(page.getByText(PULLED_LABEL, { exact: true })).toHaveCount(1);
 
-  // Staff add B's CO license; focus stays on the button, the add is announced.
-  await summary.getByRole("button", { name: "Add license row for CO PT-4471" }).click();
-  const coOnForm = summary.getByRole("button", { name: "On the form for CO PT-4471" });
+  // A36: the registry's sex and practice phone are offered, never filled.
+  await expect(summary).toContainText("NPI Registry lists sex: Female");
+  await expect(summary).toContainText("NPI Registry lists practice phone: 303-555-0199");
+  await summary.getByRole("button", { name: "Use for Gender" }).click();
+  await expect(summary.getByRole("button", { name: "On the form for Gender" })).toBeFocused();
+  await expect.poll(() => announcements(page, "Gender set to Female.")).toBe(1);
+  await summary.getByRole("button", { name: "Use for Phone" }).click();
+  await expect.poll(() => announcements(page, "Phone set to 303-555-0199.")).toBe(1);
+
+  // A second CO number can't be added on its own (CO has a row): staff add
+  // it; focus stays on the button, and the add is announced.
+  await summary.getByRole("button", { name: "Add license row for CO CO-2002" }).click();
+  const coOnForm = summary.getByRole("button", { name: "On the form for CO CO-2002" });
   await expect(coOnForm).toBeFocused();
   await expect
-    .poll(() => announcements(page, "Added a CO license row with number PT-4471."))
+    .poll(() => announcements(page, "Added a CO license row with number CO-2002."))
     .toBe(1);
   // Adding it again (Enter on the focused aria-disabled button) adds nothing
   // and says so.
   await page.keyboard.press("Enter");
   await expect
-    .poll(() => announcements(page, "A CO license row with number PT-4471 is already on the form."))
+    .poll(() => announcements(page, "A CO license row with number CO-2002 is already on the form."))
     .toBe(1);
-  await expect(
-    summary.getByRole("button", { name: "Add license row for WY WY-0099" }),
-  ).toBeVisible();
 
   // Removing the row on the Licenses step makes the offer available again;
   // the summary outlives the step change and is not announced again.
   await page.getByRole("button", { name: "Next" }).click();
-  await page.getByRole("button", { name: "Remove license" }).click();
-  await expect(page.getByRole("button", { name: "Remove license" })).toHaveCount(0);
+  const removeLicense = page.getByRole("button", { name: "Remove license" });
+  await expect(removeLicense).toHaveCount(3);
+  await removeLicense.last().click();
+  await expect(removeLicense).toHaveCount(2);
   await page.getByRole("button", { name: "Back" }).click();
   await expect(summary.getByText(filledText, { exact: true })).toBeVisible();
   expect(await announcements(page, filledText)).toBe(1);
-  await summary.getByRole("button", { name: "Add license row for CO PT-4471" }).click();
+  await summary.getByRole("button", { name: "Add license row for CO CO-2002" }).click();
   await expect
-    .poll(() => announcements(page, "Added a CO license row with number PT-4471."))
+    .poll(() => announcements(page, "Added a CO license row with number CO-2002."))
     .toBe(2);
 
-  // The added license row says where its number came from (A35).
+  // The Gender and Phone staff took from the registry say so on Personal.
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("combobox", { name: "Gender" })).toContainText("Female");
+  await expect(page.getByLabel("Phone", { exact: true })).toHaveValue("303-555-0199");
+  await expect(page.getByText(PULLED_LABEL, { exact: true })).toHaveCount(2);
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByText(PULLED_LABEL, { exact: true })).toHaveCount(1);
+
+  // Each license row the pick or staff added says where it came from (A35),
+  // with a blank expiration date.
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByText(PULLED_LABEL, { exact: true })).toHaveCount(3);
   for (let step = 0; step < 2; step += 1) {
     await page.getByRole("button", { name: "Next" }).click();
   }
   await expect(page.getByText("CO · PT-4471", { exact: false })).toBeVisible();
+  await expect(page.getByText("WY · WY-0099", { exact: false })).toBeVisible();
+  await expect(page.getByText("CO · CO-2002", { exact: false })).toBeVisible();
   await expect(page.getByText("CO · PT-1001", { exact: false })).toHaveCount(0);
-  await expect(page.getByText("WY · WY-0099", { exact: false })).toHaveCount(0);
 
   // A30b: the Review step says what the registry found, lists what differs
   // with one-click fixes, and marks the filled values; nothing to type.
@@ -555,10 +597,12 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     "false",
   );
   await expect(check).toContainText(
-    `${PULLED_LABEL}: Taxonomy code 2251X0800X; CO license PT-4471. Submitting confirms them.`,
+    `${PULLED_LABEL}: Gender Female; Phone 303-555-0199; Taxonomy code 2251X0800X; ` +
+      "CO license PT-4471; WY license WY-0099; CO license CO-2002. Submitting confirms them.",
   );
   await expect(check.locator("input, textarea")).toHaveCount(0);
-  // The mismatch stays unconfirmed, and the provider is still created.
+  // The mismatch stays unconfirmed, and the provider is still created: the
+  // blank expiration dates never block it.
   await page.getByRole("button", { name: "Create provider" }).click();
   await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
     timeout: 30000,
@@ -569,6 +613,8 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     first_name: "Jane",
     last_name: "Doe",
     credentials: "PT",
+    gender: "female",
+    phone: "303-555-0199",
     npi: "1902833742",
     taxonomy_code: "2251X0800X",
     caqh_last_attested_date: "2026-07-01",
@@ -577,6 +623,8 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
   expect(licenses).toHaveLength(1);
   expect(licenses[0].body).toEqual([
     expect.objectContaining({ state: "CO", license_number: "PT-4471", expiration_date: null }),
+    expect.objectContaining({ state: "WY", license_number: "WY-0099", expiration_date: null }),
+    expect.objectContaining({ state: "CO", license_number: "CO-2002", expiration_date: null }),
   ]);
 });
 
@@ -668,71 +716,77 @@ test("MINT-110: roster form saves through a mismatch and an outage; pick A then 
   await dialog.locator("#prov-taxonomy").click();
   await page.getByRole("option", { name: /^225200000X/ }).click();
 
+  // Typed by staff: a pick never replaces it (A36).
+  await dialog.locator("#prov-phone").fill("252-555-0142");
+
   // Pick B: the right Jane. A's untouched data is replaced, never "kept".
   await search.click();
   await matches.getByRole("button", { name: /^JANE M DOE, DPT NPI 1902833742/ }).click();
   const filledB = "Filled from the NPI Registry: NPI, Credentials, CO license number.";
+  const addedB = "Added a license row from the NPI Registry: WY WY-0099, with no expiration date.";
   const keptB =
     "Kept yours: Taxonomy code — registry has 2251X0800X (Physical Therapist, Orthopedic).";
   const offerB = "The registry lists 1 license that is not on the form.";
-  await expect.poll(() => announcements(page, `${filledB} ${keptB} ${offerB}`)).toBe(1);
+  await expect.poll(() => announcements(page, `${filledB} ${addedB} ${keptB} ${offerB}`)).toBe(1);
   expect(await announcements(page, filledA)).toBe(1);
   expect(await announcements(page, "Kept yours: Credentials")).toBe(0);
   const summary = dialog.getByRole("region", { name: "From the NPI Registry" });
   await expect(summary.getByText(filledB, { exact: true })).toBeVisible();
   await expect(summary.getByText(keptB, { exact: true })).toBeVisible();
   await expect(
-    summary.getByRole("button", { name: "Add license row for WY WY-0099" }),
+    summary.getByRole("button", { name: "Add license row for CO CO-2002" }),
   ).toBeVisible();
   await expect(dialog.locator("#prov-credentials")).toHaveValue("DPT");
   await expect(dialog.locator("#prov-taxonomy")).toContainText("225200000X");
   await expect(dialog.locator("#lic-0-number")).toHaveValue("PT-4471");
-  // A35: credentials and the license number the pick filled are marked; the
-  // taxonomy staff chose is not.
-  await expect(dialog.getByText(PULLED_LABEL, { exact: true })).toHaveCount(2);
-  // No row was added for WY.
-  await expect(dialog.locator("#lic-1-state")).toHaveCount(0);
+  // A37: WY had no row, so the pick added one: unverified, no expiration date.
+  await expect(dialog.locator("#lic-1-number")).toHaveValue("WY-0099");
+  await expect(dialog.locator("#lic-1-expiration")).toHaveValue("");
+  await expect(dialog.locator("#lic-1-psv")).toContainText("Unverified");
+  // A35: credentials, the license number the pick filled and the row it
+  // added are marked; the taxonomy staff chose is not.
+  await expect(dialog.getByText(PULLED_LABEL, { exact: true })).toHaveCount(3);
+  // A36: the registry's sex and practice phone are offered, never filled.
+  await expect(dialog.locator("#prov-phone")).toHaveValue("252-555-0142");
+  await expect(summary).toContainText("NPI Registry lists practice phone: 303-555-0199");
+  await summary.getByRole("button", { name: "Use for Gender" }).click();
+  await expect(dialog.locator("#prov-gender")).toContainText("Female");
+  await expect(dialog.getByText(PULLED_LABEL, { exact: true })).toHaveCount(4);
+  await expect.poll(() => announcements(page, "Gender set to Female.")).toBe(1);
   // The picks seeded the check, the outage NPI's too: no lookup call.
   expect(registry.calls.filter((call) => call.path === "lookup")).toHaveLength(2);
 
-  // Save shows the review step (a new provider), and saves nothing yet.
-  const save = dialog.getByRole("button", { name: "Save provider" });
-  await save.click();
-  const review = dialog.getByRole("region", { name: "Review before saving" });
-  await expect(review).toContainText("Jane Doe");
-  await expect(review).toContainText("1902833742");
-  const check = dialog.getByRole("region", { name: "NPI Registry check" });
-  await expect(check.getByRole("status")).toContainText("Found in the NPI Registry");
-  const toReview = check.getByRole("list", { name: "To review" });
-  await expect(toReview).toContainText(
-    "Taxonomy code 225200000X — the registry has 2251X0800X (Physical Therapist, Orthopedic)",
-  );
-  await expect(check).toContainText(
-    `${PULLED_LABEL}: Credentials DPT; CO license PT-4471. Submitting confirms them.`,
-  );
-  expect(fixtures.providers).toHaveLength(0);
-  // One click goes back to the field.
-  await toReview.getByRole("button", { name: "Go to Taxonomy code" }).click();
-  await expect(dialog.locator("#prov-taxonomy")).toBeFocused();
-  // Staff keep their taxonomy and save without confirming the mismatch.
-  await save.click();
-  await expect(toReview).toBeVisible();
-  await save.click();
+  // The note says what the registry found about the NPI, and nothing about
+  // the taxonomy staff chose (A30c): that difference is the summary's "Kept
+  // yours" and, after the save, a backend advisory.
+  await expect(npi).toHaveAccessibleDescription(/^Found in the NPI Registry/);
+  await expect(dialog.getByText(/the registry has/)).toHaveCount(0);
+  // Save saves at once: the roster form has no review step.
+  await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(card).toContainText("Jane Doe", { timeout: 15000 });
+  await expect(page.getByRole("region", { name: "Review before saving" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "NPI Registry check" })).toHaveCount(0);
   expect(fixtures.providers).toHaveLength(1);
   expect(fixtures.providers[0]).toMatchObject({
     first_name: "Jane",
     last_name: "Doe",
     credentials: "DPT",
+    gender: "female",
+    phone: "252-555-0142",
     npi: "1902833742",
     taxonomy_code: "225200000X",
   });
-  expect(fixtures.state_licenses).toHaveLength(1);
-  expect(fixtures.state_licenses[0]).toMatchObject({
-    state: "CO",
-    license_number: "PT-4471",
-    expiration_date: null,
-  });
+  // The blank expiration date never blocks the save.
+  expect(fixtures.state_licenses).toHaveLength(2);
+  expect(fixtures.state_licenses).toEqual([
+    expect.objectContaining({ state: "CO", license_number: "PT-4471", expiration_date: null }),
+    expect.objectContaining({
+      state: "WY",
+      license_number: "WY-0099",
+      expiration_date: null,
+      verified_status: "unverified",
+    }),
+  ]);
 });
 
 test("MINT-110: Add Provider's Review step says Checking…, then Not found in place, and the provider is created", async ({
@@ -787,7 +841,7 @@ test("MINT-110: Add Provider's Review step says Checking…, then Not found in p
   expect(creates[0].body).toMatchObject({ npi: "1234567810" });
 });
 
-test("MINT-110: the roster form's review step updates a running check in place, and saves through a name mismatch", async ({
+test("MINT-110: the roster form's note updates a running check in place, and Save saves through a name mismatch", async ({
   context,
   page,
 }) => {
@@ -807,26 +861,21 @@ test("MINT-110: the roster form's review step updates a running check in place, 
   await dialog.getByLabel("Assign Tree Hill Sports Therapy LLC").click();
   await dialog.locator("#prov-first").fill("Jane");
   await dialog.locator("#prov-last").fill("Roe");
-  await dialog.locator("#prov-npi").fill("1234567893");
-
-  const save = dialog.getByRole("button", { name: "Save provider" });
-  await save.click();
-  const check = dialog.getByRole("region", { name: "NPI Registry check" });
-  const status = check.getByRole("status");
-  await expect(status).toHaveText("Checking the NPI Registry…");
+  const npi = dialog.locator("#prov-npi");
+  await npi.fill("1234567893");
+  await expect(npi).toHaveAccessibleDescription("Checking the NPI Registry…");
 
   release();
-  await expect(status).toContainText("Found in the NPI Registry, but the name differs");
-  const toReview = check.getByRole("list", { name: "To review" });
-  await expect(toReview).toContainText("Found in the NPI Registry, but the name differs");
-  await expect(toReview.getByRole("button", { name: "Go to name" })).toBeVisible();
+  await expect(npi).toHaveAccessibleDescription(/^Found in the NPI Registry, but the name differs/);
   // A mismatch is never shown as a plain match.
   await expect(dialog.getByText("Found in the NPI Registry", { exact: true })).toHaveCount(0);
   await expect.poll(() => announcements(page, "Checking the NPI Registry…")).toBeGreaterThan(0);
   await expect.poll(() => announcements(page, "but the name differs")).toBeGreaterThan(0);
 
-  await save.click();
+  // Save saves at once (A30c): no review step, no confirm.
+  await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(card).toContainText("Jane Roe", { timeout: 15000 });
+  await expect(page.getByRole("region", { name: "Review before saving" })).toHaveCount(0);
   expect(fixtures.providers).toHaveLength(1);
   expect(fixtures.providers[0]).toMatchObject({ last_name: "Roe", npi: "1234567893" });
 });
@@ -857,11 +906,8 @@ test("MINT-110: a check kept backend only says nothing on the form, and the rost
 
   // The name differs, but the policy keeps that for Mission Control: the form
   // says nothing — and never "Found".
-  const save = dialog.getByRole("button", { name: "Save provider" });
-  await save.click();
-  await expect(dialog.getByRole("region", { name: "Review before saving" })).toBeVisible();
-  await expect(dialog.getByRole("region", { name: "NPI Registry check" })).toHaveCount(0);
   await expect(dialog.getByText(/name differs|Found in the NPI Registry/)).toHaveCount(0);
+  const save = dialog.getByRole("button", { name: "Save provider" });
   await save.click();
   await expect(card).toContainText("Jane Roe", { timeout: 15000 });
 
@@ -872,16 +918,16 @@ test("MINT-110: a check kept backend only says nothing on the form, and the rost
   await dialog.locator("#prov-first").fill("Mary");
   await dialog.locator("#prov-last").fill("Major");
   await dialog.locator("#prov-npi").fill("1902833742");
-  await save.click();
-  const status = dialog.getByRole("region", { name: "NPI Registry check" }).getByRole("status");
-  await expect(status).toHaveText("Checking the NPI Registry…");
+  await expect(dialog.locator("#prov-npi")).toHaveAccessibleDescription(
+    "Checking the NPI Registry…",
+  );
   await save.click();
   await expect(card).toContainText("Mary Major", { timeout: 15000 });
   expect(fixtures.providers).toHaveLength(2);
   release();
 });
 
-test("MINT-110: a name mismatch confirmed for one NPI is not confirmed for the next", async ({
+test("MINT-110: in the roster form an NPI typed before the name says name not checked yet, and Save saves directly", async ({
   context,
   page,
 }) => {
@@ -908,46 +954,12 @@ test("MINT-110: a name mismatch confirmed for one NPI is not confirmed for the n
   await dialog.locator("#prov-last").fill("Roe");
   await expect(npi).toHaveAccessibleDescription(/but the name differs/);
 
-  // Confirm the mismatch for NPI X (the Denver Jane Doe).
-  const save = dialog.getByRole("button", { name: "Save provider" });
-  await save.click();
-  const toReview = dialog
-    .getByRole("region", { name: "NPI Registry check" })
-    .getByRole("list", { name: "To review" });
-  await expect(toReview).toContainText("JANE DOE");
-  await toReview.getByRole("button", { name: "Confirm" }).click();
-  await expect(toReview.getByRole("button", { name: "Confirmed" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-
-  // Back to the form; NPI Y (the Boulder Jane M Doe) also differs from Roe.
-  await dialog.getByRole("button", { name: "Back to edit" }).click();
-  await npi.fill("1902833742");
-  await save.click();
-  await expect(toReview).toContainText("JANE M DOE");
-  // Y's mismatch is a new advisory: not confirmed.
-  await expect(toReview.getByRole("button", { name: "Confirm" })).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
-  await expect(toReview.getByRole("button", { name: "Confirmed" })).toHaveCount(0);
-
-  // Back to X: the same mismatch staff confirmed is still confirmed.
-  await dialog.getByRole("button", { name: "Back to edit" }).click();
-  await npi.fill("1234567893");
-  await save.click();
-  await expect(toReview).toContainText("JANE DOE");
-  await expect(toReview.getByRole("button", { name: "Confirmed" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await save.click();
+  await dialog.getByRole("button", { name: "Save provider" }).click();
   await expect(card).toContainText("Jane Roe", { timeout: 15000 });
   expect(fixtures.providers).toHaveLength(1);
 });
 
-test("MINT-110: a confirmed license row keeps its confirmation when another row is removed, and gives none away", async ({
+test("MINT-110: a Gender and Phone used from one pick go back when the next match lists neither", async ({
   context,
   page,
 }) => {
@@ -966,25 +978,187 @@ test("MINT-110: a confirmed license row keeps its confirmation when another row 
   await dialog.getByLabel("Assign Tree Hill Sports Therapy LLC").click();
   await dialog.locator("#prov-first").fill("Jane");
   await dialog.locator("#prov-last").fill("Doe");
-  // The Boulder Jane: the registry lists CO PT-4471 and WY WY-0099.
-  await dialog.locator("#prov-npi").fill("1902833742");
+  const search = dialog.getByRole("button", { name: "Search NPI Registry" });
+  const matches = dialog.getByRole("list", { name: "NPI Registry matches" });
+  const summary = dialog.getByRole("region", { name: "From the NPI Registry" });
 
-  // Two rows whose numbers differ from the registry's: CO, then WY.
-  const addLicense = dialog.getByRole("button", { name: "Add license" });
-  if ((await dialog.locator("#lic-0-state").count()) === 0) await addLicense.click();
-  await dialog.locator("#lic-0-state").click();
-  await page.getByRole("option", { name: "CO", exact: true }).click();
-  await dialog.locator("#lic-0-number").fill("PT-1");
-  await addLicense.click();
-  await dialog.locator("#lic-1-state").click();
-  await page.getByRole("option", { name: "WY", exact: true }).click();
-  await dialog.locator("#lic-1-number").fill("WY-9");
+  // Pick the Boulder Jane and use her sex and practice phone.
+  await search.click();
+  await matches.getByRole("button", { name: /^JANE M DOE, DPT NPI 1902833742/ }).click();
+  await summary.getByRole("button", { name: "Use for Gender" }).click();
+  await summary.getByRole("button", { name: "Use for Phone" }).click();
+  await expect(dialog.locator("#prov-gender")).toContainText("Female");
+  await expect(dialog.locator("#prov-phone")).toHaveValue("303-555-0199");
 
-  const save = dialog.getByRole("button", { name: "Save provider" });
-  await save.click();
-  const toReview = dialog
+  // Then the Denver Jane, who lists neither: both go back, and the summary
+  // says so (review P2: never the wrong person's values, unmarked).
+  await search.click();
+  await matches.getByRole("button", { name: /^JANE DOE, PT NPI 1234567893/ }).click();
+  await expect(summary).toContainText("Cleared from the previous pick:");
+  await expect(summary).toContainText("Gender, Phone.");
+  await expect(dialog.locator("#prov-gender")).toContainText("Not set");
+  await expect(dialog.locator("#prov-phone")).toHaveValue("");
+
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(card).toContainText("Jane Doe", { timeout: 15000 });
+  expect(fixtures.providers[0]).toMatchObject({ npi: "1234567893", gender: null, phone: null });
+});
+
+test("MINT-110: the roster form saves a provider with no NPI and asks the registry nothing (B3)", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = makeFixtures();
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  const registry = await mockRegistry(context);
+  await seedAuth(context);
+
+  await page.goto("/onboarding/wizard");
+  const card = page.locator("#wizard-providers");
+  await card.getByRole("button", { name: "Add provider" }).click({ timeout: 30000 });
+  const dialog = page.getByRole("dialog", { name: "Add provider" });
+  await dialog.getByLabel("Assign Tree Hill Sports Therapy LLC").click();
+  await dialog.locator("#prov-first").fill("Nora");
+  await dialog.locator("#prov-last").fill("Blank");
+  // Addendum 11 (B3): the NPI is optional; an entered one is still checked.
+  await dialog.locator("#prov-npi").fill("12345");
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(dialog).toContainText("NPI must be 10 digits");
+  expect(fixtures.providers).toHaveLength(0);
+  await dialog.locator("#prov-npi").fill("");
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(card).toContainText("Nora Blank", { timeout: 15000 });
+  expect(fixtures.providers).toHaveLength(1);
+  expect(fixtures.providers[0]).toMatchObject({ npi: null });
+  expect(registry.calls).toEqual([]);
+});
+
+// Add Provider, from the Credentials step to the Review step and back.
+async function toReviewStep(page: Page) {
+  for (let step = 0; step < 3; step += 1) {
+    await page.getByRole("button", { name: "Next" }).click();
+  }
+}
+async function backToStep(page: Page, steps: number) {
+  for (let step = 0; step < steps; step += 1) {
+    await page.getByRole("button", { name: "Back" }).click();
+  }
+}
+
+test("MINT-110: on Add Provider's Review step a name mismatch confirmed for one NPI is not confirmed for the next", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = makeFixtures();
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await mockRegistry(context);
+  await recordAnnouncements(context);
+  await seedAuth(context);
+
+  await page.goto("/providers/new");
+  await expect(page.getByRole("heading", { name: "Add provider" })).toBeVisible({
+    timeout: 30000,
+  });
+  await page.getByLabel("First name", { exact: true }).fill("Jane");
+  await page.getByLabel("Last name", { exact: true }).fill("Roe");
+  await page.getByRole("button", { name: "Next" }).click();
+  const npi = page.getByLabel("NPI", { exact: true });
+  await npi.fill("1234567893");
+  await expect(npi).toHaveAccessibleDescription(/but the name differs/);
+
+  // Confirm the mismatch for NPI X (the Denver Jane Doe).
+  await toReviewStep(page);
+  const toReview = page
     .getByRole("region", { name: "NPI Registry check" })
     .getByRole("list", { name: "To review" });
+  await expect(toReview).toContainText("JANE DOE");
+  await toReview.getByRole("button", { name: "Confirm" }).click();
+  await expect(toReview.getByRole("button", { name: "Confirmed" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  // Back to Credentials; NPI Y (the Boulder Jane M Doe) also differs from Roe.
+  await backToStep(page, 3);
+  await npi.fill("1902833742");
+  await toReviewStep(page);
+  await expect(toReview).toContainText("JANE M DOE");
+  // Y's mismatch is a new advisory: not confirmed.
+  await expect(toReview.getByRole("button", { name: "Confirm" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(toReview.getByRole("button", { name: "Confirmed" })).toHaveCount(0);
+
+  // Back to X: the same mismatch staff confirmed is still confirmed.
+  await backToStep(page, 3);
+  await npi.fill("1234567893");
+  await toReviewStep(page);
+  await expect(toReview).toContainText("JANE DOE");
+  await expect(toReview.getByRole("button", { name: "Confirmed" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("button", { name: "Create provider" }).click();
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+  const creates = requests.filter((r) => r.method === "POST" && r.table === "providers");
+  expect(creates).toHaveLength(1);
+  expect(creates[0].body).toMatchObject({ last_name: "Roe", npi: "1234567893" });
+});
+
+test("MINT-110: on Add Provider's Review step a confirmed license row keeps its confirmation when another row is removed, and gives none away", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = makeFixtures();
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await mockRegistry(context);
+  await recordAnnouncements(context);
+  await seedAuth(context);
+
+  await page.goto("/providers/new");
+  await expect(page.getByRole("heading", { name: "Add provider" })).toBeVisible({
+    timeout: 30000,
+  });
+  await page.getByLabel("First name", { exact: true }).fill("Jane");
+  await page.getByLabel("Last name", { exact: true }).fill("Doe");
+  await page.getByRole("button", { name: "Next" }).click();
+  // The Boulder Jane: the registry lists CO PT-4471 and WY WY-0099.
+  await page.getByLabel("NPI", { exact: true }).fill("1902833742");
+  await page.getByRole("button", { name: "Next" }).click();
+
+  // Row i's State select: each row has two selects (State, then Type), and
+  // the Licenses step has no other.
+  const chooseState = async (row: number, state: string) => {
+    await page
+      .getByRole("combobox")
+      .nth(row * 2)
+      .click();
+    await page.getByRole("option", { name: state, exact: true }).click();
+  };
+  const number = (index: number) => page.locator(`[data-review-field="licenseNumber-${index}"]`);
+  const addLicense = page.getByRole("button", { name: "Add license" });
+  // Two rows whose numbers differ from the registry's: CO, then WY.
+  await chooseState(0, "CO");
+  await number(0).fill("PT-1");
+  await addLicense.click();
+  await chooseState(1, "WY");
+  await number(1).fill("WY-9");
+
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("button", { name: "Next" }).click();
+  const toReview = page
+    .getByRole("region", { name: "NPI Registry check" })
+    .getByRole("list", { name: "To review" });
+  // (The preset taxonomy, which differs from the registry's, is listed too.)
   const co = toReview.getByRole("listitem").filter({ hasText: "CO license PT-1" });
   const wy = toReview.getByRole("listitem").filter({ hasText: "WY license WY-9" });
   await expect(co).toBeVisible();
@@ -1001,24 +1175,25 @@ test("MINT-110: a confirmed license row keeps its confirmation when another row 
   );
 
   // Remove row 0 (CO). The WY row keeps its confirmation.
-  await dialog.getByRole("button", { name: "Back to edit" }).click();
-  await dialog.getByRole("button", { name: "Remove license 1" }).click();
-  await expect(dialog.locator("#lic-0-number")).toHaveValue("WY-9");
-  await save.click();
-  await expect(toReview.getByRole("listitem")).toHaveCount(1);
+  await backToStep(page, 2);
+  await page.getByRole("button", { name: "Remove license" }).first().click();
+  await expect(number(0)).toHaveValue("WY-9");
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(co).toHaveCount(0);
   await expect(wy.getByRole("button", { name: "Confirmed" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
 
   // A new CO row, now after WY, was never confirmed.
-  await dialog.getByRole("button", { name: "Back to edit" }).click();
+  await backToStep(page, 2);
   await addLicense.click();
-  await dialog.locator("#lic-1-state").click();
-  await page.getByRole("option", { name: "CO", exact: true }).click();
-  await dialog.locator("#lic-1-number").fill("PT-1");
-  await save.click();
-  await expect(toReview.getByRole("listitem")).toHaveCount(2);
+  await chooseState(1, "CO");
+  await number(1).fill("PT-1");
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(co).toHaveCount(1);
   await expect(co.getByRole("button", { name: "Confirm" })).toHaveAttribute(
     "aria-pressed",
     "false",
@@ -1030,7 +1205,14 @@ test("MINT-110: a confirmed license row keeps its confirmation when another row 
   // The registry's one WY number is offered to use.
   await expect(wy.getByRole("button", { name: "Use WY-0099" })).toBeVisible();
 
-  await save.click();
-  await expect(card).toContainText("Jane Doe", { timeout: 15000 });
-  expect(fixtures.providers).toHaveLength(1);
+  await page.getByRole("button", { name: "Create provider" }).click();
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+  const licenses = requests.filter((r) => r.method === "POST" && r.table === "state_licenses");
+  expect(licenses).toHaveLength(1);
+  expect(licenses[0].body).toEqual([
+    expect.objectContaining({ state: "WY", license_number: "WY-9", expiration_date: null }),
+    expect.objectContaining({ state: "CO", license_number: "PT-1", expiration_date: null }),
+  ]);
 });
