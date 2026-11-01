@@ -15,7 +15,8 @@ export interface TemplateDataMap {
   test: { practiceName: string };
   provider_invitation: { practiceName: string; firstName: string; link: string };
   intake_code: { practiceName: string; code: string };
-  // MINT-108: the daily coordinator follow-up digest. The key is the
+  // MINT-108: the coordinator follow-up digest (daily, weekly or twice a
+  // day; the key keeps its first name). The key is the
   // catalog's (src/lib/notificationTemplates.ts); the data is built by
   // planFollowUpDigests (src/lib/followUpDigest.ts).
   followup_digest_daily: FollowUpDigestEmailData;
@@ -128,8 +129,10 @@ function followUpDigest(data: FollowUpDigestEmailData): RenderedEmail {
   const practice = data.practiceName.trim();
   // `day` is already HTML-safe (formatDay), so the intro is not escaped again.
   const intro = `Here are your follow-ups due on ${day}, and the ones that are overdue.`;
+  // Minted turns the digest on (A9), and it may be daily, weekly or twice a
+  // day (A8), so the footer names neither the org nor a frequency.
   const footer =
-    "You get this email because your organization turned on the daily follow-up digest.";
+    "You get this email because Minted turned on follow-up digests for your organization.";
   return {
     subject: `Your follow-ups for ${day}: ${sectionSummary(section)}`,
     text: [

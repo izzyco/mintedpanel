@@ -1642,6 +1642,41 @@ describe("followup-digest: FollowUpDigestRules per org (policy as configuration,
     expect(late.orgs_due).toBe(0);
   });
 
+  it.each([
+    ["America/Santiago", "2026-09-06"],
+    ["America/Asuncion", "2024-10-06"],
+  ])(
+    "keeps one attempt in %s when DST start skips a midnight send hour and the cut-off is 1 am",
+    async (zone, dstStart) => {
+      fake = createFollowUpDigestFakeDb(
+        world({ a: sendTime(0, zone), b: sendTime(0, zone) }).tables,
+      );
+      const rules = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 1 });
+      // 03:07 UTC: 11:07 pm the day before (-04), past that date's cut-off.
+      const before = await runFollowUpDigest(
+        ctx(new Date(`${dstStart}T03:07:00Z`)),
+        deps({ rules }),
+      );
+      expect(before.orgs_past_catch_up).toBe(2);
+      // 04:07 UTC: 1:07 am (-03). Midnight did not exist; 1 am stands in.
+      const stand = await runFollowUpDigest(
+        ctx(new Date(`${dstStart}T04:07:00Z`)),
+        deps({ rules }),
+      );
+      expect(stand.orgs_due).toBe(2);
+      expect(stand.orgs_past_catch_up).toBe(0);
+      expect(completions()).toEqual(
+        [
+          [JOB, ORG_A, dstStart],
+          [JOB, ORG_B, dstStart],
+        ].sort(),
+      );
+      // 05:07 UTC: 2:07 am, past the cut-off.
+      const late = await runFollowUpDigest(ctx(new Date(`${dstStart}T05:07:00Z`)), deps({ rules }));
+      expect(late.orgs_past_catch_up).toBe(2);
+    },
+  );
+
   it("still sends before the cut-off, and counts unassigned follow-ups under count_only", async () => {
     // 11 am Central: before org A's noon cut-off.
     const result = await runFollowUpDigest(

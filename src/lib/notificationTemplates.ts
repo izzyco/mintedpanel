@@ -55,7 +55,7 @@ export type NotificationTemplateField =
   | "followUpCount"
   | "overdueFollowUpCount"
   | "workQueueLink"
-  // MINT-108: the daily follow-up digest's rows. No at-risk fields until
+  // MINT-108: the follow-up digest's rows. No at-risk fields until
   // MINT-111 gives payers a real decision time.
   | "digestDate"
   | "dueTodayFollowUpCount"

@@ -612,6 +612,46 @@ describe("digestSlot with the catch-up rule", () => {
 });
 
 describe("catch-up cut-off edges (review)", () => {
+  it.each([
+    // Chile: 23:59 on Sep 5 2026 (-04) is followed by 1 am on Sep 6 (-03).
+    ["America/Santiago", "2026-09-05", "2026-09-06", "2026-09-13"],
+    // Paraguay's last DST start: 23:59 on Oct 5 2024, then 1 am on Oct 6.
+    ["America/Asuncion", "2024-10-05", "2024-10-06", "2024-10-13"],
+  ])(
+    "lets 1 am stand in for a midnight send hour that DST start skips in %s",
+    (zone, dayBefore, dstStart, weekLater) => {
+      const midnight = { sendHour: 0, sendTimeZone: zone };
+      const cutAtOne = { catchUpUntilLocalHour: 1 };
+      // This runtime's tzdata has the transition the test is about.
+      expect(zonedDateHour(at(`${dstStart}T03:00:00Z`), zone)).toEqual({
+        date: dayBefore,
+        hour: 23,
+      });
+      expect(zonedDateHour(at(`${dstStart}T04:00:00Z`), zone)).toEqual({
+        date: dstStart,
+        hour: 1,
+      });
+      // The day before: midnight exists, and 11 pm is past the cut-off.
+      expect(digestSlot(midnight, at(`${dayBefore}T04:07:00Z`), cutAtOne)?.due).toBe(true);
+      expect(digestSlot(midnight, at(`${dstStart}T03:07:00Z`), cutAtOne)).toEqual(
+        once("past_catch_up", dayBefore, 23, 0),
+      );
+      // The DST-start date's first hour is 1 am: it stands in for midnight.
+      expect(digestSlot(midnight, at(`${dstStart}T04:07:00Z`), cutAtOne)).toEqual(
+        once("due", dstStart, 1, 0),
+      );
+      // 2 am is past the cut-off.
+      expect(digestSlot(midnight, at(`${dstStart}T05:07:00Z`), cutAtOne)).toEqual(
+        once("past_catch_up", dstStart, 2, 0),
+      );
+      // A week later midnight exists again: 1 am is past the cut-off.
+      expect(digestSlot(midnight, at(`${weekLater}T03:07:00Z`), cutAtOne)?.due).toBe(true);
+      expect(digestSlot(midnight, at(`${weekLater}T04:07:00Z`), cutAtOne)).toEqual(
+        once("past_catch_up", weekLater, 1, 0),
+      );
+    },
+  );
+
   it("calls a cut-off at or before the send hour a problem, and none otherwise", () => {
     expect(catchUpRuleProblem({ catchUpUntilLocalHour: 8 }, 8)).toBe("cut_off_not_after_send_hour");
     expect(catchUpRuleProblem({ catchUpUntilLocalHour: 6 }, 8)).toBe("cut_off_not_after_send_hour");

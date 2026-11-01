@@ -107,8 +107,9 @@ export interface FollowUpDigestRules {
    * midnight, so every hourly run from that send's hour through the 23:00
    * hour catches up. A whole hour H from 1 to 23: only runs whose local hour
    * is before H, so a send not made by H:00 is not made for that date. When
-   * DST start skips the send's hour, the first hour after it stands in for
-   * it, whatever the cut-off. An H at or before the day's last send hour (the
+   * DST start skips the send's hour (midnight included, as in
+   * America/Santiago), the first hour after it stands in for it, whatever
+   * the cut-off. An H at or before the day's last send hour (the
    * send hour, or for twice a day the second send hour) would mean that send
    * is never due: it is invalid (catchUpRuleProblem), and the job falls back
    * to midnight and counts it. A twice-a-day first send's window always ends
@@ -502,11 +503,16 @@ export function digestSlot(
   if (!beforeCutOff && local.hour > hour) {
     // DST start can skip the send's hour (2 am on Mar 14 2027 in Chicago).
     // The first hour after it then stands in for it, so a cut-off just after
-    // that hour still leaves that one attempt. On any other day the hour
-    // before this one is at or after the send's hour.
+    // that hour still leaves that one attempt. Where DST start skips
+    // midnight itself (America/Santiago on Sep 6 2026: 23:59 on the 5th, then
+    // 1 am on the 6th), the hour before this one is on the previous date:
+    // this is the local day's first hour, and every hour before it was
+    // skipped, so it counts as "the hour before was before the send hour". On
+    // any other day the hour before this one is on this date and at or after
+    // the send's hour.
     try {
       const hourBefore = zonedDateHour(new Date(now.getTime() - 3_600_000), sendTimeZone);
-      if (hourBefore.date === local.date && hourBefore.hour < hour) beforeCutOff = true;
+      if (hourBefore.date !== local.date || hourBefore.hour < hour) beforeCutOff = true;
     } catch {
       // The zone formatted a moment ago; leave the cut-off as it is.
     }

@@ -88,6 +88,17 @@ describe("followup_digest_daily", () => {
     expect(text).not.toMatch(/<[a-z]/i);
   });
 
+  it("says Minted turned it on, with no frequency, in both parts (A8, A9)", () => {
+    const { html, text } = TEMPLATES.followup_digest_daily(base);
+    const footer =
+      "You get this email because Minted turned on follow-up digests for your organization.";
+    expect(text).toContain(footer);
+    expect(html).toContain(`<p>${footer}</p>`);
+    for (const part of [html, text]) {
+      expect(part).not.toMatch(/\bdaily\b|weekly|twice a day|your organization turned on/i);
+    }
+  });
+
   it("has no at-risk line, no Unassigned section and no team table (Sowmya, Oct 30)", () => {
     const { html, text } = TEMPLATES.followup_digest_daily(base);
     for (const part of [html, text]) {
