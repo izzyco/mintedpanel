@@ -483,9 +483,11 @@ describe("provider scan (TE-2/TE-6)", () => {
       expect(row.rowState).toBe("error");
       expect(row.errorColumn).toBe("npi");
     }
+    // B3 (Nov 1): an NPI is optional at import, so a cell of separators only
+    // strips to blank and the row stages without an NPI.
     const dashesOnly = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "---" });
-    expect(dashesOnly.rowState).toBe("error");
-    expect(dashesOnly.errorReason).toBe("npi is required");
+    expect(dashesOnly.rowState).toBe("staged");
+    expect(dashesOnly.mapped?.npi ?? "").toBe("");
   });
 
   it("quotes a bad group NPI as uploaded, not as stripped (MINT-110)", () => {
@@ -529,8 +531,11 @@ describe("provider scan (TE-2/TE-6)", () => {
     ).toBe("error");
   });
 
-  it("requires first/last/npi and a parent-group key", () => {
-    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "" }).rowState).toBe("error");
+  it("requires first/last and a parent-group key; NPI is optional (B3)", () => {
+    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "" }).rowState).toBe("staged");
+    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, provider_last_name: "" }).rowState).toBe(
+      "error",
+    );
     expect(
       scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, group_tin: "", group_name: "" }).rowState,
     ).toBe("error");

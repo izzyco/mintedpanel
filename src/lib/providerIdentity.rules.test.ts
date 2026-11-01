@@ -1,6 +1,5 @@
 // MINT-129 — the configurable identity validation rules: their decided
-// defaults, the stricter alternative, the resolver's precedence, and the
-// validator that keeps the check digit out of reach.
+// defaults, the stricter alternative, and the resolver's precedence.
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_IDENTITY_VALIDATION_RULES,
@@ -8,22 +7,18 @@ import {
   identityFieldNeedsCheck,
   isValidNpi,
   resolveIdentityValidationRules,
-  validateIdentityValidationRules,
   type IdentityValidationRules,
 } from "./providerIdentity";
 // Aliased so it reads as the plain function it is outside a component.
 import { useIdentityValidationRules as identityRulesInForce } from "@/hooks/useIdentityValidationRules";
 
-const RECHECK: IdentityValidationRules = { recheckStoredOnEdit: true, deaLastNameLetter: "off" };
+const RECHECK: IdentityValidationRules = { recheckStoredOnEdit: true };
 const EVERY_RULE_SET: IdentityValidationRules[] = [DEFAULT_IDENTITY_VALIDATION_RULES, RECHECK];
 const digits = (v: string) => v.replace(/\D/g, "");
 
 describe("DEFAULT_IDENTITY_VALIDATION_RULES", () => {
-  it("holds the decisions of Oct 30: no re-check of stored identities, DEA letter off", () => {
-    expect(DEFAULT_IDENTITY_VALIDATION_RULES).toEqual({
-      recheckStoredOnEdit: false,
-      deaLastNameLetter: "off",
-    });
+  it("holds the decision of Oct 30: no re-check of stored identities", () => {
+    expect(DEFAULT_IDENTITY_VALIDATION_RULES).toEqual({ recheckStoredOnEdit: false });
     expect(Object.isFrozen(DEFAULT_IDENTITY_VALIDATION_RULES)).toBe(true);
   });
 
@@ -54,19 +49,13 @@ describe("resolveIdentityValidationRules", () => {
 
   it("inherits on null or undefined, but not on false", () => {
     expect(
-      resolveIdentityValidationRules(
-        { recheckStoredOnEdit: true, deaLastNameLetter: "off" },
-        { recheckStoredOnEdit: null, deaLastNameLetter: undefined },
-      ),
+      resolveIdentityValidationRules({ recheckStoredOnEdit: true }, { recheckStoredOnEdit: null }),
     ).toEqual(RECHECK);
   });
 
   it("skips a value of the wrong shape like a missing one", () => {
     const platform = { recheckStoredOnEdit: true } as const;
-    const bad = {
-      recheckStoredOnEdit: "yes",
-      deaLastNameLetter: "enforce",
-    } as unknown as IdentityValidationRules;
+    const bad = { recheckStoredOnEdit: "yes" } as unknown as IdentityValidationRules;
     expect(resolveIdentityValidationRules(platform, bad)).toEqual(RECHECK);
     expect(resolveIdentityValidationRules(bad)).toEqual(DEFAULT_IDENTITY_VALIDATION_RULES);
   });
@@ -79,74 +68,7 @@ describe("resolveIdentityValidationRules", () => {
     } as unknown as IdentityValidationRules;
     const resolved = resolveIdentityValidationRules(loosening, loosening);
     expect(resolved).toEqual(RECHECK);
-    expect(Object.keys(resolved).sort()).toEqual(["deaLastNameLetter", "recheckStoredOnEdit"]);
-  });
-});
-
-describe("validateIdentityValidationRules", () => {
-  it("passes the defaults, the stricter alternative, an empty override and inherits", () => {
-    expect(validateIdentityValidationRules(null)).toEqual([]);
-    expect(validateIdentityValidationRules(undefined)).toEqual([]);
-    expect(validateIdentityValidationRules({})).toEqual([]);
-    expect(validateIdentityValidationRules(DEFAULT_IDENTITY_VALIDATION_RULES)).toEqual([]);
-    expect(validateIdentityValidationRules(RECHECK)).toEqual([]);
-    expect(
-      validateIdentityValidationRules({ recheckStoredOnEdit: null, deaLastNameLetter: null }),
-    ).toEqual([]);
-  });
-
-  it("rejects something that is not a set of settings", () => {
-    for (const value of ["on", 1, true, []]) {
-      expect(validateIdentityValidationRules(value)).toEqual([
-        "Identity validation rules must be a set of named settings.",
-      ]);
-    }
-  });
-
-  it("rejects invalid values in plain language", () => {
-    expect(
-      validateIdentityValidationRules({ recheckStoredOnEdit: "yes", deaLastNameLetter: "maybe" }),
-    ).toEqual([
-      '"Re-check stored NPIs on edit" must be on or off.',
-      'The DEA last-name letter rule must be "off".',
-    ]);
-  });
-
-  it("refuses to enforce the DEA last-name letter while no form takes a DEA number", () => {
-    expect(validateIdentityValidationRules({ deaLastNameLetter: "enforce" })).toEqual([
-      "The DEA last-name letter can't be enforced yet: no provider form takes a DEA number. Leave it off.",
-    ]);
-  });
-
-  it("rejects any setting that would loosen the NPI or DEA check digit", () => {
-    for (const key of [
-      "npiCheckDigit",
-      "skipChecksum",
-      "luhn",
-      "deaCheckDigit",
-      "allowAnyNpi",
-      "allowAnyNPI",
-      "npi_check_digit",
-      "checkDigitOff",
-    ]) {
-      expect(validateIdentityValidationRules({ [key]: false })).toEqual([
-        `"${key}" can't be configured: the NPI and DEA check digits are facts about the number, so no setting can turn them off or relax them. A setting can only make identity checks stricter.`,
-      ]);
-    }
-  });
-
-  it("rejects an unknown setting by name", () => {
-    expect(validateIdentityValidationRules({ recheckStoredOnEdit: true, cadence: 3 })).toEqual([
-      '"cadence" is not an identity validation setting.',
-    ]);
-  });
-
-  it("matches a fixed check on whole words only, so a word that merely contains one is just unknown", () => {
-    for (const key of ["idea", "ideaBoard", "deadline", "recheckDigits"]) {
-      expect(validateIdentityValidationRules({ [key]: true })).toEqual([
-        `"${key}" is not an identity validation setting.`,
-      ]);
-    }
+    expect(Object.keys(resolved)).toEqual(["recheckStoredOnEdit"]);
   });
 });
 
