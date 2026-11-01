@@ -83,8 +83,11 @@ import {
   isValidNpi,
   stripNpiSeparators,
 } from "@/lib/providerIdentity";
-import { NpiRegistryCheckNote } from "@/components/providers/NpiRegistryAssist";
-import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiRegistry";
+import {
+  NpiRegistryCheckNote,
+  NpiRegistryQuietNote,
+} from "@/components/providers/NpiRegistryAssist";
+import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
 import { hasValidLicenseDateOrder, LICENSE_DATE_ORDER_ERROR } from "@/lib/licenseDates";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -395,9 +398,11 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // MINT-110: the third NPI write path follows the same rule as Add Provider
-  // and the roster form — separators stripped, ten digits, the check digit,
-  // then the NPI Registry policy. Only a changed NPI is checked; a stored one
-  // is never re-checked (no backfill).
+  // and the roster form — separators stripped, ten digits, the check digit
+  // (facts about the number, which stay hard). The NPI Registry check never
+  // holds up the save: a changed NPI saves at once, the check finishes in the
+  // background, and a mismatch shows as a quiet note under the NPI (A30).
+  // Only a changed NPI is checked; a stored one is never re-checked.
   const npiPolicy = useNpiRegistryPolicy();
   const npiDraft = stripNpiSeparators((draft.npi ?? "").trim());
   const npiChanged = editing && npiDraft !== stripNpiSeparators((provider.npi ?? "").trim());
@@ -405,8 +410,14 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
     firstName: editing ? (draft.firstName ?? "") : provider.firstName,
     lastName: editing ? (draft.lastName ?? "") : provider.lastName,
   };
-  const npiRegistryBlock = useNpiRegistrySaveBlock(npiDraft, npiChanged, npiNames, npiPolicy);
   const npiNoticeId = "identity-npi-registry-note";
+  const recordNpiAdvisories = useRecordNpiAdvisoriesAfterSave();
+  // The NPI this edit just saved, and the name it was saved with.
+  const [savedNpi, setSavedNpi] = useState<{
+    npi: string;
+    firstName: string;
+    lastName: string;
+  } | null>(null);
 
   const dateDisplay = (v: string | null) => (v ? fmtDate(v) : "—");
   const groups: { title: string; cells: Cell[] }[] = [
@@ -450,12 +461,10 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           mono: true,
           // MINT-110: "123-456-7890" and "123 456 7890" save as digits.
           normalize: stripNpiSeparators,
-          // Runs only when the NPI changed (see save) — MINT-7 check digit,
-          // then the NPI Registry policy's refusal, if any.
+          // Runs only when the NPI changed (see save) — MINT-7 check digit.
           validate: (v) => {
             if (!/^\d{10}$/.test(v)) return NPI_FORMAT_MESSAGE;
-            if (!isValidNpi(v)) return NPI_CHECK_DIGIT_MESSAGE;
-            return npiRegistryBlock;
+            return isValidNpi(v) ? null : NPI_CHECK_DIGIT_MESSAGE;
           },
           // Off by default; under recheckStoredOnEdit (MINT-129) an unchanged
           // stored NPI is checked on save too, separators stripped as the
@@ -554,6 +563,23 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       await update.mutateAsync(patch);
       toast.success("Saved.");
       setEditing(false);
+      if (typeof patch.npi === "string") {
+        // The registry check of the new NPI goes on after the save.
+        setSavedNpi({ npi: patch.npi, ...npiNames });
+        recordNpiAdvisories({
+          recordId: provider.id,
+          npi: patch.npi,
+          verify: true,
+          typed: npiNames,
+          entered: {
+            credentials: (draft.credentials ?? "").trim(),
+            taxonomyCode: (draft.taxonomyCode ?? "").trim(),
+            licenses: [],
+          },
+          confirmed: new Set(),
+          policy: npiPolicy,
+        });
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : "Could not save.");
     }
@@ -629,6 +655,14 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
                             ? c.display(c.value)
                             : (c.value ?? "—")}
                       </p>
+                      {c.key === "npi" && savedNpi && savedNpi.npi === (c.value ?? "") ? (
+                        <NpiRegistryQuietNote
+                          npi={savedNpi.npi}
+                          firstName={savedNpi.firstName}
+                          lastName={savedNpi.lastName}
+                          policy={npiPolicy}
+                        />
+                      ) : null}
                     </div>
                   );
                 }

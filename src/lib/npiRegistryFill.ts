@@ -26,6 +26,7 @@
 // the roster form) describe their fields with NpiFillForm, keep the last
 // pick's NpiPickTrace and the touched flags, and apply the plan; this module
 // decides.
+import { fmtDate } from "@/lib/format";
 import { stripNpiSeparators } from "@/lib/providerIdentity";
 import { isKnownTaxonomyCode, normalizeTaxonomyCode } from "@/lib/providerTaxonomy";
 import { US_STATES } from "@/lib/usStates";
@@ -43,6 +44,9 @@ export interface NpiRowOrigin {
   /** An added row that filled the form's untouched empty row: taking it back
    * leaves that empty row, as before the add. */
   replacedEmpty?: boolean;
+  /** When the registry data was pulled (ISO timestamp): the value says "From
+   * NPI Registry, <date>" until confirmed (A35). */
+  pulledAt?: string;
 }
 
 export interface NpiFillLicenseRow {
@@ -124,6 +128,9 @@ export interface NpiFillSummary {
   staleRows: string[];
   /** Licenses the form has no row for, for staff to add. */
   licenseOffers: NpiLicenseOffer[];
+  /** Several taxonomies and none flagged primary (A35): a pick list for the
+   * one-value taxonomy field, nothing preselected — never the first. */
+  taxonomyChoices: { code: string; description: string | null }[];
   /** Registry data no field on the form holds. Shown, never saved. */
   details: NpiRegistryDetail[];
 }
@@ -154,6 +161,9 @@ export interface NpiPickState {
   npi: string;
   trace: NpiPickTrace;
   summary: NpiFillSummary;
+  /** When the registry data was pulled (ISO timestamp), for "From NPI
+   * Registry, <date>" (A35). */
+  pulledAt: string;
 }
 
 export const NPI_FILL_FIELD = {
@@ -369,6 +379,22 @@ export function planNpiRegistryFill(
       });
     }
   }
+  // No primary among several taxonomies (A35): the field takes one value, so
+  // staff pick one; nothing is prefilled, and never the first. The choices
+  // are the codes the picker offers — even when only one of them is, since
+  // the registry still named several and none as primary.
+  const taxonomyChoices: NpiFillSummary["taxonomyChoices"] = [];
+  const registryCodes = new Set(
+    (record.taxonomies ?? []).map((entry) => normalizeTaxonomyCode(entry.code)),
+  );
+  if (!primary && fillBlanks && registryCodes.size > 1) {
+    for (const entry of record.taxonomies ?? []) {
+      const code = normalizeTaxonomyCode(entry.code);
+      if (!isKnownTaxonomyCode(code)) continue;
+      if (taxonomyChoices.some((choice) => choice.code === code)) continue;
+      taxonomyChoices.push({ code, description: entry.description });
+    }
+  }
   const taxonomyChanged =
     normalizeTaxonomyCode(taxonomy) !== normalizeTaxonomyCode(form.taxonomyCode);
   if (taxonomyChanged) (trace.taxonomyCode ? filled : cleared).push(NPI_FILL_FIELD.taxonomyCode);
@@ -457,6 +483,7 @@ export function planNpiRegistryFill(
   } else if (primaryCode) {
     listedCodes.add(primaryCode);
   }
+  for (const code of taxonomyChoices.map((choice) => choice.code)) listedCodes.add(code);
   for (const entry of record.taxonomies ?? []) {
     const code = normalizeTaxonomyCode(entry.code);
     if (listedCodes.has(code)) continue;
@@ -502,7 +529,15 @@ export function planNpiRegistryFill(
     removeRows,
     resetRows,
     trace,
-    summary: { filled, cleared, kept, staleRows, licenseOffers: offers, details },
+    summary: {
+      filled,
+      cleared,
+      kept,
+      staleRows,
+      licenseOffers: offers,
+      taxonomyChoices,
+      details,
+    },
   };
 }
 
@@ -594,11 +629,13 @@ export function npiFillOffersText(summary: NpiFillSummary): string | null {
 /** What the polite live region says after a pick. */
 export function npiFillAnnouncement(summary: NpiFillSummary): string {
   const more =
-    summary.licenseOffers.length > 0
-      ? "Add them below if they apply."
-      : summary.details.length > 0
-        ? "More registry details are listed below."
-        : null;
+    summary.taxonomyChoices.length > 0
+      ? "The registry lists several taxonomies and none as primary; choose one below."
+      : summary.licenseOffers.length > 0
+        ? "Add them below if they apply."
+        : summary.details.length > 0
+          ? "More registry details are listed below."
+          : null;
   return [
     npiFillFilledText(summary),
     npiFillClearedText(summary),
@@ -609,4 +646,51 @@ export function npiFillAnnouncement(summary: NpiFillSummary): string {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+/** "From NPI Registry, Oct 31, 2026": what a value a pick filled says until
+ * the review step's submit confirms it (A35). */
+export function npiRegistrySourceLabel(pulledAt: string): string {
+  return `From NPI Registry, ${fmtDate(pulledAt)}`;
+}
+
+/** The values that still hold what a pick filled or added, untouched by
+ * staff: registry-sourced until the review step's submit confirms them (A35).
+ * A value staff typed, chose or edited is theirs. `lines` is what the review
+ * step lists, one line per pull date: "From NPI Registry, Oct 31, 2026:
+ * Credentials DPT; CO license PT-4471". A license row carries its own pull
+ * date (an offer added from an earlier pick keeps that pick's). */
+export function npiRegistrySourcedFields(
+  pick: NpiPickState | null,
+  form: {
+    credentials: string;
+    credentialsTouched: boolean;
+    taxonomyCode: string;
+    taxonomyTouched: boolean;
+    licenses: { state: string; number: string; origin: NpiRowOrigin | null | undefined }[];
+  },
+): {
+  credentials: boolean;
+  taxonomyCode: boolean;
+  lines: { label: string; values: string[] }[];
+} {
+  const holds = (write: NpiPickWrite | null | undefined, value: string, touched: boolean) =>
+    Boolean(write) && !touched && value === write?.written;
+  const credentials = holds(pick?.trace.credentials, form.credentials, form.credentialsTouched);
+  const taxonomyCode = holds(pick?.trace.taxonomyCode, form.taxonomyCode, form.taxonomyTouched);
+  const lines: { label: string; values: string[] }[] = [];
+  const put = (pulledAt: string, value: string) => {
+    const label = npiRegistrySourceLabel(pulledAt);
+    const line = lines.find((item) => item.label === label);
+    if (line) line.values.push(value);
+    else lines.push({ label, values: [value] });
+  };
+  if (pick && credentials) put(pick.pulledAt, `Credentials ${form.credentials}`);
+  if (pick && taxonomyCode) put(pick.pulledAt, `Taxonomy code ${form.taxonomyCode}`);
+  for (const row of form.licenses) {
+    const origin = row.origin;
+    if (!origin || origin.touched || !origin.pulledAt || !row.number.trim()) continue;
+    put(origin.pulledAt, `${row.state} license ${row.number}`);
+  }
+  return { credentials, taxonomyCode, lines };
 }

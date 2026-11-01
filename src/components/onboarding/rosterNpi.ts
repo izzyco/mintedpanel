@@ -18,21 +18,18 @@ import {
 } from "@/lib/providerIdentity";
 
 /** Why the roster form refuses the NPI, or null. Required; separators are
- * stripped and nothing else, so a pasted label or dots fail. An unchanged
- * stored NPI is not re-validated, so legacy data never blocks an unrelated
- * edit. `registryBlock` is the NPI Registry policy's refusal
- * (useNpiRegistrySaveBlock), checked after the check digit. */
-export function rosterNpiError(
-  npi: string,
-  changed: boolean,
-  registryBlock: string | null,
-): string | null {
+ * stripped and nothing else, so a pasted label or dots fail. `check` is
+ * whether this save checks the NPI (identityFieldNeedsCheck: entered or
+ * changed, or every stored one under recheckStoredOnEdit), so legacy data
+ * never blocks an unrelated edit. These are facts about the number and stay
+ * hard; the NPI Registry check never refuses a save. */
+export function rosterNpiError(npi: string, check: boolean): string | null {
   if (!npi.trim()) return "Type 1 NPI is required";
-  if (!changed) return null;
+  if (!check) return null;
   const digits = stripNpiSeparators(npi);
   if (!/^\d{10}$/.test(digits)) return NPI_FORMAT_MESSAGE;
   if (!isValidNpi(digits)) return NPI_CHECK_DIGIT_MESSAGE;
-  return registryBlock;
+  return null;
 }
 
 /** The roster form's fields a pick can set. */
@@ -59,6 +56,8 @@ export function applyRosterNpiPick(
     /** Staff edited the field since the last pick wrote it (or at all). */
     touched: { credentials: boolean; taxonomyCode: boolean };
     lastPick: NpiPickTrace | null;
+    /** When this pick's registry data was pulled (ISO timestamp). */
+    pulledAt: string;
   },
 ): {
   patch: Partial<RosterNpiFields>;
@@ -96,7 +95,11 @@ export function applyRosterNpiPick(
     licenses: applyNpiLicenseRows(
       licenses,
       plan,
-      (draft, number, origin) => ({ ...draft, licenseNumber: number, npiOrigin: origin }),
+      (draft, number, origin) => ({
+        ...draft,
+        licenseNumber: number,
+        npiOrigin: origin ? { ...origin, pulledAt: origin.pulledAt ?? context.pulledAt } : null,
+      }),
       () => ({ ...EMPTY_LICENSE_DRAFT }),
     ),
     trace: plan.trace,

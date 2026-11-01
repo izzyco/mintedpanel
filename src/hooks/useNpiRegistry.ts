@@ -1,14 +1,22 @@
 // NPI Registry (NPPES) reads — MINT-110. Both are reads with no side effects,
 // cached for ten minutes (the server caches for ten too), never retried on
-// their own: a failure is shown once and saving is never blocked on it.
+// their own: a failure is shown once and saving never waits for them. After a
+// save, the NPI's advisories go to the capture seam (advisoryCapture).
 import { useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { queryKeys } from "@/hooks/queryKeys";
 import { lookupNpiRegistry, searchNpiRegistry } from "@/services/npiRegistry";
+import { advisoriesForRecord } from "@/lib/advisories";
+import { buildNpiRegistryReview, type NpiReviewInput } from "@/lib/npiRegistryReview";
+import {
+  logAdvisoryCaptureFailure,
+  recordAdvisories,
+  type AdvisoryCaptureResult,
+} from "@/services/advisoryCapture";
 import {
   npiLookupStateOf,
-  npiRegistrySaveBlock,
+  npiRegistryErrorMessage,
   npiToCheck,
   npiVerificationView,
   type NpiLookupState,
@@ -68,8 +76,8 @@ export function usePrimeNpiRegistryLookup(): (record: NpiRegistryRecord) => void
 }
 
 // No platform or organization override is stored yet: that storage and its
-// Mission Control screen are a sibling of MINT-125. Until then every
-// organization runs on the defaults.
+// Mission Control screen are MINT-128. Until then every organization runs on
+// the defaults.
 const RESOLVED_POLICY = resolveNpiRegistryPolicy();
 
 /** The NPI Registry policy in force for the active organization. */
@@ -83,13 +91,13 @@ export interface NpiRegistryCheck {
   state: NpiLookupState;
   /** The note under the NPI field, or null when there is nothing to say. */
   view: NpiVerificationView | null;
-  /** Why saving is refused under the policy, or null. */
-  block: string | null;
+  /** Ask the registry again (after it could not be reached). */
+  retry: () => void;
 }
 
-/** The registry check of one NPI field: its state, its note, and whether the
- * policy refuses the save. Every caller with the same NPI shares one cached
- * lookup, so the note, the save and the record page cost one registry call. */
+/** The registry check of one NPI field: its state and its note. Every caller
+ * with the same NPI shares one cached lookup, so the note, the review step
+ * and the record page cost one registry call. A save never waits for it. */
 export function useNpiRegistryCheck(
   npi: string,
   verify: boolean,
@@ -99,21 +107,80 @@ export function useNpiRegistryCheck(
   const checkable = npiToCheck(npi, verify);
   const lookup = useNpiRegistryLookup(checkable);
   const state = npiLookupStateOf(checkable, lookup);
+  const { refetch } = lookup;
   return {
     checkable,
     state,
     view: npiVerificationView(state, typed, policy),
-    block: npiRegistrySaveBlock(state, typed, policy),
+    retry: () => void refetch(),
   };
 }
 
-/** Why a provider form must refuse to save under `policy`, or null. Reads the
- * same cached lookup the NPI field's note shows, so it adds no registry call. */
-export function useNpiRegistrySaveBlock(
-  npi: string,
-  verify: boolean,
-  typed: { firstName: string; lastName: string },
-  policy: NpiRegistryPolicy,
-): string | null {
-  return useNpiRegistryCheck(npi, verify, typed, policy).block;
+/** What a saved form hands over for its NPI's advisories. */
+export interface NpiAdvisoriesAfterSave {
+  /** The saved provider's id. */
+  recordId: string;
+  /** The NPI, separators stripped. */
+  npi: string;
+  /** Whether this save checks the NPI at all (see NpiReviewInput.verify). */
+  verify: boolean;
+  typed: NpiReviewInput["typed"];
+  entered: NpiReviewInput["entered"];
+  /** Advisory ids staff confirmed on the review step. */
+  confirmed: ReadonlySet<string>;
+  policy: NpiRegistryPolicy;
+}
+
+/** After a save: wait for the NPI's registry check (it may still be running —
+ * the save never waits for it), build its advisories, and hand them, facts
+ * only, to the capture seam. It runs outside the form, so it finishes after
+ * the dialog closes or the page moves on. Resolves to what the seam said, or
+ * null when there was nothing to hand over. */
+export async function recordNpiAdvisoriesAfterSave(
+  client: QueryClient,
+  orgId: string | null,
+  input: NpiAdvisoriesAfterSave,
+): Promise<AdvisoryCaptureResult | null> {
+  const checkable = npiToCheck(input.npi, input.verify);
+  if (checkable === null || !orgId) return null;
+  let state: NpiLookupState;
+  try {
+    const data = await client.fetchQuery({
+      queryKey: queryKeys.npiRegistryLookup(orgId, checkable),
+      queryFn: () => lookupNpiRegistry(checkable),
+      staleTime: TEN_MINUTES,
+      gcTime: TEN_MINUTES,
+      retry: false,
+    });
+    state = { status: "done", record: data.record };
+  } catch (error) {
+    state = { status: "error", message: npiRegistryErrorMessage(error) };
+  }
+  const review = buildNpiRegistryReview({ ...input, npi: checkable, state });
+  if (review.advisories.length === 0) return null;
+  const advisories = advisoriesForRecord(review.advisories, input.recordId);
+  try {
+    return await recordAdvisories(advisories);
+  } catch (error) {
+    logAdvisoryCaptureFailure(
+      error,
+      advisories.map((advisory) => advisory.check),
+    );
+    return null;
+  }
+}
+
+/** recordNpiAdvisoriesAfterSave for the active organization, fire and
+ * forget: a failure is logged without values, never shown. */
+export function useRecordNpiAdvisoriesAfterSave(): (input: NpiAdvisoriesAfterSave) => void {
+  const client = useQueryClient();
+  const orgId = useActiveOrgId();
+  return useCallback(
+    (input: NpiAdvisoriesAfterSave) => {
+      void recordNpiAdvisoriesAfterSave(client, orgId, input).catch((error: unknown) =>
+        logAdvisoryCaptureFailure(error, []),
+      );
+    },
+    [client, orgId],
+  );
 }
