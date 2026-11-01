@@ -217,7 +217,9 @@ export function resolveOnboardingFunnelConfig(
   caqhAttestationWindowDays: number,
 ): OnboardingFunnelConfig {
   const text = Object.values(organization?.stageText ?? {});
-  const org = text.every((t) => t.label.trim() && t.description.trim()) ? organization : null;
+  // A stored entry the type doesn't promise (missing, or label only) drops the
+  // whole layer rather than crashing the read.
+  const org = text.every((t) => t?.label?.trim() && t?.description?.trim()) ? organization : null;
   return {
     stages: DEFAULT_ONBOARDING_FUNNEL_STAGES.map((stage) => {
       const copy = org?.stageText?.[stage.key];

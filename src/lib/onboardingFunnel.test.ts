@@ -828,6 +828,19 @@ describe("stages", () => {
       description: "Waiting on verification.",
     });
   });
+
+  it("drops a malformed organization layer instead of throwing", () => {
+    const minted = visibleOnboardingFunnelStages(resolveOnboardingFunnelConfig(null, null, CAQH));
+    for (const stageText of [
+      { submitted: { label: "Sent" } },
+      { submitted: undefined },
+    ] as unknown as NonNullable<
+      Parameters<typeof resolveOnboardingFunnelConfig>[1]
+    >["stageText"][]) {
+      const config = resolveOnboardingFunnelConfig(null, { stageText }, CAQH);
+      expect(visibleOnboardingFunnelStages(config)).toEqual(minted);
+    }
+  });
 });
 
 describe("the fixed placement is exhaustive", () => {
