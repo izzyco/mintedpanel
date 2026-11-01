@@ -476,9 +476,8 @@ describe("onboarding funnel service", () => {
     expect(input.config).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
   });
 
-  it("cannot read the intake tables, so the Invited stage stays hidden", async () => {
-    const input = await getOnboardingFunnelInput();
-    expect(input.intakeReadable).toBe(false);
+  it("never reads the intake tables, which are service-role only (MINT-89)", async () => {
+    await getOnboardingFunnelInput();
     expect(Object.keys(holder.calls).filter((table) => table.includes("intake"))).toEqual([]);
   });
 
@@ -497,7 +496,6 @@ describe("onboarding funnel service", () => {
     const rows = buildOnboardingFunnelRows(input, "2026-10-20", input.config);
     expect(rows.map((row) => [row.providerId, row.stage])).toEqual([["p-denied", "credentialing"]]);
     expect(onboardingFunnelStageCounts(rows, input.config.stages)).toEqual({
-      invited: 0,
       profile_incomplete: 0,
       submitted: 0,
       verified_awaiting_assignment: 0,

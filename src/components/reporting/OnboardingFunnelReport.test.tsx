@@ -4,6 +4,7 @@ import {
   buildOnboardingFunnelRows,
   DEFAULT_ONBOARDING_FUNNEL_CONFIG,
   DEFAULT_ONBOARDING_FUNNEL_STAGES,
+  resolveOnboardingFunnelConfig,
   visibleOnboardingFunnelStages,
   type OnboardingFunnelInput,
   type OnboardingFunnelConfig,
@@ -13,7 +14,6 @@ import {
 
 const state = vi.hoisted(() => ({
   stage: null as string | null,
-  intakeReadable: false,
   config: null as OnboardingFunnelConfig | null,
 }));
 
@@ -34,10 +34,7 @@ vi.mock("@/hooks/useOnboardingFunnel", () => ({
       "2026-10-20",
       state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG,
     ),
-    stages: visibleOnboardingFunnelStages(
-      state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-      state.intakeReadable,
-    ),
+    stages: visibleOnboardingFunnelStages(state.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG),
     isLoading: false,
     isError: false,
     refetch: vi.fn(),
@@ -95,9 +92,6 @@ function funnelInput(): OnboardingFunnelInput {
     ],
     // Dee's only case was denied; by default every case counts.
     cases: [{ providerId: "p-denied", state: "TX", status: "denied" }],
-    // Read only while the intake tables can be (state.intakeReadable).
-    intakeReadable: state.intakeReadable,
-    intake: [{ providerId: "p-ready", intakeSubmitted: false }],
   };
 }
 
@@ -113,12 +107,11 @@ function cardTitles(html: string): string[] {
 
 beforeEach(() => {
   state.stage = null;
-  state.intakeReadable = false;
   state.config = null;
 });
 
 describe("Provider Onboarding report", () => {
-  it("shows the five provider stages in funnel order, without Invited", () => {
+  it("shows the five provider stages in funnel order", () => {
     const html = render();
     expect(cardTitles(html)).toEqual([
       "Profile incomplete",
@@ -160,63 +153,46 @@ describe("Provider Onboarding report", () => {
     expect(html).not.toMatch(/denied|approved|withdrawn|case status/i);
   });
 
-  it("adds Invited as the first stage once the intake tables can be read", () => {
-    state.intakeReadable = true;
+  it("renders an organization's labels and descriptions", () => {
+    state.config = resolveOnboardingFunnelConfig(
+      null,
+      {
+        stageText: {
+          ready_for_credentialing: {
+            label: "Ready to start",
+            description: "Ready for payer work.",
+          },
+          credentialing: { label: "With payers", description: "Has a case." },
+        },
+      },
+      120,
+    );
     const html = render();
     expect(cardTitles(html)).toEqual([
-      "Invited",
       "Profile incomplete",
       "Submitted",
       "Verified, awaiting assignment",
+      "Ready to start",
+      "With payers",
+    ]);
+    expect(html).toContain("Ready for payer work.");
+    expect(DEFAULT_ONBOARDING_FUNNEL_STAGES[3].label).toBe("Ready for credentialing");
+  });
+
+  it("lays four cards out in one row when Verified, awaiting assignment is hidden", () => {
+    state.config = resolveOnboardingFunnelConfig(
+      { assignmentRequiredForReady: false, statelessLocationHolds: false },
+      null,
+      120,
+    );
+    const html = render();
+    expect(cardTitles(html)).toEqual([
+      "Profile incomplete",
+      "Submitted",
       "Ready for credentialing",
       "Credentialing",
     ]);
-    expect(html).toContain("xl:grid-cols-6");
-  });
-
-  it("renders the configured labels, gates and order", () => {
-    state.config = {
-      stages: [
-        {
-          key: "not_ready",
-          label: "Not ready",
-          description: "Anything short of Ready.",
-          gate: "not_ready",
-        },
-        {
-          key: "ready_for_credentialing",
-          label: "Ready to start",
-          description: "Ready for payer work.",
-          gate: "ready",
-        },
-        {
-          key: "credentialing",
-          label: "Credentialing",
-          description: "Has a case.",
-          gate: "has_case",
-        },
-      ],
-      rules: DEFAULT_ONBOARDING_FUNNEL_CONFIG.rules,
-      caqhAttestationWindowDays: 120,
-    };
-    const html = render();
-    expect(cardTitles(html)).toEqual(["Not ready", "Ready to start", "Credentialing"]);
-    expect(html).toContain("lg:grid-cols-3");
-    // Opens on the first stage that lists what is needed.
-    expect(html).toContain("Not ready · 3");
-    expect(html).toContain("No NPI");
-    expect(html).toContain("Needs a location");
-    expect(html).toContain("No group assigned yet");
-    expect(html).not.toContain("Submitted");
-    expect(DEFAULT_ONBOARDING_FUNNEL_STAGES[2].label).toBe("Submitted");
-  });
-
-  it("tags a provider past Invited whose invite is outstanding (A28)", () => {
-    state.intakeReadable = true;
-    const html = render("ready_for_credentialing");
-    expect(html).toContain("Cal Ready");
-    expect(html).toContain("Invite outstanding");
-    state.intakeReadable = false;
-    expect(render("ready_for_credentialing")).not.toContain("Invite outstanding");
+    expect(html).toContain("lg:grid-cols-4");
+    expect(html).not.toContain("xl:grid-cols-5");
   });
 });

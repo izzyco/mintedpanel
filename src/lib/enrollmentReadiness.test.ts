@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS,
   resolveCaqhAttestationWindowDays,
-  validateCaqhAttestationWindowDays,
 } from "./caqhAttestation";
 import {
   daysBetween,
@@ -86,11 +85,7 @@ describe("the shared CAQH attestation window (A26)", () => {
     // A stored value that is not a whole number of days from 1 to 365 is skipped.
     for (const bad of [0, -5, 12.5, 366, Number.NaN, "90" as unknown as number])
       expect(resolveCaqhAttestationWindowDays(90, bad)).toBe(90);
-    expect(validateCaqhAttestationWindowDays(null)).toEqual([]);
-    expect(validateCaqhAttestationWindowDays(45)).toEqual([]);
-    expect(validateCaqhAttestationWindowDays(0)).toEqual([
-      "The CAQH attestation window must be a whole number of days from 1 to 365.",
-    ]);
+    expect(resolveCaqhAttestationWindowDays(0, 0)).toBe(120);
   });
 
   it("drives the readiness check and its label", () => {

@@ -1,16 +1,13 @@
 // Provider Onboarding funnel (Oct 20 review, RC-06; stage names from the PM,
-// Oct 30 and 31). Provider stages from today's data, in the configured order
-// (src/lib/onboardingFunnel.ts; by default Profile incomplete, Submitted,
-// Verified awaiting assignment, Ready for credentialing, Credentialing, with
-// Invited first once the intake tables can be read). Labels and descriptions
-// come from the configuration. Click a stage to see who is in it and what
-// holds them there; a fact such as an outstanding invite shows as a tag
-// beside the name (A28). Credentialing is one stage, never split by case
+// Oct 30 and 31). Provider stages from today's data, in funnel order
+// (src/lib/onboardingFunnel.ts: Profile incomplete, Submitted, Verified
+// awaiting assignment, Ready for credentialing, Credentialing). Labels and
+// descriptions come from the configuration. Click a stage to see who is in it
+// and what holds them there. Credentialing is one stage, never split by case
 // status: that belongs on the case board. State filter only, per the Oct 19
 // Luna prep (no date range). Read-only.
 import { useMemo, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
-import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -37,16 +34,6 @@ import {
 
 const PAGE_SIZE = 100;
 
-/** Wide-screen columns by visible stage count; Tailwind needs literal class names. */
-const LG_COLUMNS: Readonly<Record<number, string>> = {
-  1: "lg:grid-cols-1",
-  2: "lg:grid-cols-2",
-  3: "lg:grid-cols-3",
-  4: "lg:grid-cols-4",
-  5: "lg:grid-cols-3 xl:grid-cols-5",
-  6: "lg:grid-cols-3 xl:grid-cols-6",
-};
-
 function percent(count: number, total: number): number {
   return total === 0 ? 0 : Math.round((count / total) * 100);
 }
@@ -54,11 +41,7 @@ function percent(count: number, total: number): number {
 export function OnboardingFunnelReport() {
   const { orgId, rows, stages, isLoading, isError, refetch } = useOnboardingFunnel();
   const [state, setState] = useState("");
-  // Opens on the first stage that lists what is needed (Profile incomplete
-  // by default); a stage the configuration no longer has falls back to it.
-  const firstStage = stages.find((entry) => entry.listsGaps)?.key ?? stages[0]?.key ?? "";
-  const [chosen, setStage] = useState<OnboardingFunnelStageKey>(firstStage);
-  const stage = stages.some((entry) => entry.key === chosen) ? chosen : firstStage;
+  const [stage, setStage] = useState<OnboardingFunnelStageKey>("profile_incomplete");
   const [shown, setShown] = useState({ key: "", count: PAGE_SIZE });
 
   const states = useMemo(() => onboardingFunnelStates(rows ?? []), [rows]);
@@ -72,7 +55,9 @@ export function OnboardingFunnelReport() {
   const visibleCount = shown.key === viewKey ? shown.count : PAGE_SIZE;
   const stageInfo = stages.find((entry) => entry.key === stage);
   const showGaps = stageInfo?.listsGaps ?? false;
-  const columns = LG_COLUMNS[stages.length] ?? "lg:grid-cols-4";
+  // Five cards: three across on a laptop, five from 1280px. Four (Verified,
+  // awaiting assignment hidden) fit one row.
+  const columns = stages.length === 4 ? "lg:grid-cols-4" : "lg:grid-cols-3 xl:grid-cols-5";
 
   if (!orgId) {
     return <EmptyState message="Select an organization to see provider onboarding." />;
@@ -190,14 +175,7 @@ export function OnboardingFunnelReport() {
                 <TableBody>
                   {inStage.slice(0, visibleCount).map((row) => (
                     <TableRow key={row.providerId}>
-                      <TableCell className="text-[13px] font-medium">
-                        <span className="inline-flex flex-wrap items-center gap-1.5">
-                          {row.name}
-                          {row.tags.map((tag) => (
-                            <StatusPill key={tag} status="neutral" label={tag} />
-                          ))}
-                        </span>
-                      </TableCell>
+                      <TableCell className="text-[13px] font-medium">{row.name}</TableCell>
                       <TableCell className="text-[12.5px] tabular-nums">
                         {row.npi ?? "Not recorded"}
                       </TableCell>

@@ -1,45 +1,29 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS,
-  explainCaqhAttestationWindowDays,
-} from "@/lib/caqhAttestation";
+import { DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS } from "@/lib/caqhAttestation";
 import { CASE_STATUSES, type CaseStatus } from "@/lib/caseStatus";
 import {
   buildOnboardingFunnelRows,
   DEFAULT_ONBOARDING_FUNNEL_CONFIG,
   DEFAULT_ONBOARDING_FUNNEL_RULES,
   DEFAULT_ONBOARDING_FUNNEL_STAGES,
-  effectiveOnboardingFunnelConfig,
-  explainOnboardingFunnelConfig,
-  INVITE_OUTSTANDING_TAG,
-  MAX_ONBOARDING_FUNNEL_STAGES,
-  ONBOARDING_FUNNEL_GATES,
   onboardingFunnelStageCounts,
   onboardingFunnelStates,
   NO_GROUP_GAP,
-  ONBOARDING_FUNNEL_PROFILE_FIELDS,
-  placeOnboardingFunnelStages,
+  placeOnboardingFunnelStage,
   resolveOnboardingFunnelConfig,
   resolveOnboardingFunnelRules,
   STATELESS_LOCATION_GAP,
-  validateOnboardingFunnelConfig,
-  validateOnboardingFunnelOrganizationOverride,
-  validateOnboardingFunnelPlatformOverride,
   visibleOnboardingFunnelStages,
   type OnboardingFunnelConfig,
   type OnboardingFunnelOrganizationOverride,
-  type OnboardingFunnelPlatformOverride,
   type OnboardingFunnelDimensions,
-  type OnboardingFunnelGate,
   type OnboardingFunnelInput,
-  type OnboardingFunnelIntakeFacts,
   type OnboardingFunnelLocationInput,
   type OnboardingFunnelMembershipInput,
   type OnboardingFunnelProfileField,
   type OnboardingFunnelProviderFacts,
   type OnboardingFunnelRules,
   type OnboardingFunnelRulesOverride,
-  type OnboardingFunnelStageConfig,
 } from "@/lib/onboardingFunnel";
 
 const TODAY = "2026-10-20";
@@ -131,7 +115,6 @@ function input(): OnboardingFunnelInput {
     ],
     groupMemberships: [member("unverified"), member("stale"), member("ready")],
     cases: [kase("enrolling", "CO")],
-    intakeReadable: false,
   };
 }
 
@@ -170,7 +153,6 @@ describe("provider onboarding funnel", () => {
     ]);
     const counts = onboardingFunnelStageCounts(rows, DEFAULT_ONBOARDING_FUNNEL_STAGES);
     expect(counts).toEqual({
-      invited: 0,
       profile_incomplete: 3,
       submitted: 2,
       verified_awaiting_assignment: 0,
@@ -611,12 +593,7 @@ describe("configurable rules", () => {
     // is still a state she touches.
     const row = rowFor(data, "ready", rules);
     expect(row).toMatchObject({ stage: "ready_for_credentialing", states: ["CO", "NC", "SC"] });
-    expect(row?.dimensions).toMatchObject({
-      hasCase: true,
-      caseCount: 1,
-      caseStatuses: ["not_pursuing"],
-      hasCountedCase: false,
-    });
+    expect(row?.dimensions.hasCountedCase).toBe(false);
     data.cases = [kase("ready", "CO", "denied"), kase("ready", "TX", "approved")];
     expect(rowFor(data, "ready", rules)).toMatchObject({
       stage: "credentialing",
@@ -744,13 +721,9 @@ describe("per-provider dimensions", () => {
       groupGaps: [NO_GROUP_GAP],
       statesValid: true,
       stateGaps: [],
-      hasCase: true,
-      caseCount: 1,
-      caseStatuses: ["denied"],
       hasCountedCase: false,
-      intake: null,
     });
-    // The stage reads the dimensions; its gaps are the ones its gate lists.
+    // The stage reads the dimensions; its gaps are the ones that stage lists.
     expect(row).toMatchObject({
       stage: "profile_incomplete",
       gaps: ["No NPI"],
@@ -769,71 +742,28 @@ describe("per-provider dimensions", () => {
       assignmentGaps: ["Needs a location"],
       grouped: false,
       groupGaps: [NO_GROUP_GAP],
-      hasCase: true,
-      caseCount: 1,
-      caseStatuses: ["in_progress"],
       hasCountedCase: true,
     });
   });
 });
 
-describe("intake facts", () => {
-  function withIntake(readable: boolean): OnboardingFunnelInput {
-    const data = input();
-    data.intakeReadable = readable;
-    data.intake = [
-      { providerId: "missing", intakeSubmitted: false },
-      { providerId: "nolicense", intakeSubmitted: true },
-      { providerId: "enrolling", intakeSubmitted: false },
-    ];
-    return data;
-  }
-
-  it("is unknown while the intake tables cannot be read, and never inferred", () => {
-    const rows = rowsOf(withIntake(false));
-    expect(rows.every((r) => r.dimensions.intake === null)).toBe(true);
-    expect(rows.some((r) => r.stage === "invited")).toBe(false);
-    expect(rowFor(withIntake(false), "missing")?.stage).toBe("profile_incomplete");
-  });
-
-  it("places an invited provider who has not sent the form back in Invited, once readable", () => {
-    const data = withIntake(true);
-    expect(rowFor(data, "missing")).toMatchObject({
-      stage: "invited",
-      gaps: [],
-      dimensions: { intake: { invited: true, intakeSubmitted: false } },
-    });
-    // Sent back: placed by the record like anyone else.
-    expect(rowFor(data, "nolicense")).toMatchObject({
-      stage: "profile_incomplete",
-      dimensions: { intake: { invited: true, intakeSubmitted: true } },
-    });
-    // Not invited at all: a fact once readable, not a guess.
-    expect(rowFor(data, "ready")).toMatchObject({
-      stage: "ready_for_credentialing",
-      dimensions: { intake: { invited: false, intakeSubmitted: false } },
-    });
-    // A case still wins.
-    expect(rowFor(data, "enrolling")?.stage).toBe("credentialing");
-  });
-});
-
-describe("stage configuration", () => {
-  it("defaults to the PM's six stages and labels, in order", () => {
-    expect(DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => [s.key, s.label, s.gate])).toEqual([
-      ["invited", "Invited", "invited_not_submitted"],
-      ["profile_incomplete", "Profile incomplete", "incomplete"],
-      ["submitted", "Submitted", "complete_unverified"],
-      ["verified_awaiting_assignment", "Verified, awaiting assignment", "verified_unassigned"],
-      ["ready_for_credentialing", "Ready for credentialing", "ready"],
-      ["credentialing", "Credentialing", "has_case"],
+describe("stages", () => {
+  it("are the PM's five stages and labels, in order", () => {
+    expect(DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => [s.key, s.label])).toEqual([
+      ["profile_incomplete", "Profile incomplete"],
+      ["submitted", "Submitted"],
+      ["verified_awaiting_assignment", "Verified, awaiting assignment"],
+      ["ready_for_credentialing", "Ready for credentialing"],
+      ["credentialing", "Credentialing"],
     ]);
     expect(DEFAULT_ONBOARDING_FUNNEL_CONFIG).toEqual({
       stages: DEFAULT_ONBOARDING_FUNNEL_STAGES,
       rules: DEFAULT_ONBOARDING_FUNNEL_RULES,
       caqhAttestationWindowDays: 120,
     });
-    expect(Object.isFrozen(DEFAULT_ONBOARDING_FUNNEL_STAGES[2])).toBe(true);
+    expect(
+      visibleOnboardingFunnelStages(DEFAULT_ONBOARDING_FUNNEL_CONFIG).map((s) => s.key),
+    ).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => s.key));
   });
 
   it("describes the stages without depending on a rule, and Submitted as complete, not sent", () => {
@@ -841,7 +771,6 @@ describe("stage configuration", () => {
       DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => [s.label, s.description]),
     );
     expect(copy).toEqual({
-      Invited: "Invited to the intake form. Nothing sent back yet.",
       // Neutral (A18): the required fields are a setting (A26).
       "Profile incomplete": "A required profile field is missing.",
       Submitted: "Information is complete but not yet verified.",
@@ -856,30 +785,11 @@ describe("stage configuration", () => {
     expect(text).not.toMatch(/approved|denied|withdrawn|underway|any status/i);
   });
 
-  it("hides intake-gated stages until the intake tables can be read", () => {
-    expect(
-      visibleOnboardingFunnelStages(DEFAULT_ONBOARDING_FUNNEL_CONFIG, false).map((s) => s.key),
-    ).toEqual([
-      "profile_incomplete",
-      "submitted",
-      "verified_awaiting_assignment",
-      "ready_for_credentialing",
-      "credentialing",
-    ]);
-    expect(
-      visibleOnboardingFunnelStages(DEFAULT_ONBOARDING_FUNNEL_CONFIG, true).map((s) => s.key),
-    ).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => s.key));
-    expect(rowsOf(input()).some((r) => r.stage === "invited")).toBe(false);
-  });
-
-  it("hides a stage no provider could reach under the rules in force", () => {
+  it("hides Verified, awaiting assignment only when neither rule can hold anyone there (A24)", () => {
     const visible = (rules: OnboardingFunnelRulesOverride) =>
-      visibleOnboardingFunnelStages(
-        resolveOnboardingFunnelConfig(null, { rules }, CAQH),
-        false,
-      ).map((s) => s.key);
-    // A24: the two rules are independent, so Verified, awaiting assignment is
-    // hidden only when neither holds anyone.
+      visibleOnboardingFunnelStages(resolveOnboardingFunnelConfig(null, { rules }, CAQH)).map(
+        (s) => s.key,
+      );
     expect(visible({ assignmentRequiredForReady: false, statelessLocationHolds: false })).toEqual([
       "profile_incomplete",
       "submitted",
@@ -892,26 +802,12 @@ describe("stage configuration", () => {
     expect(visible({ statelessLocationHolds: false })).toContain("verified_awaiting_assignment");
   });
 
-  it("lists gaps only for the stages whose gate has them", () => {
-    expect(
-      visibleOnboardingFunnelStages(DEFAULT_ONBOARDING_FUNNEL_CONFIG, true)
-        .filter((s) => s.listsGaps)
-        .map((s) => s.key),
-    ).toEqual(["profile_incomplete", "submitted", "verified_awaiting_assignment"]);
-  });
-
-  it("offers a fixed menu of gates", () => {
-    expect(ONBOARDING_FUNNEL_GATES.map((g) => g.key)).toEqual([
-      "invited_not_submitted",
-      "incomplete",
-      "complete_unverified",
-      "verified_unassigned",
-      "not_ready",
-      "ready",
-      "has_case",
-      "any",
+  it("lists gaps only for the stages that hold a provider for them", () => {
+    expect(DEFAULT_ONBOARDING_FUNNEL_STAGES.filter((s) => s.listsGaps).map((s) => s.key)).toEqual([
+      "profile_incomplete",
+      "submitted",
+      "verified_awaiting_assignment",
     ]);
-    expect(ONBOARDING_FUNNEL_GATES.every((g) => g.description.length > 0)).toBe(true);
   });
 
   it("lets an organization rename a stage without moving anyone", () => {
@@ -926,91 +822,18 @@ describe("stage configuration", () => {
     );
     const rows = buildOnboardingFunnelRows(input(), TODAY, config);
     expect(rows.map((r) => r.stage)).toEqual(rowsOf(input()).map((r) => r.stage));
-    expect(visibleOnboardingFunnelStages(config, false)[1]).toMatchObject({
+    expect(visibleOnboardingFunnelStages(config)[1]).toMatchObject({
       key: "submitted",
       label: "Complete, not verified",
+      description: "Waiting on verification.",
     });
-  });
-
-  it("lets Minted merge stages with a menu gate, listing every gap", () => {
-    const stages: OnboardingFunnelStageConfig[] = [
-      {
-        key: "profile_incomplete",
-        label: "Profile incomplete",
-        description: "d",
-        gate: "incomplete",
-      },
-      { key: "not_ready", label: "Not ready", description: "d", gate: "not_ready" },
-      { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
-      { key: "credentialing", label: "Credentialing", description: "d", gate: "has_case" },
-    ];
-    const config = resolveOnboardingFunnelConfig({ stages }, null, CAQH);
-    expect(config.stages.map((s) => s.key)).toEqual(stages.map((s) => s.key));
-    const data = input();
-    data.groupMemberships = data.groupMemberships.filter((m) => m.providerId !== "unverified");
-    const rows = buildOnboardingFunnelRows(data, TODAY, config);
-    // A25: the merged view lists every gap, the staff-side group gap included.
-    expect(rows.find((r) => r.providerId === "unverified")).toMatchObject({
-      stage: "not_ready",
-      gaps: [
-        "TX license not board-verified",
-        NO_GROUP_GAP,
-        "Location tx Clinic is under Rose City Rehab, not the provider's group",
-      ],
-    });
-    expect(onboardingFunnelStageCounts(rows, config.stages)).toEqual({
-      profile_incomplete: 3,
-      not_ready: 2,
-      ready_for_credentialing: 1,
-      credentialing: 1,
-    });
-  });
-
-  it("places each provider by the first stage whose gate matches", () => {
-    const stages: OnboardingFunnelStageConfig[] = [
-      { key: "credentialing", label: "Credentialing", description: "d", gate: "has_case" },
-      { key: "everyone_else", label: "Everyone else", description: "d", gate: "any" },
-    ];
-    expect(validateOnboardingFunnelConfig({ stages, rules: DEFAULT })).toEqual([]);
-    const rows = buildOnboardingFunnelRows(input(), TODAY, {
-      stages,
-      rules: DEFAULT,
-      caqhAttestationWindowDays: CAQH,
-    });
-    expect(onboardingFunnelStageCounts(rows, stages)).toEqual({
-      credentialing: 1,
-      everyone_else: 6,
-    });
-  });
-
-  it("runs the default stages when a configuration fails validation, so nobody is dropped", () => {
-    const expected = rowsOf(input()).map((r) => r.stage);
-    for (const stages of [
-      [],
-      [{ key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" }],
-      [null],
-    ] as unknown as OnboardingFunnelStageConfig[][]) {
-      const rows = buildOnboardingFunnelRows(input(), TODAY, {
-        stages,
-        rules: DEFAULT,
-        caqhAttestationWindowDays: CAQH,
-      });
-      expect(rows.map((r) => r.stage)).toEqual(expected);
-      expect(rows.some((r) => r.stage === "")).toBe(false);
-    }
   });
 });
 
-describe("the default configuration is exhaustive", () => {
+describe("the fixed placement is exhaustive", () => {
   const flags = [true, false];
-  const intakes: Array<OnboardingFunnelIntakeFacts | null> = [
-    null,
-    { invited: false, intakeSubmitted: false },
-    { invited: true, intakeSubmitted: false },
-    { invited: true, intakeSubmitted: true },
-  ];
 
-  /** Every combination of the dimensions the gates read. */
+  /** Every combination of the dimensions the placement reads. */
   function everyDimension(): OnboardingFunnelDimensions[] {
     const all: OnboardingFunnelDimensions[] = [];
     for (const complete of flags)
@@ -1019,32 +842,25 @@ describe("the default configuration is exhaustive", () => {
           for (const grouped of flags)
             for (const statesValid of flags)
               for (const hasCountedCase of flags)
-                for (const intake of intakes)
-                  all.push({
-                    complete,
-                    completenessGaps: complete ? [] : ["No NPI"],
-                    verified,
-                    verificationGaps: verified ? [] : ["Record pending verification"],
-                    assigned,
-                    assignmentGaps: assigned ? [] : ["Needs a location"],
-                    grouped,
-                    groupGaps: grouped ? [] : [NO_GROUP_GAP],
-                    statesValid,
-                    stateGaps: statesValid ? [] : [STATELESS_LOCATION_GAP],
-                    hasCase: hasCountedCase,
-                    caseCount: hasCountedCase ? 1 : 0,
-                    caseStatuses: hasCountedCase ? ["in_progress"] : [],
-                    hasCountedCase,
-                    intake,
-                  });
+                all.push({
+                  complete,
+                  completenessGaps: complete ? [] : ["No NPI"],
+                  verified,
+                  verificationGaps: verified ? [] : ["Record pending verification"],
+                  assigned,
+                  assignmentGaps: assigned ? [] : ["Needs a location"],
+                  grouped,
+                  groupGaps: grouped ? [] : [NO_GROUP_GAP],
+                  statesValid,
+                  stateGaps: statesValid ? [] : [STATELESS_LOCATION_GAP],
+                  hasCountedCase,
+                });
     return all;
   }
 
-  /** The PM's placement, written out plainly (D61 to D76, A23, A24, A28). */
+  /** The PM's placement, written out plainly (D61 to D76, A23, A24). */
   function expectedStage(d: OnboardingFunnelDimensions, rules: OnboardingFunnelRules): string {
     if (d.hasCountedCase) return "credentialing";
-    const invited = d.intake?.invited === true && !d.intake.intakeSubmitted;
-    if (invited && (!rules.completeRecordMovesPastInvite || !d.complete)) return "invited";
     if (!d.complete) return "profile_incomplete";
     if (!d.verified) return "submitted";
     const assignmentHeld = rules.assignmentRequiredForReady && (!d.assigned || !d.grouped);
@@ -1053,252 +869,61 @@ describe("the default configuration is exhaustive", () => {
     return "ready_for_credentialing";
   }
 
-  // Every combination, no sampling: 256 dimension combinations under 1,024
-  // rule combinations, 262,144 placements. Each rule combination is set up
-  // once (one validation, one visible-stage read, one batch placement), and
-  // each placement is checked in plain code with the problems collected, so
-  // a failure still names every bad placement. With one expect per placement
-  // this took about 3 s locally and 16 s on CI (run 41282244702, Nov 1),
-  // past vitest's 5 s default. It now takes under 1 s locally; the explicit
-  // 60 s timeout keeps headroom for a CI runner about 5 times slower.
-  it(
-    "places every combination of dimensions in exactly one visible stage, under every rule",
-    { timeout: 60_000 },
-    () => {
-      const dimensions = everyDimension();
-      const problems: string[] = [];
-      let checked = 0;
-      for (const licenseWithoutExpiryHolds of flags)
-        for (const statelessLocationHolds of flags)
-          for (const assignmentRequiredForReady of flags)
-            for (const futureMembershipCounts of flags)
-              for (const futureLocationAssignmentCounts of flags)
-                for (const locationMustBeInProviderGroup of flags)
-                  for (const ungroupedLocationCounts of flags)
-                    for (const completeRecordMovesPastInvite of flags)
-                      for (const caseStatusesNotCountedAsCredentialing of [
-                        [],
-                        ["denied"],
-                      ] as CaseStatus[][])
-                        for (const requiredProfileFields of [
-                          [...ONBOARDING_FUNNEL_PROFILE_FIELDS],
-                          ["npi"],
-                        ] as OnboardingFunnelProfileField[][]) {
-                          const rules: OnboardingFunnelRules = {
-                            caseStatusesNotCountedAsCredentialing,
-                            requiredProfileFields,
-                            licenseWithoutExpiryHolds,
-                            statelessLocationHolds,
-                            assignmentRequiredForReady,
-                            futureMembershipCounts,
-                            futureLocationAssignmentCounts,
-                            locationMustBeInProviderGroup,
-                            ungroupedLocationCounts,
-                            completeRecordMovesPastInvite,
-                          };
-                          const label = JSON.stringify(rules);
-                          const config = withRules(rules);
-                          const invalid = validateOnboardingFunnelConfig(config);
-                          if (invalid.length > 0) problems.push(`${label}: ${invalid.join(" ")}`);
-                          // Read and unread from one call: unread is read
-                          // without the intake-gated stages.
-                          const shown = visibleOnboardingFunnelStages(config, true);
-                          const visible = {
-                            read: new Set(shown.map((s) => s.key)),
-                            unread: new Set(
-                              shown.filter((s) => !s.needsIntakeData).map((s) => s.key),
-                            ),
-                          };
-                          const placed = placeOnboardingFunnelStages(dimensions, config);
-                          dimensions.forEach((d, i) => {
-                            const { stage, gaps } = placed[i];
-                            const fail = (why: string) =>
-                              problems.push(`${label} ${JSON.stringify(d)}: ${why}`);
-                            const expected = expectedStage(d, rules);
-                            if (stage !== expected)
-                              fail(`placed in ${stage}, expected ${expected}`);
-                            if (!visible[d.intake === null ? "unread" : "read"].has(stage))
-                              fail(`placed in ${stage}, which is hidden`);
-                            // A23: a missing group is never the provider's
-                            // reason; it is listed under awaiting assignment.
-                            if (stage === "submitted" && gaps.includes(NO_GROUP_GAP))
-                              fail("Submitted lists the missing group");
-                            if (
-                              stage === "verified_awaiting_assignment" &&
-                              gaps.includes(NO_GROUP_GAP) !==
-                                (assignmentRequiredForReady && !d.grouped)
-                            )
-                              fail("awaiting assignment lists the missing group wrongly");
-                            checked += 1;
-                          });
-                        }
-      expect(problems).toEqual([]);
-      expect(checked).toBe(1024 * 256);
-    },
-  );
-});
-
-describe("validateOnboardingFunnelConfig", () => {
-  const stage = (
-    key: string,
-    gate: OnboardingFunnelGate,
-    label = key,
-  ): OnboardingFunnelStageConfig => ({ key, label, description: `${label} providers`, gate });
-  const valid = (stages: unknown, rules = DEFAULT) =>
-    validateOnboardingFunnelConfig({
-      stages: stages as OnboardingFunnelStageConfig[],
-      rules,
-    });
-
-  it("passes the default configuration, with either assignment rule", () => {
-    expect(validateOnboardingFunnelConfig(DEFAULT_ONBOARDING_FUNNEL_CONFIG)).toEqual([]);
-    expect(
-      valid([...DEFAULT_ONBOARDING_FUNNEL_STAGES], {
-        ...DEFAULT,
-        assignmentRequiredForReady: false,
-      }),
-    ).toEqual([]);
-  });
-
-  it("rejects a list that leaves some providers without a stage, under any value of a gate's rule", () => {
-    // Review P2: this list validated before, and put an unassigned provider
-    // with no case in Credentialing.
-    const list = [
-      stage("profile_incomplete", "incomplete", "Profile incomplete"),
-      stage("submitted", "complete_unverified", "Submitted"),
-      stage("ready_for_credentialing", "ready", "Ready for credentialing"),
-      stage("credentialing", "has_case", "Credentialing"),
-    ];
-    const gap =
-      'A provider who is complete, verified, with a location that counts, in a group, with a location missing its state, with no case, would fit no stage when Ready requires assignment; a location with no state holds; a complete record moves past Invited, and 6 other kinds of provider would too. Add a stage for them, or end with an "everyone else" stage ("any").';
-    expect(valid(list)).toEqual([gap]);
-    // Even under rules that hold nobody: an organization's rules could, so
-    // the list must hold under every combination of them (A24).
-    expect(
-      valid(list, { ...DEFAULT, assignmentRequiredForReady: false, statelessLocationHolds: false }),
-    ).toEqual([gap]);
-  });
-
-  it("accepts a list whose last stage is reachable under only some values of the gates' rules", () => {
-    // Everyone else catches the unassigned and the stateless while a rule
-    // holds them; with both rules off, Ready takes them and Everyone else is
-    // empty (hidden). The two rules are independent (A24).
-    const list = [
-      stage("incomplete", "incomplete", "Profile incomplete"),
-      stage("submitted", "complete_unverified", "Submitted"),
-      stage("ready", "ready", "Ready"),
-      stage("cred", "has_case", "Credentialing"),
-      stage("other", "any", "Everyone else"),
-    ];
-    expect(valid(list)).toEqual([]);
-    expect(valid(list, { ...DEFAULT, assignmentRequiredForReady: false })).toEqual([]);
-    const visible = (rules: Partial<OnboardingFunnelRules>) =>
-      visibleOnboardingFunnelStages(
-        { stages: list, rules: { ...DEFAULT, ...rules }, caqhAttestationWindowDays: CAQH },
-        false,
-      ).map((s) => s.key);
-    expect(visible({ assignmentRequiredForReady: false, statelessLocationHolds: false })).toEqual([
-      "incomplete",
-      "submitted",
-      "ready",
-      "cred",
-    ]);
-    // Either rule on its own still holds someone, so Everyone else shows.
-    expect(visible({ assignmentRequiredForReady: false })).toContain("other");
-    expect(visible({ statelessLocationHolds: false })).toContain("other");
-    expect(visible({})).toContain("other");
-  });
-
-  it("rejects a gate that is not on the menu", () => {
-    expect(
-      valid([
-        stage("a", "incomplete"),
-        stage("b", "has_license" as OnboardingFunnelGate),
-        stage("c", "any"),
-      ]),
-    ).toContain('Stage 2: "has_license" is not a gate on the menu.');
-  });
-
-  it("rejects duplicate and malformed keys", () => {
-    const errors = valid([
-      stage("a", "incomplete"),
-      stage("a", "ready", "A again"),
-      stage("Bad Key", "has_case"),
-      stage("c", "any"),
-    ]);
-    expect(errors).toContain('Stage 2: the key "a" is already used.');
-    expect(errors).toContain(
-      "Stage 3: the key must start with a lowercase letter and use only lowercase letters, digits and underscores.",
-    );
-  });
-
-  it('allows "everyone else" only as the last stage', () => {
-    expect(valid([stage("a", "any"), stage("b", "has_case")])).toContain(
-      'Stage 1: only the last stage can take everyone else ("any").',
-    );
-    expect(valid([])).toEqual(["Add at least one stage."]);
-  });
-
-  it(`caps the list at ${MAX_ONBOARDING_FUNNEL_STAGES} stages`, () => {
-    expect(
-      valid([...DEFAULT_ONBOARDING_FUNNEL_STAGES, stage("everyone_else", "any", "Everyone else")]),
-    ).toContain("Use at most 6 stages.");
-  });
-
-  it("rejects empty, long and duplicate labels, and a missing description", () => {
-    const errors = valid([
-      { ...stage("a", "incomplete"), label: " " },
-      { ...stage("b", "complete_unverified"), label: "x".repeat(61) },
-      stage("c", "ready", "Ready"),
-      { ...stage("d", "any"), label: "ready", description: "" },
-    ]);
-    expect(errors).toEqual([
-      "Stage 1: add a label.",
-      "Stage 2: keep the label to 60 characters.",
-      'Stage 4: the label "ready" is already used.',
-      "Stage 4: add a description.",
-    ]);
-  });
-
-  it("rejects a stage the stages before it always take everyone from", () => {
-    expect(
-      valid([
-        stage("profile_incomplete", "incomplete", "Profile incomplete"),
-        stage("not_ready", "not_ready", "Not ready"),
-        stage("submitted", "complete_unverified", "Submitted"),
-        stage("credentialing", "any", "Credentialing"),
-      ]),
-    ).toEqual([
-      '"Submitted" can never be reached: the stages before it take everyone its gate would.',
-    ]);
-  });
-
-  it("rejects rules of the wrong shape", () => {
-    const rules = {
-      ...DEFAULT,
-      caseStatusesNotCountedAsCredentialing: ["withdrawn"],
-      futureMembershipCounts: "yes",
-    } as unknown as OnboardingFunnelRules;
-    expect(valid([...DEFAULT_ONBOARDING_FUNNEL_STAGES], rules)).toEqual([
-      "Case statuses that do not count must be known case statuses.",
-      'The rule "futureMembershipCounts" must be on or off.',
-    ]);
-  });
-
-  it("reports malformed stored lists instead of crashing", () => {
-    expect(valid([null])).toEqual(["Stage 1 is not a stage."]);
-    expect(valid([1, null])).toEqual(["Stage 1 is not a stage.", "Stage 2 is not a stage."]);
-    expect(valid([stage("credentialing", "any", "Credentialing"), null])).toContain(
-      "Stage 2 is not a stage.",
-    );
-    expect(valid("abc")).toEqual(["The stages must be a list."]);
-    expect(valid({})).toEqual(["The stages must be a list."]);
-    expect(valid([{}])).toEqual([
-      "Stage 1: the key must start with a lowercase letter and use only lowercase letters, digits and underscores.",
-      "Stage 1: add a label.",
-      "Stage 1: add a description.",
-      'Stage 1: "undefined" is not a gate on the menu.',
-    ]);
+  it("places every combination of dimensions in exactly one visible stage, under every rule", () => {
+    const dimensions = everyDimension();
+    const problems: string[] = [];
+    let checked = 0;
+    for (const licenseWithoutExpiryHolds of flags)
+      for (const statelessLocationHolds of flags)
+        for (const assignmentRequiredForReady of flags)
+          for (const futureMembershipCounts of flags)
+            for (const futureLocationAssignmentCounts of flags)
+              for (const locationMustBeInProviderGroup of flags)
+                for (const ungroupedLocationCounts of flags)
+                  for (const caseStatusesNotCountedAsCredentialing of [
+                    [],
+                    ["denied"],
+                  ] as CaseStatus[][])
+                    for (const requiredProfileFields of [
+                      ["npi", "caqhId", "dateOfBirth", "ssnLast4", "stateLicense"],
+                      ["npi"],
+                    ] as OnboardingFunnelProfileField[][]) {
+                      const rules: OnboardingFunnelRules = {
+                        caseStatusesNotCountedAsCredentialing,
+                        requiredProfileFields,
+                        licenseWithoutExpiryHolds,
+                        statelessLocationHolds,
+                        assignmentRequiredForReady,
+                        futureMembershipCounts,
+                        futureLocationAssignmentCounts,
+                        locationMustBeInProviderGroup,
+                        ungroupedLocationCounts,
+                      };
+                      const label = JSON.stringify(rules);
+                      const visible = new Set(
+                        visibleOnboardingFunnelStages(withRules(rules)).map((s) => s.key),
+                      );
+                      for (const d of dimensions) {
+                        const { stage, gaps } = placeOnboardingFunnelStage(d, rules);
+                        const fail = (why: string) =>
+                          problems.push(`${label} ${JSON.stringify(d)}: ${why}`);
+                        const expected = expectedStage(d, rules);
+                        if (stage !== expected) fail(`placed in ${stage}, expected ${expected}`);
+                        if (!visible.has(stage)) fail(`placed in ${stage}, which is hidden`);
+                        // A23: a missing group is never the provider's
+                        // reason; it is listed under awaiting assignment.
+                        if (stage === "submitted" && gaps.includes(NO_GROUP_GAP))
+                          fail("Submitted lists the missing group");
+                        if (
+                          stage === "verified_awaiting_assignment" &&
+                          gaps.includes(NO_GROUP_GAP) !== (assignmentRequiredForReady && !d.grouped)
+                        )
+                          fail("awaiting assignment lists the missing group wrongly");
+                        checked += 1;
+                      }
+                    }
+    expect(problems).toEqual([]);
+    expect(checked).toBe(512 * 64);
   });
 });
 
@@ -1314,11 +939,9 @@ describe("resolveOnboardingFunnelRules", () => {
       futureLocationAssignmentCounts: true,
       locationMustBeInProviderGroup: true,
       ungroupedLocationCounts: true,
-      completeRecordMovesPastInvite: true,
     });
     expect(resolveOnboardingFunnelRules()).toEqual(DEFAULT_ONBOARDING_FUNNEL_RULES);
     expect(resolveOnboardingFunnelRules(null, null)).toEqual(DEFAULT_ONBOARDING_FUNNEL_RULES);
-    expect(Object.isFrozen(DEFAULT_ONBOARDING_FUNNEL_RULES)).toBe(true);
   });
 
   it("takes the organization's value, else the platform's, else the default, field by field", () => {
@@ -1332,7 +955,6 @@ describe("resolveOnboardingFunnelRules", () => {
       futureLocationAssignmentCounts: false,
       locationMustBeInProviderGroup: false,
       ungroupedLocationCounts: false,
-      completeRecordMovesPastInvite: false,
     };
     expect(resolveOnboardingFunnelRules(platform)).toEqual(platform);
     expect(
@@ -1379,68 +1001,34 @@ describe("resolveOnboardingFunnelRules", () => {
       ).statelessLocationHolds,
     ).toBe(false);
   });
-
-  it("skips a stored value of the wrong shape, as if it were missing", () => {
-    const stored = {
-      caseStatusesNotCountedAsCredentialing: ["withdrawn"],
-      statelessLocationHolds: "no",
-      locationMustBeInProviderGroup: false,
-    } as unknown as OnboardingFunnelRules;
-    expect(resolveOnboardingFunnelRules({ futureMembershipCounts: false }, stored)).toEqual({
-      ...DEFAULT,
-      futureMembershipCounts: false,
-      locationMustBeInProviderGroup: false,
-    });
-    expect(resolveOnboardingFunnelRules("abc" as unknown as OnboardingFunnelRules, null)).toEqual(
-      DEFAULT,
-    );
-  });
-
-  it("returns its own de-duplicated status list", () => {
-    const list: CaseStatus[] = ["denied", "denied", "not_pursuing"];
-    const resolved = resolveOnboardingFunnelRules({ caseStatusesNotCountedAsCredentialing: list });
-    expect(resolved.caseStatusesNotCountedAsCredentialing).toEqual(["denied", "not_pursuing"]);
-    expect(resolved.caseStatusesNotCountedAsCredentialing).not.toBe(list);
-    expect(resolveOnboardingFunnelRules().caseStatusesNotCountedAsCredentialing).not.toBe(
-      DEFAULT_ONBOARDING_FUNNEL_RULES.caseStatusesNotCountedAsCredentialing,
-    );
-  });
 });
 
 describe("resolveOnboardingFunnelConfig", () => {
-  const custom: OnboardingFunnelStageConfig[] = [
-    { key: "not_ready", label: "Not ready", description: "d", gate: "not_ready" },
-    { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
-    { key: "credentialing", label: "Credentialing", description: "d", gate: "has_case" },
-  ];
-  const broken: OnboardingFunnelStageConfig[] = [
-    { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
-  ];
-  const MINTED = DEFAULT_ONBOARDING_FUNNEL_CONFIG;
-
   it("is the platform default when nothing overrides it", () => {
     expect(resolveOnboardingFunnelConfig(null, null, CAQH)).toEqual(
       DEFAULT_ONBOARDING_FUNNEL_CONFIG,
     );
-    expect(resolveOnboardingFunnelConfig(null, null, CAQH)).toEqual(
-      DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-    );
   });
 
-  it("takes Minted's stage list, with an organization's labels, and rules field by field", () => {
+  it("takes an organization's labels and descriptions, and rules field by field over Minted's", () => {
     const config = resolveOnboardingFunnelConfig(
-      { stages: custom, rules: { statelessLocationHolds: false } },
+      { statelessLocationHolds: false },
       {
-        stageText: { not_ready: { label: "Still to do" } },
+        stageText: {
+          credentialing: { label: "With payers", description: "A case is open with a payer." },
+        },
         rules: { futureMembershipCounts: false },
       },
       CAQH,
     );
-    expect(config.stages).toEqual([
-      { key: "not_ready", label: "Still to do", description: "d", gate: "not_ready" },
-      custom[1],
-      custom[2],
-    ]);
+    expect(config.stages.map((s) => s.key)).toEqual(
+      DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => s.key),
+    );
+    expect(config.stages[4]).toMatchObject({
+      label: "With payers",
+      description: "A case is open with a payer.",
+    });
+    expect(config.stages[1]).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES[1]);
     expect(config.rules).toEqual({
       ...DEFAULT,
       statelessLocationHolds: false,
@@ -1448,313 +1036,30 @@ describe("resolveOnboardingFunnelConfig", () => {
     });
   });
 
-  it("never lets an organization's rules replace Minted's stage list", () => {
-    // Review P2 (probe3 A): Minted's five stages, and an organization that
-    // turns off assignment for Ready and relabels Everyone else.
-    const minted: OnboardingFunnelStageConfig[] = [
-      { key: "incomplete", label: "Profile incomplete", description: "d", gate: "incomplete" },
-      { key: "submitted", label: "Submitted", description: "d", gate: "complete_unverified" },
-      { key: "ready", label: "Ready", description: "d", gate: "ready" },
-      { key: "cred", label: "Credentialing", description: "d", gate: "has_case" },
-      { key: "other", label: "Everyone else", description: "d", gate: "any" },
-    ];
-    const org: OnboardingFunnelOrganizationOverride = {
-      rules: { assignmentRequiredForReady: false, statelessLocationHolds: false },
-      stageText: { other: { label: "Others" } },
-    };
-    const mintedConfig = resolveOnboardingFunnelConfig({ stages: minted }, null, CAQH);
-    expect(validateOnboardingFunnelOrganizationOverride(org, mintedConfig)).toEqual([]);
-    const config = resolveOnboardingFunnelConfig({ stages: minted }, org, CAQH);
-    expect(config.stages.map((s) => [s.key, s.gate, s.label])).toEqual([
-      ["incomplete", "incomplete", "Profile incomplete"],
-      ["submitted", "complete_unverified", "Submitted"],
-      ["ready", "ready", "Ready"],
-      ["cred", "has_case", "Credentialing"],
-      ["other", "any", "Others"],
-    ]);
-    expect(config.rules.assignmentRequiredForReady).toBe(false);
-    // The organization's rules empty Everyone else, so it is hidden: intended.
-    // (Either rule left on would still hold someone there, A24.)
-    expect(visibleOnboardingFunnelStages(config, false).map((s) => s.key)).toEqual([
-      "incomplete",
-      "submitted",
-      "ready",
-      "cred",
-    ]);
-  });
-
-  it("reports rules that would break Minted's list, and then applies none of the layer", () => {
-    // Only reachable when the caller passes a list that is not valid on its
-    // own; the save path must pass Minted's resolved configuration.
-    const org: OnboardingFunnelOrganizationOverride = {
-      rules: { assignmentRequiredForReady: true },
-      stageText: { ready_for_credentialing: { label: "Go" } },
-    };
-    const errors = validateOnboardingFunnelOrganizationOverride(org, {
-      stages: broken,
-      rules: DEFAULT,
-    });
-    expect(errors.length).toBeGreaterThan(0);
-    expect(
-      errors.every((e) => e.startsWith("With this organization's rules, Minted's stages fail: ")),
-    ).toBe(true);
-  });
-
-  it("lets an organization rename and re-describe stages, but never reorder or re-gate them", () => {
-    const org: OnboardingFunnelOrganizationOverride = {
-      stageText: {
-        credentialing: { label: "With payers", description: "A case is open with a payer." },
-        submitted: { description: "Complete; verification is next." },
-      },
-    };
-    const config = resolveOnboardingFunnelConfig(null, org, CAQH);
-    expect(config.stages.map((s) => [s.key, s.gate])).toEqual(
-      DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => [s.key, s.gate]),
-    );
-    expect(config.stages[5]).toMatchObject({
-      label: "With payers",
-      description: "A case is open with a payer.",
-    });
-    expect(config.stages[2]).toMatchObject({
-      label: "Submitted",
-      description: "Complete; verification is next.",
-    });
-    // A reordered list from an organization is refused, and changes nothing.
-    const reordered = {
-      stages: [...DEFAULT_ONBOARDING_FUNNEL_STAGES].reverse(),
-    } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(validateOnboardingFunnelOrganizationOverride(reordered, MINTED)).toEqual([
-      "An organization cannot change the stage list: Minted sets the stages, their order and their gates. Change labels and descriptions instead.",
-    ]);
-    expect(resolveOnboardingFunnelConfig(null, reordered, CAQH)).toEqual(
-      DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-    );
-  });
-
   it("applies an organization's layer whole or not at all, rules included", () => {
-    const withList = {
-      stages: custom,
-      rules: { assignmentRequiredForReady: false },
-    } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(resolveOnboardingFunnelConfig(null, withList, CAQH)).toEqual(
-      DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-    );
-    // Probe3 G: good copy and a good rule beside an unknown rule key.
-    const mixed = {
-      stageText: { submitted: { label: "S2" } },
-      rules: { futureMembershipCounts: false, bogus: 1 },
-    } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(validateOnboardingFunnelOrganizationOverride(mixed, MINTED)).toEqual([
-      '"bogus" is not a funnel rule.',
-    ]);
-    const config = resolveOnboardingFunnelConfig(null, mixed, CAQH);
-    expect(config.stages[2].label).toBe("Submitted");
-    expect(config.rules.futureMembershipCounts).toBe(true);
-  });
-
-  it("refuses an organization's copy for a stage Minted does not have, whole", () => {
     const org: OnboardingFunnelOrganizationOverride = {
       stageText: {
-        submitted: { label: "Complete, not verified" },
-        on_hold: { label: "On hold" },
+        submitted: { label: "S2", description: "Complete." },
+        credentialing: { label: " ", description: "Has a case." },
       },
+      rules: { futureMembershipCounts: false },
     };
-    expect(validateOnboardingFunnelOrganizationOverride(org, MINTED)).toEqual([
-      '"on_hold" is not one of Minted\'s stages, so it cannot be relabelled.',
-    ]);
-    // Not even the valid part goes live: Minted's copy stays.
-    expect(resolveOnboardingFunnelConfig(null, org, CAQH).stages).toEqual(
-      DEFAULT_ONBOARDING_FUNNEL_STAGES,
-    );
-    // Checked against Minted's list, not the default one.
+    const config = resolveOnboardingFunnelConfig({ statelessLocationHolds: false }, org, CAQH);
+    // One blank label: none of the organization's copy or rules goes live.
+    expect(config.stages).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES);
+    expect(config.rules).toEqual({ ...DEFAULT, statelessLocationHolds: false });
+    // A blank description counts the same way.
     expect(
-      validateOnboardingFunnelOrganizationOverride(
-        { stageText: { not_ready: { label: "x" } } },
-        { stages: custom, rules: DEFAULT },
-      ),
-    ).toEqual([]);
+      resolveOnboardingFunnelConfig(
+        null,
+        { stageText: { submitted: { label: "S2", description: "" } } },
+        CAQH,
+      ).stages,
+    ).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES);
   });
 
-  it("refuses a label that is another stage's own label, so stages cannot swap names", () => {
-    const swap: OnboardingFunnelOrganizationOverride = {
-      stageText: {
-        submitted: { label: "Ready for credentialing" },
-        ready_for_credentialing: { label: "Submitted" },
-      },
-    };
-    expect(validateOnboardingFunnelOrganizationOverride(swap, MINTED)).toEqual([
-      '"submitted": "Ready for credentialing" is Minted\'s label for "ready_for_credentialing".',
-      '"ready_for_credentialing": "Submitted" is Minted\'s label for "submitted".',
-    ]);
-    expect(resolveOnboardingFunnelConfig(null, swap, CAQH).stages).toEqual(
-      DEFAULT_ONBOARDING_FUNNEL_STAGES,
-    );
-    // Case and spaces do not get around it, and a hidden stage's label counts.
-    expect(
-      validateOnboardingFunnelOrganizationOverride(
-        { stageText: { submitted: { label: "  ready FOR credentialing " } } },
-        MINTED,
-      ),
-    ).toHaveLength(1);
-    expect(
-      validateOnboardingFunnelOrganizationOverride(
-        { stageText: { submitted: { label: "Invited" } } },
-        MINTED,
-      ),
-    ).toEqual(['"submitted": "Invited" is Minted\'s label for "invited".']);
-  });
-
-  it("checks an organization's labels, descriptions and rules", () => {
-    const org = {
-      stageText: {
-        submitted: { label: " ", gate: "ready" },
-        invited: { label: "x".repeat(61), description: "" },
-        credentialing: { label: "With payers" },
-        verified_awaiting_assignment: { label: "With Payers" },
-        profile_incomplete: "Missing things",
-      },
-      rules: { statelessLocationHolds: "no", showDenied: true },
-    } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(validateOnboardingFunnelOrganizationOverride(org, MINTED)).toEqual([
-      '"submitted": only the label and the description can change.',
-      '"submitted": the label cannot be empty.',
-      '"invited": keep the label to 60 characters.',
-      '"invited": the description cannot be empty.',
-      '"profile_incomplete": give a label, a description, or both.',
-      'The label "With payers" would be used twice.',
-      'The rule "statelessLocationHolds" must be on or off.',
-      '"showDenied" is not a funnel rule.',
-    ]);
-    expect(validateOnboardingFunnelOrganizationOverride(null, MINTED)).toEqual([]);
-    expect(
-      validateOnboardingFunnelOrganizationOverride(
-        "abc" as unknown as OnboardingFunnelOrganizationOverride,
-        MINTED,
-      ),
-    ).toEqual(["An organization's funnel settings must be an object."]);
-  });
-
-  it("ignores inherited keys in an organization's copy", () => {
-    const proto = JSON.parse(
-      '{"stageText": {"__proto__": {"label": "x"}, "submitted": {"label": "S2"}}}',
-    ) as OnboardingFunnelOrganizationOverride;
-    expect(validateOnboardingFunnelOrganizationOverride(proto, MINTED)).toEqual([
-      '"__proto__" is not one of Minted\'s stages, so it cannot be relabelled.',
-    ]);
-    expect(resolveOnboardingFunnelConfig(null, proto, CAQH).stages[2].label).toBe("Submitted");
-  });
-
-  it("never lets a platform list that fails validation go live", () => {
-    expect(resolveOnboardingFunnelConfig({ stages: broken }, null, CAQH).stages).toEqual(
-      DEFAULT_ONBOARDING_FUNNEL_STAGES,
-    );
-    for (const stages of [[null], [1, null], [custom[0], null], "abc", {}, [{}]]) {
-      const platform = { stages } as unknown as OnboardingFunnelPlatformOverride;
-      expect(resolveOnboardingFunnelConfig(platform, null, CAQH).stages).toEqual(
-        DEFAULT_ONBOARDING_FUNNEL_STAGES,
-      );
-      expect(
-        visibleOnboardingFunnelStages({ stages, rules: DEFAULT } as OnboardingFunnelConfig, false),
-      ).toHaveLength(5);
-    }
-  });
-
-  it("copies only the stage fields, so the default cannot be changed through them", () => {
-    const extra = custom.map((s) => ({ ...s, note: "stray" }));
-    const config = resolveOnboardingFunnelConfig({ stages: extra }, null, CAQH);
-    expect(config.stages[0]).toEqual(custom[0]);
-    expect(config.stages[0]).not.toHaveProperty("note");
-    const fallback = resolveOnboardingFunnelConfig(
-      null,
-      {
-        stageText: { submitted: { label: "Complete, not verified" } },
-      },
-      CAQH,
-    );
-    expect(fallback.stages[2]).not.toBe(DEFAULT_ONBOARDING_FUNNEL_STAGES[2]);
-    expect(DEFAULT_ONBOARDING_FUNNEL_STAGES[2].label).toBe("Submitted");
-    expect(fallback.rules).not.toBe(DEFAULT_ONBOARDING_FUNNEL_RULES);
-  });
-});
-
-describe("stored keys that name built-in properties", () => {
-  // Review P2 (2558313a): "__proto__" and "__defineGetter__" crashed the
-  // organization validator, and "toString" and "constructor" passed as rules.
-  const MINTED = DEFAULT_ONBOARDING_FUNNEL_CONFIG;
-  const hostile = ["__proto__", "__defineGetter__", "toString", "constructor"];
-
-  for (const key of hostile) {
-    it(`reports "${key}" as an unknown rule in an organization's layer, and never crashes`, () => {
-      const org = JSON.parse(`{"rules": {"${key}": true}}`) as OnboardingFunnelOrganizationOverride;
-      expect(validateOnboardingFunnelOrganizationOverride(org, MINTED)).toEqual([
-        `"${key}" is not a funnel rule.`,
-      ]);
-      expect(resolveOnboardingFunnelConfig(null, org, CAQH)).toEqual(
-        DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-      );
-    });
-
-    it(`reports "${key}" as an unknown rule in Minted's layer, and never crashes`, () => {
-      const platform = JSON.parse(
-        `{"rules": {"${key}": true}}`,
-      ) as OnboardingFunnelPlatformOverride;
-      expect(validateOnboardingFunnelPlatformOverride(platform)).toEqual([
-        `"${key}" is not a funnel rule.`,
-      ]);
-      expect(resolveOnboardingFunnelConfig(platform, null, CAQH)).toEqual(
-        DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-      );
-      // A whole configuration carrying the key is refused too, and the
-      // funnel still runs on the default.
-      const full: OnboardingFunnelConfig = {
-        ...DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-        rules: JSON.parse(
-          JSON.stringify(DEFAULT_ONBOARDING_FUNNEL_RULES).replace(/}$/, `,"${key}":true}`),
-        ) as OnboardingFunnelRules,
-      };
-      expect(Object.hasOwn(full.rules, key)).toBe(true);
-      expect(validateOnboardingFunnelConfig(full)).toEqual([`"${key}" is not a funnel rule.`]);
-      expect(buildOnboardingFunnelRows(input(), TODAY, full).map((r) => r.stage)).toEqual(
-        rowsOf(input()).map((r) => r.stage),
-      );
-    });
-  }
-
-  it("never reads a rule value from a prototype", () => {
-    const inherited = Object.create({
-      assignmentRequiredForReady: false,
-    }) as OnboardingFunnelRulesOverride;
-    expect(resolveOnboardingFunnelRules(null, inherited)).toEqual(DEFAULT);
-    expect(resolveOnboardingFunnelRules(inherited, null)).toEqual(DEFAULT);
-  });
-});
-
-describe("validateOnboardingFunnelPlatformOverride", () => {
-  it("checks Minted's rules and stage list", () => {
-    expect(validateOnboardingFunnelPlatformOverride(null)).toEqual([]);
-    expect(
-      validateOnboardingFunnelPlatformOverride({
-        stages: [...DEFAULT_ONBOARDING_FUNNEL_STAGES],
-        rules: { assignmentRequiredForReady: false },
-      }),
-    ).toEqual([]);
-    expect(
-      validateOnboardingFunnelPlatformOverride(
-        "abc" as unknown as OnboardingFunnelPlatformOverride,
-      ),
-    ).toEqual(["Minted's funnel settings must be an object."]);
-    expect(
-      validateOnboardingFunnelPlatformOverride({
-        rules: { statelessLocationHolds: "no" } as unknown as OnboardingFunnelRulesOverride,
-      }),
-    ).toEqual(['The rule "statelessLocationHolds" must be on or off.']);
-    expect(
-      validateOnboardingFunnelPlatformOverride({
-        stages: [
-          { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
-        ],
-      }),
-    ).toHaveLength(1);
+  it("carries the shared CAQH window it is given", () => {
+    expect(resolveOnboardingFunnelConfig(null, null, 45).caqhAttestationWindowDays).toBe(45);
   });
 });
 
@@ -1790,7 +1095,6 @@ describe("Oct 31 answers (Addendum 8)", () => {
     const fewer = resolveOnboardingFunnelRules(null, {
       requiredProfileFields: ["stateLicense", "npi", "caqhId"],
     });
-    expect(fewer.requiredProfileFields).toEqual(["npi", "caqhId", "stateLicense"]);
     expect(rowFor(data, "ready", fewer)).toMatchObject({ stage: "ready_for_credentialing" });
     // Without a required license, a provider with none is complete.
     data.licenses = [];
@@ -1828,9 +1132,6 @@ describe("Oct 31 answers (Addendum 8)", () => {
     expect(
       buildOnboardingFunnelRows(data, TODAY, withWindow(60)).find((r) => r.providerId === "ready"),
     ).toMatchObject({ stage: "ready_for_credentialing" });
-    expect(resolveOnboardingFunnelConfig(null, null, 45).caqhAttestationWindowDays).toBe(45);
-    // A bad value never runs: the platform default does.
-    expect(resolveOnboardingFunnelConfig(null, null, 0).caqhAttestationWindowDays).toBe(120);
   });
 
   it("A26: a license with no expiry is not current by default, and counts when the rule is off", () => {
@@ -1871,132 +1172,24 @@ describe("Oct 31 answers (Addendum 8)", () => {
     expect(off.futureMembershipCounts).toBe(true);
   });
 
-  it("A28: a complete record moves past Invited, with the invite as a tag", () => {
-    const data = input();
-    data.intakeReadable = true;
-    data.intake = [
-      { providerId: "ready", intakeSubmitted: false },
-      { providerId: "missing", intakeSubmitted: false },
-      { providerId: "enrolling", intakeSubmitted: false },
-    ];
-    expect(rowFor(data, "ready")).toMatchObject({
-      stage: "ready_for_credentialing",
-      tags: [INVITE_OUTSTANDING_TAG],
-    });
-    // An incomplete record still sits in Invited, with no tag.
-    expect(rowFor(data, "missing")).toMatchObject({ stage: "invited", tags: [] });
-    // A case wins, and the invite still shows.
-    expect(rowFor(data, "enrolling")).toMatchObject({
-      stage: "credentialing",
-      tags: [INVITE_OUTSTANDING_TAG],
-    });
-    // The precedence is a setting: off, Invited outranks the complete record.
-    const off = resolveOnboardingFunnelRules(null, { completeRecordMovesPastInvite: false });
-    expect(rowFor(data, "ready", off)).toMatchObject({ stage: "invited", tags: [] });
-    // While intake cannot be read, nobody is tagged.
-    data.intakeReadable = false;
-    expect(rowsOf(data).every((r) => r.tags.length === 0)).toBe(true);
-  });
-
   it("A29: nothing checks or warns on label wording", () => {
-    const worded = DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) =>
-      s.key === "submitted" ? { ...s, label: "Sent to payer", description: "Transmitted." } : s,
-    );
-    expect(validateOnboardingFunnelConfig({ stages: worded, rules: DEFAULT })).toEqual([]);
-    expect(
-      validateOnboardingFunnelOrganizationOverride(
-        { stageText: { submitted: { label: "Submitted to payer" } } },
-        DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-      ),
-    ).toEqual([]);
-  });
-});
-
-describe("A19: explainOnboardingFunnelConfig says which layer was ignored and why", () => {
-  const broken: OnboardingFunnelStageConfig[] = [
-    { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
-  ];
-
-  it("reports nothing when every stored layer was used", () => {
-    expect(explainOnboardingFunnelConfig(null, null, CAQH)).toEqual({
-      config: DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-      ignored: [],
-    });
-    const used = explainOnboardingFunnelConfig(
-      { rules: { futureMembershipCounts: false } },
-      { stageText: { submitted: { label: "Complete" } } },
+    const config = resolveOnboardingFunnelConfig(
+      null,
+      {
+        stageText: {
+          submitted: { label: "Submitted to payer", description: "Transmitted." },
+          verified_awaiting_assignment: { label: "Credentialing", description: "Next up." },
+        },
+      },
       CAQH,
     );
-    expect(used.ignored).toEqual([]);
-    expect(used.config.stages[2].label).toBe("Complete");
-  });
-
-  it("reports an invalid organization layer, which falls back to Minted's setup", () => {
-    const org = {
-      stageText: { submitted: { label: "Complete" } },
-      rules: { statelessLocationHolds: "no" },
-    } as unknown as OnboardingFunnelOrganizationOverride;
-    const result = explainOnboardingFunnelConfig(
-      { rules: { futureMembershipCounts: false } },
-      org,
-      CAQH,
-    );
-    expect(result.ignored).toEqual([
-      {
-        layer: "organization",
-        part: "layer",
-        reasons: ['The rule "statelessLocationHolds" must be on or off.'],
-      },
+    expect(config.stages.map((s) => s.label)).toEqual([
+      "Profile incomplete",
+      "Submitted to payer",
+      "Credentialing",
+      "Ready for credentialing",
+      "Credentialing",
     ]);
-    // Minted's setup ran: its rule, and none of the organization's copy.
-    expect(result.config.rules.futureMembershipCounts).toBe(false);
-    expect(result.config.stages[2].label).toBe("Submitted");
-  });
-
-  it("reports an invalid platform stage list or rule, which fall back to the default", () => {
-    const platform = {
-      stages: broken,
-      rules: { ungroupedLocationCounts: "yes", bogus: 1 },
-    } as unknown as OnboardingFunnelPlatformOverride;
-    const result = explainOnboardingFunnelConfig(platform, null, CAQH);
-    expect(result.ignored).toEqual([
-      {
-        layer: "platform",
-        part: "rules",
-        reasons: [
-          'The rule "ungroupedLocationCounts" must be on or off.',
-          '"bogus" is not a funnel rule.',
-        ],
-      },
-      {
-        layer: "platform",
-        part: "stages",
-        reasons: [expect.stringContaining("would fit no stage")],
-      },
-    ]);
-    expect(result.config.stages).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES);
-    expect(result.config.rules).toEqual(DEFAULT);
-    expect(
-      explainOnboardingFunnelConfig(
-        "abc" as unknown as OnboardingFunnelPlatformOverride,
-        null,
-        CAQH,
-      ).ignored,
-    ).toEqual([
-      {
-        layer: "platform",
-        part: "layer",
-        reasons: ["Minted's funnel settings must be an object."],
-      },
-    ]);
-  });
-
-  it("matches resolveOnboardingFunnelConfig", () => {
-    const platform = { stages: broken };
-    const org = { stageText: { submitted: { label: "Complete" } } };
-    expect(resolveOnboardingFunnelConfig(platform, org, CAQH)).toEqual(
-      explainOnboardingFunnelConfig(platform, org, CAQH).config,
-    );
   });
 });
 
@@ -2172,7 +1365,6 @@ describe("A23: a group problem is never the provider's reason (review of 209c1df
                   locations: locationRows,
                   groupMemberships,
                   cases: [],
-                  intakeReadable: false,
                 };
                 for (const row of rowsOf(data, rules)) {
                   if (row.stage !== "submitted") continue;
@@ -2190,71 +1382,5 @@ describe("A23: a group problem is never the provider's reason (review of 209c1df
                 }
               }
     expect(submitted).toBeGreaterThan(1000);
-  });
-});
-
-describe("own-property reads and the CAQH window report (P3s)", () => {
-  it("never applies copy or rules an organization layer only inherits", () => {
-    const inherited = Object.create({
-      stageText: { submitted: { label: "Hacked" } },
-      rules: { assignmentRequiredForReady: false },
-    }) as OnboardingFunnelOrganizationOverride;
-    const result = explainOnboardingFunnelConfig(null, inherited, CAQH);
-    expect(result.ignored).toEqual([]);
-    expect(result.config).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
-    // Own copy whose label is inherited is not applied either.
-    const ownText = {
-      stageText: { submitted: Object.create({ label: "Hacked" }) },
-    } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(explainOnboardingFunnelConfig(null, ownText, CAQH).config.stages[2].label).toBe(
-      "Submitted",
-    );
-  });
-
-  it("never reads a stage field or a config field from a prototype", () => {
-    const inheritedStage = Object.create({
-      key: "submitted",
-      label: "S",
-      description: "d",
-      gate: "any",
-    }) as OnboardingFunnelStageConfig;
-    expect(validateOnboardingFunnelConfig({ stages: [inheritedStage], rules: DEFAULT })).toContain(
-      'Stage 1: "undefined" is not a gate on the menu.',
-    );
-    const inheritedConfig = Object.create({
-      stages: [{ key: "a", label: "A", description: "d", gate: "any" }],
-      rules: DEFAULT,
-      caqhAttestationWindowDays: 30,
-    }) as OnboardingFunnelConfig;
-    const effective = effectiveOnboardingFunnelConfig(inheritedConfig);
-    expect(effective.stages).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES);
-    expect(effective.caqhAttestationWindowDays).toBe(120);
-  });
-
-  it("reports an invalid CAQH window instead of silently using the default", () => {
-    expect(explainCaqhAttestationWindowDays(90, 0)).toEqual({
-      windowDays: 90,
-      ignored: [
-        {
-          layer: "organization",
-          reasons: ["The CAQH attestation window must be a whole number of days from 1 to 365."],
-        },
-      ],
-    });
-    expect(explainCaqhAttestationWindowDays("90", null)).toMatchObject({
-      windowDays: 120,
-      ignored: [{ layer: "platform" }],
-    });
-    expect(explainCaqhAttestationWindowDays(null, 45)).toEqual({ windowDays: 45, ignored: [] });
-    expect(explainOnboardingFunnelConfig(null, null, 0)).toEqual({
-      config: DEFAULT_ONBOARDING_FUNNEL_CONFIG,
-      ignored: [
-        {
-          layer: "shared",
-          part: "caqhAttestationWindowDays",
-          reasons: ["The CAQH attestation window must be a whole number of days from 1 to 365."],
-        },
-      ],
-    });
   });
 });

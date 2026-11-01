@@ -3,10 +3,10 @@
 // completion, so a Luna-sized roster is never silently capped.
 //
 // The intake tables (provider_intake_invites and friends) are service-role
-// only (MINT-89), so this browser read cannot see them: intakeReadable is
-// false and the funnel hides its Invited stage.
+// only (MINT-89), so this browser read does not touch them, and the funnel
+// has no Invited stage until it can.
 //
-// Configuration (stages and rules): nothing stores a platform or organization
+// Configuration (labels and rules): nothing stores a platform or organization
 // override yet; the Mission Control setting is MINT-125. Until then the read
 // resolves to the platform default.
 //
@@ -161,7 +161,6 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> 
       state: text(row.state),
       status: isCaseStatus(row.case_status) ? row.case_status : null,
     })),
-    intakeReadable: false,
     // Platform default, no organization override: neither is stored yet
     // (MINT-125). The CAQH window is the setting shared with enrollment
     // readiness (A26), resolved the same way.

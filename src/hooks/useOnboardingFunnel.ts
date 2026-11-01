@@ -2,11 +2,9 @@
 // runs on the cached read with today's local date. The report refetches every
 // time it opens. Case creation also marks the key stale (not awaited); it is
 // deliberately NOT in the roster cache set, whose awaited "all" refetch would
-// make every provider write wait on this seven-table read. Invited shows only
-// once the read can see the intake tables (intakeReadable; MINT-89). The
-// funnel configuration (stages and rules) comes with the read, resolved for
-// the org; while it loads, the platform default stages show. A stage whose
-// gate cannot match under the org's rules is hidden.
+// make every provider write wait on this seven-table read. The funnel
+// configuration (labels and rules) comes with the read, resolved for the
+// org; while it loads, the platform default stages show.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
@@ -35,12 +33,8 @@ export function useOnboardingFunnel() {
         : undefined,
     [query.data],
   );
-  const intakeReadable = query.data?.intakeReadable ?? false;
   const config = query.data?.config ?? DEFAULT_ONBOARDING_FUNNEL_CONFIG;
-  const stages = useMemo(
-    () => visibleOnboardingFunnelStages(config, intakeReadable),
-    [config, intakeReadable],
-  );
+  const stages = useMemo(() => visibleOnboardingFunnelStages(config), [config]);
   return {
     orgId,
     rows,
