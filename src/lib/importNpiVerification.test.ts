@@ -1,8 +1,8 @@
 // MINT-110 PR 2 / MINT-119 — which import rows are checked against the NPI
 // Registry (both scopes), the quiet notes each row shows under each display
 // setting, that every row commits whatever the registry says (A30, A39–A41),
-// what is captured after commit (the registry's answers, facts only), and the
-// progress words (the time-left estimate and its fallback to "N of M").
+// what is captured after commit (the registry's answers, facts only, and the
+// run's NPI-less creates and unusable NPIs), and the progress words (the time-left estimate and its fallback to "N of M").
 // Pure; no network.
 import { describe, expect, it } from "vitest";
 import {
@@ -23,6 +23,7 @@ import {
   importNpiChecksKey,
   importNpiCommitWarning,
   importNpiProgressText,
+  importNpiRowChecks,
   importNpiRowResult,
   importNpiStatusText,
   selectImportNpiChecks,
@@ -37,7 +38,7 @@ import {
   NPI_REGISTRY_CHECKS,
   resolveNpiRegistryPolicy,
 } from "./npiRegistryPolicy";
-import { npiCheckDigit } from "./providerIdentity";
+import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE, npiCheckDigit } from "./providerIdentity";
 
 function fakeNpi(n: number): string {
   const first9 = `1${String(n).padStart(8, "0")}`;
@@ -293,8 +294,9 @@ describe("importNpiRowResult — every answer an advisory, never a block (A30)",
         policy: hidden,
         providerIdByLine: new Map([[item().line, "prov-1"]]),
       });
-      expect(captured.length).toBeGreaterThan(0);
-      expect(captured.every((a) => a.display === "backend_only")).toBe(true);
+      const advisories = captured.flatMap((row) => row.advisories);
+      expect(advisories.length).toBeGreaterThan(0);
+      expect(advisories.every((a) => a.display === "backend_only")).toBe(true);
     }
     // Only the hidden one: the row is quiet, not "Found".
     const nameOnly = resolveNpiRegistryPolicy(null, { display: { nameMismatch: "backend_only" } });
@@ -504,15 +506,17 @@ describe("importNpiCaptureAdvisories — the registry's answers, facts only", ()
     providerIdByLine,
   });
 
-  it("captures what the registry said about each committed row; rows not checked, skips and full matches add nothing", () => {
-    expect(captured.map((a) => [a.record.id, a.check])).toEqual([
-      ["prov-3", "npi_registry.name_mismatch"],
-      ["prov-4", "npi_registry.not_found"],
+  it("captures what the registry said about each committed row, by its line; rows not checked, skips and full matches add nothing", () => {
+    expect(
+      captured.map((row) => [row.line, row.advisories.map((a) => [a.record.id, a.check])]),
+    ).toEqual([
+      [3, [["prov-3", "npi_registry.name_mismatch"]]],
+      [4, [["prov-4", "npi_registry.not_found"]]],
     ]);
   });
 
   it("carries facts only: the check key and the provider — no value, name or registry data", () => {
-    for (const advisory of captured) {
+    for (const advisory of captured.flatMap((row) => row.advisories)) {
       expect(Object.keys(advisory).sort()).toEqual(
         ["check", "context", "display", "record", "whyItMatters"].sort(),
       );
@@ -545,6 +549,51 @@ describe("importNpiCaptureAdvisories — the registry's answers, facts only", ()
         snapshot: snap,
         policy: DEFAULT_NPI_REGISTRY_POLICY,
         providerIdByLine: new Map(),
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("importNpiRowChecks — the run's import NPI checks at commit", () => {
+  const RUN = "run-1";
+  const { dispositions } = mixedImport();
+  const plan = buildCommitPlan(dispositions, {});
+  // Creates come back in plan order: line 2 (an NPI), then line 7 (none).
+  const providerIdByLine = importCommitProviderIds(plan, {
+    createdProviderIds: ["p-new", "p-bare"],
+  });
+  const errorReport = [
+    { line: 9, column: "npi", reason: NPI_FORMAT_MESSAGE },
+    { line: 10, column: "caqh_id", reason: "CAQH must be 8 digits" },
+    { line: 11, column: "npi", reason: "Missing NPI — flagged for manual review" },
+  ];
+
+  it("records a blank-NPI create on its provider, and a row left out for its NPI on the run", () => {
+    expect(importNpiRowChecks({ runId: RUN, plan, errorReport, providerIdByLine })).toEqual([
+      { check: "import.npi_missing", record: { table: "providers", id: "p-bare" }, line: 7 },
+      // The dedupe's check-digit block (line 6) and the scan's ten-digit error (line 9).
+      { check: "import.npi_unusable", record: { table: "import_runs", id: RUN }, line: 6 },
+      { check: "import.npi_unusable", record: { table: "import_runs", id: RUN }, line: 9 },
+    ]);
+    expect(plan.blocked_entries).toContainEqual({
+      line: 6,
+      column: "npi",
+      reason: NPI_CHECK_DIGIT_MESSAGE,
+    });
+  });
+
+  it("names no provider it can't be sure of, and nothing for other errors", () => {
+    expect(
+      importNpiRowChecks({ runId: RUN, plan, errorReport: [], providerIdByLine: new Map() }),
+    ).toEqual([
+      { check: "import.npi_unusable", record: { table: "import_runs", id: RUN }, line: 6 },
+    ]);
+    expect(
+      importNpiRowChecks({
+        runId: RUN,
+        plan: { creates: [], blocked_entries: [] },
+        errorReport: errorReport.slice(1),
+        providerIdByLine,
       }),
     ).toEqual([]);
   });
