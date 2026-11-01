@@ -1,18 +1,8 @@
 // Shared constants, types, and validation for the Add Provider stepper.
 // Record edit uses a separate inline Identity path (EditProviderForm retired).
 import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
+import type { NpiRowOrigin } from "@/lib/npiRegistryFill";
 import { isKnownTaxonomyCode } from "@/lib/providerTaxonomy";
-import {
-  applyNpiLicenseRows,
-  isBlankField,
-  npiOfferTarget,
-  planNpiRegistryFill,
-  type NpiFillSummary,
-  type NpiPickTrace,
-  type NpiRowOrigin,
-} from "@/lib/npiRegistryFill";
-import type { NpiRegistryRecord } from "@/lib/npiRegistry";
-import type { NpiFillOnPick } from "@/lib/npiRegistryPolicy";
 
 // Re-export the single mastered state list (src/lib/usStates.ts) rather than
 // keep a second copy in sync — the provider forms import US_STATES from here.
@@ -110,13 +100,7 @@ export function validatePersonal(f: ProviderFormState): ProviderFormErrors {
   return e;
 }
 
-/** `registryBlock` is why the NPI Registry policy refuses this NPI
- * (useNpiRegistrySaveBlock), or null. Required, so no call site can forget
- * the policy; the shape and the check digit come first. */
-export function validateCredentials(
-  f: ProviderFormState,
-  registryBlock: string | null,
-): ProviderFormErrors {
+export function validateCredentials(f: ProviderFormState): ProviderFormErrors {
   const e: ProviderFormErrors = {};
   // Blank stays allowed (incomplete onboarding); an entered NPI must be ten
   // digits with the CMS check digit (MINT-7), the same rule as the roster
@@ -124,7 +108,6 @@ export function validateCredentials(
   // valid NPIs, and the type of an NPI is the registry's to say.
   if (f.npi && !NPI_DIGITS_RE.test(f.npi)) e.npi = NPI_FORMAT_MESSAGE;
   else if (f.npi && !isValidNpi(f.npi)) e.npi = NPI_CHECK_DIGIT_MESSAGE;
-  else if (f.npi && registryBlock) e.npi = registryBlock;
   if (!f.isNewGrad && f.caqhId && !CAQH_RE.test(f.caqhId)) e.caqhId = "CAQH must be 8 digits";
   // Soft gate: value must be one of the picker options (PT/PTA + dietitian).
   // Blank stays allowed; the Credentials step defaults to Physical Therapist.
@@ -133,119 +116,6 @@ export function validateCredentials(
   return e;
 }
 
-export function validateAll(
-  f: ProviderFormState,
-  registryBlock: string | null,
-): ProviderFormErrors {
-  return { ...validatePersonal(f), ...validateCredentials(f, registryBlock) };
-}
-
-/** The errors that stop the stepper leaving `step`. */
-export function validateProviderStep(
-  step: number,
-  f: ProviderFormState,
-  registryBlock: string | null,
-): ProviderFormErrors {
-  if (step === 1) return validatePersonal(f);
-  if (step === 2) return validateCredentials(f, registryBlock);
-  return {};
-}
-
-/** A license row nobody has touched: every field still empty. */
-export function isBlankLicenseRow(row: LicenseRow): boolean {
-  return [row.state, row.number, row.type, row.issueDate, row.expirationDate].every(isBlankField);
-}
-
-/** What Add Provider remembers beside its form state about NPI Registry
- * picks. Not in ProviderFormState: that maps one to one onto import columns
- * (importSections.ts). */
-export interface ProviderNpiPickContext {
-  /** Staff edited the field since the last pick wrote it (or at all), from
-   * user input only. A taxonomy staff never chose is the preset, a default
-   * nobody chose. */
-  touched: { credentials: boolean; taxonomyCode: boolean };
-  /** What the last pick wrote, or null before the first pick. */
-  lastPick: NpiPickTrace | null;
-}
-
-/** MINT-110: a picked NPI Registry match applied to the Add Provider form.
- * The NPI is set; at "blank_fields" credentials, the taxonomy and the number
- * of a license row whose state matches fill when blank. Blank includes the
- * untouched preset taxonomy and whatever the last pick wrote or added that
- * staff left alone; an untouched row added from the last pick's offer goes.
- * No license row is added: licenses not on the form come back as offers. */
-export function applyNpiRegistryPick(
-  form: ProviderFormState,
-  record: NpiRegistryRecord,
-  fillOnPick: NpiFillOnPick,
-  context: ProviderNpiPickContext,
-): { form: ProviderFormState; summary: NpiFillSummary; trace: NpiPickTrace } {
-  const plan = planNpiRegistryFill(
-    record,
-    {
-      npi: form.npi,
-      credentials: form.credentials,
-      credentialsTouched: context.touched.credentials,
-      taxonomyCode: form.taxonomyCode,
-      taxonomyTouched: context.touched.taxonomyCode,
-      taxonomyPreset: emptyProviderFormState.taxonomyCode,
-      licenses: form.licenses.map((row) => ({
-        state: row.state,
-        number: row.number,
-        origin: row.npiOrigin ?? null,
-        // Add Provider records no license verification.
-        numberLocked: false,
-      })),
-      // Add Provider saves a license row with any subset of its fields.
-      licenseRowSaveable: true,
-    },
-    fillOnPick,
-    context.lastPick,
-  );
-  return {
-    form: {
-      ...form,
-      npi: plan.npi,
-      credentials: plan.credentials ?? form.credentials,
-      taxonomyCode: plan.taxonomyCode ?? form.taxonomyCode,
-      licenses: applyNpiLicenseRows(
-        form.licenses,
-        plan,
-        (row, number, origin) => ({ ...row, number, npiOrigin: origin }),
-        emptyLicenseRow,
-      ),
-    },
-    summary: plan.summary,
-    trace: plan.trace,
-  };
-}
-
-/** Staff added an offered registry license: it fills the untouched empty row
- * when there is one, or a new row, marked as added from the pick (so the next
- * pick can take it back while it is untouched). Type and dates stay blank
- * (NPPES has no expiration date). When a row already holds that license
- * nothing is added, and `existing` names it. */
-export function addNpiLicenseOffer(
-  licenses: LicenseRow[],
-  offer: { state: string; number: string },
-): { licenses: LicenseRow[]; existing: number | null } {
-  const target = npiOfferTarget(licenses, offer, (row) => row, isBlankLicenseRow);
-  if ("existing" in target) return { licenses, existing: target.existing };
-  const filled = { state: offer.state, number: offer.number };
-  if ("append" in target) {
-    const added: LicenseRow = {
-      ...emptyLicenseRow(),
-      ...filled,
-      npiOrigin: { kind: "added", touched: false },
-    };
-    return { licenses: [...licenses, added], existing: null };
-  }
-  // Filling the empty row: taking it back later leaves the empty row again.
-  const origin: NpiRowOrigin = { kind: "added", touched: false, replacedEmpty: true };
-  return {
-    licenses: licenses.map((row, index) =>
-      index === target.fill ? { ...row, ...filled, npiOrigin: origin } : row,
-    ),
-    existing: null,
-  };
+export function validateAll(f: ProviderFormState): ProviderFormErrors {
+  return { ...validatePersonal(f), ...validateCredentials(f) };
 }

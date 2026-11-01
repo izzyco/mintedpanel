@@ -77,6 +77,7 @@ export function isBlankLicenseDraft(draft: LicenseDraft): boolean {
 export function addRegistryLicenseDraft(
   drafts: LicenseDraft[],
   offer: { state: string; number: string },
+  pulledAt: string,
 ): { licenses: LicenseDraft[]; existing: number | null } {
   const target = npiOfferTarget(
     drafts,
@@ -90,12 +91,12 @@ export function addRegistryLicenseDraft(
     const added: LicenseDraft = {
       ...EMPTY_LICENSE_DRAFT,
       ...filled,
-      npiOrigin: { kind: "added", touched: false },
+      npiOrigin: { kind: "added", touched: false, pulledAt },
     };
     return { licenses: [...drafts, added], existing: null };
   }
   // Filling the empty row: taking it back later leaves the empty row again.
-  const origin: NpiRowOrigin = { kind: "added", touched: false, replacedEmpty: true };
+  const origin: NpiRowOrigin = { kind: "added", touched: false, replacedEmpty: true, pulledAt };
   return {
     licenses: drafts.map((draft, index) =>
       index === target.fill ? { ...draft, ...filled, npiOrigin: origin } : draft,

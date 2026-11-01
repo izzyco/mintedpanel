@@ -17,7 +17,7 @@
 // note alone (NpiRegistryCheckNote) is also on the provider record's inline
 // edit. Composition of stock primitives, logged in DESIGN-DEBT.md.
 import { Fragment, useId, useRef, useState, type KeyboardEvent } from "react";
-import { CircleAlert, CircleCheck, Search, TriangleAlert } from "lucide-react";
+import { CircleCheck, Search, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StateSelect } from "@/components/StateSelect";
 import {
@@ -72,18 +72,12 @@ export function NpiVerificationNotice({
               aria-hidden="true"
               className="mt-px h-4 w-4 shrink-0 text-[var(--mp-warn-ink)]"
             />
-          ) : view.tone === "block" ? (
-            <CircleAlert aria-hidden="true" className="mt-px h-4 w-4 shrink-0 text-destructive" />
           ) : null}
           <p>
             <span
               className={cn(
                 "font-medium",
-                view.tone === "warn"
-                  ? "text-[var(--mp-warn-ink)]"
-                  : view.tone === "block"
-                    ? "text-destructive"
-                    : "text-foreground",
+                view.tone === "warn" ? "text-[var(--mp-warn-ink)]" : "text-foreground",
               )}
             >
               {view.title}
@@ -188,10 +182,9 @@ export interface NpiRegistryCheckNoteProps {
 }
 
 /** The registry check of an NPI field: the note under it, and a polite live
- * region that speaks when the result changes, when a name edit makes a
- * blocking answer start or stop blocking, and when `announcement` is new —
- * never on a keystroke that changes neither. Updated during render from the
- * previous key, so no effect is needed. */
+ * region that speaks when the result changes and when `announcement` is new —
+ * never on a name keystroke. Updated during render from the previous key, so
+ * no effect is needed. Never a block: a save never waits for the check. */
 export function NpiRegistryCheckNote({
   noticeId,
   npi,
@@ -207,9 +200,7 @@ export function NpiRegistryCheckNote({
     { firstName, lastName },
     policy,
   );
-  const blocked = view?.tone === "block";
-  const checkKey =
-    checkable === null ? "idle" : `${checkable}:${state.status}:${blocked ? "block" : "note"}`;
+  const checkKey = checkable === null ? "idle" : `${checkable}:${state.status}`;
   const eventKey = announcement?.key ?? null;
   const [announced, setAnnounced] = useState({ checkKey, eventKey, text: "" });
   if (announced.checkKey !== checkKey || announced.eventKey !== eventKey) {
@@ -233,16 +224,44 @@ export function NpiRegistryCheckNote({
   );
 }
 
+/** After a save, in view mode: the saved NPI's registry check, finishing in
+ * the background (A30). Quiet: it says nothing while the check runs or when
+ * the record matches, and shows a mismatch or an unreachable registry as a
+ * short note in a polite live region. */
+export function NpiRegistryQuietNote({
+  npi,
+  firstName,
+  lastName,
+  policy,
+}: {
+  npi: string;
+  firstName: string;
+  lastName: string;
+  policy: NpiRegistryPolicy;
+}) {
+  const noteId = useId();
+  const { view } = useNpiRegistryCheck(npi, true, { firstName, lastName }, policy);
+  return (
+    <div role="status" aria-live="polite">
+      {view && view.tone === "warn" ? <NpiVerificationNotice id={noteId} view={view} /> : null}
+    </div>
+  );
+}
+
 /** What the last pick did, the licenses staff may add, and the registry data
  * no field on the form holds. Not a live region: the check note announces a
  * pick and an added license once, politely. */
 export function NpiRegistryPickSummary({
   summary,
   onAddLicense,
+  onChooseTaxonomy,
 }: {
   summary: NpiFillSummary;
   /** Staff add an offered license; without it the offers are listed only. */
   onAddLicense?: (offer: NpiLicenseOffer) => void;
+  /** Staff choose one of several taxonomies (A35); without it they are
+   * listed only. */
+  onChooseTaxonomy?: (code: string) => void;
 }) {
   const titleId = useId();
   const cleared = npiFillClearedText(summary);
@@ -299,6 +318,35 @@ export function NpiRegistryPickSummary({
           </ul>
         </>
       ) : null}
+      {summary.taxonomyChoices.length > 0 ? (
+        <>
+          <p>
+            The registry lists several taxonomies and none as primary. Choose the one that applies:
+          </p>
+          <ul className="space-y-1">
+            {summary.taxonomyChoices.map((choice) => (
+              <li key={choice.code} className="flex items-center gap-2">
+                <span>
+                  <span className="font-mono">{choice.code}</span>
+                  {choice.description ? ` (${choice.description})` : ""}
+                </span>
+                {onChooseTaxonomy ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-[12px]"
+                    onClick={() => onChooseTaxonomy(choice.code)}
+                  >
+                    Use this taxonomy
+                    <span className="sr-only"> {choice.code}</span>
+                  </Button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
       {summary.details.length > 0 ? (
         <>
           <p className="text-muted-foreground">Shown for reference; not saved:</p>
@@ -334,15 +382,18 @@ export interface NpiRegistryAssistProps {
    * change and so the next pick can replace what this one wrote. */
   pick: NpiPickState | null;
   /** Apply a picked match (set the NPI, fill what the policy's fillOnPick
-   * allows, never a value of staff's) and remember it as the form's pick. */
-  onPick: (record: NpiRegistryRecord) => void;
+   * allows, never a value of staff's) and remember it as the form's pick,
+   * with when the registry data was pulled (ISO timestamp). */
+  onPick: (record: NpiRegistryRecord, pulledAt: string) => void;
   /** Staff add a license the pick offered: "exists" when a row already holds
    * it, and nothing was added. */
   onAddLicense: (offer: NpiLicenseOffer) => "added" | "exists";
+  /** Staff choose one of several taxonomies the pick listed (A35). */
+  onChooseTaxonomy: (code: string) => void;
   /** The verification note's id; the NPI input names it in aria-describedby. */
   noticeId: string;
-  /** The resolved NPI Registry policy (useNpiRegistryPolicy): which answers
-   * block, and what a pick fills. */
+  /** The resolved NPI Registry policy (useNpiRegistryPolicy): where each
+   * advisory shows, and what a pick fills. */
   policy: NpiRegistryPolicy;
 }
 
@@ -354,6 +405,7 @@ export function NpiRegistryAssist({
   pick,
   onPick,
   onAddLicense,
+  onChooseTaxonomy,
   noticeId,
   policy,
 }: NpiRegistryAssistProps) {
@@ -413,9 +465,25 @@ export function NpiRegistryAssist({
 
   const pickRecord = (record: NpiRegistryRecord) => {
     primeLookup(record);
-    onPick(record);
+    // A35's pull date: when the registry answered, which a cached answer
+    // keeps; else when this browser got the answer.
+    onPick(
+      record,
+      search.data?.pulledAt ?? new Date(search.dataUpdatedAt || Date.now()).toISOString(),
+    );
     setSubmitted(null);
     searchButton.current?.focus();
+  };
+
+  const chooseTaxonomy = (code: string) => {
+    onChooseTaxonomy(code);
+    const next = addCount + 1;
+    setAddCount(next);
+    setAnnouncement({
+      key: `add:${next}`,
+      text: `Taxonomy code set to ${code}.`,
+      withCheck: false,
+    });
   };
 
   const addLicense = (offer: NpiLicenseOffer) => {
@@ -477,7 +545,11 @@ export function NpiRegistryAssist({
       ) : null}
       {/* Shown while the form still holds the picked NPI. */}
       {pick && pick.npi === npi ? (
-        <NpiRegistryPickSummary summary={pick.summary} onAddLicense={addLicense} />
+        <NpiRegistryPickSummary
+          summary={pick.summary}
+          onAddLicense={addLicense}
+          onChooseTaxonomy={chooseTaxonomy}
+        />
       ) : null}
     </div>
   );

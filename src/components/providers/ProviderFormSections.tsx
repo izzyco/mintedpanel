@@ -15,12 +15,17 @@ import {
 import { Field, FieldLabel } from "@/components/providers/FormField";
 import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
 import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
+import { addNpiLicenseOffer, applyNpiRegistryPick } from "@/components/providers/providerNpiPick";
+import {
+  npiOffersOnForm,
+  npiRegistrySourceLabel,
+  touchNpiRowOrigin,
+  type NpiPickState,
+} from "@/lib/npiRegistryFill";
 
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import {
   US_STATES,
-  addNpiLicenseOffer,
-  applyNpiRegistryPick,
   emptyLicenseRow,
   type LicenseRow,
   type ProviderFormErrors,
@@ -30,7 +35,6 @@ import {
 import { stripNpiSeparators } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { PROVIDER_GENDER_OPTIONS, PROVIDER_GENDER_UNSET_VALUE } from "@/lib/providerGender";
-import { npiOffersOnForm, touchNpiRowOrigin, type NpiPickState } from "@/lib/npiRegistryFill";
 
 interface SectionProps {
   form: ProviderFormState;
@@ -38,17 +42,40 @@ interface SectionProps {
   update: UpdateProviderField;
 }
 
-export function PersonalSection({ form, errors, update }: SectionProps) {
+/** MINT-110 (A35): whether Credentials and the taxonomy still hold what a
+ * pick filled, untouched, and the "From NPI Registry, <date>" they show until
+ * the review step confirms them. Null before any pick. (A license row carries
+ * its own pull date on npiOrigin.) */
+export type RegistrySource = {
+  label: string;
+  credentials: boolean;
+  taxonomyCode: boolean;
+} | null;
+
+export function PersonalSection({
+  form,
+  errors,
+  update,
+  registrySource,
+}: SectionProps & { registrySource: RegistrySource }) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <Field label="First name" error={errors.firstName}>
-        <Input value={form.firstName} onChange={(e) => update("firstName", e.target.value)} />
+        <Input
+          data-review-field="firstName"
+          value={form.firstName}
+          onChange={(e) => update("firstName", e.target.value)}
+        />
       </Field>
       <Field label="Last name" error={errors.lastName}>
         <Input value={form.lastName} onChange={(e) => update("lastName", e.target.value)} />
       </Field>
-      <Field label="Credentials">
+      <Field
+        label="Credentials"
+        helper={registrySource?.credentials ? registrySource.label : undefined}
+      >
         <Input
+          data-review-field="credentials"
           placeholder="PT, DPT"
           value={form.credentials}
           onChange={(e) => update("credentials", e.target.value)}
@@ -121,6 +148,9 @@ export interface CredentialsNpiProps {
   touched: { credentials: boolean; taxonomyCode: boolean };
   /** Set the form and the pick together, marking nothing as staff's. */
   applyNpi: (form: ProviderFormState, pick: NpiPickState | null) => void;
+  /** The preset taxonomy applied for the group (A32). */
+  taxonomyPreset: string;
+  registrySource: RegistrySource;
 }
 
 export function CredentialsSection({
@@ -131,7 +161,7 @@ export function CredentialsSection({
 }: SectionProps & { npi: CredentialsNpiProps }) {
   const npiNoticeId = useId();
   const npiPolicy = useNpiRegistryPolicy();
-  const { npiPick, touched, applyNpi } = npi;
+  const { npiPick, touched, applyNpi, taxonomyPreset, registrySource } = npi;
   // Whether each offer is on the form is read from the rows, so a removed row
   // can be added again.
   const shownPick = npiPick
@@ -141,6 +171,7 @@ export function CredentialsSection({
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
       <Field label="NPI" error={errors.npi}>
         <Input
+          data-review-field="npi"
           inputMode="numeric"
           maxLength={20}
           aria-describedby={npiNoticeId}
@@ -155,22 +186,31 @@ export function CredentialsSection({
           lastName={form.lastName}
           verify
           pick={shownPick}
-          onPick={(record) => {
+          onPick={(record, pulledAt) => {
             // Credentials (Personal) and licenses (Licenses) live on other
             // steps; the summary under the search names what changed.
             const next = applyNpiRegistryPick(form, record, npiPolicy.fillOnPick, {
               touched,
               lastPick: npiPick?.trace ?? null,
+              taxonomyPreset,
+              pulledAt,
             });
             applyNpi(next.form, {
               seq: (npiPick?.seq ?? 0) + 1,
               npi: record.npi,
               trace: next.trace,
               summary: next.summary,
+              pulledAt,
             });
           }}
+          // One of several taxonomies (A35): staff chose it, so it is theirs.
+          onChooseTaxonomy={(code) => update("taxonomyCode", code)}
           onAddLicense={(offer) => {
-            const next = addNpiLicenseOffer(form.licenses, offer);
+            const next = addNpiLicenseOffer(
+              form.licenses,
+              offer,
+              npiPick?.pulledAt ?? new Date().toISOString(),
+            );
             if (next.existing !== null) return "exists";
             applyNpi({ ...form, licenses: next.licenses }, npiPick);
             return "added";
@@ -215,7 +255,11 @@ export function CredentialsSection({
       <Field
         label="Taxonomy code"
         error={errors.taxonomyCode}
-        helper="NUCC taxonomy for this provider's specialty"
+        helper={
+          registrySource?.taxonomyCode
+            ? registrySource.label
+            : "NUCC taxonomy for this provider's specialty"
+        }
       >
         {(control) => (
           <Select
@@ -223,7 +267,7 @@ export function CredentialsSection({
             // The stepper's update marks the taxonomy as chosen by staff.
             onValueChange={(v) => update("taxonomyCode", v)}
           >
-            <SelectTrigger aria-label="Taxonomy code" {...control}>
+            <SelectTrigger aria-label="Taxonomy code" data-review-field="taxonomyCode" {...control}>
               <SelectValue placeholder="Select taxonomy" />
             </SelectTrigger>
             <SelectContent>
@@ -291,9 +335,17 @@ export function LicensesSection({ form, errors, update }: SectionProps) {
             <div className="md:col-span-3">
               <FieldLabel>License number</FieldLabel>
               <Input
+                data-review-field={`licenseNumber-${i}`}
                 value={row.number}
                 onChange={(e) => updateRow(i, { number: e.target.value })}
               />
+              {/* MINT-110 (A35): a number or row an NPI Registry pick filled or
+                  added says so until staff edit it. */}
+              {row.npiOrigin && !row.npiOrigin.touched && row.npiOrigin.pulledAt ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {npiRegistrySourceLabel(row.npiOrigin.pulledAt)}
+                </p>
+              ) : null}
             </div>
             <div className="md:col-span-2">
               <FieldLabel>Type</FieldLabel>

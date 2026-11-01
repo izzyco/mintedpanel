@@ -10,8 +10,11 @@ import {
   formatRegistryAddress,
   npiFillAnnouncement,
   npiOffersOnForm,
+  npiRegistrySourceLabel,
+  npiRegistrySourcedFields,
   planNpiRegistryFill,
   touchNpiRowOrigin,
+  type NpiPickState,
   type NpiFillForm,
   type NpiFillLicenseRow,
   type NpiPickTrace,
@@ -205,6 +208,7 @@ describe("planNpiRegistryFill — blank fields", () => {
       staleRows: [],
       licenseOffers: [],
       details: [],
+      taxonomyChoices: [],
     });
   });
 });
@@ -720,7 +724,190 @@ describe("npiFillAnnouncement", () => {
         staleRows: [],
         licenseOffers: [],
         details: [],
+        taxonomyChoices: [],
       }),
     ).toBe("Nothing blank to fill from the NPI Registry.");
+  });
+});
+
+// A35: several candidates of one kind are a pick list with nothing
+// preselected — never the first, never all.
+describe("planNpiRegistryFill — several taxonomies and no primary", () => {
+  const noPrimary = record({
+    primaryTaxonomy: null,
+    taxonomies: [
+      {
+        code: "225100000X",
+        description: "Physical Therapist",
+        primary: false,
+        license: null,
+        licenseState: null,
+      },
+      {
+        code: "2251X0800X",
+        description: "Physical Therapist, Orthopedic",
+        primary: false,
+        license: null,
+        licenseState: null,
+      },
+      {
+        code: "2251X0800X",
+        description: "Physical Therapist, Orthopedic",
+        primary: false,
+        license: null,
+        licenseState: null,
+      },
+    ],
+  });
+
+  it("offers each known code once to choose, and fills none of them", () => {
+    const next = plan(noPrimary, blankForm());
+    expect(next.taxonomyCode).toBeNull();
+    expect(next.summary.filled).not.toContain("Taxonomy code");
+    expect(next.summary.taxonomyChoices).toEqual([
+      { code: "225100000X", description: "Physical Therapist" },
+      { code: "2251X0800X", description: "Physical Therapist, Orthopedic" },
+    ]);
+    // Listed once, as choices, not again under "Other taxonomies".
+    expect(next.summary.details.find((item) => item.label === "Other taxonomies")).toBeUndefined();
+    expect(npiFillAnnouncement(next.summary)).toContain(
+      "The registry lists several taxonomies and none as primary; choose one below.",
+    );
+  });
+
+  it("leaves the untouched preset as it is: a default, not a registry pick", () => {
+    const next = plan(
+      noPrimary,
+      blankForm({ taxonomyCode: "225100000X", taxonomyPreset: "225100000X" }),
+    );
+    expect(next.taxonomyCode).toBeNull();
+    expect(next.summary.taxonomyChoices).toHaveLength(2);
+  });
+
+  it("offers no choice when there is one code, or a primary, or under npi_only", () => {
+    const one = record({
+      primaryTaxonomy: null,
+      taxonomies: [
+        {
+          code: "225100000X",
+          description: null,
+          primary: false,
+          license: null,
+          licenseState: null,
+        },
+      ],
+    });
+    expect(plan(one, blankForm()).summary.taxonomyChoices).toEqual([]);
+    expect(plan(record(), blankForm()).summary.taxonomyChoices).toEqual([]);
+    expect(plan(noPrimary, blankForm(), "npi_only").summary.taxonomyChoices).toEqual([]);
+  });
+
+  it("skips codes the Taxonomy code list does not offer", () => {
+    const withUnknown = record({
+      primaryTaxonomy: null,
+      taxonomies: [
+        {
+          code: "225100000X",
+          description: null,
+          primary: false,
+          license: null,
+          licenseState: null,
+        },
+        {
+          code: "999999999X",
+          description: "Unlisted",
+          primary: false,
+          license: null,
+          licenseState: null,
+        },
+      ],
+    });
+    expect(plan(withUnknown, blankForm()).summary.taxonomyChoices).toEqual([]);
+  });
+});
+
+describe("registry-sourced values (A35)", () => {
+  const pulledAt = "2026-10-31T15:00:00.000Z";
+  const pick = (over: Partial<NpiPickState> = {}): NpiPickState => ({
+    seq: 1,
+    npi: "1902833742",
+    trace: {
+      credentials: { written: "DPT", previous: "" },
+      taxonomyCode: { written: "2251X0800X", previous: "225100000X" },
+    },
+    summary: plan(record(), blankForm()).summary,
+    pulledAt,
+    ...over,
+  });
+  const form = {
+    credentials: "DPT",
+    credentialsTouched: false,
+    taxonomyCode: "2251X0800X",
+    taxonomyTouched: false,
+    licenses: [
+      {
+        state: "CO",
+        number: "PT-4471",
+        origin: { kind: "number" as const, touched: false, pulledAt },
+      },
+      { state: "WY", number: "WY-1", origin: { kind: "added" as const, touched: true, pulledAt } },
+      { state: "UT", number: "UT-9", origin: null },
+    ],
+  };
+
+  it('labels a value "From NPI Registry, <pull date>"', () => {
+    expect(npiRegistrySourceLabel(pulledAt)).toBe("From NPI Registry, Oct 31, 2026");
+  });
+
+  it("lists what still holds the pick's values, untouched, one line per pull date", () => {
+    const sourced = npiRegistrySourcedFields(pick(), form);
+    expect(sourced.credentials).toBe(true);
+    expect(sourced.taxonomyCode).toBe(true);
+    expect(sourced.lines).toEqual([
+      {
+        label: "From NPI Registry, Oct 31, 2026",
+        values: ["Credentials DPT", "Taxonomy code 2251X0800X", "CO license PT-4471"],
+      },
+    ]);
+  });
+
+  it("drops a value staff touched, or one that no longer holds what the pick wrote", () => {
+    const sourced = npiRegistrySourcedFields(pick(), {
+      ...form,
+      credentialsTouched: true,
+      taxonomyCode: "225100000X",
+    });
+    expect(sourced.credentials).toBe(false);
+    expect(sourced.taxonomyCode).toBe(false);
+    expect(sourced.lines[0].values).toEqual(["CO license PT-4471"]);
+  });
+
+  it("keeps a row added from an earlier pull under that pull's date", () => {
+    const earlier = "2026-10-30T15:00:00.000Z";
+    const sourced = npiRegistrySourcedFields(pick(), {
+      ...form,
+      licenses: [
+        {
+          state: "WY",
+          number: "WY-0099",
+          origin: { kind: "added" as const, touched: false, pulledAt: earlier },
+        },
+      ],
+    });
+    expect(sourced.lines).toEqual([
+      {
+        label: "From NPI Registry, Oct 31, 2026",
+        values: ["Credentials DPT", "Taxonomy code 2251X0800X"],
+      },
+      { label: "From NPI Registry, Oct 30, 2026", values: ["WY license WY-0099"] },
+    ]);
+  });
+
+  it("says nothing before any pick", () => {
+    expect(npiRegistrySourcedFields(null, { ...form, licenses: [] })).toEqual({
+      credentials: false,
+      taxonomyCode: false,
+      lines: [],
+    });
   });
 });

@@ -213,6 +213,26 @@ describe("toNpiRegistryRecord", () => {
     });
   });
 
+  it("never makes the first taxonomy primary when the registry flags none (A35)", () => {
+    const two = toNpiRegistryRecord({
+      ...NPPES_INDIVIDUAL,
+      taxonomies: [
+        { code: "225100000X", desc: "Physical Therapist", primary: false },
+        { code: "225X00000X", desc: "Occupational Therapist", primary: false },
+      ],
+    });
+    expect(two?.primaryTaxonomy).toBeNull();
+    // One code, repeated per licensing state, is still unambiguous.
+    const one = toNpiRegistryRecord({
+      ...NPPES_INDIVIDUAL,
+      taxonomies: [
+        { code: "225100000X", desc: "Physical Therapist", primary: false, state: "CO" },
+        { code: "225100000X", desc: "Physical Therapist", primary: false, state: "WY" },
+      ],
+    });
+    expect(one?.primaryTaxonomy).toEqual({ code: "225100000X", description: "Physical Therapist" });
+  });
+
   it("names an organization and skips malformed rows", () => {
     const org = toNpiRegistryRecord({
       number: "1902833742",
@@ -356,7 +376,22 @@ describe("lookupNppes", () => {
       version: "2.1",
       number: "1234567893",
     });
-    expect(await lookupNppes("1902833742", { fetch: fetchFn })).toEqual({ record: null });
+    // The answer carries when the registry gave it (A35's pull date).
+    const now = () => new Date("2026-10-31T15:00:00Z");
+    expect(await lookupNppes("1902833742", { fetch: fetchFn, now })).toEqual({
+      record: null,
+      pulledAt: "2026-10-31T15:00:00.000Z",
+    });
+  });
+
+  it("stamps a search with when the registry answered", async () => {
+    const fetchFn = fetchReturning(reply({ result_count: 1, results: [NPPES_INDIVIDUAL] }));
+    const now = () => new Date("2026-10-31T15:00:00Z");
+    const result = await searchNppes(
+      { firstName: "Jane", lastName: "Doe", state: null },
+      { fetch: fetchFn, now },
+    );
+    expect(result.pulledAt).toBe("2026-10-31T15:00:00.000Z");
   });
 });
 

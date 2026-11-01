@@ -1,6 +1,6 @@
 // Multi-step Add Provider form used by /providers/new. Re-exports shared
 // types/state for the route. Record edit is inline on /providers/$id.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,9 @@ import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { maskSsn } from "@/lib/ssnMask";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
-import { useNpiRegistryPolicy, useNpiRegistrySaveBlock } from "@/hooks/useNpiRegistry";
+import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
+import { useTaxonomyPreset } from "@/hooks/useTaxonomyPreset";
+import { NpiRegistryReview } from "@/components/providers/NpiRegistryReview";
 import {
   CredentialsSection,
   EmploymentSection,
@@ -17,12 +19,20 @@ import {
 } from "@/components/providers/ProviderFormSections";
 import {
   validateAll,
-  validateProviderStep,
+  validateCredentials,
+  validatePersonal,
   type ProviderFormErrors,
   type ProviderFormState,
   type UpdateProviderField,
 } from "@/components/providers/providerFormShared";
-import type { NpiPickState } from "@/lib/npiRegistryFill";
+import {
+  npiRegistrySourceLabel,
+  npiRegistrySourcedFields,
+  touchNpiRowOrigin,
+  type NpiPickState,
+} from "@/lib/npiRegistryFill";
+import type { NpiReviewAdvisory, NpiReviewFixTarget } from "@/lib/npiRegistryReview";
+import { taxonomyAfterPresetChange } from "@/lib/providerTaxonomyPreset";
 
 export {
   emptyProviderFormState,
@@ -38,12 +48,28 @@ const STEPS = [
   { id: 5, label: "Review" },
 ] as const;
 
+function validateStep(step: number, f: ProviderFormState): ProviderFormErrors {
+  if (step === 1) return validatePersonal(f);
+  if (step === 2) return validateCredentials(f);
+  return {};
+}
+
+// Where a review-step fix goes: the step, and the control's data-review-field.
+function fixTarget(target: NpiReviewFixTarget): { step: number; field: string } {
+  if (target.field === "licenseNumber") return { step: 3, field: `licenseNumber-${target.row}` };
+  if (target.field === "firstName" || target.field === "credentials") {
+    return { step: 1, field: target.field };
+  }
+  return { step: 2, field: target.field };
+}
+
 export interface ProviderFormProps {
   initial: ProviderFormState;
   submitLabel: string;
   pendingLabel: string;
   isPending: boolean;
-  onSubmit: (form: ProviderFormState) => Promise<void>;
+  /** Resolves to the saved provider's id (void when the save failed). */
+  onSubmit: (form: ProviderFormState) => Promise<string | void>;
   onCancel?: () => void;
 }
 
@@ -60,20 +86,63 @@ export function ProviderForm({
   const [form, setForm] = useState<ProviderFormState>(initial);
   const [errors, setErrors] = useState<ProviderFormErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
-  // MINT-110: why the NPI Registry policy refuses this NPI, or null (always
-  // null under the default policy, where every registry answer only warns).
-  const registryBlock = useNpiRegistrySaveBlock(
-    form.npi,
-    true,
-    { firstName: form.firstName, lastName: form.lastName },
-    useNpiRegistryPolicy(),
-  );
-  // MINT-110: kept here, not in CredentialsSection, so a pick's summary and
-  // its trace outlive a step change. `npiTouched` says which fields staff
-  // edited (only `update`, which every input calls, sets it); a pick goes
-  // through applyNpi and marks nothing.
+  // MINT-110: the registry check never holds up a step or the save; what it
+  // finds is listed on the Review step (A30, A30b). Kept here, not in
+  // CredentialsSection, so a pick's summary and its trace outlive a step
+  // change. `npiTouched` says which fields staff edited (only `update`, which
+  // every input calls, sets it); a pick goes through applyNpi and marks
+  // nothing.
+  const npiPolicy = useNpiRegistryPolicy();
+  const recordNpiAdvisories = useRecordNpiAdvisoriesAfterSave();
   const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
   const [npiTouched, setNpiTouched] = useState({ credentials: false, taxonomyCode: false });
+  const [npiConfirmed, setNpiConfirmed] = useState<ReadonlySet<string>>(() => new Set());
+  const [focusField, setFocusField] = useState<string | null>(null);
+  // A32: the preset taxonomy is the chosen group's (then the organization's,
+  // then the platform's). While the field still holds the preset nobody
+  // chose, a group change gives the new group's preset; a taxonomy staff
+  // chose, or one a pick filled, stays.
+  const taxonomyPreset = useTaxonomyPreset(form.groupId || null);
+  const [appliedPreset, setAppliedPreset] = useState(initial.taxonomyCode);
+  if (appliedPreset !== taxonomyPreset) {
+    const nextTaxonomy = taxonomyAfterPresetChange({
+      current: form.taxonomyCode,
+      appliedPreset,
+      nextPreset: taxonomyPreset,
+      touched: npiTouched.taxonomyCode,
+      pickWrote: npiPick?.trace.taxonomyCode?.written ?? null,
+    });
+    setAppliedPreset(taxonomyPreset);
+    if (nextTaxonomy !== null) setForm((f) => ({ ...f, taxonomyCode: nextTaxonomy }));
+  }
+  // A35: values a pick filled, untouched, say "From NPI Registry, <date>".
+  const npiSourced = npiRegistrySourcedFields(npiPick, {
+    credentials: form.credentials,
+    credentialsTouched: npiTouched.credentials,
+    taxonomyCode: form.taxonomyCode,
+    taxonomyTouched: npiTouched.taxonomyCode,
+    licenses: form.licenses.map((row) => ({
+      state: row.state,
+      number: row.number,
+      origin: row.npiOrigin,
+    })),
+  });
+  const registrySource = npiPick
+    ? {
+        label: npiRegistrySourceLabel(npiPick.pulledAt),
+        credentials: npiSourced.credentials,
+        taxonomyCode: npiSourced.taxonomyCode,
+      }
+    : null;
+  // A review-step fix: the field's step, then focus on the field.
+  useEffect(() => {
+    if (!focusField) return;
+    const control = document.querySelector<HTMLElement>(`[data-review-field="${focusField}"]`);
+    if (control) {
+      control.focus();
+      setFocusField(null);
+    }
+  }, [focusField, step]);
 
   const update: UpdateProviderField = (key, value) => {
     if (key === "credentials" || key === "taxonomyCode") {
@@ -91,7 +160,7 @@ export function ProviderForm({
   };
 
   const next = () => {
-    const e = validateProviderStep(step, form, registryBlock);
+    const e = validateStep(step, form);
     setErrors(e);
     if (Object.keys(e).length === 0) setStep((s) => Math.min(5, s + 1));
   };
@@ -106,7 +175,7 @@ export function ProviderForm({
 
   const submit = async () => {
     setSubmitError(null);
-    const allErrors = validateAll(form, registryBlock);
+    const allErrors = validateAll(form);
     if (Object.keys(allErrors).length > 0) {
       setErrors(allErrors);
       // Jump back to the first step with an error so the user sees it.
@@ -118,13 +187,61 @@ export function ProviderForm({
       return;
     }
     try {
-      await onSubmit(form);
+      const savedId = await onSubmit(form);
+      // The registry check may still be running: its advisories go to the
+      // capture once it ends (A30), with what staff confirmed.
+      if (typeof savedId === "string") {
+        recordNpiAdvisories({
+          recordId: savedId,
+          npi: form.npi,
+          verify: true,
+          typed: { firstName: form.firstName, lastName: form.lastName },
+          entered: reviewEntered,
+          confirmed: npiConfirmed,
+          policy: npiPolicy,
+        });
+      }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to save provider");
     }
   };
 
   const handleCancel = onCancel ?? (() => navigate({ to: "/providers" }));
+
+  const reviewEntered = {
+    credentials: form.credentials,
+    taxonomyCode: form.taxonomyCode,
+    licenses: form.licenses.map((row) => ({ state: row.state, number: row.number })),
+  };
+  const fixOnReview = (target: NpiReviewFixTarget) => {
+    const { step: fixStep, field } = fixTarget(target);
+    setErrors({});
+    setStep(fixStep);
+    setFocusField(field);
+  };
+  // Choose the registry's value (A35: choose, edit or add — never clear and
+  // type). Staff chose it, so it is theirs.
+  const chooseRegistryValue = (advisory: NpiReviewAdvisory) => {
+    const value = advisory.registryValue;
+    const fix = advisory.fix;
+    if (!value || !fix || fix === "retry") return;
+    if (fix.field === "credentials") update("credentials", value);
+    else if (fix.field === "taxonomyCode") update("taxonomyCode", value);
+    else if (fix.field === "licenseNumber") {
+      update(
+        "licenses",
+        form.licenses.map((row, index) =>
+          index === fix.row
+            ? {
+                ...row,
+                number: value,
+                npiOrigin: touchNpiRowOrigin(row.npiOrigin, { number: true }),
+              }
+            : row,
+        ),
+      );
+    }
+  };
 
   return (
     <>
@@ -136,13 +253,26 @@ export function ProviderForm({
       <Stepper current={step} />
       <div className="mt-6 rounded-md border border-border bg-card">
         <div className="p-6">
-          {step === 1 ? <PersonalSection form={form} errors={errors} update={update} /> : null}
+          {step === 1 ? (
+            <PersonalSection
+              form={form}
+              errors={errors}
+              update={update}
+              registrySource={registrySource}
+            />
+          ) : null}
           {step === 2 ? (
             <CredentialsSection
               form={form}
               errors={errors}
               update={update}
-              npi={{ npiPick, touched: npiTouched, applyNpi }}
+              npi={{
+                npiPick,
+                touched: npiTouched,
+                applyNpi,
+                taxonomyPreset: appliedPreset,
+                registrySource,
+              }}
             />
           ) : null}
           {step === 3 ? <LicensesSection form={form} errors={errors} update={update} /> : null}
@@ -150,6 +280,29 @@ export function ProviderForm({
           {step === 5 ? <ReviewStep form={form} jumpTo={jumpTo} /> : null}
 
           {submitError ? <p className="mt-4 text-sm text-destructive">{submitError}</p> : null}
+          {step === 5 ? (
+            <div className="mt-4">
+              <NpiRegistryReview
+                npi={form.npi}
+                verify
+                firstName={form.firstName}
+                lastName={form.lastName}
+                entered={reviewEntered}
+                policy={npiPolicy}
+                confirmed={npiConfirmed}
+                onToggleConfirm={(id) =>
+                  setNpiConfirmed((ids) => {
+                    const next = new Set(ids);
+                    if (!next.delete(id)) next.add(id);
+                    return next;
+                  })
+                }
+                onFix={fixOnReview}
+                onUseRegistryValue={chooseRegistryValue}
+                sourced={npiSourced.lines}
+              />
+            </div>
+          ) : null}
         </div>
 
         <div className="flex items-center justify-between border-t border-border px-6 py-4">

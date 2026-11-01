@@ -1,17 +1,14 @@
 // MINT-110 — NPI Registry pure rules: what the route accepts, how a typed
 // name is compared with the registry's, the note shown under the NPI, and
-// what the policy's severities do to a save.
+// where the policy shows each answer. No answer ever blocks a save (A30).
 import { describe, expect, it } from "vitest";
 import {
-  NPI_REGISTRY_BLOCK_REASONS,
-  NPI_REGISTRY_CHECK_PENDING_MESSAGE,
   NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
   NPI_REGISTRY_RATE_LIMIT_MESSAGE,
   NPI_REGISTRY_UNAVAILABLE_MESSAGE,
   compareNpiRegistryName,
   npiLookupOutcome,
   npiLookupStateOf,
-  npiRegistrySaveBlock,
   npiToCheck,
   foldNameForRegistry,
   npiVerificationView,
@@ -21,6 +18,7 @@ import {
   type NpiLookupState,
   type NpiRegistryRecord,
 } from "./npiRegistry";
+import * as npiRegistry from "./npiRegistry";
 import {
   DEFAULT_NPI_REGISTRY_POLICY,
   NPI_REGISTRY_OUTCOMES,
@@ -336,7 +334,7 @@ describe("npiVerificationView", () => {
     );
   });
 
-  it("warns, never blocks, on a name mismatch, a miss, an organization or downtime", () => {
+  it("warns on a name mismatch, a miss, an organization or downtime", () => {
     const mismatch = npiVerificationView(
       { status: "done", record: jane },
       { firstName: "Mary", lastName: "Roe" },
@@ -348,8 +346,11 @@ describe("npiVerificationView", () => {
     expect(mismatch?.detail).toContain("JANE A DOE");
 
     const missing = npiVerificationView({ status: "done", record: null }, typed);
-    expect(missing).toMatchObject({ tone: "warn", title: "Not found in the NPI Registry" });
-    expect(missing?.detail).toContain("You can still save");
+    expect(missing).toEqual({
+      tone: "warn",
+      title: "Not found in the NPI Registry",
+      detail: "Re-check the number; deactivated NPIs are not listed.",
+    });
 
     const org = npiVerificationView(
       {
@@ -372,11 +373,7 @@ describe("npiVerificationView", () => {
       { status: "error", message: NPI_REGISTRY_UNAVAILABLE_MESSAGE },
       typed,
     );
-    expect(down).toEqual({
-      tone: "warn",
-      title: "NPI Registry is unavailable",
-      detail: "You can still save this provider.",
-    });
+    expect(down).toEqual({ tone: "warn", title: "NPI Registry is unavailable", detail: null });
 
     const inactive = npiVerificationView(
       { status: "done", record: { ...jane, status: "inactive" } },
@@ -392,7 +389,7 @@ describe("npiVerificationView", () => {
   });
 });
 
-describe("the NPI Registry policy at save", () => {
+describe("the NPI Registry policy's display setting", () => {
   const typed = { firstName: "Jane", lastName: "Doe" };
   const organization: NpiRegistryRecord = {
     ...jane,
@@ -412,16 +409,8 @@ describe("the NPI Registry policy at save", () => {
     ],
     inactive: [{ status: "done", record: { ...jane, status: "inactive" } }, typed],
   };
-  const blocking = (outcome: NpiRegistryOutcome) =>
-    resolveNpiRegistryPolicy(null, { severity: { [outcome]: "block" } });
-  const strict = resolveNpiRegistryPolicy(null, {
-    severity: {
-      organizationNumber: "block",
-      notFound: "block",
-      nameMismatch: "block",
-      inactive: "block",
-    },
-  });
+  const backendOnly = (outcome: NpiRegistryOutcome) =>
+    resolveNpiRegistryPolicy(null, { display: { [outcome]: "backend_only" } });
 
   it("names the outcome a policy acts on", () => {
     for (const outcome of NPI_REGISTRY_OUTCOMES) {
@@ -434,42 +423,41 @@ describe("the NPI Registry policy at save", () => {
     expect(npiLookupOutcome({ status: "error", message: "x" }, typed)).toBeNull();
   });
 
-  it.each(NPI_REGISTRY_OUTCOMES)("%s: warn saves, block refuses with a plain reason", (outcome) => {
-    const [state, names] = answers[outcome];
-    expect(npiRegistrySaveBlock(state, names)).toBeNull();
-    expect(npiRegistrySaveBlock(state, names, DEFAULT_NPI_REGISTRY_POLICY)).toBeNull();
-    expect(npiVerificationView(state, names, DEFAULT_NPI_REGISTRY_POLICY)?.tone).toBe("warn");
+  it.each(NPI_REGISTRY_OUTCOMES)(
+    "%s: a warning by default; backend_only keeps it off the form, and never says ok",
+    (outcome) => {
+      const [state, names] = answers[outcome];
+      expect(npiVerificationView(state, names, DEFAULT_NPI_REGISTRY_POLICY)?.tone).toBe("warn");
+      expect(npiVerificationView(state, names, backendOnly(outcome))).toBeNull();
+      // Another outcome's setting leaves this one a warning.
+      const other = NPI_REGISTRY_OUTCOMES.find((candidate) => candidate !== outcome) ?? outcome;
+      expect(npiVerificationView(state, names, backendOnly(other))?.tone).toBe("warn");
+    },
+  );
 
-    expect(npiRegistrySaveBlock(state, names, blocking(outcome))).toBe(
-      NPI_REGISTRY_BLOCK_REASONS[outcome],
-    );
-    const view = npiVerificationView(state, names, blocking(outcome));
-    expect(view?.tone).toBe("block");
-    expect(view?.detail).toContain(NPI_REGISTRY_BLOCK_REASONS[outcome]);
-    expect(view?.detail).not.toContain("You can still save");
-    // Another outcome's block leaves this one a warning.
-    const other = NPI_REGISTRY_OUTCOMES.find((candidate) => candidate !== outcome) ?? outcome;
-    expect(npiRegistrySaveBlock(state, names, blocking(other))).toBeNull();
-  });
-
-  it("never refuses a match, a skipped check, or a check the registry could not answer", () => {
-    expect(npiRegistrySaveBlock({ status: "done", record: jane }, typed, strict)).toBeNull();
-    expect(npiRegistrySaveBlock({ status: "idle" }, typed, strict)).toBeNull();
+  it("still warns when the registry could not answer, whatever the policy", () => {
+    const quiet = resolveNpiRegistryPolicy(null, {
+      display: {
+        organizationNumber: "backend_only",
+        notFound: "backend_only",
+        nameMismatch: "backend_only",
+        inactive: "backend_only",
+      },
+    });
     for (const message of [
       NPI_REGISTRY_UNAVAILABLE_MESSAGE,
       NPI_REGISTRY_RATE_LIMIT_MESSAGE,
       NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
     ]) {
-      expect(npiRegistrySaveBlock({ status: "error", message }, typed, strict)).toBeNull();
-      expect(npiVerificationView({ status: "error", message }, typed, strict)?.tone).toBe("warn");
+      expect(npiVerificationView({ status: "error", message }, typed, quiet)?.tone).toBe("warn");
     }
   });
 
-  it("waits for a running check only when some answer would block", () => {
-    expect(npiRegistrySaveBlock({ status: "loading" }, typed)).toBeNull();
-    expect(npiRegistrySaveBlock({ status: "loading" }, typed, blocking("inactive"))).toBe(
-      NPI_REGISTRY_CHECK_PENDING_MESSAGE,
-    );
+  it("has no save block left to consult (A30)", () => {
+    const exports = npiRegistry as Record<string, unknown>;
+    expect(exports.npiRegistrySaveBlock).toBeUndefined();
+    expect(exports.NPI_REGISTRY_BLOCK_REASONS).toBeUndefined();
+    expect(exports.NPI_REGISTRY_CHECK_PENDING_MESSAGE).toBeUndefined();
   });
 
   it("reads a lookup query as a state, and checks only a check-digit-valid NPI on request", () => {
@@ -491,13 +479,13 @@ describe("the NPI Registry policy at save", () => {
     ).toEqual({ status: "error", message: NPI_REGISTRY_UNAVAILABLE_MESSAGE });
   });
 
-  it("reads a disabled or paused lookup as not checked, which never blocks", () => {
+  it("reads a disabled or paused lookup as not checked", () => {
     // No active organization (the query is disabled) or offline (paused):
     // no answer is coming, so the check is idle, not loading forever.
     for (const fetchStatus of ["idle", "paused"] as const) {
       const state = npiLookupStateOf("1234567893", { isError: false, error: null, fetchStatus });
       expect(state).toEqual({ status: "idle" });
-      expect(npiRegistrySaveBlock(state, typed, strict)).toBeNull();
+      expect(npiVerificationView(state, typed)).toBeNull();
     }
     expect(
       npiLookupStateOf("1234567893", { isError: false, error: null, fetchStatus: "fetching" }),

@@ -121,7 +121,9 @@ describe("POST /api/npi-registry/lookup", () => {
       fetch: registry({ result_count: 0, results: [] }),
     });
     expect(missing.status).toBe(200);
-    expect((await envelope<NpiRegistryLookupResult>(missing)).data).toEqual({ record: null });
+    expect((await envelope<NpiRegistryLookupResult>(missing)).data).toMatchObject({
+      record: null,
+    });
   });
 
   it("422s an NPI that fails the check digit without calling the registry", async () => {

@@ -75,6 +75,8 @@ export interface NppesDeps {
   fetch?: typeof fetch;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  /** The clock that stamps pulledAt (tests). */
+  now?: () => Date;
 }
 
 function isAbort(error: unknown): boolean {
@@ -159,10 +161,15 @@ function text(value: unknown): string | null {
   return cleaned && cleaned !== "--" ? cleaned : null;
 }
 
+// The taxonomy the registry flags primary. With none flagged, one code (a
+// taxonomy repeats once per licensing state) is still unambiguous; several
+// are a choice for staff, so none is primary — never the first (A35).
 function primaryTaxonomy(value: unknown): NpiRegistryRecord["primaryTaxonomy"] {
   if (!Array.isArray(value)) return null;
   const rows = value.filter(isObject);
-  const primary = rows.find((row) => row.primary === true) ?? rows[0];
+  const codes = new Set(rows.map((row) => text(row.code)).filter(Boolean));
+  const primary =
+    rows.find((row) => row.primary === true) ?? (codes.size === 1 ? rows[0] : undefined);
   const code = primary ? text(primary.code) : null;
   return primary && code ? { code, description: text(primary.desc) } : null;
 }
@@ -327,6 +334,7 @@ export async function searchNppes(
   return {
     results: records.slice(0, NPI_REGISTRY_RESULT_CAP),
     truncated: records.length > NPI_REGISTRY_RESULT_CAP,
+    pulledAt: (deps.now ?? (() => new Date()))().toISOString(),
   };
 }
 
@@ -337,7 +345,10 @@ export async function lookupNppes(
   deps: NppesDeps = {},
 ): Promise<NpiRegistryLookupResult> {
   const records = parseNppesResponse(await callNppes({ number: npi }, deps));
-  return { record: records.find((record) => record.npi === npi) ?? null };
+  return {
+    record: records.find((record) => record.npi === npi) ?? null,
+    pulledAt: (deps.now ?? (() => new Date()))().toISOString(),
+  };
 }
 
 /** A small TTL cache with a size bound; the oldest entry goes first. */

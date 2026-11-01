@@ -39,11 +39,13 @@ describe("isBlankLicenseDraft", () => {
 });
 
 describe("addRegistryLicenseDraft", () => {
-  const ADDED = { kind: "added" as const, touched: false };
+  const PULLED = "2026-10-31T15:00:00.000Z";
+  // The pull date rides on the row: it says "From NPI Registry, <date>" (A35).
+  const ADDED = { kind: "added" as const, touched: false, pulledAt: PULLED };
 
   it("fills the untouched empty row, or adds one with the editor's defaults", () => {
     const rows = [saved, { ...EMPTY_LICENSE_DRAFT }];
-    const next = addRegistryLicenseDraft(rows, { state: "WY", number: "WY-0099" });
+    const next = addRegistryLicenseDraft(rows, { state: "WY", number: "WY-0099" }, PULLED);
     expect(next.existing).toBeNull();
     expect(next.licenses[0]).toBe(saved);
     expect(next.licenses[1]).toEqual({
@@ -54,7 +56,11 @@ describe("addRegistryLicenseDraft", () => {
       npiOrigin: { ...ADDED, replacedEmpty: true },
     });
     expect(next.licenses).toHaveLength(2);
-    const again = addRegistryLicenseDraft(next.licenses, { state: "CO", number: "PT-4471" });
+    const again = addRegistryLicenseDraft(
+      next.licenses,
+      { state: "CO", number: "PT-4471" },
+      PULLED,
+    );
     expect(again.licenses[2]).toEqual({
       ...EMPTY_LICENSE_DRAFT,
       state: "CO",
@@ -66,7 +72,7 @@ describe("addRegistryLicenseDraft", () => {
 
   it("adds nothing when a row already holds that license (the database allows one)", () => {
     const rows = [{ ...saved, state: "CO", licenseNumber: "PT-1111" }];
-    expect(addRegistryLicenseDraft(rows, { state: "CO", number: "PT-1111" })).toEqual({
+    expect(addRegistryLicenseDraft(rows, { state: "CO", number: "PT-1111" }, PULLED)).toEqual({
       licenses: rows,
       existing: 0,
     });

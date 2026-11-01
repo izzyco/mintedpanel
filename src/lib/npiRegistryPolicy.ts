@@ -1,24 +1,27 @@
 // NPI Registry policy — MINT-110. Business policy is configuration, never a
 // constant: every value here is a decided default (Sowmya, Oct 31, 2026) that
 // a platform override and then an organization override may change, field by
-// field. Overrides are not stored yet: their storage and the Mission Control
-// screen are a sibling of MINT-125, so today every caller resolves to the
-// defaults (useNpiRegistryPolicy).
+// field (an organization's value wins in either direction; A31). Overrides are
+// not stored yet: their storage and the Mission Control screen are MINT-128,
+// so today every caller resolves to the defaults (useNpiRegistryPolicy).
+//
+// Every registry check is advisory (Sowmya's standing rule, Oct 31): a save
+// always goes through, at once, and the check finishes in the background. A
+// check's answer becomes an advisory — listed on the form's review step, or
+// kept for Mission Control only — and is handed to the advisory-capture seam
+// (src/services/advisoryCapture.ts). The registry never marks an NPI verified
+// unless it really matched.
 //
 // Not configurable, by design, and so not in this object: who may use the
 // registry (writers only; billing never), tenant isolation, the NPI check digit
-// and the 10-digit rule, and a registry that can't answer (an outage, a rate
-// limit, a refused query). A failed check is a fact — we could not check — so
-// it is always a note and never refuses a save.
+// and the 10-digit rule (facts about the number, which stay hard), and a
+// registry that can't answer (an outage, a rate limit, a refused query): that
+// NPI is saved as not checked.
 //
 // Pure and leaf-level: this module imports nothing at runtime.
 import type { Validation } from "@/lib/npiRegistry";
 
-export const NPI_CHECK_SEVERITIES = ["warn", "block"] as const;
-/** "warn" notes the answer and still saves; "block" refuses the save. */
-export type NpiCheckSeverity = (typeof NPI_CHECK_SEVERITIES)[number];
-
-/** The registry answers a policy can act on. */
+/** The registry's answers about an NPI. */
 export const NPI_REGISTRY_OUTCOMES = [
   "organizationNumber",
   "notFound",
@@ -26,6 +29,28 @@ export const NPI_REGISTRY_OUTCOMES = [
   "inactive",
 ] as const;
 export type NpiRegistryOutcome = (typeof NPI_REGISTRY_OUTCOMES)[number];
+
+/** Where the entered data differs from a registry record that was found. */
+export const NPI_REGISTRY_FIELD_CHECKS = [
+  "credentialsDiffer",
+  "taxonomyDiffers",
+  "licenseDiffers",
+] as const;
+export type NpiRegistryFieldCheck = (typeof NPI_REGISTRY_FIELD_CHECKS)[number];
+
+/** Every noncritical registry check; each yields an advisory, never a block. */
+export const NPI_REGISTRY_CHECKS = [
+  ...NPI_REGISTRY_OUTCOMES,
+  ...NPI_REGISTRY_FIELD_CHECKS,
+] as const;
+export type NpiRegistryCheck = NpiRegistryOutcome | NpiRegistryFieldCheck;
+
+export const NPI_ADVISORY_DISPLAYS = ["review_step", "backend_only"] as const;
+/** "review_step": listed on the form's review step (and the note under the
+ * NPI field), where staff fix or confirm it in one click. "backend_only":
+ * kept for Mission Control and not shown on the form. Either way the save
+ * goes through and the advisory is handed to the capture seam. */
+export type NpiAdvisoryDisplay = (typeof NPI_ADVISORY_DISPLAYS)[number];
 
 export const NPI_FILL_ON_PICK = ["blank_fields", "npi_only"] as const;
 /** What picking a search match fills: the NPI plus every blank field the
@@ -37,32 +62,37 @@ export const NPI_IMPORT_VERIFY_SCOPES = ["new_providers", "all_rows"] as const;
 export type NpiImportVerifyScope = (typeof NPI_IMPORT_VERIFY_SCOPES)[number];
 
 export interface NpiRegistryPolicy {
-  /** What each registry answer does to a provider form's save:
+  /** Where each check's advisory shows:
    * - organizationNumber: an organization (NPI-2) number in a provider's NPI;
    * - notFound: the registry has no record of the NPI;
    * - nameMismatch: the typed name differs from the registry's;
-   * - inactive: the registry lists the NPI as inactive. */
-  severity: Record<NpiRegistryOutcome, NpiCheckSeverity>;
+   * - inactive: the registry lists the NPI as inactive;
+   * - credentialsDiffer / taxonomyDiffers / licenseDiffers: a value staff
+   *   entered differs from the record the registry found. */
+  display: Record<NpiRegistryCheck, NpiAdvisoryDisplay>;
   fillOnPick: NpiFillOnPick;
   importVerifyScope: NpiImportVerifyScope;
 }
 
 /** A platform or organization override: any field left null or out inherits. */
 export interface NpiRegistryPolicyOverride {
-  severity?: Partial<Record<NpiRegistryOutcome, NpiCheckSeverity | null>> | null;
+  display?: Partial<Record<NpiRegistryCheck, NpiAdvisoryDisplay | null>> | null;
   fillOnPick?: NpiFillOnPick | null;
   importVerifyScope?: NpiImportVerifyScope | null;
 }
 
-/** Sowmya's answers, Oct 31, 2026: every registry answer warns (an
- * organization number included), a pick fills the blank fields, and import
- * verification checks new providers only (no backfill). */
+/** Sowmya's answers, Oct 31, 2026: every check is shown on the review step
+ * (A30, A30b), a pick fills the blank fields (D71), and import verification
+ * checks new providers only (D72). */
 export const DEFAULT_NPI_REGISTRY_POLICY: NpiRegistryPolicy = Object.freeze({
-  severity: Object.freeze({
-    organizationNumber: "warn",
-    notFound: "warn",
-    nameMismatch: "warn",
-    inactive: "warn",
+  display: Object.freeze({
+    organizationNumber: "review_step",
+    notFound: "review_step",
+    nameMismatch: "review_step",
+    inactive: "review_step",
+    credentialsDiffer: "review_step",
+    taxonomyDiffers: "review_step",
+    licenseDiffers: "review_step",
   }),
   fillOnPick: "blank_fields",
   importVerifyScope: "new_providers",
@@ -82,15 +112,15 @@ export function resolveNpiRegistryPolicy(
   orgOverride?: NpiRegistryPolicyOverride | null,
 ): NpiRegistryPolicy {
   const layers = [platformOverride, orgOverride];
-  const severity = {} as Record<NpiRegistryOutcome, NpiCheckSeverity>;
-  for (const outcome of NPI_REGISTRY_OUTCOMES) {
-    severity[outcome] = firstSet(
-      DEFAULT_NPI_REGISTRY_POLICY.severity[outcome],
-      ...layers.map((layer) => layer?.severity?.[outcome]),
+  const display = {} as Record<NpiRegistryCheck, NpiAdvisoryDisplay>;
+  for (const check of NPI_REGISTRY_CHECKS) {
+    display[check] = firstSet(
+      DEFAULT_NPI_REGISTRY_POLICY.display[check],
+      ...layers.map((layer) => layer?.display?.[check]),
     );
   }
   return {
-    severity,
+    display,
     fillOnPick: firstSet(
       DEFAULT_NPI_REGISTRY_POLICY.fillOnPick,
       ...layers.map((layer) => layer?.fillOnPick),
@@ -118,11 +148,7 @@ function oneOf<T extends string>(
   return { ok: false, error: `${name} must be ${allowed.map((v) => `"${v}"`).join(" or ")}` };
 }
 
-const TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
-  "severity",
-  "fillOnPick",
-  "importVerifyScope",
-]);
+const TOP_LEVEL_KEYS: ReadonlySet<string> = new Set(["display", "fillOnPick", "importVerifyScope"]);
 
 /** An override as stored or submitted: a full policy, a partial one, or
  * nothing (inherit everything). Unknown settings and unknown values are
@@ -131,24 +157,31 @@ export function validateNpiRegistryPolicy(input: unknown): Validation<NpiRegistr
   if (input === null || input === undefined) return { ok: true, value: {} };
   if (!isPlainObject(input)) return { ok: false, error: "NPI Registry policy must be an object" };
   for (const key of Object.keys(input)) {
+    if (key === "severity") {
+      return {
+        ok: false,
+        error:
+          '"severity" is gone: a registry check never blocks a save. Use "display" ("review_step" or "backend_only")',
+      };
+    }
     if (!TOP_LEVEL_KEYS.has(key)) {
       return { ok: false, error: `Unknown NPI Registry policy setting "${key}"` };
     }
   }
   const value: NpiRegistryPolicyOverride = {};
-  const rawSeverity = input.severity;
-  if (rawSeverity !== null && rawSeverity !== undefined) {
-    if (!isPlainObject(rawSeverity)) return { ok: false, error: "severity must be an object" };
-    const severity: Partial<Record<NpiRegistryOutcome, NpiCheckSeverity | null>> = {};
-    for (const [outcome, raw] of Object.entries(rawSeverity)) {
-      if (!(NPI_REGISTRY_OUTCOMES as readonly string[]).includes(outcome)) {
-        return { ok: false, error: `Unknown NPI Registry outcome "${outcome}"` };
+  const rawDisplay = input.display;
+  if (rawDisplay !== null && rawDisplay !== undefined) {
+    if (!isPlainObject(rawDisplay)) return { ok: false, error: "display must be an object" };
+    const display: Partial<Record<NpiRegistryCheck, NpiAdvisoryDisplay | null>> = {};
+    for (const [check, raw] of Object.entries(rawDisplay)) {
+      if (!(NPI_REGISTRY_CHECKS as readonly string[]).includes(check)) {
+        return { ok: false, error: `Unknown NPI Registry check "${check}"` };
       }
-      const checked = oneOf(NPI_CHECK_SEVERITIES, raw, `severity.${outcome}`);
+      const checked = oneOf(NPI_ADVISORY_DISPLAYS, raw, `display.${check}`);
       if (!checked.ok) return checked;
-      severity[outcome as NpiRegistryOutcome] = checked.value;
+      display[check as NpiRegistryCheck] = checked.value;
     }
-    value.severity = severity;
+    value.display = display;
   }
   const fillOnPick = oneOf(NPI_FILL_ON_PICK, input.fillOnPick, "fillOnPick");
   if (!fillOnPick.ok) return fillOnPick;
