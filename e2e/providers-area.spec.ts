@@ -11,19 +11,16 @@
 //   TS-130  PHI sweep: the roster's list read carries no DOB/SSN/home-address
 //           columns; the record masks DOB at rest and SSN to last-4.
 //   MINT-110 The record's inline NPI edit is the third NPI write path: the
-//           same ten-digit rule and message, the NPI Registry note, and the
-//           policy's block (run here with "not found" set to block).
+//           same ten-digit rule and message, and the NPI Registry note. It
+//           saves at once (A30); the check finishes in the background and a
+//           mismatch is a quiet note under the saved NPI.
 // TS-128 (the CSV relationship fold + reference sheet) is covered at the scan
 // grain by importSections.test.ts and the staged pipeline by
 // roster-import.spec.ts — the commit relationship pass is pinned here at the
 // wire in TS-113's harness (write-through fact POST).
 import { RECHECK_STORED_RULES, serveIdentityValidationRules } from "./fixtures/identityRules";
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
-import {
-  announcements,
-  blockNpiRegistryAnswers,
-  recordAnnouncements,
-} from "./fixtures/npiRegistry";
+import { announcements, recordAnnouncements } from "./fixtures/npiRegistry";
 
 const AUTH_KEY = "sb-example-auth-token";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -1119,20 +1116,23 @@ test("MINT-7: record inline edit checks only a changed NPI's check digit", async
   ]);
 });
 
-test("MINT-110: record inline NPI edit follows the NPI Registry check and policy", async ({
+test("MINT-110: record inline NPI edit saves at once; the check finishes after and a mismatch is a quiet note", async ({
   context,
   page,
 }) => {
   test.setTimeout(90_000);
-  const policy = await blockNpiRegistryAnswers(context, ["notFound"]);
   const fixtures = baseFixtures();
   const { handler, requests } = makeHandler(fixtures);
   await context.route(/\/(rest|auth)\/v1\//, handler);
-  // The registry, mocked at the browser: it lists only Brooke Ostrander.
+  // The registry, mocked at the browser: it lists only Brooke Ostrander. A
+  // lookup of a held NPI waits until the spec releases it.
   const lookups: unknown[] = [];
+  const held = new Map<string, Promise<void>>();
   await context.route(/\/api\/npi-registry\//, async (route) => {
     const body = route.request().postDataJSON() as { npi?: string };
     lookups.push(body);
+    const gate = held.get(String(body.npi));
+    if (gate) await gate;
     const record =
       body.npi === "1234567893"
         ? {
@@ -1157,6 +1157,13 @@ test("MINT-110: record inline NPI edit follows the NPI Registry check and policy
       body: JSON.stringify({ data: { record }, error: null, meta: null }),
     });
   });
+  let release: () => void = () => undefined;
+  held.set(
+    "1234567810",
+    new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  );
   await recordAnnouncements(context);
   await seedAuth(context);
   const providerPatches = () =>
@@ -1166,38 +1173,52 @@ test("MINT-110: record inline NPI edit follows the NPI Registry check and policy
   await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
     timeout: 30000,
   });
-  expect(policy.patched()).toBe(true);
   await page.getByRole("button", { name: "Edit details" }).click();
   const npi = page.locator("#identity-npi");
 
-  // The same wording as Add Provider and the roster form.
+  // The same wording as Add Provider and the roster form: the number's own
+  // rules stay hard.
   await npi.fill("12345");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByRole("alert")).toHaveText("NPI must be 10 digits");
   await expect(npi).toHaveAttribute("aria-invalid", "true");
-
-  // Not in the registry, and the policy blocks that: the note is an error,
-  // the save is refused with the reason, and nothing is written.
-  const reason = "Your organization saves only NPIs the NPI Registry lists.";
-  await npi.fill("123-456-7810");
-  await expect(page.getByText("Not found in the NPI Registry", { exact: true })).toHaveClass(
-    /text-destructive/,
-  );
-  await expect.poll(() => announcements(page, reason)).toBe(1);
-  await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page.getByRole("alert")).toHaveText(reason);
-  await expect(npi).toHaveAccessibleDescription(
-    new RegExp(`Not found in the NPI Registry.*${reason}`),
-  );
   expect(providerPatches()).toHaveLength(0);
 
-  // A listed NPI with a matching name saves, as digits.
+  // Not in the registry, and the check has not answered: the save goes
+  // through at once anyway.
+  await npi.fill("123-456-7810");
+  await expect(npi).toHaveAccessibleDescription("Checking the NPI Registry…");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(providerPatches().map((request) => request.body)).toEqual([{ npi: "1234567810" }]);
+  // Quiet while the check runs.
+  await expect(page.getByText("Checking the NPI Registry…", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Not found in the NPI Registry", { exact: true })).toHaveCount(0);
+
+  // The check ends: the mismatch is a short note under the saved NPI, said
+  // politely, never an error, and never "Found".
+  release();
+  const note = page.getByText("Not found in the NPI Registry", { exact: true });
+  await expect(note).toBeVisible();
+  await expect(note).not.toHaveClass(/text-destructive/);
+  await expect.poll(() => announcements(page, "Not found in the NPI Registry")).toBeGreaterThan(0);
+  await expect(page.getByText("Found in the NPI Registry", { exact: true })).toHaveCount(0);
+
+  // A listed NPI with a matching name saves, as digits, and the view says
+  // nothing more about it.
+  await page.getByRole("button", { name: "Edit details" }).click();
   await npi.fill("123 456 7893");
   await expect(page.getByText("Found in the NPI Registry", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
     timeout: 15000,
   });
-  expect(providerPatches().map((request) => request.body)).toEqual([{ npi: "1234567893" }]);
+  expect(providerPatches().map((request) => request.body)).toEqual([
+    { npi: "1234567810" },
+    { npi: "1234567893" },
+  ]);
+  await expect(page.getByText(/in the NPI Registry/)).toHaveCount(0);
   expect(lookups).toEqual([{ npi: "1234567810" }, { npi: "1234567893" }]);
 });

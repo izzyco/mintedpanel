@@ -1,28 +1,39 @@
 // MINT-110 e2e helpers for the NPI Registry. Test-only; the app has no hook
 // for either.
 //
-// - blockNpiRegistryAnswers: serves the browser a copy of the policy module
-//   (src/lib/npiRegistryPolicy.ts, a separate ES module under the Vite dev
-//   server) whose defaults set the given answers to "block", so a spec runs
-//   the forms under a blocking policy without stored overrides. The returned
-//   `patched()` must be true, or the spec ran under the defaults.
+// - showNpiRegistryChecksBackendOnly: serves the browser a copy of the policy
+//   module (src/lib/npiRegistryPolicy.ts, a separate ES module under the Vite
+//   dev server) whose defaults keep the given checks backend only (Mission
+//   Control, not the form), so a spec runs the forms under that policy without
+//   stored overrides. The returned `patched()` must be true, or the spec ran
+//   under the defaults. No policy blocks a save (A30); this is the only knob.
 // - recordAnnouncements / announcements: every distinct text a live region
 //   (role="status" or aria-live) takes, in order, so a spec counts what was
 //   announced instead of looking at what is on screen now.
 import type { BrowserContext, Page } from "@playwright/test";
 
-export type NpiRegistryAnswer = "organizationNumber" | "notFound" | "nameMismatch" | "inactive";
+export type NpiRegistryCheckKey =
+  | "organizationNumber"
+  | "notFound"
+  | "nameMismatch"
+  | "inactive"
+  | "credentialsDiffer"
+  | "taxonomyDiffers"
+  | "licenseDiffers";
 
-export async function blockNpiRegistryAnswers(
+export async function showNpiRegistryChecksBackendOnly(
   context: BrowserContext,
-  answers: NpiRegistryAnswer[],
+  checks: NpiRegistryCheckKey[],
 ): Promise<{ patched: () => boolean }> {
   let patched = false;
   await context.route(/\/src\/lib\/npiRegistryPolicy\.ts(\?.*)?$/, async (route) => {
     const response = await route.fetch();
     let body = await response.text();
-    for (const answer of answers) {
-      const next = body.replace(new RegExp(`${answer}:\\s*"warn"`), `${answer}: "block"`);
+    for (const check of checks) {
+      const next = body.replace(
+        new RegExp(`${check}:\\s*"review_step"`),
+        `${check}: "backend_only"`,
+      );
       if (next === body) {
         await route.fulfill({ response, body });
         return;
