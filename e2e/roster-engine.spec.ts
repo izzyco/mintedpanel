@@ -117,7 +117,8 @@ test("roster mapping saves scope, records an override, and downloads an immutabl
 }) => {
   test.setTimeout(120_000);
   let mapping = makeMapping();
-  let overrideReason: string | null = null;
+  // MINT-136: "Export anyway" posts no reason; this records what it posted.
+  let overrideBody: Record<string, unknown> | null = null;
   let snapshot: Record<string, unknown> | null = null;
   const exportAttemptKeys: string[] = [];
 
@@ -195,9 +196,9 @@ test("roster mapping saves scope, records an override, and downloads an immutabl
         revision: mapping.revision,
         inputFingerprint: `fingerprint-${mapping.revision}`,
         rowCount: mapping.selectedProviderIds.length,
-        hardErrorCount: overrideReason ? 0 : 1,
-        overriddenErrorCount: overrideReason ? 1 : 0,
-        exportable: Boolean(overrideReason && mapping.selectedProviderIds.length),
+        hardErrorCount: overrideBody ? 0 : 1,
+        overriddenErrorCount: overrideBody ? 1 : 0,
+        exportable: Boolean(overrideBody && mapping.selectedProviderIds.length),
         issues: mapping.selectedProviderIds.length
           ? [
               {
@@ -207,16 +208,15 @@ test("roster mapping saves scope, records an override, and downloads an immutabl
                 severity: "hard_error",
                 message: "Practice ZIP must include ZIP+4 for this roster column.",
                 overrideable: true,
-                overrideId: overrideReason ? "override-1" : null,
-                overrideReason,
+                overrideId: overrideBody ? "override-1" : null,
+                overrideReason: null,
               },
             ]
           : [],
       });
     }
     if (url.pathname === `/api/rosters/mappings/${MAPPING_ID}/overrides` && method === "POST") {
-      const body = request.postDataJSON() as { reason: string };
-      overrideReason = body.reason;
+      overrideBody = request.postDataJSON() as Record<string, unknown>;
       return json(
         {
           id: "override-1",
@@ -226,7 +226,7 @@ test("roster mapping saves scope, records an override, and downloads an immutabl
           rowKey: `${PROVIDER_ID}:${FACILITY_ID}`,
           ruleCode: "ZIP_PLUS_4_REQUIRED",
           fieldKey: "practice_zip",
-          reason: overrideReason,
+          reason: null,
           createdAt: "2026-09-24T12:30:00Z",
         },
         201,
@@ -306,13 +306,18 @@ test("roster mapping saves scope, records an override, and downloads an immutabl
   await page.getByRole("link", { name: /Review validation/ }).click();
 
   await expect(page.getByText("Hard errors")).toBeVisible();
-  await page
-    .getByLabel("Audited override reason")
-    .fill(
-      "Confirmed the payer accepts this ZIP+5 for the selected location in this one-time roster export.",
-    );
-  await page.getByRole("button", { name: "Record override" }).click();
+  // MINT-136: one click, no reason field, no confirm dialog.
+  await expect(page.getByRole("button", { name: "Export anyway" })).toBeVisible();
+  await expect(page.getByLabel("Audited override reason")).toHaveCount(0);
+  await page.getByRole("button", { name: "Export anyway" }).click();
   await expect(page.getByText("Export ready")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(overrideBody).toMatchObject({
+    rowKey: `${PROVIDER_ID}:${FACILITY_ID}`,
+    ruleCode: "ZIP_PLUS_4_REQUIRED",
+    fieldKey: "practice_zip",
+  });
+  expect(overrideBody).not.toHaveProperty("reason");
   await page.getByRole("link", { name: /Continue to export/ }).click();
 
   await expect(page.getByText("Draft payer schema")).toBeVisible();

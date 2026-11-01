@@ -34,6 +34,7 @@
 // the one safe failure log line.
 import { CASE_TYPES } from "./caseTypes";
 import { PROFILE_ATTRIBUTE_KEYS } from "./profileGating";
+import { ROSTER_OVERRIDE_FIELDS, ROSTER_OVERRIDE_RULES } from "./rosterOverrideAdvisory";
 
 /* ------------------------------ Vocabularies ------------------------------ */
 // The record tables, sources, severities and roles below are mirrored by the
@@ -208,11 +209,14 @@ export const CONFIG_LAYERS = ["platform", "org"] as const;
  *                        10 MB file cap; 100,000 is the house complete-read
  *                        cap (COMPLETE_READ_MAX_ROWS) and far past any real
  *                        roster. A later line records without it.
- *    count               follow-ups left unassigned for one org on one day.
+ *    count               follow-ups left unassigned for one org on one day,
+ *                        or a roster's output rows (at most 5,000).
  *    earlier_open_count  earlier open tasks on a case, or steps on a task.
  *    step_order          an SOP step's position on its task.
  *    step_position       a reminder step (a sequence has at most 10).
  *    removed_count       cc members removed (a cc list holds at most 20).
+ *  rule and field are a roster override's rule code and field key (MINT-136,
+ *  src/lib/rosterOverrideAdvisory.ts).
  *  Adding a key, or a value to a vocabulary, is a migration (the SQL list). */
 export const CONTEXT_KEYS = {
   attributes: { kind: "tokens", values: PROFILE_ATTRIBUTE_KEYS },
@@ -221,12 +225,14 @@ export const CONTEXT_KEYS = {
   count: { kind: "count", max: 9_999 },
   earlier_open_count: { kind: "count", max: 99 },
   facility_ids: { kind: "ids" },
+  field: { kind: "token", values: ROSTER_OVERRIDE_FIELDS },
   import_run_id: { kind: "id" },
   layer: { kind: "token", values: CONFIG_LAYERS },
   line: { kind: "count", max: 100_000 },
   payer_id: { kind: "id" },
   recipient_id: { kind: "id" },
   removed_count: { kind: "count", max: 20 },
+  rule: { kind: "token", values: ROSTER_OVERRIDE_RULES },
   step_order: { kind: "count", max: 99 },
   step_position: { kind: "count", max: 10 },
   surface: { kind: "token", values: ADVISORY_SURFACES },
@@ -615,7 +621,8 @@ export const CHECKS = {
     critical: false,
     help: "A roster was exported past a validation error, so the payer may receive a value in a format it rejects.",
     recordTables: ["roster_mappings"],
-    contextKeys: [],
+    // MINT-136: the override's rule and field, and the roster's row count.
+    contextKeys: ["rule", "field", "count"],
   },
 } as const satisfies Record<string, CheckDefinition>;
 

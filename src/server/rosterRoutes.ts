@@ -18,7 +18,9 @@ import {
 } from "@/services/rosterEngineData";
 import { evaluateRosterSource } from "@/lib/rosterValidation";
 import { isRosterSourceCompatibleWithTarget } from "@/lib/rosterTransforms";
+import { rosterOverrideContext } from "@/lib/rosterOverrideAdvisory";
 import { serializeRosterFile } from "@/lib/rosterSpreadsheet";
+import { recordServerAdvisory } from "./advisories";
 import { fail, ok } from "./envelope";
 import { isWriter, type AuthContext } from "./guard";
 import type {
@@ -389,6 +391,11 @@ export function handleRosterValidation(id: string, ctx: AuthContext): Promise<Re
   );
 }
 
+// MINT-136 "Export anyway": one click, no typed reason. A reason an older
+// client still sends is ignored, so no free text reaches the ledger. The
+// override is recorded, then the bypass goes to the workflow advisories
+// (roster_export.override: the mapping, the rule, the field and the row
+// count). The advisory helper never throws, so the override stands either way.
 export function handleSaveRosterOverride(
   id: string,
   body: unknown,
@@ -404,8 +411,7 @@ export function handleSaveRosterOverride(
     !HEX_SHA_RE.test(body.inputFingerprint) ||
     !string(body.rowKey) ||
     !string(body.ruleCode) ||
-    !string(body.fieldKey) ||
-    !string(body.reason)
+    !string(body.fieldKey)
   ) {
     return Promise.resolve(noStore(fail(422, "Roster override request is invalid")));
   }
@@ -415,12 +421,7 @@ export function handleSaveRosterOverride(
     rowKey: body.rowKey,
     ruleCode: body.ruleCode,
     fieldKey: body.fieldKey,
-    reason: body.reason,
   };
-  if (input.reason.trim().length < 20)
-    return Promise.resolve(
-      noStore(fail(422, "Override reason must contain at least 20 characters")),
-    );
   return run(
     async () => {
       const { service, snapshot, result } = await evaluateCurrent(ctx, id);
@@ -438,7 +439,15 @@ export function handleSaveRosterOverride(
       );
       if (!issue || issue.severity !== "hard_error" || !issue.overrideable)
         throw new Error("roster_mapping_invalid");
-      return recordRosterOverride(service, id, input);
+      const override = await recordRosterOverride(service, id, input);
+      await recordServerAdvisory(
+        ctx,
+        "api",
+        "roster_export.override",
+        { table: "roster_mappings", id },
+        rosterOverrideContext(issue.ruleCode, issue.fieldKey, result.validation.rowCount),
+      );
+      return override;
     },
     (override) => ok(override, null, 201),
   );

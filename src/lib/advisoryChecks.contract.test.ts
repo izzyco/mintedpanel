@@ -95,6 +95,46 @@ function hasColumn(body: string, column: string): boolean {
   return new RegExp(`^\\s*${column}\\s`, "m").test(body);
 }
 
+/** Every definition of a function across the migrations, oldest first. A
+ *  later migration may replace one: MINT-136 replaced the context validator
+ *  to add the rule and field keys. The latest definition is the live one. */
+function definitions(name: string): { file: string; body: string }[] {
+  return ALL_MIGRATIONS.flatMap((file) => {
+    const source = executable(read(file));
+    const start = source.indexOf(`CREATE OR REPLACE FUNCTION ${name}(`);
+    if (start < 0) return [];
+    const open = source.indexOf("$function$", start);
+    const close = source.indexOf("$function$;", open + "$function$".length);
+    return open < 0 || close < 0 ? [] : [{ file, body: source.slice(start, close) }];
+  });
+}
+
+function latestBody(name: string): string {
+  const body = definitions(name).at(-1)?.body;
+  if (!body) throw new Error(`${name} not found in any migration`);
+  return body;
+}
+
+// A context validator's declared keys: one VALUES row per key,
+// ('<key>', '<kind>', <bound or NULL>, <ARRAY[...] or NULL>).
+function contextRows(
+  body: string,
+): Map<string, { kind: string; max: number | null; values: string[] | null }> {
+  const rows = body.matchAll(
+    /\('([a-z_]+)', '(flag|count|id|ids|token|tokens)', (NULL|\d+), (NULL|ARRAY\[([^\]]*)\])\)/g,
+  );
+  return new Map(
+    [...rows].map((m) => [
+      m[1],
+      {
+        kind: m[2],
+        max: m[3] === "NULL" ? null : Number(m[3]),
+        values: m[4] === "NULL" ? null : quotedList(m[5]),
+      },
+    ]),
+  );
+}
+
 describe("MINT-134 migration mirrors the registry", () => {
   it("is the only migration at its version", () => {
     const version = MIGRATION_FILE.slice(0, 14);
@@ -233,25 +273,9 @@ describe("MINT-134 migration mirrors the registry", () => {
     expect(count(sql, `'${JOB_NAME_PATTERN.source}'`)).toBe(2);
   });
 
-  // The SQL's declared context keys: one VALUES row per key,
-  // ('<key>', '<kind>', <bound or NULL>, <ARRAY[...] or NULL>).
-  function sqlContextKeys(): Map<
-    string,
-    { kind: string; max: number | null; values: string[] | null }
-  > {
-    const rows = functionBody("private.workflow_advisory_context_valid").matchAll(
-      /\('([a-z_]+)', '(flag|count|id|ids|token|tokens)', (NULL|\d+), (NULL|ARRAY\[([^\]]*)\])\)/g,
-    );
-    return new Map(
-      [...rows].map((m) => [
-        m[1],
-        {
-          kind: m[2],
-          max: m[3] === "NULL" ? null : Number(m[3]),
-          values: m[4] === "NULL" ? null : quotedList(m[5]),
-        },
-      ]),
-    );
+  // The live validator's declared context keys (its latest definition).
+  function sqlContextKeys() {
+    return contextRows(latestBody("private.workflow_advisory_context_valid"));
   }
 
   it("declares exactly CONTEXT_KEYS in SQL, with the same kinds, bounds and vocabularies", () => {
@@ -268,7 +292,7 @@ describe("MINT-134 migration mirrors the registry", () => {
   });
 
   it("accepts declared keys only, with the registry's limits, and no open tokens", () => {
-    const body = functionBody("private.workflow_advisory_context_valid");
+    const body = latestBody("private.workflow_advisory_context_valid");
     expect(body).toMatch(/WHERE d\.context_key = v_key;\s+IF NOT FOUND THEN\s+RETURN false;/);
     expect(body).toContain(`v_keys > ${CONTEXT_MAX_KEYS}`);
     expect(body).toContain(`RETURN v_capacity < ${CONTEXT_MAX_COUNT_CAPACITY};`);
@@ -285,6 +309,34 @@ describe("MINT-134 migration mirrors the registry", () => {
     expect(sql).toMatch(
       /CONSTRAINT workflow_advisories_context_check CHECK \(\s*private\.workflow_advisory_context_valid\(context\)/,
     );
+  });
+
+  // MINT-136 replaced the validator in a later migration. A replacement may
+  // only add declared keys: the body around the VALUES list is #568's, and
+  // every row an earlier definition declared is kept as it was.
+  it("replaces the context validator only to add declared keys", () => {
+    const all = definitions("private.workflow_advisory_context_valid");
+    expect(all[0]?.file).toBe(MIGRATION_FILE);
+    expect(all.map(({ file }) => file)).toContain(
+      "20261101150000_mint136_roster_export_anyway.sql",
+    );
+    const shape = (body: string) =>
+      body
+        .replace(
+          /FROM \(VALUES[\s\S]*?\) AS d\(context_key, kind, max_value, allowed\)/,
+          "FROM (VALUES) AS d",
+        )
+        .replace(/\s+/g, " ")
+        .trim();
+    for (let index = 1; index < all.length; index += 1) {
+      const earlier = all[index - 1];
+      const later = all[index];
+      expect(shape(later.body), later.file).toBe(shape(all[0].body));
+      const kept = contextRows(later.body);
+      for (const [key, row] of contextRows(earlier.body)) {
+        expect(kept.get(key), `${later.file} keeps ${key}`).toEqual(row);
+      }
+    }
   });
 
   it("checks every context id against the org, one branch per id key", () => {

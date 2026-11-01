@@ -4442,7 +4442,7 @@ export type Database = {
           mapping_id: string;
           mapping_revision: number;
           org_id: string;
-          reason: string;
+          reason: string | null;
           row_key: string;
           rule_code: string;
         };
@@ -4455,7 +4455,7 @@ export type Database = {
           mapping_id: string;
           mapping_revision: number;
           org_id: string;
-          reason: string;
+          reason?: string | null;
           row_key: string;
           rule_code: string;
         };
@@ -4468,7 +4468,7 @@ export type Database = {
           mapping_id?: string;
           mapping_revision?: number;
           org_id?: string;
-          reason?: string;
+          reason?: string | null;
           row_key?: string;
           rule_code?: string;
         };
@@ -5583,7 +5583,7 @@ export type Database = {
           p_mapping_id: string;
           p_mapping_revision: number;
           p_org_id: string;
-          p_reason: string;
+          p_reason?: string;
           p_row_key: string;
           p_rule_code: string;
         };

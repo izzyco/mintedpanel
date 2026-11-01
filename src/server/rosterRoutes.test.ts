@@ -17,6 +17,7 @@ vi.mock("@/services/rosterEngineData", () => ({
   recordRosterOverride: vi.fn(),
   saveRosterMapping: vi.fn(),
 }));
+vi.mock("./advisories", () => ({ recordServerAdvisory: vi.fn() }));
 
 import {
   commitRosterExport,
@@ -31,6 +32,7 @@ import {
   recordRosterOverride,
   saveRosterMapping,
 } from "@/services/rosterEngineData";
+import { recordServerAdvisory } from "./advisories";
 import {
   handleCreateRosterMapping,
   handleRosterDownload,
@@ -144,7 +146,6 @@ const overrideInput = {
   rowKey: PROVIDER_ID,
   ruleCode: "provider_npi_invalid",
   fieldKey: "provider.npi",
-  reason: "Payer confirmed this provider exception for this specific roster.",
 };
 
 beforeEach(() => {
@@ -272,6 +273,7 @@ describe("roster API route governance", () => {
     expect(getRosterSourceSnapshot).not.toHaveBeenCalled();
     expect(getIdempotentRosterExport).not.toHaveBeenCalled();
     expect(recordRosterOverride).not.toHaveBeenCalled();
+    expect(recordServerAdvisory).not.toHaveBeenCalled();
     expect(commitRosterExport).not.toHaveBeenCalled();
   });
 
@@ -293,16 +295,30 @@ describe("roster API route governance", () => {
     expect(result.data).toMatchObject({ hardErrorCount: 1, exportable: false });
   });
 
-  it("rejects short override reasons before reading source data", async () => {
+  // MINT-136: "Export anyway" takes no typed reason, and a reason an older
+  // client still sends never reaches the data layer.
+  it("records an override without a typed reason and drops one an older client sends", async () => {
+    vi.mocked(recordRosterOverride).mockResolvedValue({
+      id: "override-1",
+      mappingId: MAPPING_ID,
+      revision: mapping.revision,
+      inputFingerprint: FINGERPRINT,
+      rowKey: PROVIDER_ID,
+      ruleCode: "provider_npi_invalid",
+      fieldKey: "provider.npi",
+      reason: null,
+      createdAt: "2026-09-25T12:31:00Z",
+    });
     const response = await handleSaveRosterOverride(
       MAPPING_ID,
       { ...overrideInput, reason: "too short" },
       ctx(),
     );
-    expect(response.status).toBe(422);
-    expect((await envelope(response)).error).toMatch(/20 characters/);
-    expect(getRosterSourceSnapshot).not.toHaveBeenCalled();
-    expect(recordRosterOverride).not.toHaveBeenCalled();
+    expect(response.status).toBe(201);
+    expect(recordRosterOverride).toHaveBeenCalledTimes(1);
+    const input = vi.mocked(recordRosterOverride).mock.calls[0]?.[2];
+    expect(input).toEqual(overrideInput);
+    expect(input).not.toHaveProperty("reason");
   });
 
   it("saves an override only for the current row, rule, and field tuple", async () => {
@@ -314,7 +330,7 @@ describe("roster API route governance", () => {
       rowKey: PROVIDER_ID,
       ruleCode: "provider_npi_invalid",
       fieldKey: "provider.npi",
-      reason: overrideInput.reason,
+      reason: null,
       createdAt: "2026-09-25T12:31:00Z",
     };
     vi.mocked(recordRosterOverride).mockResolvedValue(saved);
@@ -326,8 +342,10 @@ describe("roster API route governance", () => {
     );
     expect(mismatch.status).toBe(422);
     expect(recordRosterOverride).not.toHaveBeenCalled();
+    expect(recordServerAdvisory).not.toHaveBeenCalled();
 
-    const response = await handleSaveRosterOverride(MAPPING_ID, overrideInput, ctx());
+    const caller = ctx();
+    const response = await handleSaveRosterOverride(MAPPING_ID, overrideInput, caller);
     expect(response.status).toBe(201);
     expect((await envelope(response)).data).toEqual(saved);
     expect(recordRosterOverride).toHaveBeenCalledWith(
@@ -335,6 +353,26 @@ describe("roster API route governance", () => {
       MAPPING_ID,
       overrideInput,
     );
+    // MINT-136: the bypass goes to the workflow advisories with its rule, its
+    // field (as a closed token) and the roster's row count, after the save.
+    expect(recordServerAdvisory).toHaveBeenCalledTimes(1);
+    expect(recordServerAdvisory).toHaveBeenCalledWith(
+      caller,
+      "api",
+      "roster_export.override",
+      { table: "roster_mappings", id: MAPPING_ID },
+      { rule: "provider_npi_invalid", field: "provider_npi", count: 1 },
+    );
+    expect(vi.mocked(recordRosterOverride).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(recordServerAdvisory).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("records no advisory when the override itself fails", async () => {
+    vi.mocked(recordRosterOverride).mockRejectedValue(new Error("roster_input_fingerprint_stale"));
+    const response = await handleSaveRosterOverride(MAPPING_ID, overrideInput, ctx());
+    expect(response.status).toBe(409);
+    expect(recordServerAdvisory).not.toHaveBeenCalled();
   });
 
   it("returns stale conflict when freshly read source differs from the requested export fingerprint", async () => {

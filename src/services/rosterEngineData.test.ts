@@ -7,6 +7,7 @@ import {
   getRosterMappingRecord,
   listRosterExportSnapshots,
   listRosterOverrides,
+  recordRosterOverride,
   type RosterEngineDataCtx,
 } from "./rosterEngineData";
 
@@ -288,4 +289,54 @@ describe("roster engine data access", () => {
       ).rejects.toThrow("roster_idempotency_conflict");
     },
   );
+});
+
+// MINT-136 "Export anyway": an override carries no typed reason.
+describe("recording a roster override", () => {
+  it("sends no reason to the RPC and reads a stored null reason as null", async () => {
+    const calls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+    const db = {
+      rpc(fn: string, args: Record<string, unknown>) {
+        calls.push({ fn, args });
+        return Promise.resolve({
+          data: {
+            id: "override-1",
+            mapping_id: "mapping-1",
+            mapping_revision: 2,
+            input_fingerprint: "a".repeat(64),
+            row_key: "provider-1:facility-1",
+            rule_code: "facility_zip_plus_4_invalid",
+            field_key: "facility.zip",
+            reason: null,
+            created_at: "2026-11-01T12:00:00Z",
+          },
+          error: null,
+        });
+      },
+    } as unknown as SupabaseClient<Database>;
+
+    const saved = await recordRosterOverride(ctx(db), "mapping-1", {
+      expectedRevision: 2,
+      inputFingerprint: "a".repeat(64),
+      rowKey: "provider-1:facility-1",
+      ruleCode: "facility_zip_plus_4_invalid",
+      fieldKey: "facility.zip",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.fn).toBe("roster_engine_record_override");
+    expect(calls[0]?.args).toEqual({
+      p_org_id: "org-1",
+      p_actor_id: "user-1",
+      p_mapping_id: "mapping-1",
+      p_mapping_revision: 2,
+      p_input_fingerprint: "a".repeat(64),
+      p_row_key: "provider-1:facility-1",
+      p_rule_code: "facility_zip_plus_4_invalid",
+      p_field_key: "facility.zip",
+    });
+    expect(calls[0]?.args).not.toHaveProperty("p_reason");
+    expect(saved.reason).toBeNull();
+    expect(saved).toMatchObject({ id: "override-1", fieldKey: "facility.zip" });
+  });
 });
