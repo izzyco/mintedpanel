@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS } from "@/lib/caqhAttestation";
+import {
+  DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS,
+  explainCaqhAttestationWindowDays,
+} from "@/lib/caqhAttestation";
 import { CASE_STATUSES, type CaseStatus } from "@/lib/caseStatus";
 import {
   buildOnboardingFunnelRows,
   DEFAULT_ONBOARDING_FUNNEL_CONFIG,
   DEFAULT_ONBOARDING_FUNNEL_RULES,
   DEFAULT_ONBOARDING_FUNNEL_STAGES,
+  effectiveOnboardingFunnelConfig,
   explainOnboardingFunnelConfig,
   INVITE_OUTSTANDING_TAG,
   MAX_ONBOARDING_FUNNEL_STAGES,
@@ -188,15 +192,15 @@ describe("provider onboarding funnel", () => {
     data.locations = [at("both", "NC"), at("locationonly", "NC")];
     data.groupMemberships = [member("both"), member("grouponly")];
     data.cases = [];
-    // A23: the missing group is a staff-side gap, listed beside per-location
-    // reasons like anyone else's.
+    // A23: the missing group is a staff-side gap. Without a group, a
+    // location under someone else's group is part of that gap too.
     expect(rowsOf(data).map((r) => [r.providerId, r.stage, r.gaps])).toEqual([
       ["both", "ready_for_credentialing", []],
       ["grouponly", "verified_awaiting_assignment", ["Needs a location"]],
       [
         "locationonly",
         "verified_awaiting_assignment",
-        ["Location NC Clinic is under Rose City Rehab, not the provider's group", NO_GROUP_GAP],
+        [NO_GROUP_GAP, "Location NC Clinic is under Rose City Rehab, not the provider's group"],
       ],
       ["neither", "verified_awaiting_assignment", ["Needs a location", NO_GROUP_GAP]],
     ]);
@@ -295,11 +299,7 @@ describe("provider onboarding funnel", () => {
     data.licenses = [{ ...verified("ready", "NC"), verifiedStatus: "unverified" }];
     expect(rowFor(data, "ready")).toMatchObject({
       stage: "submitted",
-      gaps: [
-        "NC license not board-verified",
-        "Location nowhere Clinic is under Rose City Rehab, not the provider's group",
-        STATELESS_LOCATION_GAP,
-      ],
+      gaps: ["NC license not board-verified", STATELESS_LOCATION_GAP],
     });
   });
 
@@ -417,16 +417,17 @@ describe("Submitted and Verified, awaiting assignment", () => {
         "Location TX Clinic is under Shelby Sports Rehab, not the provider's group",
       ],
     });
-    // A23: a missing group is never listed as the provider's reason.
+    // A23: a missing group is never listed as the provider's reason, and
+    // without a group the location's mismatch is part of that staff gap.
     data.groupMemberships = [];
     expect(rowFor(data, "unverified")).toMatchObject({
       stage: "submitted",
-      gaps: [
-        "TX license not board-verified",
-        "Location TX Clinic is under Shelby Sports Rehab, not the provider's group",
-      ],
+      gaps: ["TX license not board-verified"],
     });
-    expect(rowFor(data, "unverified")?.dimensions.groupGaps).toEqual([NO_GROUP_GAP]);
+    expect(rowFor(data, "unverified")?.dimensions.groupGaps).toEqual([
+      NO_GROUP_GAP,
+      "Location TX Clinic is under Shelby Sports Rehab, not the provider's group",
+    ]);
   });
 });
 
@@ -475,8 +476,8 @@ describe("a location must be under the provider's group", () => {
     expect(rowFor(data, "ready")).toMatchObject({
       stage: "verified_awaiting_assignment",
       gaps: [
-        "Location Austin is under Shelby Sports Rehab, not the provider's group",
         NO_GROUP_GAP,
+        "Location Austin is under Shelby Sports Rehab, not the provider's group",
       ],
     });
     // An ungrouped location counts for them too (A22): only the group is left.
@@ -834,7 +835,8 @@ describe("stage configuration", () => {
     );
     expect(copy).toEqual({
       Invited: "Invited to the intake form. Nothing sent back yet.",
-      "Profile incomplete": "Missing NPI, CAQH ID, demographics, or a license.",
+      // Neutral (A18): the required fields are a setting (A26).
+      "Profile incomplete": "A required profile field is missing.",
       Submitted: "Information is complete but not yet verified.",
       "Verified, awaiting assignment":
         "Verified; the group, the location, or a location's record still needs attention.",
@@ -945,8 +947,8 @@ describe("stage configuration", () => {
       stage: "not_ready",
       gaps: [
         "TX license not board-verified",
-        "Location tx Clinic is under Rose City Rehab, not the provider's group",
         NO_GROUP_GAP,
+        "Location tx Clinic is under Rose City Rehab, not the provider's group",
       ],
     });
     expect(onboardingFunnelStageCounts(rows, config.stages)).toEqual({
@@ -1961,5 +1963,232 @@ describe("A19: explainOnboardingFunnelConfig says which layer was ignored and wh
     expect(resolveOnboardingFunnelConfig(platform, org, CAQH)).toEqual(
       explainOnboardingFunnelConfig(platform, org, CAQH).config,
     );
+  });
+});
+
+describe("A23: a group problem is never the provider's reason (review of 209c1dfd)", () => {
+  // Bea: complete but pending verification, so she sits in Submitted. Her
+  // only membership and her only location are in Rose City Rehab.
+  function pendingAtRose(membership: Partial<OnboardingFunnelMembershipInput> | null) {
+    const data = input();
+    data.providers = [{ ...complete("bea", "Bea Pending"), pendingVerification: true }];
+    data.licenses = [verified("bea", "NC")];
+    data.locations = [at("bea", "NC", { locationName: "Durham" })];
+    data.groupMemberships = membership ? [member("bea", null, membership)] : [];
+    data.cases = [];
+    return data;
+  }
+
+  const cases: Array<{
+    name: string;
+    membership: Partial<OnboardingFunnelMembershipInput> | null;
+    rules?: OnboardingFunnelRules;
+    staff: string[];
+  }> = [
+    {
+      name: "a membership that ended",
+      membership: { endDate: "2026-10-01" },
+      staff: ["Membership in Rose City Rehab ended 2026-10-01"],
+    },
+    {
+      name: "an inactive group",
+      membership: { groupActive: false },
+      staff: ["Group Rose City Rehab is inactive"],
+    },
+    {
+      name: "a group the read cannot see",
+      membership: { groupActive: null, groupName: null },
+      staff: ["Membership group not found"],
+    },
+    {
+      name: "a membership that starts later, while future memberships do not count",
+      membership: { startDate: "2026-12-01" },
+      rules: resolveOnboardingFunnelRules(null, { futureMembershipCounts: false }),
+      staff: ["Membership in Rose City Rehab starts 2026-12-01"],
+    },
+    {
+      name: "no membership at all",
+      membership: null,
+      staff: [NO_GROUP_GAP, "Location Durham is under Rose City Rehab, not the provider's group"],
+    },
+  ];
+
+  for (const { name, membership, rules = DEFAULT, staff } of cases) {
+    it(`keeps ${name} out of Submitted and lists it for staff`, () => {
+      const data = pendingAtRose(membership);
+      const row = rowFor(data, "bea", rules);
+      expect(row).toMatchObject({ stage: "submitted", gaps: ["Record pending verification"] });
+      expect(row?.dimensions).toMatchObject({
+        assigned: false,
+        assignmentGaps: [],
+        grouped: false,
+        groupGaps: staff,
+      });
+      // Once verified, staff see it under Verified, awaiting assignment.
+      data.providers = [complete("bea", "Bea Pending")];
+      expect(rowFor(data, "bea", rules)).toMatchObject({
+        stage: "verified_awaiting_assignment",
+        gaps: staff,
+      });
+    });
+  }
+
+  it("keeps a real location mismatch for a provider who has a current group", () => {
+    const data = pendingAtRose({ ...underShelby });
+    expect(rowFor(data, "bea")).toMatchObject({
+      stage: "submitted",
+      gaps: [
+        "Record pending verification",
+        "Location Durham is under Rose City Rehab, not the provider's group",
+      ],
+    });
+  });
+
+  it("never shows a group gap in Submitted, across real records and rules", () => {
+    // Every mix of membership and location below, verified or not, under
+    // every on/off setting that shapes a membership or location reason.
+    const memberships: Array<Array<Partial<OnboardingFunnelMembershipInput>>> = [
+      [],
+      [{}],
+      [{ endDate: "2026-10-01" }],
+      [{ groupActive: false }],
+      [{ groupActive: null, groupName: null, groupId: "g-unseen" }],
+      [{ startDate: "2026-12-01" }],
+      [{ ...underShelby }, { endDate: "2026-10-01" }],
+      [{ ...underShelby, startDate: "2026-12-01" }],
+    ];
+    const locations: Array<Array<Partial<OnboardingFunnelLocationInput>>> = [
+      [],
+      [{}],
+      [{ ...underShelby }],
+      [{ groupId: null, groupName: null }],
+      [{ state: null }],
+      [{ assignmentStartDate: "2026-12-01" }],
+      [{}, { ...underShelby, state: "SC" }],
+      [{ groupId: "g-unseen", groupName: null }],
+    ];
+    const flags = [true, false];
+    let submitted = 0;
+    for (const futureMembershipCounts of flags)
+      for (const futureLocationAssignmentCounts of flags)
+        for (const ungroupedLocationCounts of flags)
+          for (const locationMustBeInProviderGroup of flags)
+            for (const assignmentRequiredForReady of flags)
+              for (const statelessLocationHolds of flags) {
+                const rules: OnboardingFunnelRules = {
+                  ...DEFAULT,
+                  futureMembershipCounts,
+                  futureLocationAssignmentCounts,
+                  ungroupedLocationCounts,
+                  locationMustBeInProviderGroup,
+                  assignmentRequiredForReady,
+                  statelessLocationHolds,
+                };
+                const providers: OnboardingFunnelProviderFacts[] = [];
+                const licenses: OnboardingFunnelInput["licenses"][number][] = [];
+                const groupMemberships: OnboardingFunnelMembershipInput[] = [];
+                const locationRows: OnboardingFunnelLocationInput[] = [];
+                memberships.forEach((ms, mi) =>
+                  locations.forEach((ls, li) =>
+                    [true, false].forEach((pending) => {
+                      const id = `p-${mi}-${li}-${pending}`;
+                      providers.push({ ...complete(id, id), pendingVerification: pending });
+                      licenses.push(verified(id, "NC"), verified(id, "SC"));
+                      ms.forEach((m) => groupMemberships.push(member(id, null, m)));
+                      ls.forEach((l, i) =>
+                        locationRows.push(
+                          at(id, "NC", { locationId: `f-${id}-${i}`, locationName: `L${i}`, ...l }),
+                        ),
+                      );
+                    }),
+                  ),
+                );
+                const data: OnboardingFunnelInput = {
+                  providers,
+                  licenses,
+                  locations: locationRows,
+                  groupMemberships,
+                  cases: [],
+                  intakeReadable: false,
+                };
+                for (const row of rowsOf(data, rules)) {
+                  if (row.stage !== "submitted") continue;
+                  submitted += 1;
+                  for (const gap of row.gaps) expect(row.dimensions.groupGaps).not.toContain(gap);
+                  // Without a current group, nothing about groups is shown.
+                  if (!row.dimensions.grouped)
+                    for (const gap of row.gaps)
+                      expect(gap).not.toMatch(
+                        /^(Membership |Group |The provider's group|No group)|not the provider's group$/,
+                      );
+                }
+              }
+    expect(submitted).toBeGreaterThan(1000);
+  });
+});
+
+describe("own-property reads and the CAQH window report (P3s)", () => {
+  it("never applies copy or rules an organization layer only inherits", () => {
+    const inherited = Object.create({
+      stageText: { submitted: { label: "Hacked" } },
+      rules: { assignmentRequiredForReady: false },
+    }) as OnboardingFunnelOrganizationOverride;
+    const result = explainOnboardingFunnelConfig(null, inherited, CAQH);
+    expect(result.ignored).toEqual([]);
+    expect(result.config).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
+    // Own copy whose label is inherited is not applied either.
+    const ownText = {
+      stageText: { submitted: Object.create({ label: "Hacked" }) },
+    } as unknown as OnboardingFunnelOrganizationOverride;
+    expect(explainOnboardingFunnelConfig(null, ownText, CAQH).config.stages[2].label).toBe(
+      "Submitted",
+    );
+  });
+
+  it("never reads a stage field or a config field from a prototype", () => {
+    const inheritedStage = Object.create({
+      key: "submitted",
+      label: "S",
+      description: "d",
+      gate: "any",
+    }) as OnboardingFunnelStageConfig;
+    expect(validateOnboardingFunnelConfig({ stages: [inheritedStage], rules: DEFAULT })).toContain(
+      'Stage 1: "undefined" is not a gate on the menu.',
+    );
+    const inheritedConfig = Object.create({
+      stages: [{ key: "a", label: "A", description: "d", gate: "any" }],
+      rules: DEFAULT,
+      caqhAttestationWindowDays: 30,
+    }) as OnboardingFunnelConfig;
+    const effective = effectiveOnboardingFunnelConfig(inheritedConfig);
+    expect(effective.stages).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES);
+    expect(effective.caqhAttestationWindowDays).toBe(120);
+  });
+
+  it("reports an invalid CAQH window instead of silently using the default", () => {
+    expect(explainCaqhAttestationWindowDays(90, 0)).toEqual({
+      windowDays: 90,
+      ignored: [
+        {
+          layer: "organization",
+          reasons: ["The CAQH attestation window must be a whole number of days from 1 to 365."],
+        },
+      ],
+    });
+    expect(explainCaqhAttestationWindowDays("90", null)).toMatchObject({
+      windowDays: 120,
+      ignored: [{ layer: "platform" }],
+    });
+    expect(explainCaqhAttestationWindowDays(null, 45)).toEqual({ windowDays: 45, ignored: [] });
+    expect(explainOnboardingFunnelConfig(null, null, 0)).toEqual({
+      config: DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+      ignored: [
+        {
+          layer: "shared",
+          part: "caqhAttestationWindowDays",
+          reasons: ["The CAQH attestation window must be a whole number of days from 1 to 365."],
+        },
+      ],
+    });
   });
 });

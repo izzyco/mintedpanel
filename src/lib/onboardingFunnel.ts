@@ -86,6 +86,7 @@
 import {
   DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS,
   isValidCaqhAttestationWindowDays,
+  validateCaqhAttestationWindowDays,
 } from "@/lib/caqhAttestation";
 import { isCaseStatus, type CaseStatus } from "@/lib/caseStatus";
 import { isCaqhCurrent } from "@/lib/enrollmentReadiness";
@@ -526,7 +527,7 @@ const DEFAULT_STAGE_LIST: OnboardingFunnelStageConfig[] = [
   {
     key: "profile_incomplete",
     label: "Profile incomplete",
-    description: "Missing NPI, CAQH ID, demographics, or a license.",
+    description: "A required profile field is missing.",
     gate: "incomplete",
   },
   {
@@ -644,7 +645,7 @@ function describeVariant(rules: OnboardingFunnelRules): string {
  * reads, so the list holds whatever an organization's rules say. */
 export function validateOnboardingFunnelConfig(config: OnboardingFunnelStagesAndRules): string[] {
   const errors: string[] = [];
-  const raw: unknown = isRecord(config) ? config.stages : undefined;
+  const raw: unknown = isRecord(config) ? own(config, "stages") : undefined;
   if (!Array.isArray(raw)) errors.push("The stages must be a list.");
   const list: unknown[] = Array.isArray(raw) ? raw : [];
   if (Array.isArray(raw) && list.length === 0) errors.push("Add at least one stage.");
@@ -659,9 +660,13 @@ export function validateOnboardingFunnelConfig(config: OnboardingFunnelStagesAnd
       errors.push(`${where} is not a stage.`);
       return;
     }
-    const key = typeof entry.key === "string" ? entry.key : "";
-    const label = typeof entry.label === "string" ? entry.label.trim() : "";
-    const description = typeof entry.description === "string" ? entry.description.trim() : "";
+    const ownKey = own(entry, "key");
+    const ownLabel = own(entry, "label");
+    const ownDescription = own(entry, "description");
+    const gate = own(entry, "gate");
+    const key = typeof ownKey === "string" ? ownKey : "";
+    const label = typeof ownLabel === "string" ? ownLabel.trim() : "";
+    const description = typeof ownDescription === "string" ? ownDescription.trim() : "";
     if (!STAGE_KEY.test(key))
       errors.push(
         `${where}: the key must start with a lowercase letter and use only lowercase letters, digits and underscores.`,
@@ -677,14 +682,14 @@ export function validateOnboardingFunnelConfig(config: OnboardingFunnelStagesAnd
     if (!description) errors.push(`${where}: add a description.`);
     else if (description.length > MAX_DESCRIPTION)
       errors.push(`${where}: keep the description to ${MAX_DESCRIPTION} characters.`);
-    if (typeof entry.gate !== "string" || !GATES.has(entry.gate as OnboardingFunnelGate))
-      errors.push(`${where}: "${String(entry.gate)}" is not a gate on the menu.`);
-    else if (entry.gate === "any" && i !== list.length - 1)
+    if (typeof gate !== "string" || !GATES.has(gate as OnboardingFunnelGate))
+      errors.push(`${where}: "${String(gate)}" is not a gate on the menu.`);
+    else if (gate === "any" && i !== list.length - 1)
       errors.push(`${where}: only the last stage can take everyone else ("any").`);
   });
 
-  const rules: Record<string, unknown> =
-    isRecord(config) && isRecord(config.rules) ? config.rules : {};
+  const ownRules = isRecord(config) ? own(config, "rules") : undefined;
+  const rules: Record<string, unknown> = isRecord(ownRules) ? ownRules : {};
   for (const key of RULE_KEYS) {
     if (!RULE_CHECKS[key](own(rules, key))) errors.push(ruleValueError(key));
   }
@@ -751,17 +756,25 @@ const caqhWindowOrDefault = (value: unknown): number =>
 export function effectiveOnboardingFunnelConfig(
   config: OnboardingFunnelConfig | null | undefined,
 ): OnboardingFunnelConfig {
-  const rules = resolveOnboardingFunnelRules(null, isRecord(config) ? config.rules : null);
+  const layer: Record<string, unknown> | null = isRecord(config) ? config : null;
+  const rules = resolveOnboardingFunnelRules(
+    null,
+    (layer ? own(layer, "rules") : null) as OnboardingFunnelRulesOverride | null | undefined,
+  );
+  const list = layer ? own(layer, "stages") : null;
   const stages =
-    isRecord(config) &&
-    validateOnboardingFunnelConfig({ stages: config.stages, rules }).length === 0
-      ? config.stages
+    list != null &&
+    validateOnboardingFunnelConfig({
+      stages: list as ReadonlyArray<OnboardingFunnelStageConfig>,
+      rules,
+    }).length === 0
+      ? (list as ReadonlyArray<OnboardingFunnelStageConfig>)
       : DEFAULT_ONBOARDING_FUNNEL_STAGES;
   return {
     stages: stages.map(copyStage),
     rules,
     caqhAttestationWindowDays: caqhWindowOrDefault(
-      isRecord(config) ? config.caqhAttestationWindowDays : null,
+      layer ? own(layer, "caqhAttestationWindowDays") : null,
     ),
   };
 }
@@ -872,11 +885,14 @@ export function validateOnboardingFunnelOrganizationOverride(
 
 /** A stored override that was not used, and why (A19). */
 export interface OnboardingFunnelIgnoredOverride {
-  layer: "platform" | "organization";
+  /** "shared": the CAQH window passed in, the setting shared with enrollment
+   * readiness; explainCaqhAttestationWindowDays names its stored layer. */
+  layer: "platform" | "organization" | "shared";
   /** "stages": Minted's stage list; the default list ran instead. "rules":
    * some of Minted's rules; each named one kept its default. "layer": the
-   * whole layer; for an organization, Minted's configuration ran instead. */
-  part: "stages" | "rules" | "layer";
+   * whole layer; for an organization, Minted's configuration ran instead.
+   * "caqhAttestationWindowDays": the window; the default ran instead. */
+  part: "stages" | "rules" | "layer" | "caqhAttestationWindowDays";
   reasons: string[];
 }
 
@@ -923,6 +939,15 @@ export function explainOnboardingFunnelConfig(
     if (problems.length > 0) ignored.push({ layer: "platform", part: "stages", reasons: problems });
     else stages = list as ReadonlyArray<OnboardingFunnelStageConfig>;
   }
+  if (!isValidCaqhAttestationWindowDays(caqhAttestationWindowDays))
+    ignored.push({
+      layer: "shared",
+      part: "caqhAttestationWindowDays",
+      reasons:
+        caqhAttestationWindowDays == null
+          ? ["The CAQH attestation window is missing."]
+          : validateCaqhAttestationWindowDays(caqhAttestationWindowDays),
+    });
   const minted: OnboardingFunnelConfig = {
     stages: stages.map(copyStage),
     rules: platformRules,
@@ -934,21 +959,26 @@ export function explainOnboardingFunnelConfig(
     ignored.push({ layer: "organization", part: "layer", reasons: problems });
     return { config: minted, ignored };
   }
-  const text = organization.stageText ?? {};
+  // The layer validated, so it is a plain object; still, read only its own
+  // properties, as the validator did.
+  const layer = organization as unknown as Record<string, unknown>;
+  const text = own(layer, "stageText");
+  const textFor = (key: string, field: "label" | "description"): string | null => {
+    const copy = isRecord(text) ? own(text, key) : undefined;
+    const value = isRecord(copy) ? own(copy, field) : undefined;
+    return typeof value === "string" ? value.trim() : null;
+  };
   return {
     config: {
       ...minted,
-      stages: minted.stages.map((stage) => {
-        const copy = Object.hasOwn(text, stage.key) ? text[stage.key] : undefined;
-        return {
-          ...stage,
-          label: copy?.label != null ? copy.label.trim() : stage.label,
-          description: copy?.description != null ? copy.description.trim() : stage.description,
-        };
-      }),
+      stages: minted.stages.map((stage) => ({
+        ...stage,
+        label: textFor(stage.key, "label") ?? stage.label,
+        description: textFor(stage.key, "description") ?? stage.description,
+      })),
       rules: resolveOnboardingFunnelRules(
         platformRuleOverride as OnboardingFunnelRulesOverride | null | undefined,
-        organization.rules,
+        own(layer, "rules") as OnboardingFunnelRulesOverride | null | undefined,
       ),
     },
     ignored,
@@ -1168,33 +1198,40 @@ function lapsedMembershipReason(
   return null;
 }
 
-/** Why a location does not count, or null when it does. */
+/** Why a location does not count, or null when it does. `groupOnly`: the
+ * only problem is that the location's group is not a current group of the
+ * provider's (a mismatch, or a membership there that does not count). */
 function locationReason(
   location: OnboardingFunnelLocationInput,
   current: ReadonlySet<string>,
   lapsed: ReadonlyMap<string, string>,
   today: string,
   rules: OnboardingFunnelRules,
-): string | null {
+): { text: string; groupOnly: boolean } | null {
   const name = location.locationName;
   if (rules.locationMustBeInProviderGroup) {
     if (location.groupId === null) {
-      if (!rules.ungroupedLocationCounts) return `Location ${name} has no group`;
+      if (!rules.ungroupedLocationCounts)
+        return { text: `Location ${name} has no group`, groupOnly: false };
     } else if (!current.has(location.groupId)) {
-      return (
-        lapsed.get(location.groupId) ??
-        `Location ${name} is under ${location.groupName ?? "another group"}, not the provider's group`
-      );
+      return {
+        text:
+          lapsed.get(location.groupId) ??
+          `Location ${name} is under ${location.groupName ?? "another group"}, not the provider's group`,
+        groupOnly: true,
+      };
     }
   }
   const start = day(location.assignmentStartDate);
   if (!rules.futureLocationAssignmentCounts && start !== null && start > today)
-    return `Assignment to ${name} starts ${start}`;
+    return { text: `Assignment to ${name} starts ${start}`, groupOnly: false };
   return null;
 }
 
 interface Placement {
+  assigned: boolean;
   assignmentGaps: string[];
+  grouped: boolean;
   groupGaps: string[];
   stateGaps: string[];
 }
@@ -1216,25 +1253,43 @@ function placementGaps(
 
   // The group (A23, staff-side): named when a membership exists but does not
   // count, else the plain fact that none is assigned.
-  const groupGaps =
-    current.size > 0 ? [] : lapsed.size > 0 ? [...new Set(lapsed.values())].sort() : [NO_GROUP_GAP];
+  const grouped = current.size > 0;
+  const groupGaps = grouped
+    ? []
+    : lapsed.size > 0
+      ? [...new Set(lapsed.values())].sort()
+      : [NO_GROUP_GAP];
 
   // The location: per-location reasons, for a provider with or without a
   // group alike (A23). An ungrouped location can count for anyone (A22).
-  let assignmentGaps: string[] = [];
-  if (locations.length === 0) assignmentGaps = ["Needs a location"];
+  // Without a current group, a reason that only says the location's group is
+  // not theirs is a group gap, so it is staff-side too and never the
+  // provider's reason. With one, it is a real location mismatch.
+  let assigned = false;
+  const assignmentGaps: string[] = [];
+  if (locations.length === 0) assignmentGaps.push("Needs a location");
   else {
     const sorted = [...locations].sort(
       (a, b) =>
         a.locationName.localeCompare(b.locationName) || a.locationId.localeCompare(b.locationId),
     );
     const reasons = sorted.map((l) => locationReason(l, current, lapsed, today, rules));
-    if (reasons.every((reason) => reason !== null))
-      assignmentGaps = [...new Set(reasons as string[])];
+    assigned = reasons.some((reason) => reason === null);
+    if (!assigned)
+      for (const reason of reasons as Array<{ text: string; groupOnly: boolean }>) {
+        if (reason.groupOnly && !grouped) groupGaps.push(reason.text);
+        else assignmentGaps.push(reason.text);
+      }
   }
 
   const stateGaps = locations.some((l) => code(l.state) === null) ? [STATELESS_LOCATION_GAP] : [];
-  return { assignmentGaps, groupGaps, stateGaps };
+  return {
+    assigned,
+    assignmentGaps: [...new Set(assignmentGaps)],
+    grouped,
+    groupGaps: [...new Set(groupGaps)],
+    stateGaps,
+  };
 }
 
 export function buildOnboardingFunnelRows(
@@ -1355,9 +1410,9 @@ export function buildOnboardingFunnelRows(
         completenessGaps,
         verified: verificationGaps.length === 0,
         verificationGaps,
-        assigned: placement.assignmentGaps.length === 0,
+        assigned: placement.assigned,
         assignmentGaps: placement.assignmentGaps,
-        grouped: placement.groupGaps.length === 0,
+        grouped: placement.grouped,
         groupGaps: placement.groupGaps,
         statesValid: placement.stateGaps.length === 0,
         stateGaps: placement.stateGaps,
