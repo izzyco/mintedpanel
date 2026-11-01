@@ -758,3 +758,89 @@ view token; internal digests remain server-side. CSV uses an explicit client-saf
 28-column projection for either audience, with strict row/byte bounds and a fresh
 snapshot/authority check after serialization and before direct delivery. It
 creates no persistent artifact or asynchronous work.
+
+## MINT-134 workflow advisories (repository-only)
+
+`20261101090000_mint134_workflow_advisories.sql` adds the ledger behind the
+Oct 31 2026 rule that every workflow completes: a noncritical check is bypassed
+and recorded, never enforced. Nothing writes to it yet; the conversion PRs call
+the helpers in `src/services/advisories.ts` (browser) and
+`src/server/advisories.ts` (`/api`, extension routes, jobs). The check registry
+is code: `src/lib/advisoryChecks.ts`.
+
+### workflow_advisories
+
+`id`, `org_id` (FK, cascades), `check_key` (one of the registered keys in
+`private.workflow_advisory_check_key_valid`, mirrored by `CHECKS`; any other is
+refused, so a new check key is a migration), `severity_at_time` (`advisory` = the action proceeded, `block` =
+a critical check stopped it), `record_table` (closed: `providers`,
+`provider_groups`, `facilities`, `credential_cases`, `tasks`, `touches`,
+`import_runs`, `roster_mappings`, `sop_templates`) and `record_id` (checked to
+belong to `org_id`), `actor_id` and `actor_role` (the verified user and their
+`memberships.role`; both NULL exactly for a job row), `source` (`panel |
+extension | api | import | job`), `job` (set exactly when `source = 'job'`),
+`context` (see below), `bypassed_at`, `resolved_at`, `resolved_by`. No record
+label is stored. Append-only: the BEFORE UPDATE guard
+allows only stamping `resolved_at` / `resolved_by` once. The partial unique
+index `workflow_advisories_one_open_job_row` keeps one open job row per
+`(org_id, check_key, record_table, record_id)`. RLS on with no policies;
+service_role has SELECT and nothing else.
+
+`context` holds declared facts only. Its 16 keys are a closed list, kept in
+`private.workflow_advisory_context_valid` and mirrored by `CONTEXT_KEYS` in
+`src/lib/advisoryChecks.ts`; any other key is refused. Each key has one kind:
+
+- **count:** an integer from 0 to the key's own bound: `line` 100000, `count`
+  9999, `earlier_open_count` and `step_order` 99, `removed_count` 20,
+  `step_position` 10. The bounds of the count keys in one context multiply to
+  under 10,000,000.
+- **id / ids:** a lowercase UUID, or a set of up to 20 (`import_run_id`,
+  `payer_id`, `recipient_id`, `facility_ids`, `template_ids`). The record RPCs
+  check that each one names an existing record of the org; a payer or SOP
+  template may be a global catalog row.
+- **token / tokens:** a value, or a set of up to 20, from the key's closed
+  vocabulary (`attributes`, `case_type`, `column`, `layer`, `surface`). There
+  are no open tokens.
+
+A set is sorted in byte order with no repeats, so its order carries nothing.
+No field, check key included, accepts text, an arbitrary number or an
+arbitrary UUID, so a name, email, NPI, phone or date can't be stored as text
+under any spelling. These walls stop plain text and accidental leaks, nothing
+more. One row's choices (the check key, listed values, which org records it
+names, its counts) add up to well over 7 digits, and rows are unlimited, so a
+deliberate direct caller with a codebook could encode an identifier: as
+bounded choices, never as text. A new context key or vocabulary value is a
+migration.
+
+### RPCs (SECURITY DEFINER, `search_path = ''`)
+
+- `record_workflow_advisory(p_org_id, p_check_key, p_severity, p_record_table,
+p_record_id, p_source, p_context DEFAULT '{}', p_actor_id DEFAULT NULL) → uuid`
+  — authenticated (actor = `auth.uid()`; a different `p_actor_id` is refused;
+  an E6.12 restricted external client is refused; source `panel` or `import`)
+  and service_role (`p_actor_id` required, and not a restricted client; source
+  `api` or `extension`). Any other session role is refused. The actor must be a
+  member of the org; the record and every context id must be the org's.
+- `record_job_advisory(p_job, p_org_id, p_check_key, p_severity,
+p_record_table, p_record_id, p_context DEFAULT '{}') → uuid | null` —
+  service_role only, by grant and by session role; null when an open job row
+  already exists. The record and every context id must be the org's.
+- `resolve_workflow_advisories(p_org_id, p_check_key, p_record_table,
+p_record_id, p_resolved_by DEFAULT NULL) → integer` — service_role only, by
+  grant and by session role; stamps every open row for the record and returns
+  the count. `p_resolved_by` must be an org member and not a restricted client.
+
+The restricted-client test for a user the server names is
+`app_authz.is_restricted_external_user(p_user_id)`: `is_restricted_external()`'s
+body with `p_user_id` in place of `auth.uid()`. Like the original it is
+SECURITY DEFINER, owned by `minted_e612_authz_owner` (NOBYPASSRLS), and reads
+the forced-RLS tables through E6.12's grants and policies. The migration
+creates it as that owner with E6.12's temporary handoff capabilities. Because
+it names a user, it is never granted to `authenticated` or `anon`: only to
+`service_role` and to the executor that owns the advisory RPCs. That grant is
+by name, so if the RPCs change owner, re-run the migration as the new owner or
+re-grant. Apply the migration as the executor itself (not through `SET ROLE`):
+the handoff block refuses otherwise.
+
+The read RPC (`list_workflow_advisories`) and the platform-admin SELECT policy
+follow #540's `is_platform_admin()`.

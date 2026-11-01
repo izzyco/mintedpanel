@@ -390,6 +390,12 @@ jobs:
             echo "::endgroup::"
           done
 
+      # MINT-134 workflow advisories: append-only ledger, context refusals,
+      # caller and org checks, job dedupe, grants. Rollback-only; any failed
+      # check raises.
+      - name: Run MINT-134 workflow advisories SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-workflow-advisories.sql
+
       - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
         run: node scripts/security/verify-portal-field-map-learning.mjs
 
