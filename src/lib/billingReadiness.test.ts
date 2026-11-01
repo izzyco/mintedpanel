@@ -7,7 +7,6 @@ import {
   evaluateBillingReadiness,
   filterBillingFeed,
   resolveBillingReadinessRules,
-  validateBillingReadinessRules,
   type BillingReadinessRules,
   type BillingReadinessRulesOverride,
   type BillingReadinessSnapshot,
@@ -532,13 +531,11 @@ const ONBOARDING_LABEL =
 
 const withRules = (next: {
   onboarding?: "hold" | "stop";
-  other?: "hold" | "stop";
   membershipWithoutStartDate?: BillingReadinessRules["membershipWithoutStartDate"];
 }): BillingReadinessRules => ({
   providerStatusSeverity: {
     ...DEFAULT_BILLING_READINESS_RULES.providerStatusSeverity,
     ...(next.onboarding ? { onboarding: next.onboarding } : {}),
-    ...(next.other ? { other: next.other } : {}),
   },
   membershipWithoutStartDate:
     next.membershipWithoutStartDate ?? DEFAULT_BILLING_READINESS_RULES.membershipWithoutStartDate,
@@ -550,7 +547,7 @@ const assessWith = (snapshot: BillingReadinessSnapshot, rules: BillingReadinessR
 describe("BillingReadinessRules", () => {
   it("defaults to the PM's Oct 20 decisions, frozen", () => {
     expect(DEFAULT_BILLING_READINESS_RULES).toEqual({
-      providerStatusSeverity: { terminated: "stop", onboarding: "hold", other: "hold" },
+      providerStatusSeverity: { onboarding: "hold" },
       membershipWithoutStartDate: "current",
     });
     expect(Object.isFrozen(DEFAULT_BILLING_READINESS_RULES)).toBe(true);
@@ -568,13 +565,13 @@ describe("BillingReadinessRules", () => {
     }
   });
 
-  it("resolves field by field and one status at a time: organization over platform over default", () => {
+  it("resolves field by field: organization over platform over default", () => {
     const platform: BillingReadinessRulesOverride = {
-      providerStatusSeverity: { onboarding: "stop", other: "stop" },
+      providerStatusSeverity: { onboarding: "stop" },
       membershipWithoutStartDate: "not_current",
     };
     expect(resolveBillingReadinessRules(platform)).toEqual({
-      providerStatusSeverity: { terminated: "stop", onboarding: "stop", other: "stop" },
+      providerStatusSeverity: { onboarding: "stop" },
       membershipWithoutStartDate: "not_current",
     });
     expect(
@@ -583,7 +580,7 @@ describe("BillingReadinessRules", () => {
         membershipWithoutStartDate: null,
       }),
     ).toEqual({
-      providerStatusSeverity: { terminated: "stop", onboarding: "hold", other: "stop" },
+      providerStatusSeverity: { onboarding: "hold" },
       membershipWithoutStartDate: "not_current",
     });
     expect(
@@ -591,9 +588,9 @@ describe("BillingReadinessRules", () => {
     ).toEqual({ ...DEFAULT_BILLING_READINESS_RULES, membershipWithoutStartDate: "not_current" });
   });
 
-  it("ignores a stored value of the wrong shape, and never relaxes a terminated clinician", () => {
+  it("ignores a stored value of the wrong shape", () => {
     const bad = {
-      providerStatusSeverity: { terminated: "hold", onboarding: "ready", other: 1 },
+      providerStatusSeverity: { onboarding: "ready" },
       membershipWithoutStartDate: "sometimes",
     } as unknown as BillingReadinessRulesOverride;
     expect(resolveBillingReadinessRules(bad)).toEqual(DEFAULT_BILLING_READINESS_RULES);
@@ -606,81 +603,6 @@ describe("BillingReadinessRules", () => {
         { providerStatusSeverity: "stop" } as unknown as BillingReadinessRulesOverride,
       ),
     ).toEqual(DEFAULT_BILLING_READINESS_RULES);
-  });
-
-  it("validates an override in plain language", () => {
-    expect(validateBillingReadinessRules(null)).toEqual([]);
-    expect(validateBillingReadinessRules({})).toEqual([]);
-    expect(
-      validateBillingReadinessRules({
-        providerStatusSeverity: { terminated: "stop", onboarding: "stop", other: null },
-        membershipWithoutStartDate: "not_current",
-      }),
-    ).toEqual([]);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: null })).toEqual([]);
-    expect(
-      validateBillingReadinessRules({ providerStatusSeverity: { terminated: "hold" } }),
-    ).toEqual(["A terminated clinician is always Do Not Bill; it cannot be relaxed to a hold."]);
-    expect(
-      validateBillingReadinessRules({ providerStatusSeverity: { onboarding: "ready" } }),
-    ).toEqual([
-      'For an Onboarding clinician, choose a hold ("hold") or Do Not Bill ("stop"), not "ready".',
-    ]);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: { other: "warn" } })).toEqual([
-      'For a clinician status this rule does not recognize, choose a hold ("hold") or Do Not Bill ("stop"), not "warn".',
-    ]);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: { active: "hold" } })).toEqual([
-      '"active" is not a clinician status this setting covers. An Active clinician always counts; the statuses it covers are terminated, onboarding and other.',
-    ]);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: "stop" })).toEqual([
-      "Clinician status settings must name a status and its effect.",
-    ]);
-    expect(validateBillingReadinessRules({ membershipWithoutStartDate: "never" })).toEqual([
-      'A group membership with no start date either counts as current ("current") or holds ("not_current"), not "never".',
-    ]);
-    expect(validateBillingReadinessRules({ caseNotEffective: "hold" })).toEqual([
-      '"caseNotEffective" is not a Billing Readiness setting.',
-    ]);
-    expect(validateBillingReadinessRules(["stop"])).toEqual([
-      "Billing Readiness settings must be a set of named settings.",
-    ]);
-  });
-
-  it("says 'cannot be relaxed' only for a hold, and names a non-text value by its kind", () => {
-    expect(
-      validateBillingReadinessRules({ providerStatusSeverity: { terminated: "bogus" } }),
-    ).toEqual(['A terminated clinician is always Do Not Bill ("stop"), not "bogus".']);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: { terminated: 1 } })).toEqual([
-      'A terminated clinician is always Do Not Bill ("stop"), not 1.',
-    ]);
-    expect(validateBillingReadinessRules({ membershipWithoutStartDate: { a: 1 } })).toEqual([
-      'A group membership with no start date either counts as current ("current") or holds ("not_current"), not a set of values.',
-    ]);
-    expect(
-      validateBillingReadinessRules({ providerStatusSeverity: { onboarding: ["stop"] } }),
-    ).toEqual([
-      'For an Onboarding clinician, choose a hold ("hold") or Do Not Bill ("stop"), not a list.',
-    ]);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: { other: true } })).toEqual([
-      'For a clinician status this rule does not recognize, choose a hold ("hold") or Do Not Bill ("stop"), not true.',
-    ]);
-  });
-
-  it("accepts only plain objects as a set of settings, never a Date or a list", () => {
-    expect(validateBillingReadinessRules(new Date())).toEqual([
-      "Billing Readiness settings must be a set of named settings.",
-    ]);
-    expect(validateBillingReadinessRules(Object.create(null))).toEqual([]);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: new Date() })).toEqual([
-      "Clinician status settings must name a status and its effect.",
-    ]);
-    expect(validateBillingReadinessRules({ providerStatusSeverity: [] })).toEqual([
-      "Clinician status settings must name a status and its effect.",
-    ]);
-    const dated = Object.assign(new Date(), { membershipWithoutStartDate: "not_current" });
-    expect(resolveBillingReadinessRules(dated as unknown as BillingReadinessRulesOverride)).toEqual(
-      DEFAULT_BILLING_READINESS_RULES,
-    );
   });
 
   describe("providerStatusSeverity", () => {
@@ -698,26 +620,16 @@ describe("BillingReadinessRules", () => {
       });
     });
 
-    it("other: holds by default; 'stop' makes an unrecognized status Do Not Bill", () => {
-      const snapshot = readySnapshot();
-      Object.assign(snapshot.providers[0], { status: "inactive" });
-      const reason = "The clinician status is not recognized.";
-      expect(assessWith(snapshot, DEFAULT_BILLING_READINESS_RULES)).toMatchObject({
-        status: "hold",
-        reasons: [{ severity: "hold", label: reason }],
-      });
-      expect(assessWith(snapshot, withRules({ other: "stop" }))).toMatchObject({
-        status: "stop",
-        reasons: [{ severity: "stop", label: reason }],
-      });
-    });
-
     it("terminated: always Do Not Bill, and Active stays billable-eligible under any rules", () => {
-      const strictest = withRules({ onboarding: "stop", other: "stop" });
+      const strictest = withRules({ onboarding: "stop" });
       const snapshot = readySnapshot();
       expect(assessWith(snapshot, strictest)).toMatchObject({ status: "ready", reasons: [] });
       snapshot.providers[0].status = "terminated";
-      for (const rules of [DEFAULT_BILLING_READINESS_RULES, strictest]) {
+      // A compliance floor, not a setting: no override can name it.
+      const relaxed = resolveBillingReadinessRules({
+        providerStatusSeverity: { terminated: "hold" },
+      } as unknown as BillingReadinessRulesOverride);
+      for (const rules of [DEFAULT_BILLING_READINESS_RULES, strictest, relaxed]) {
         expect(assessWith(snapshot, rules)).toMatchObject({
           status: "stop",
           reasons: [{ severity: "stop", label: "The clinician is terminated." }],
