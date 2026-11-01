@@ -11,14 +11,9 @@
 //
 // Nothing here says an NPI is verified unless the registry's record matched:
 // the "ok" line is only for a found, active, individual NPI whose name
-// matches.
+// matches; a name not typed yet is "not checked yet".
 import type { Advisory } from "@/lib/advisories";
-import {
-  npiLookupOutcome,
-  npiVerificationView,
-  registrySummary,
-  type NpiLookupState,
-} from "@/lib/npiRegistry";
+import { npiLookupOutcome, npiVerificationView, type NpiLookupState } from "@/lib/npiRegistry";
 import type { NpiRegistryCheck, NpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
 import { isKnownTaxonomyCode, normalizeTaxonomyCode } from "@/lib/providerTaxonomy";
 
@@ -27,10 +22,15 @@ export type NpiReviewFixTarget =
   | { field: "npi" | "firstName" | "credentials" | "taxonomyCode" }
   | { field: "licenseNumber"; row: number };
 
-/** An advisory as the review step lists it. The title, detail and the
- * registry's value are for the form only; toCapturedAdvisory drops them. */
+/** An advisory as the review step lists it. The id, title, detail and the
+ * registry's values are for the form only; toCapturedAdvisory drops them. */
 export interface NpiReviewAdvisory extends Advisory {
-  /** Stable within one review: the check, plus the license row. */
+  /** What the advisory is about: the check, the NPI, and the typed or
+   * entered value and the registry's value it compares (a license row by its
+   * state and number, never its position). A confirmation is kept by this
+   * id, so it holds only while the advisory is about the same thing: change
+   * the NPI, the name or the value, or the registry's answer, and it is a new
+   * advisory, unconfirmed. */
   id: string;
   /** The policy check behind it, or null for a check that couldn't run. */
   policyCheck: NpiRegistryCheck | null;
@@ -38,9 +38,9 @@ export interface NpiReviewAdvisory extends Advisory {
   detail: string | null;
   /** Where Fix goes; "retry" asks the registry again; null: confirm only. */
   fix: NpiReviewFixTarget | "retry" | null;
-  /** The registry's value staff can choose instead (A35: choose, edit or
-   * add), or null when there is none to choose. */
-  registryValue: string | null;
+  /** The registry's values staff can choose instead, one "Use" each (A35:
+   * choose, edit or add — never retype); empty when there is none. */
+  registryValues: string[];
 }
 
 export interface NpiReviewLine {
@@ -80,6 +80,12 @@ export interface NpiReviewInput {
 // Case, spaces and punctuation ignored.
 function looseKey(value: string): string {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+// An advisory's id from its subject. Values are kept as typed (trimmed), so
+// any edit makes a new subject. Form-only: never captured.
+function subjectId(check: string, ...parts: (string | null | undefined)[]): string {
+  return JSON.stringify([check, ...parts.map((part) => (part ?? "").trim())]);
 }
 
 const OUTCOME_CHECK = {
@@ -127,7 +133,7 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
   }
   if (state.status === "error") {
     add({
-      id: "npi_registry.not_checked",
+      id: subjectId("npi_registry.not_checked", input.npi),
       check: "npi_registry.not_checked",
       policyCheck: null,
       field: "npi",
@@ -136,7 +142,7 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
       whyItMatters:
         "The NPI Registry could not be reached, so this NPI was saved without a registry check.",
       fix: "retry",
-      registryValue: null,
+      registryValues: [],
     });
     return {
       line: { tone: "warn", title: `Not checked: ${state.message}`, detail: null },
@@ -150,7 +156,16 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
   if (outcome) {
     const view = npiVerificationView(state, input.typed, policy);
     add({
-      id: OUTCOME_CHECK[outcome],
+      // A name mismatch is about the name typed, too.
+      id:
+        outcome === "nameMismatch"
+          ? subjectId(
+              OUTCOME_CHECK[outcome],
+              input.npi,
+              input.typed.firstName,
+              input.typed.lastName,
+            )
+          : subjectId(OUTCOME_CHECK[outcome], input.npi),
       check: OUTCOME_CHECK[outcome],
       policyCheck: outcome,
       field: outcome === "nameMismatch" ? "firstName" : "npi",
@@ -158,7 +173,7 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
       detail: view?.detail ?? null,
       whyItMatters: OUTCOME_WHY[outcome],
       fix: { field: outcome === "nameMismatch" ? "firstName" : "npi" },
-      registryValue: null,
+      registryValues: [],
     });
     // An answer kept for Mission Control says nothing here, and never "ok".
     return {
@@ -169,8 +184,10 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
   }
   if (!record) return { line: null, checking: false, advisories };
 
-  // Found, active, an individual, and the name matches: the one "ok" line.
-  // Then what staff entered that differs from this record.
+  // Found, active and an individual: "ok" only when the name matches too (a
+  // name not typed yet is "not checked yet", never ok). Then what staff
+  // entered that differs from this record.
+  const found = npiVerificationView(state, input.typed, policy);
   const { credentials, taxonomyCode, licenses } = input.entered;
   if (
     record.credential &&
@@ -178,7 +195,7 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
     looseKey(credentials) !== looseKey(record.credential)
   ) {
     add({
-      id: "npi_registry.credentials_differ",
+      id: subjectId("npi_registry.credentials_differ", input.npi, credentials, record.credential),
       check: "npi_registry.credentials_differ",
       policyCheck: "credentialsDiffer",
       field: "credentials",
@@ -186,7 +203,7 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
       detail: null,
       whyItMatters: "The credentials differ from the NPI Registry's for this NPI.",
       fix: { field: "credentials" },
-      registryValue: record.credential,
+      registryValues: [record.credential],
     });
   }
   const primary = record.primaryTaxonomy;
@@ -199,7 +216,12 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
       ? `${primary.code} (${primary.description})`
       : primary.code;
     add({
-      id: "npi_registry.taxonomy_differs",
+      id: subjectId(
+        "npi_registry.taxonomy_differs",
+        input.npi,
+        normalizeTaxonomyCode(taxonomyCode),
+        normalizeTaxonomyCode(primary.code),
+      ),
       check: "npi_registry.taxonomy_differs",
       policyCheck: "taxonomyDiffers",
       field: "taxonomyCode",
@@ -208,7 +230,9 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
       whyItMatters: "The taxonomy differs from the NPI Registry's primary taxonomy for this NPI.",
       fix: { field: "taxonomyCode" },
       // Only a code the taxonomy picker offers can be chosen.
-      registryValue: isKnownTaxonomyCode(primary.code) ? normalizeTaxonomyCode(primary.code) : null,
+      registryValues: isKnownTaxonomyCode(primary.code)
+        ? [normalizeTaxonomyCode(primary.code)]
+        : [],
     });
   }
   const registryLicenses = (record.taxonomies ?? []).flatMap((taxonomy) =>
@@ -216,6 +240,10 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
       ? [{ state: taxonomy.licenseState.trim().toUpperCase(), number: taxonomy.license.trim() }]
       : [],
   );
+  // A row is known by its state and number, not its position: removing
+  // another row never moves a confirmation. Identical rows are told apart by
+  // how many came before.
+  const seen = new Map<string, number>();
   licenses.forEach((row, index) => {
     const rowState = row.state.trim().toUpperCase();
     if (!rowState || !row.number.trim()) return;
@@ -224,8 +252,17 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
     if (inState.some((license) => looseKey(license.number) === looseKey(row.number))) return;
     const unique = [...new Set(inState.map((license) => license.number))];
     const registryNumbers = unique.join(", ");
+    const subject = subjectId(
+      "npi_registry.license_differs",
+      input.npi,
+      rowState,
+      row.number,
+      registryNumbers,
+    );
+    const repeat = seen.get(subject) ?? 0;
+    seen.set(subject, repeat + 1);
     add({
-      id: `npi_registry.license_differs:${index}`,
+      id: repeat === 0 ? subject : `${subject}#${repeat + 1}`,
       check: "npi_registry.license_differs",
       policyCheck: "licenseDiffers",
       field: `licenses.${index}.number`,
@@ -234,16 +271,11 @@ export function buildNpiRegistryReview(input: NpiReviewInput): NpiRegistryReview
       // No state or number: the field names the row (A35: no registry values).
       whyItMatters: "A license number differs from the NPI Registry's in that state for this NPI.",
       fix: { field: "licenseNumber", row: index },
-      // One number in that state is a candidate; several are a choice for the
-      // license editor, not a one-click swap.
-      registryValue: unique.length === 1 ? unique[0] : null,
+      // Each number the registry lists in that state is a choice (A35).
+      registryValues: unique,
     });
   });
-  return {
-    line: { tone: "ok", title: "Found in the NPI Registry", detail: registrySummary(record) },
-    checking: false,
-    advisories,
-  };
+  return { line: found, checking: false, advisories };
 }
 
 /** The advisories the review step lists (the rest are kept for Mission

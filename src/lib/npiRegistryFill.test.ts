@@ -802,7 +802,7 @@ describe("planNpiRegistryFill — several taxonomies and no primary", () => {
     expect(plan(noPrimary, blankForm(), "npi_only").summary.taxonomyChoices).toEqual([]);
   });
 
-  it("skips codes the Taxonomy code list does not offer", () => {
+  it("offers the one code the list offers as a choice, not prefilled, when the registry names several", () => {
     const withUnknown = record({
       primaryTaxonomy: null,
       taxonomies: [
@@ -822,7 +822,16 @@ describe("planNpiRegistryFill — several taxonomies and no primary", () => {
         },
       ],
     });
-    expect(plan(withUnknown, blankForm()).summary.taxonomyChoices).toEqual([]);
+    const next = plan(withUnknown, blankForm());
+    // Before: no choice at all (fewer than two known codes). Now the known
+    // code is offered, and still nothing is filled (A35).
+    expect(next.summary.taxonomyChoices).toEqual([{ code: "225100000X", description: null }]);
+    expect(next.taxonomyCode).toBeNull();
+    expect(next.summary.filled).not.toContain("Taxonomy code");
+    expect(next.summary.details).toContainEqual({
+      label: "Other taxonomies",
+      lines: ["999999999X (Unlisted)"],
+    });
   });
 });
 

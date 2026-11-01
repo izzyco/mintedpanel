@@ -231,6 +231,18 @@ describe("toNpiRegistryRecord", () => {
       ],
     });
     expect(one?.primaryTaxonomy).toEqual({ code: "225100000X", description: "Physical Therapist" });
+    // The primary is the row that holds the code, not the first row.
+    const blankFirst = toNpiRegistryRecord({
+      ...NPPES_INDIVIDUAL,
+      taxonomies: [
+        { code: "", desc: "Blank row", primary: false },
+        { code: "225100000X", desc: "Physical Therapist", primary: false },
+      ],
+    });
+    expect(blankFirst?.primaryTaxonomy).toEqual({
+      code: "225100000X",
+      description: "Physical Therapist",
+    });
   });
 
   it("names an organization and skips malformed rows", () => {

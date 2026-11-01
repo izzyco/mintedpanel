@@ -380,16 +380,20 @@ export function planNpiRegistryFill(
     }
   }
   // No primary among several taxonomies (A35): the field takes one value, so
-  // staff pick one; nothing is prefilled, and never the first.
+  // staff pick one; nothing is prefilled, and never the first. The choices
+  // are the codes the picker offers — even when only one of them is, since
+  // the registry still named several and none as primary.
   const taxonomyChoices: NpiFillSummary["taxonomyChoices"] = [];
-  if (!primary && fillBlanks) {
+  const registryCodes = new Set(
+    (record.taxonomies ?? []).map((entry) => normalizeTaxonomyCode(entry.code)),
+  );
+  if (!primary && fillBlanks && registryCodes.size > 1) {
     for (const entry of record.taxonomies ?? []) {
       const code = normalizeTaxonomyCode(entry.code);
       if (!isKnownTaxonomyCode(code)) continue;
       if (taxonomyChoices.some((choice) => choice.code === code)) continue;
       taxonomyChoices.push({ code, description: entry.description });
     }
-    if (taxonomyChoices.length < 2) taxonomyChoices.length = 0;
   }
   const taxonomyChanged =
     normalizeTaxonomyCode(taxonomy) !== normalizeTaxonomyCode(form.taxonomyCode);

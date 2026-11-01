@@ -14,6 +14,7 @@ import {
   shownAdvisories,
   type NpiReviewInput,
 } from "@/lib/npiRegistryReview";
+import { toCapturedAdvisory } from "@/lib/advisories";
 
 const NPI = "1902833742";
 const jane: NpiRegistryRecord = {
@@ -82,6 +83,21 @@ describe("buildNpiRegistryReview — the check's line", () => {
     });
   });
 
+  it("says the name is not checked yet, never Found, while a name is blank", () => {
+    for (const typed of [
+      { firstName: "", lastName: "" },
+      { firstName: "Jane", lastName: "" },
+      { firstName: "", lastName: "Doe" },
+    ]) {
+      const review = buildNpiRegistryReview(input(found(), { typed }));
+      expect(review.line).toMatchObject({
+        tone: "neutral",
+        title: "In the NPI Registry; name not checked yet",
+      });
+      expect(review.advisories).toEqual([]);
+    }
+  });
+
   it("says Found only for a found, active, individual NPI whose name matches", () => {
     const review = buildNpiRegistryReview(input(found()));
     expect(review.line).toMatchObject({ tone: "ok", title: "Found in the NPI Registry" });
@@ -119,12 +135,11 @@ describe("buildNpiRegistryReview — advisories about the NPI", () => {
       const review = buildNpiRegistryReview(input(state));
       expect(review.advisories).toHaveLength(1);
       expect(review.advisories[0]).toMatchObject({
-        id: check,
         check,
         record: { table: "providers", id: null, field },
         display: "review_step",
         fix: { field },
-        registryValue: null,
+        registryValues: [],
         context: { confirmed: false },
       });
       expect(review.line?.tone).toBe("warn");
@@ -174,10 +189,118 @@ describe("buildNpiRegistryReview — advisories about the NPI", () => {
   });
 
   it("marks what staff confirmed", () => {
-    const review = buildNpiRegistryReview(
-      input(found(null), { confirmed: new Set(["npi_registry.not_found"]) }),
-    );
+    const { id } = buildNpiRegistryReview(input(found(null))).advisories[0];
+    const review = buildNpiRegistryReview(input(found(null), { confirmed: new Set([id]) }));
     expect(review.advisories[0].context).toEqual({ confirmed: true });
+  });
+});
+
+// A confirmation holds only while the advisory is about what staff confirmed
+// (the review that rejected 31d4378b: ids were the check key alone, or the
+// check plus the row's position).
+describe("buildNpiRegistryReview — a confirmation sticks to its subject", () => {
+  const roe = { firstName: "Jane", lastName: "Roe" };
+  const other: NpiRegistryRecord = { ...jane, npi: "1234567893", firstName: "MARY" };
+
+  it("a name mismatch confirmed for NPI X is not confirmed for NPI Y", () => {
+    const forX = buildNpiRegistryReview(input(found(), { typed: roe }));
+    expect(forX.advisories.map((advisory) => advisory.check)).toEqual([
+      "npi_registry.name_mismatch",
+    ]);
+    const confirmed = new Set([forX.advisories[0].id]);
+    expect(
+      buildNpiRegistryReview(input(found(), { typed: roe, confirmed })).advisories[0].context,
+    ).toEqual({ confirmed: true });
+
+    // Staff go to the NPI and type Y, whose registry name also differs.
+    const forY = buildNpiRegistryReview(
+      input(found(other), { npi: "1234567893", typed: roe, confirmed }),
+    );
+    expect(forY.advisories).toHaveLength(1);
+    expect(forY.advisories[0].check).toBe("npi_registry.name_mismatch");
+    expect(forY.advisories[0].id).not.toBe(forX.advisories[0].id);
+    expect(forY.advisories[0].context).toEqual({ confirmed: false });
+  });
+
+  it("a name mismatch confirmed under one typed name is not confirmed under another", () => {
+    const first = buildNpiRegistryReview(input(found(), { typed: roe }));
+    const confirmed = new Set([first.advisories[0].id]);
+    const renamed = buildNpiRegistryReview(
+      input(found(), { typed: { firstName: "Jane", lastName: "Rowe" }, confirmed }),
+    );
+    expect(renamed.advisories[0].context).toEqual({ confirmed: false });
+  });
+
+  it("a confirmed license row keeps its confirmation when another row is removed, and gives none away", () => {
+    const rows = [
+      { state: "CO", number: "PT-1" },
+      { state: "WY", number: "WY-9" },
+    ];
+    const entered = (licenses: typeof rows) => ({ credentials: "", taxonomyCode: "", licenses });
+    const before = buildNpiRegistryReview(input(found(), { entered: entered(rows) }));
+    expect(before.advisories.map((advisory) => advisory.record.field)).toEqual([
+      "licenses.0.number",
+      "licenses.1.number",
+    ]);
+    // Staff confirm row 1's WY difference, then remove row 0.
+    const confirmed = new Set([before.advisories[1].id]);
+    const after = buildNpiRegistryReview(
+      input(found(), { entered: entered([rows[1]]), confirmed }),
+    );
+    expect(after.advisories).toHaveLength(1);
+    expect(after.advisories[0]).toMatchObject({
+      title: "WY license WY-9 — the registry has WY-1, WY-2",
+      record: { field: "licenses.0.number" },
+      fix: { field: "licenseNumber", row: 0 },
+      context: { confirmed: true },
+    });
+    // The CO row, now first, was never confirmed.
+    const reordered = buildNpiRegistryReview(
+      input(found(), { entered: entered([rows[1], rows[0]]), confirmed }),
+    );
+    expect(reordered.advisories.map((advisory) => advisory.context.confirmed)).toEqual([
+      true,
+      false,
+    ]);
+  });
+
+  it("an edited value is a new advisory, unconfirmed", () => {
+    const pt = buildNpiRegistryReview(
+      input(found(), { entered: { credentials: "PT", taxonomyCode: "", licenses: [] } }),
+    );
+    const confirmed = new Set([pt.advisories[0].id]);
+    const pta = buildNpiRegistryReview(
+      input(found(), {
+        entered: { credentials: "PTA", taxonomyCode: "", licenses: [] },
+        confirmed,
+      }),
+    );
+    expect(pta.advisories[0].context).toEqual({ confirmed: false });
+  });
+
+  it("tells identical rows apart, so ids stay unique", () => {
+    const review = buildNpiRegistryReview(
+      input(found(), {
+        entered: {
+          credentials: "",
+          taxonomyCode: "",
+          licenses: [
+            { state: "CO", number: "PT-1" },
+            { state: "CO", number: "PT-1" },
+          ],
+        },
+      }),
+    );
+    const ids = review.advisories.map((advisory) => advisory.id);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("never captures the id: it holds values", () => {
+    const review = buildNpiRegistryReview(
+      input(found(), { entered: { credentials: "PT", taxonomyCode: "", licenses: [] } }),
+    );
+    expect(review.advisories[0].id).toContain("DPT");
+    expect(JSON.stringify(toCapturedAdvisory(review.advisories[0]))).not.toContain("DPT");
   });
 });
 
@@ -192,7 +315,7 @@ describe("buildNpiRegistryReview — what staff entered against the record found
         check: "npi_registry.credentials_differ",
         title: "Credentials PT — the registry has DPT",
         fix: { field: "credentials" },
-        registryValue: "DPT",
+        registryValues: ["DPT"],
       },
     ]);
   });
@@ -215,7 +338,7 @@ describe("buildNpiRegistryReview — what staff entered against the record found
       {
         check: "npi_registry.taxonomy_differs",
         record: { field: "taxonomyCode" },
-        registryValue: "2251X0800X",
+        registryValues: ["2251X0800X"],
       },
     ]);
     const unlisted = buildNpiRegistryReview(
@@ -223,7 +346,7 @@ describe("buildNpiRegistryReview — what staff entered against the record found
         entered: { credentials: "", taxonomyCode: "225100000X", licenses: [] },
       }),
     );
-    expect(unlisted.advisories[0].registryValue).toBeNull();
+    expect(unlisted.advisories[0].registryValues).toEqual([]);
   });
 
   it("lists each license row whose number differs from the registry's in that state", () => {
@@ -242,20 +365,19 @@ describe("buildNpiRegistryReview — what staff entered against the record found
         },
       }),
     );
-    expect(review.advisories.map((advisory) => advisory.id)).toEqual([
-      "npi_registry.license_differs:0",
-      "npi_registry.license_differs:2",
+    expect(review.advisories.map((advisory) => advisory.record.field)).toEqual([
+      "licenses.0.number",
+      "licenses.2.number",
     ]);
     expect(review.advisories[0]).toMatchObject({
-      record: { field: "licenses.0.number" },
       fix: { field: "licenseNumber", row: 0 },
-      registryValue: "PT-4471",
+      registryValues: ["PT-4471"],
     });
-    // Several numbers in that state are a choice for the license editor,
-    // not a one-click swap.
+    // Several numbers in that state: each is a choice (A35).
     expect(review.advisories[1]).toMatchObject({
       title: "WY license WY-9 — the registry has WY-1, WY-2",
-      registryValue: null,
+      fix: { field: "licenseNumber", row: 2 },
+      registryValues: ["WY-1", "WY-2"],
     });
   });
 

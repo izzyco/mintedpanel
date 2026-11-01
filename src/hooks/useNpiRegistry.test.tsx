@@ -14,7 +14,9 @@ vi.mock("@/services/npiRegistry", () => ({
   lookupNpiRegistry: vi.fn(() => new Promise(() => undefined)),
   searchNpiRegistry: vi.fn(() => new Promise(() => undefined)),
 }));
-vi.mock("@/services/advisoryCapture", () => ({
+vi.mock("@/services/advisoryCapture", async (importActual) => ({
+  // The real safe logger; the seam itself is mocked.
+  ...(await importActual<typeof import("@/services/advisoryCapture")>()),
   recordAdvisories: vi.fn(async () => ({
     recorded: false,
     reason: "advisory_store_not_built",
@@ -27,8 +29,10 @@ import {
   recordNpiAdvisoriesAfterSave,
   useNpiRegistryCheck,
   useNpiRegistryPolicy,
+  useRecordNpiAdvisoriesAfterSave,
   type NpiAdvisoriesAfterSave,
 } from "./useNpiRegistry";
+import { buildNpiRegistryReview } from "@/lib/npiRegistryReview";
 import type { NpiRegistryLookupResult, NpiRegistryRecord } from "@/lib/npiRegistry";
 import {
   DEFAULT_NPI_REGISTRY_POLICY,
@@ -173,10 +177,14 @@ describe("recordNpiAdvisoriesAfterSave", () => {
 
   it("hands the saved record's advisories to the seam, facts only; nothing is recorded yet", async () => {
     cache(jane);
+    const { id } = buildNpiRegistryReview({
+      ...input(),
+      state: { status: "done", record: jane },
+    }).advisories[0];
     const result = await recordNpiAdvisoriesAfterSave(
       client,
       "org-1",
-      input({ confirmed: new Set(["npi_registry.credentials_differ"]) }),
+      input({ confirmed: new Set([id]) }),
     );
     expect(result).toEqual({ recorded: false, reason: "advisory_store_not_built" });
     expect(recordAdvisories).toHaveBeenCalledTimes(1);
@@ -242,6 +250,64 @@ describe("recordNpiAdvisoriesAfterSave", () => {
     ).toBeNull();
     expect(await recordNpiAdvisoriesAfterSave(client, null, input())).toBeNull();
     expect(recordAdvisories).not.toHaveBeenCalled();
+  });
+});
+
+describe("a capture that fails", () => {
+  const input = (): NpiAdvisoriesAfterSave => ({
+    recordId: "prov-1",
+    npi: NPI,
+    verify: true,
+    typed: JANE,
+    entered: { credentials: "PT", taxonomyCode: "225100000X", licenses: [] },
+    confirmed: new Set(),
+    policy: DEFAULT_NPI_REGISTRY_POLICY,
+  });
+
+  it("is logged with the event, the check keys and the SQLSTATE, and no values", async () => {
+    cache(jane);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.mocked(recordAdvisories).mockRejectedValueOnce(
+      Object.assign(new Error('duplicate key value violates "x" DETAIL: (DPT)=(Jane)'), {
+        code: "23505",
+        details: "Key (credential)=(DPT) already exists.",
+      }),
+    );
+    await expect(recordNpiAdvisoriesAfterSave(client, "org-1", input())).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledWith("advisory_capture_failed", {
+      event: "advisory_capture_failed",
+      checks: ["npi_registry.credentials_differ"],
+      sqlstate: "23505",
+    });
+    const logged = JSON.stringify(warn.mock.calls);
+    for (const value of ["DPT", "Jane", "JANE", "duplicate", NPI, "prov-1"]) {
+      expect(logged).not.toContain(value);
+    }
+    warn.mockRestore();
+  });
+
+  it("never reaches the form from the fire-and-forget hook", async () => {
+    cache(jane);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.mocked(recordAdvisories).mockRejectedValueOnce(new Error("boom"));
+    let record: ((value: NpiAdvisoriesAfterSave) => void) | null = null;
+    function Grab() {
+      record = useRecordNpiAdvisoriesAfterSave();
+      return null;
+    }
+    renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <Grab />
+      </QueryClientProvider>,
+    );
+    expect(() => record?.(input())).not.toThrow();
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(warn.mock.calls[0][1]).toEqual({
+      event: "advisory_capture_failed",
+      checks: ["npi_registry.credentials_differ"],
+      sqlstate: null,
+    });
+    warn.mockRestore();
   });
 });
 

@@ -168,8 +168,10 @@ function primaryTaxonomy(value: unknown): NpiRegistryRecord["primaryTaxonomy"] {
   if (!Array.isArray(value)) return null;
   const rows = value.filter(isObject);
   const codes = new Set(rows.map((row) => text(row.code)).filter(Boolean));
+  // The row that holds the code, never just the first row (it may have none).
   const primary =
-    rows.find((row) => row.primary === true) ?? (codes.size === 1 ? rows[0] : undefined);
+    rows.find((row) => row.primary === true) ??
+    (codes.size === 1 ? rows.find((row) => text(row.code)) : undefined);
   const code = primary ? text(primary.code) : null;
   return primary && code ? { code, description: text(primary.desc) } : null;
 }

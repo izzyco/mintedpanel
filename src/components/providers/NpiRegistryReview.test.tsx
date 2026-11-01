@@ -40,6 +40,7 @@ vi.mock("@/hooks/useNpiRegistry", async () => {
 
 import { NpiRegistryReview, type NpiRegistryReviewProps } from "./NpiRegistryReview";
 import { DEFAULT_NPI_REGISTRY_POLICY, resolveNpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
+import { buildNpiRegistryReview } from "@/lib/npiRegistryReview";
 
 const jane: NpiRegistryRecord = {
   npi: "1234567893",
@@ -126,10 +127,65 @@ describe("NpiRegistryReview", () => {
 
   it("shows a confirmed advisory as Confirmed, pressed", () => {
     lookupResult.current = { data: { record: null } };
-    const html = render({ confirmed: new Set(["npi_registry.not_found"]) });
+    const { id } = buildNpiRegistryReview({
+      npi: "1234567893",
+      verify: true,
+      state: { status: "done", record: null },
+      typed: { firstName: "Jane", lastName: "Doe" },
+      entered: { credentials: "DPT", taxonomyCode: "2251X0800X", licenses: [] },
+      policy: DEFAULT_NPI_REGISTRY_POLICY,
+      confirmed: new Set(),
+    }).advisories[0];
+    const html = render({ confirmed: new Set([id]) });
     expect(html).toContain("Not found in the NPI Registry");
     expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>Confirmed<\/button>/);
     expect(html).not.toContain("Found in the NPI Registry<");
+  });
+
+  it("offers each of several registry numbers in one state as its own Use (A35)", () => {
+    lookupResult.current = {
+      data: {
+        record: {
+          ...jane,
+          taxonomies: [
+            {
+              code: "2251X0800X",
+              description: null,
+              primary: true,
+              license: "WY-1",
+              licenseState: "WY",
+            },
+            {
+              code: "225100000X",
+              description: null,
+              primary: false,
+              license: "WY-2",
+              licenseState: "WY",
+            },
+          ],
+        },
+      },
+    };
+    const used: string[] = [];
+    const html = render({
+      entered: {
+        credentials: "DPT",
+        taxonomyCode: "2251X0800X",
+        licenses: [{ state: "WY", number: "WY-9" }],
+      },
+      onUseRegistryValue: (_, value) => used.push(value),
+    });
+    expect(text(html)).toContain(
+      "|WY license WY-9 — the registry has WY-1, WY-2|Go to license|Use WY-1|Use WY-2|Confirm|",
+    );
+  });
+
+  it("says the name is not checked yet, never Found, while a name is blank", () => {
+    lookupResult.current = { data: { record: jane } };
+    const html = render({ lastName: "" });
+    expect(html).toContain("In the NPI Registry; name not checked yet");
+    expect(html).not.toContain("Found in the NPI Registry");
+    expect(html).not.toContain("lucide-circle-check");
   });
 
   it("offers Check again when the registry could not be reached", () => {

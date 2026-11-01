@@ -461,6 +461,15 @@ export function npiVerificationView(
       detail: `The registry lists ${registrySummary(record)}.`,
     };
   }
+  // Listed, but with a name not typed yet there is nothing to compare: never
+  // "found" until the name matches.
+  if (compareNpiRegistryName(typed, record) === "unchecked") {
+    return {
+      tone: "neutral",
+      title: "In the NPI Registry; name not checked yet",
+      detail: `${registrySummary(record)}. Type the first and last name to compare.`,
+    };
+  }
   return { tone: "ok", title: "Found in the NPI Registry", detail: registrySummary(record) };
 }
 

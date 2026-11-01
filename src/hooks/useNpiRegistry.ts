@@ -9,7 +9,11 @@ import { queryKeys } from "@/hooks/queryKeys";
 import { lookupNpiRegistry, searchNpiRegistry } from "@/services/npiRegistry";
 import { advisoriesForRecord } from "@/lib/advisories";
 import { buildNpiRegistryReview, type NpiReviewInput } from "@/lib/npiRegistryReview";
-import { recordAdvisories, type AdvisoryCaptureResult } from "@/services/advisoryCapture";
+import {
+  logAdvisoryCaptureFailure,
+  recordAdvisories,
+  type AdvisoryCaptureResult,
+} from "@/services/advisoryCapture";
 import {
   npiLookupStateOf,
   npiRegistryErrorMessage,
@@ -154,17 +158,28 @@ export async function recordNpiAdvisoriesAfterSave(
   }
   const review = buildNpiRegistryReview({ ...input, npi: checkable, state });
   if (review.advisories.length === 0) return null;
-  return recordAdvisories(advisoriesForRecord(review.advisories, input.recordId));
+  const advisories = advisoriesForRecord(review.advisories, input.recordId);
+  try {
+    return await recordAdvisories(advisories);
+  } catch (error) {
+    logAdvisoryCaptureFailure(
+      error,
+      advisories.map((advisory) => advisory.check),
+    );
+    return null;
+  }
 }
 
 /** recordNpiAdvisoriesAfterSave for the active organization, fire and
- * forget. */
+ * forget: a failure is logged without values, never shown. */
 export function useRecordNpiAdvisoriesAfterSave(): (input: NpiAdvisoriesAfterSave) => void {
   const client = useQueryClient();
   const orgId = useActiveOrgId();
   return useCallback(
     (input: NpiAdvisoriesAfterSave) => {
-      void recordNpiAdvisoriesAfterSave(client, orgId, input);
+      void recordNpiAdvisoriesAfterSave(client, orgId, input).catch((error: unknown) =>
+        logAdvisoryCaptureFailure(error, []),
+      );
     },
     [client, orgId],
   );

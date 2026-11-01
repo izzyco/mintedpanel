@@ -382,10 +382,19 @@ describe("npiVerificationView", () => {
     expect(inactive?.title).toBe("The NPI Registry lists this NPI as inactive");
   });
 
-  it("reports a found NPI as found while the form names are still blank", () => {
-    expect(
-      npiVerificationView({ status: "done", record: jane }, { firstName: "", lastName: "" }),
-    ).toMatchObject({ tone: "ok", title: "Found in the NPI Registry" });
+  it("never says found before both names are typed: the name is not checked yet", () => {
+    for (const names of [
+      { firstName: "", lastName: "" },
+      { firstName: "Jane", lastName: "" },
+      { firstName: "", lastName: "Doe" },
+    ]) {
+      expect(npiVerificationView({ status: "done", record: jane }, names)).toEqual({
+        tone: "neutral",
+        title: "In the NPI Registry; name not checked yet",
+        detail:
+          "JANE A DOE, PT, DPT · Physical Therapist · DENVER, CO. Type the first and last name to compare.",
+      });
+    }
   });
 });
 

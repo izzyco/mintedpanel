@@ -221,10 +221,9 @@ export function ProviderForm({
   };
   // Choose the registry's value (A35: choose, edit or add — never clear and
   // type). Staff chose it, so it is theirs.
-  const chooseRegistryValue = (advisory: NpiReviewAdvisory) => {
-    const value = advisory.registryValue;
+  const chooseRegistryValue = (advisory: NpiReviewAdvisory, value: string) => {
     const fix = advisory.fix;
-    if (!value || !fix || fix === "retry") return;
+    if (!advisory.registryValues.includes(value) || !fix || fix === "retry") return;
     if (fix.field === "credentials") update("credentials", value);
     else if (fix.field === "taxonomyCode") update("taxonomyCode", value);
     else if (fix.field === "licenseNumber") {

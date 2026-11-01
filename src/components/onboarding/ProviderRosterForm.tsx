@@ -324,10 +324,9 @@ function FormBody({
     );
   };
   // Choose the registry's value (A35): staff chose it, so it is theirs.
-  const chooseRegistryValue = (advisory: NpiReviewAdvisory) => {
-    const value = advisory.registryValue;
+  const chooseRegistryValue = (advisory: NpiReviewAdvisory, value: string) => {
     const fix = advisory.fix;
-    if (!value || !fix || fix === "retry") return;
+    if (!advisory.registryValues.includes(value) || !fix || fix === "retry") return;
     if (fix.field === "credentials") {
       set({ credentials: value });
       setNpiTouched((touched) => ({ ...touched, credentials: true }));
@@ -986,7 +985,7 @@ function RosterReview({
   confirmed: ReadonlySet<string>;
   onToggleConfirm: (id: string) => void;
   onFix: (target: NpiReviewFixTarget) => void;
-  onUseRegistryValue: (advisory: NpiReviewAdvisory) => void;
+  onUseRegistryValue: (advisory: NpiReviewAdvisory, value: string) => void;
   sourced: { label: string; values: string[] }[];
 }) {
   const rows = licenses.filter((draft) => draft.state.trim());

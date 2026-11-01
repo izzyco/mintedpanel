@@ -42,8 +42,9 @@ export interface NpiRegistryReviewProps {
   confirmed: ReadonlySet<string>;
   onToggleConfirm: (id: string) => void;
   onFix: (target: NpiReviewFixTarget) => void;
-  /** Use the registry's value for this field (choose, not clear and type). */
-  onUseRegistryValue: (advisory: NpiReviewAdvisory) => void;
+  /** Use one of the registry's values for this field (choose, not clear and
+   * type). */
+  onUseRegistryValue: (advisory: NpiReviewAdvisory, value: string) => void;
   /** Values a pick filled that staff left alone, one line per pull date:
    * "From NPI Registry, <date>: …" — submitting confirms them. */
   sourced: { label: string; values: string[] }[];
@@ -146,18 +147,19 @@ export function NpiRegistryReview({
                         {FIX_LABEL[advisory.fix.field]}
                       </Button>
                     ) : null}
-                    {advisory.registryValue ? (
+                    {advisory.registryValues.map((value) => (
                       <Button
+                        key={value}
                         type="button"
                         variant="outline"
                         size="sm"
                         className="h-7 px-2 text-[12px]"
                         aria-describedby={describedBy}
-                        onClick={() => onUseRegistryValue(advisory)}
+                        onClick={() => onUseRegistryValue(advisory, value)}
                       >
-                        Use {advisory.registryValue}
+                        Use {value}
                       </Button>
-                    ) : null}
+                    ))}
                     {advisory.fix === "retry" ? (
                       <Button
                         type="button"
