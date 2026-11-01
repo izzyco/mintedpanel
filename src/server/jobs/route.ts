@@ -12,16 +12,17 @@
 //   3. a missing or wrong bearer         -> 401
 //   4. a job name not in the registry    -> 404 (only now, so an unauthenticated
 //      caller cannot enumerate job names)
-// A run answers the standard envelope with `data: { job, runKey, outcome,
-// counts }`: 200 for succeeded or skipped, 500 for failed (with the log
-// line's `x-request-id`). Refusals are the usual `fail()` envelope.
+// A run answers the standard envelope with `data: { job, outcome, counts }`:
+// 200 for succeeded, 500 for failed (with the log line's `x-request-id`).
+// There is no run ledger: every authorized call runs the job, and each job
+// keeps its own idempotency (./types.ts). Refusals are the usual `fail()`
+// envelope.
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import { fail, ok } from "../envelope";
 import { logServerError, requestSite, withRequestId, type ErrorLogSite } from "../safeLog";
 import { getServiceClient } from "../serviceClient";
-import { supabaseJobLedger } from "./ledger";
 import { JOB_REGISTRY } from "./registry";
 import { runJob } from "./runner";
 import type { JobRegistry } from "./types";
@@ -101,14 +102,8 @@ export async function handleJobRequest(
 
     // A registered name is code, not caller input, so the log can carry it.
     site = { method: "GET", route: `/api/jobs/${job.name}` };
-    const db = deps.getDb();
-    const result = await runJob(job, { ledger: supabaseJobLedger(db), db, now: deps.now(), site });
-    const data = {
-      job: result.job,
-      runKey: result.runKey,
-      outcome: result.outcome,
-      counts: result.counts,
-    };
+    const result = await runJob(job, { db: deps.getDb(), now: deps.now(), site });
+    const data = { job: result.job, outcome: result.outcome, counts: result.counts };
     const response = noStore(ok(data, null, result.outcome === "failed" ? 500 : 200));
     return result.requestId ? withRequestId(response, result.requestId) : response;
   } catch (error) {

@@ -9,7 +9,8 @@ vi.mock("node:crypto", async () => {
 });
 
 import { timingSafeEqual } from "node:crypto";
-import { createFakeJobDb, type FakeJobDb } from "@/__fixtures__/jobRunsFakeDb";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
 import { REQUEST_ID_HEADER } from "../safeLog";
 import { validateJobCounts } from "./counts";
 import { createJobRegistry } from "./registry";
@@ -21,17 +22,17 @@ import type { JobContext, JobCounts } from "./types";
 const SECRET = "cron-secret-0123456789abcdef";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LEVELS = ["error", "warn", "info", "log", "debug"] as const;
+const NOW = new Date("2026-10-30T13:00:00Z");
+const db = { stand_in: "service client" } as unknown as SupabaseClient<Database>;
 
-let fake: FakeJobDb;
-let getDb: ReturnType<typeof vi.fn<() => FakeJobDb["db"]>>;
+let getDb: ReturnType<typeof vi.fn<() => SupabaseClient<Database>>>;
 let digestRun: ReturnType<typeof vi.fn<(ctx: JobContext) => Promise<JobCounts>>>;
 let spies: Array<MockInstance<(...args: unknown[]) => void>>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("DEV", false);
-  fake = createFakeJobDb();
-  getDb = vi.fn(() => fake.db);
+  getDb = vi.fn(() => db);
   digestRun = vi.fn(async () => ({ orgs: 2, sent: 2 }));
   spies = LEVELS.map((level) => vi.spyOn(console, level).mockImplementation(() => {}));
 });
@@ -46,7 +47,7 @@ function deps(overrides: Partial<JobRouteDeps> = {}): Partial<JobRouteDeps> {
       { name: "daily-digest", countKeys: ["orgs", "sent"], run: digestRun },
     ]),
     getDb,
-    now: () => new Date(fake.clock.now),
+    now: () => NOW,
     cronSecret: () => SECRET,
     ...overrides,
   };
@@ -80,7 +81,6 @@ async function expectRefusal(res: Response, status: number, error: string) {
   expect(res.headers.get("cache-control")).toBe("no-store");
   expect(digestRun).not.toHaveBeenCalled();
   expect(getDb).not.toHaveBeenCalled();
-  expect(fake.calls).toEqual([]);
 }
 
 describe("GET /api/jobs/<name>: the cron secret", () => {
@@ -188,37 +188,30 @@ describe("GET /api/jobs/<name>: methods and names", () => {
 });
 
 describe("GET /api/jobs/<name>: the response", () => {
-  it("returns { job, runKey, outcome, counts } in the envelope, with no-store and no CORS", async () => {
+  it("returns { job, outcome, counts } in the envelope, with no-store and no CORS", async () => {
     vi.stubEnv("API_CORS_ORIGINS", "chrome-extension://abc");
     const res = await call("/api/jobs/daily-digest", { origin: "chrome-extension://abc" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      data: {
-        job: "daily-digest",
-        runKey: "2026-10-30",
-        outcome: "succeeded",
-        counts: { orgs: 2, sent: 2 },
-      },
+      data: { job: "daily-digest", outcome: "succeeded", counts: { orgs: 2, sent: 2 } },
       error: null,
       meta: null,
     });
+    expect(digestRun).toHaveBeenCalledWith(
+      expect.objectContaining({ db, now: new Date("2026-10-30T13:00:00Z") }),
+    );
     expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect([...res.headers.keys()].filter((key) => key.startsWith("access-control-"))).toEqual([]);
     expect(res.headers.get(REQUEST_ID_HEADER)).toBeNull();
   });
 
-  it("returns 200 skipped with empty counts on a second call the same day", async () => {
+  it("runs the job again on a second call: the job keeps its own idempotency", async () => {
     await call("/api/jobs/daily-digest");
     const res = await call("/api/jobs/daily-digest");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      data: { job: "daily-digest", runKey: "2026-10-30", outcome: "skipped", counts: {} },
-      error: null,
-      meta: null,
-    });
-    expect(digestRun).toHaveBeenCalledOnce();
-    expect(fake.rows).toHaveLength(1);
+    expect(await res.json()).toMatchObject({ data: { outcome: "succeeded" } });
+    expect(digestRun).toHaveBeenCalledTimes(2);
   });
 
   it("returns 500 failed with the log line's request id when the job throws", async () => {
@@ -226,7 +219,7 @@ describe("GET /api/jobs/<name>: the response", () => {
     const res = await call("/api/jobs/daily-digest");
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({
-      data: { job: "daily-digest", runKey: "2026-10-30", outcome: "failed", counts: {} },
+      data: { job: "daily-digest", outcome: "failed", counts: {} },
       error: null,
       meta: null,
     });
@@ -234,17 +227,6 @@ describe("GET /api/jobs/<name>: the response", () => {
     expect(requestId).toMatch(UUID_RE);
     expect(logged()).toContain(`"requestId":"${requestId}"`);
     expect(logged()).toContain('"method":"GET","route":"/api/jobs/daily-digest"');
-  });
-
-  it("returns a generic 500 when the ledger itself fails", async () => {
-    fake.failNext.claim_job_run = { code: "08006", message: "connection failure" };
-    const res = await call("/api/jobs/daily-digest");
-    expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ data: null, error: "Internal server error", meta: null });
-    expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(UUID_RE);
-    expect(logged()).toContain("[jobs] internal error");
-    expect(logged()).toContain('"sqlstate":"08006"');
-    expect(digestRun).not.toHaveBeenCalled();
   });
 
   it("returns a generic 500 when the service client cannot be built", async () => {
@@ -259,11 +241,14 @@ describe("GET /api/jobs/<name>: the response", () => {
     );
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ data: null, error: "Internal server error", meta: null });
+    expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(UUID_RE);
+    expect(logged()).toContain("[jobs] internal error");
+    expect(digestRun).not.toHaveBeenCalled();
   });
 });
 
 // SEC-03 sentinels: a DOB, a full SSN and a home address. None may reach the
-// log, the response or the ledger, whatever shape the job's failure takes.
+// log or the response, whatever shape the job's failure takes.
 describe("GET /api/jobs/<name>: a failing job leaks nothing", () => {
   const SENTINELS = ["1961-04-12", "078-05-1120", "078051120", "742 Evergreen Terrace"];
   const PG_ERROR = {
@@ -278,12 +263,10 @@ describe("GET /api/jobs/<name>: a failing job leaks nothing", () => {
     const raw = await res.text();
     const headers = JSON.stringify([...res.headers.entries()]);
     const output = logged();
-    const ledger = JSON.stringify(fake.rows);
     for (const sentinel of [...SENTINELS, SECRET]) {
       expect(raw).not.toContain(sentinel);
       expect(headers).not.toContain(sentinel);
       expect(output).not.toContain(sentinel);
-      expect(ledger).not.toContain(sentinel);
     }
     return { raw, output };
   }
@@ -296,9 +279,6 @@ describe("GET /api/jobs/<name>: a failing job leaks nothing", () => {
     expect(res.status).toBe(500);
     const { output } = await expectNoLeak(res);
     expect(output).toContain('"errorClass":"Error"');
-    expect(fake.rows).toEqual([
-      expect.objectContaining({ outcome: "failed", error_code: "job_error", counts: {} }),
-    ]);
   });
 
   it("a PostgREST error object with the row in details", async () => {
@@ -332,18 +312,18 @@ describe("GET /api/jobs/<name>: a failing job leaks nothing", () => {
     const res = await call("/api/jobs/daily-digest");
     expect(res.status).toBe(500);
     const { raw, output } = await expectNoLeak(res);
-    for (const text of [raw, output, JSON.stringify(fake.rows)]) {
+    for (const text of [raw, output]) {
       expect(text).not.toContain("19610412");
       expect(text).not.toContain("jane_doe");
     }
-    expect(fake.rows[0]).toMatchObject({ error_code: "invalid_counts", counts: {} });
+    expect(output).toContain("[jobs:daily-digest] invalid_counts");
   });
 
   it("a job that returns free text as a count key", async () => {
     digestRun.mockResolvedValue({ ["742 Evergreen Terrace"]: 1 } as JobCounts);
     const res = await call("/api/jobs/daily-digest");
     expect(res.status).toBe(500);
-    await expectNoLeak(res);
-    expect(fake.rows[0]).toMatchObject({ error_code: "invalid_counts", counts: {} });
+    const { output } = await expectNoLeak(res);
+    expect(output).toContain("[jobs:daily-digest] invalid_counts");
   });
 });

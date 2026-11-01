@@ -1,22 +1,21 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { createFakeJobDb, type FakeJobDb } from "@/__fixtures__/jobRunsFakeDb";
+import type { Database } from "@/integrations/supabase/types";
 import { validateJobCounts } from "./counts";
-import { JOB_STALE_AFTER_MINUTES, supabaseJobLedger } from "./ledger";
-import { createJobRegistry, JOB_REGISTRY, utcDayKey } from "./registry";
+import { createJobRegistry, JOB_REGISTRY } from "./registry";
 import { jobLogger, runJob } from "./runner";
 import type { JobContext, JobCounts, JobDefinition } from "./types";
 
-// MINT-106 runner against a fake job_runs: claim, skip while running or after
-// success, retry after failure, and stale-running recovery.
+// MINT-106 runner: run the job, check its counts, and report failures through
+// the safe logger. There is no run ledger, so every call runs the job.
 const SITE = { method: "GET", route: "/api/jobs/test-job" };
 const COUNT_KEYS = ["orgs", "sent"] as const;
-const MINUTE = 60_000;
+const NOW = new Date("2026-10-30T13:00:00Z");
+const db = { stand_in: "service client" } as unknown as SupabaseClient<Database>;
 
-let fake: FakeJobDb;
 let consoleError: MockInstance<(...args: unknown[]) => void>;
 beforeEach(() => {
   vi.stubEnv("DEV", false);
-  fake = createFakeJobDb();
   consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -24,257 +23,57 @@ afterEach(() => {
   consoleError.mockRestore();
 });
 
-function testJob(
-  run: (ctx: JobContext) => Promise<JobCounts>,
-  extra: Partial<Omit<JobDefinition, "run">> = {},
-) {
+function testJob(run: (ctx: JobContext) => Promise<JobCounts>) {
   const spy = vi.fn(run);
-  const job: JobDefinition = { name: "test-job", countKeys: COUNT_KEYS, ...extra, run: spy };
+  const job: JobDefinition = { name: "test-job", countKeys: COUNT_KEYS, run: spy };
   return { job, spy };
 }
 
 function run(job: JobDefinition) {
-  return runJob(job, {
-    ledger: supabaseJobLedger(fake.db),
-    db: fake.db,
-    now: new Date(fake.clock.now),
-    site: SITE,
-  });
+  return runJob(job, { db, now: NOW, site: SITE });
 }
 
-function slot(runKey = "2026-10-30") {
-  return fake.rows.filter((row) => row.job === "test-job" && row.run_key === runKey);
-}
-
-describe("runJob: claim", () => {
-  it("claims the slot, hands the job its context and records the counts", async () => {
+describe("runJob", () => {
+  it("hands the job its context and returns its counts", async () => {
     const { job, spy } = testJob(async () => ({ orgs: 3, sent: 2 }));
     const result = await run(job);
-    expect(result).toEqual({
-      job: "test-job",
-      runKey: "2026-10-30",
-      outcome: "succeeded",
-      counts: { orgs: 3, sent: 2 },
-    });
+    expect(result).toEqual({ job: "test-job", outcome: "succeeded", counts: { orgs: 3, sent: 2 } });
     const ctx = spy.mock.calls[0][0];
-    expect(ctx.db).toBe(fake.db);
+    expect(ctx.db).toBe(db);
     expect(ctx.now.toISOString()).toBe("2026-10-30T13:00:00.000Z");
-    expect(ctx.runKey).toBe("2026-10-30");
+    expect(ctx.now).not.toBe(NOW);
+    expect(Object.keys(ctx).sort()).toEqual(["db", "log", "now"]);
     expect(typeof ctx.log.error).toBe("function");
-    expect(slot()).toEqual([
-      expect.objectContaining({
-        outcome: "succeeded",
-        counts: { orgs: 3, sent: 2 },
-        error_code: null,
-        finished_at: fake.clock.now,
-      }),
-    ]);
-    expect(fake.calls.map((call) => call.fn)).toEqual(["claim_job_run", "finish_job_run"]);
-    expect(fake.calls[0].args).toEqual({ p_job: "test-job", p_run_key: "2026-10-30" });
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it("keys a daily run on the UTC day, not the server's local day", () => {
-    expect(utcDayKey(new Date("2026-10-30T23:30:00-07:00"))).toBe("2026-10-31");
-    expect(utcDayKey(new Date("2026-10-31T00:00:00Z"))).toBe("2026-10-31");
-  });
-
-  it("uses the job's own runKey when it defines one", async () => {
-    const { job } = testJob(async () => ({}), {
-      runKey: (now) => `${utcDayKey(now)}T${String(now.getUTCHours()).padStart(2, "0")}`,
-    });
-    expect((await run(job)).runKey).toBe("2026-10-30T13");
-    expect(fake.rows[0].run_key).toBe("2026-10-30T13");
-  });
-
-  it("refuses a run key the ledger would reject, before claiming", async () => {
-    const { job, spy } = testJob(async () => ({}), { runKey: () => "2026 10 30" });
-    await expect(run(job)).rejects.toThrow("RUN_KEY_RE");
-    expect(spy).not.toHaveBeenCalled();
-    expect(fake.calls).toEqual([]);
-  });
-});
-
-describe("runJob: one run per (job, runKey)", () => {
-  it("skips while a run is running, without running the job or writing a row", async () => {
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    const { job, spy } = testJob(async () => {
-      await gate;
-      return { sent: 1 };
-    });
-    const first = run(job);
-    await vi.waitFor(() => expect(spy).toHaveBeenCalledOnce());
-    const second = await run(job);
-    expect(second).toEqual({
-      job: "test-job",
-      runKey: "2026-10-30",
-      outcome: "skipped",
-      counts: {},
-    });
-    expect(spy).toHaveBeenCalledOnce();
-    expect(slot()).toHaveLength(1);
-    release();
-    expect((await first).outcome).toBe("succeeded");
-    expect(slot()).toEqual([expect.objectContaining({ outcome: "succeeded" })]);
-  });
-
-  it("skips after a run succeeded", async () => {
-    const { job, spy } = testJob(async () => ({ sent: 2 }));
-    await run(job);
-    fake.clock.now += 3 * 60 * MINUTE;
-    const again = await run(job);
-    expect(again.outcome).toBe("skipped");
-    expect(again.counts).toEqual({});
-    expect(spy).toHaveBeenCalledOnce();
-    expect(slot()).toHaveLength(1);
-  });
-
-  it("runs again on the next day's key", async () => {
-    const { job, spy } = testJob(async () => ({ sent: 2 }));
-    await run(job);
-    fake.clock.now += 24 * 60 * MINUTE;
-    expect((await run(job)).runKey).toBe("2026-10-31");
-    expect(spy).toHaveBeenCalledTimes(2);
-  });
-
-  it("retries after a failed run, as a new row, keeping the failure on record", async () => {
-    let attempt = 0;
-    const { job, spy } = testJob(async () => {
-      attempt += 1;
-      if (attempt === 1) throw new Error("transient");
-      return { sent: 4 };
-    });
-    const first = await run(job);
-    expect(first.outcome).toBe("failed");
-    expect(first.counts).toEqual({});
-    const second = await run(job);
-    expect(second).toEqual({
-      job: "test-job",
-      runKey: "2026-10-30",
-      outcome: "succeeded",
-      counts: { sent: 4 },
-    });
-    expect(spy).toHaveBeenCalledTimes(2);
-    expect(slot().map((row) => [row.outcome, row.error_code])).toEqual([
-      ["failed", "job_error"],
-      ["succeeded", null],
-    ]);
-  });
-
-  it("only one of two simultaneous calls runs the job", async () => {
+  it("runs the job on every call: there is no run ledger", async () => {
     const { job, spy } = testJob(async () => ({ sent: 1 }));
-    const outcomes = (await Promise.all([run(job), run(job)])).map((r) => r.outcome).sort();
-    expect(outcomes).toEqual(["skipped", "succeeded"]);
-    expect(spy).toHaveBeenCalledOnce();
-  });
-});
-
-describe("runJob: stale running rows", () => {
-  function seedRunning(ageMinutes: number, runKey = "2026-10-30", job = "test-job") {
-    fake.rows.push({
-      id: `00000000-0000-4000-a000-${String(fake.rows.length + 1).padStart(12, "a")}`,
-      job,
-      run_key: runKey,
-      started_at: fake.clock.now - ageMinutes * MINUTE,
-      finished_at: null,
-      outcome: "running",
-      counts: {},
-      error_code: null,
-    });
-  }
-
-  it("marks a running row older than the stale timeout timed_out and runs again", async () => {
-    seedRunning(JOB_STALE_AFTER_MINUTES + 1);
-    const { job, spy } = testJob(async () => ({ sent: 5 }));
-    const result = await run(job);
-    expect(result.outcome).toBe("succeeded");
-    expect(spy).toHaveBeenCalledOnce();
-    expect(slot().map((row) => [row.outcome, row.error_code])).toEqual([
-      ["failed", "timed_out"],
-      ["succeeded", null],
-    ]);
-    expect(slot()[0].finished_at).toBe(fake.clock.now);
-  });
-
-  it("times out a crashed run in an earlier day's slot, which no later claim would revisit", async () => {
-    seedRunning(24 * 60 + JOB_STALE_AFTER_MINUTES, "2026-10-29");
-    const { job, spy } = testJob(async () => ({ sent: 5 }));
-    expect((await run(job)).runKey).toBe("2026-10-30");
-    expect(spy).toHaveBeenCalledOnce();
-    expect(slot("2026-10-29")).toEqual([
-      expect.objectContaining({
-        outcome: "failed",
-        error_code: "timed_out",
-        finished_at: fake.clock.now,
-      }),
-    ]);
-    expect(slot()).toEqual([expect.objectContaining({ outcome: "succeeded" })]);
-  });
-
-  it("leaves another job's stale rows, and its own young rows in other slots, alone", async () => {
-    seedRunning(JOB_STALE_AFTER_MINUTES + 1, "2026-10-29", "other-job");
-    seedRunning(JOB_STALE_AFTER_MINUTES - 1, "2026-10-30T12");
-    const { job } = testJob(async () => ({ sent: 5 }));
+    const outcomes = (await Promise.all([run(job), run(job)])).map((r) => r.outcome);
     expect((await run(job)).outcome).toBe("succeeded");
-    expect(
-      fake.rows
-        .filter((row) => row.run_key !== "2026-10-30")
-        .map((row) => [row.job, row.run_key, row.outcome]),
-    ).toEqual([
-      ["other-job", "2026-10-29", "running"],
-      ["test-job", "2026-10-30T12", "running"],
-    ]);
-  });
-
-  it("leaves a running row inside the stale timeout alone and skips", async () => {
-    seedRunning(JOB_STALE_AFTER_MINUTES - 1);
-    const { job, spy } = testJob(async () => ({ sent: 5 }));
-    expect((await run(job)).outcome).toBe("skipped");
-    expect(spy).not.toHaveBeenCalled();
-    expect(slot()).toEqual([expect.objectContaining({ outcome: "running", error_code: null })]);
-  });
-
-  it("exceeds the longest a Vercel function may run (800 s)", () => {
-    expect(JOB_STALE_AFTER_MINUTES * 60).toBeGreaterThan(800);
-  });
-
-  it("reports a run whose row was reclaimed meanwhile, and logs the lost finish", async () => {
-    const { job } = testJob(async () => {
-      // A later claim after the stale timeout takes the slot mid-run.
-      fake.clock.now += (JOB_STALE_AFTER_MINUTES + 1) * MINUTE;
-      await supabaseJobLedger(fake.db).claim("test-job", "2026-10-30");
-      return { sent: 1 };
-    });
-    const result = await run(job);
-    expect(result.outcome).toBe("succeeded");
-    expect(slot().map((row) => row.outcome)).toEqual(["failed", "running"]);
-    expect(consoleError).toHaveBeenCalledOnce();
-    expect(String(consoleError.mock.calls[0][0])).toBe("[jobs:test-job] finish_lost");
+    expect(outcomes).toEqual(["succeeded", "succeeded"]);
+    expect(spy).toHaveBeenCalledTimes(3);
   });
 });
 
 describe("runJob: failures", () => {
-  it("records a throw as failed / job_error with empty counts and returns the log id", async () => {
+  it("reports a throw as failed with empty counts and returns the log id", async () => {
     const { job } = testJob(async () => {
       throw new Error("boom");
     });
     const result = await run(job);
-    expect(result.outcome).toBe("failed");
+    expect(result).toMatchObject({ job: "test-job", outcome: "failed", counts: {} });
     expect(result.requestId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(slot()).toEqual([
-      expect.objectContaining({ outcome: "failed", error_code: "job_error", counts: {} }),
-    ]);
     expect(String(consoleError.mock.calls[0][0])).toBe("[jobs:test-job] run_failed");
     expect(String(consoleError.mock.calls[0][1])).toContain(`"requestId":"${result.requestId}"`);
   });
 
-  it("records counts that are not JobCounts as failed / invalid_counts", async () => {
+  it("reports counts that are not JobCounts as failed / invalid_counts", async () => {
     const { job } = testJob(async () => ({ sent: 1.5 }));
     const result = await run(job);
     expect(result).toMatchObject({ outcome: "failed", counts: {} });
-    expect(slot()).toEqual([
-      expect.objectContaining({ outcome: "failed", error_code: "invalid_counts", counts: {} }),
-    ]);
+    expect(result.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(String(consoleError.mock.calls[0][0])).toBe("[jobs:test-job] invalid_counts");
     expect(String(consoleError.mock.calls[0][1])).toContain('"errorClass":"InvalidJobCountsError"');
   });
 
@@ -284,23 +83,14 @@ describe("runJob: failures", () => {
     const { job } = testJob(async () => ({ jane_doe: 19610412 }));
     const result = await run(job);
     expect(result).toMatchObject({ outcome: "failed", counts: {} });
-    expect(slot()).toEqual([
-      expect.objectContaining({ outcome: "failed", error_code: "invalid_counts", counts: {} }),
-    ]);
-    expect(JSON.stringify(fake.rows)).not.toContain("19610412");
-    expect(JSON.stringify(fake.rows)).not.toContain("jane_doe");
+    const output = JSON.stringify([result, consoleError.mock.calls]);
+    expect(output).not.toContain("19610412");
+    expect(output).not.toContain("jane_doe");
   });
 
   it("accepts a subset of the declared keys", async () => {
     const { job } = testJob(async () => ({ sent: 0 }));
     expect(await run(job)).toMatchObject({ outcome: "succeeded", counts: { sent: 0 } });
-  });
-
-  it("propagates a ledger fault on claim without running the job", async () => {
-    fake.failNext.claim_job_run = { code: "08006", message: "connection failure" };
-    const { job, spy } = testJob(async () => ({}));
-    await expect(run(job)).rejects.toMatchObject({ code: "08006" });
-    expect(spy).not.toHaveBeenCalled();
   });
 });
 

@@ -1,11 +1,9 @@
 // What a job may report (MINT-106): integer tallies under the snake_case keys
-// the job declared, nothing else. The counts land in public.job_runs and in
-// the cron response, so this check is what keeps row data out of both. The
-// declaration is what stops a valid-looking key such as `jane_doe`;
-// finish_job_run repeats the shape check in SQL.
+// the job declared, nothing else. The counts land in the cron response (and
+// the tick's log that prints it), so this check is what keeps row data out of
+// both. The declaration is what stops a valid-looking key such as `jane_doe`.
 import type { JobCounts } from "./types";
 
-// Mirrored in finish_job_run (supabase/migrations/20261031050000_job_runs.sql).
 // A key starts with a letter, which also rules out `__proto__`.
 export const JOB_COUNT_KEY_RE = /^[a-z][a-z_]{0,39}$/;
 export const MAX_JOB_COUNT_KEYS = 32;
