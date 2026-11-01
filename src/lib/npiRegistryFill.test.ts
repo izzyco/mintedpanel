@@ -1,8 +1,9 @@
 // MINT-110 — what picking an NPI Registry match fills: every blank field (an
 // untouched preset and the previous pick's untouched data — fields, numbers
-// and rows added from its offers — count as blank), never a value staff
-// touched, a license number only into an unverified row of that state, and no
-// license row added — licenses not on the form are offered. Synthetic data.
+// and rows it or its offers added — count as blank), never a value staff
+// touched, a license number only into an unverified row of that state, a row
+// for a license in a state with none (A37), and an offer for the rest.
+// Synthetic data.
 import { describe, expect, it } from "vitest";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import {
@@ -145,12 +146,16 @@ function applied(form: NpiFillForm, next: ReturnType<typeof planNpiRegistryFill>
     credentials: next.credentials ?? form.credentials,
     credentialsTouched: next.trace.credentials ? false : form.credentialsTouched,
     taxonomyCode: next.taxonomyCode ?? form.taxonomyCode,
-    licenses: applyNpiLicenseRows(
-      form.licenses,
-      next,
-      (r, number, origin) => ({ ...r, number, origin }),
-      () => row(""),
-    ),
+    licenses: [
+      ...applyNpiLicenseRows(
+        form.licenses,
+        next,
+        (r, number, origin) => ({ ...r, number, origin }),
+        () => row(""),
+      ),
+      // The forms add these the way staff add an offer; appended here.
+      ...next.addLicenses.map((license) => row(license.state, license.number, ADDED)),
+    ],
   };
 }
 
@@ -208,6 +213,7 @@ describe("planNpiRegistryFill — blank fields", () => {
       cleared: [],
       kept: [],
       staleRows: [],
+      addedRows: [],
       licenseOffers: [],
       details: [],
       taxonomyChoices: [],
@@ -294,14 +300,33 @@ describe("planNpiRegistryFill — never overwrite staff's values", () => {
 });
 
 describe("planNpiRegistryFill — license rows", () => {
-  it("never adds a row: a license the form has no row for is offered", () => {
+  it("adds a row for each license in a state with no row (A37), and lists it as added", () => {
     const next = plan(record(), blankForm({ licenses: [row("")] }));
     expect(next.licenseRows).toEqual([]);
-    expect(next.summary.filled).toEqual(["NPI", "Credentials", "Taxonomy code"]);
-    expect(next.summary.licenseOffers).toEqual([
-      { state: "CO", number: "PT-4471", added: false },
-      { state: "WY", number: "WY-0099", added: false },
+    expect(next.addLicenses).toEqual([
+      { state: "CO", number: "PT-4471" },
+      { state: "WY", number: "WY-0099" },
     ]);
+    expect(next.summary.filled).toEqual(["NPI", "Credentials", "Taxonomy code"]);
+    expect(next.summary.addedRows).toEqual(["CO PT-4471", "WY WY-0099"]);
+    expect(next.summary.licenseOffers).toEqual([]);
+  });
+
+  it("adds the first number in a state with no row and offers the second", () => {
+    const taxonomy = (license: string, primary = false) => ({
+      code: "225X00000X",
+      description: null,
+      primary,
+      license,
+      licenseState: "CO",
+    });
+    const next = plan(
+      record({ taxonomies: [taxonomy("A-1", true), taxonomy("B-2")] }),
+      blankForm(),
+    );
+    expect(next.addLicenses).toEqual([{ state: "CO", number: "A-1" }]);
+    expect(next.summary.licenseOffers).toEqual([{ state: "CO", number: "B-2", added: false }]);
+    expect(next.summary.kept).toEqual([]);
   });
 
   it("fills a blank number in a row of that state, whatever its case or spacing", () => {
@@ -379,7 +404,11 @@ describe("planNpiRegistryFill — license rows", () => {
   });
 
   it("reads whether an offer is on the form from the rows, so a removed one comes back", () => {
-    const { summary } = plan(record(), blankForm());
+    // Verified rows with no number: each license is offered, not added.
+    const { summary } = plan(
+      record(),
+      blankForm({ licenses: [row("CO", "", null, true), row("WY", "", null, true)] }),
+    );
     const withRow = npiOffersOnForm(summary, [{ state: "wy", number: "wy 0099" }]);
     expect(withRow.licenseOffers).toEqual([
       { state: "CO", number: "PT-4471", added: false },
@@ -418,7 +447,11 @@ describe("planNpiRegistryFill — a second pick replaces the first pick's data",
       npi: "1902833742",
       credentials: "DPT",
       taxonomyCode: "2251X0800X",
-      licenses: [{ state: "CO", number: "PT-4471" }],
+      // B's WY license has no row: added (A37).
+      licenses: [
+        { state: "CO", number: "PT-4471" },
+        { state: "WY", number: "WY-0099" },
+      ],
     });
     expect(second.summary.kept).toEqual([]);
     expect(second.summary.filled).toEqual([
@@ -519,17 +552,39 @@ describe("planNpiRegistryFill — rows added from the previous pick's offers", (
     taxonomyCode: null,
   };
 
-  it("removes an untouched added row when B has a different license in that state", () => {
+  it("removes an untouched added row when B has a different license in that state, and adds B's", () => {
     const next = plan(record(), afterAdd, "blank_fields", lastPick);
     expect(next.removeRows).toEqual([0]);
-    expect(applied(afterAdd, next).licenses).toEqual([]);
+    expect(next.addLicenses).toEqual([
+      { state: "CO", number: "PT-4471" },
+      { state: "WY", number: "WY-0099" },
+    ]);
+    expect(applied(afterAdd, next).licenses).toEqual([
+      row("CO", "PT-4471", ADDED),
+      row("WY", "WY-0099", ADDED),
+    ]);
     expect(next.summary.cleared).toEqual(["CO license row"]);
-    expect(next.summary.licenseOffers).toContainEqual({
-      state: "CO",
-      number: "PT-4471",
-      added: false,
-    });
+    expect(next.summary.licenseOffers).toEqual([]);
     expect(next.summary.kept).toEqual([]);
+  });
+
+  it("never calls a row of the last pick's that B also lists staff's", () => {
+    const taxonomy = (license: string, primary = false) => ({
+      code: "225100000X",
+      description: null,
+      primary,
+      license,
+      licenseState: "CO",
+    });
+    const next = plan(
+      record({ taxonomies: [taxonomy("PT-1111", true), taxonomy("PT-2222")] }),
+      afterAdd,
+      "blank_fields",
+      lastPick,
+    );
+    expect(next.removeRows).toEqual([]);
+    expect(next.summary.kept).toEqual([]);
+    expect(next.summary.licenseOffers).toEqual([{ state: "CO", number: "PT-2222", added: false }]);
   });
 
   it("removes it when B has no license in that state", () => {
@@ -591,7 +646,10 @@ describe("planNpiRegistryFill — after staff verify or fail a row a pick filled
     };
     const second = plan(record(), failed, "blank_fields", first.trace);
     // Never a verified or failed row with no number.
-    expect(applied(failed, second).licenses).toEqual([row("CO", "PT-1111", null, true)]);
+    expect(applied(failed, second).licenses).toEqual([
+      row("CO", "PT-1111", null, true),
+      row("WY", "WY-0099", ADDED),
+    ]);
     expect(second.summary.cleared).not.toContain("CO license number");
     expect(second.summary.staleRows).toEqual(["CO PT-1111"]);
     expect(second.summary.kept).toEqual([]);
@@ -623,7 +681,12 @@ describe("planNpiRegistryFill — an added row that filled the empty starting ro
     const next = plan(record(), afterAdd, "blank_fields", null);
     expect(next.resetRows).toEqual([0]);
     expect(next.removeRows).toEqual([]);
-    expect(applied(afterAdd, next).licenses).toEqual([row("")]);
+    expect(applied(afterAdd, next).licenses).toEqual([
+      row(""),
+      // (The forms put the first added row into that empty row.)
+      row("CO", "PT-4471", ADDED),
+      row("WY", "WY-0099", ADDED),
+    ]);
     expect(next.summary.cleared).toEqual(["CO license row"]);
   });
 });
@@ -712,9 +775,16 @@ describe("npiFillAnnouncement", () => {
     );
     expect(npiFillAnnouncement(next.summary)).toBe(
       "Filled from the NPI Registry: NPI, Taxonomy code, CO license number. " +
+        "Added a license row from the NPI Registry: WY WY-0099, with no expiration date. " +
         "Kept yours: Credentials — registry has DPT. " +
-        "The registry lists 1 license that is not on the form. " +
-        "Add them below if they apply.",
+        "More registry details are listed below.",
+    );
+    const offered = plan(
+      record(),
+      blankForm({ licenses: [row("CO", "PT-4471"), row("WY", "", null, true)] }),
+    );
+    expect(npiFillAnnouncement(offered.summary)).toContain(
+      "The registry lists 1 license that is not on the form. Add them below if they apply.",
     );
   });
 
@@ -725,6 +795,7 @@ describe("npiFillAnnouncement", () => {
         cleared: [],
         kept: [],
         staleRows: [],
+        addedRows: [],
         licenseOffers: [],
         details: [],
         taxonomyChoices: [],

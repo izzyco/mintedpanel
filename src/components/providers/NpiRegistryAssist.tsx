@@ -28,6 +28,7 @@ import {
   usePrimeNpiRegistryLookup,
 } from "@/hooks/useNpiRegistry";
 import {
+  npiFillAddedText,
   npiFillAnnouncement,
   npiFillClearedText,
   npiFillFilledText,
@@ -272,6 +273,7 @@ export function NpiRegistryPickSummary({
   onUseCandidate?: (candidate: NpiFieldCandidate) => void;
 }) {
   const titleId = useId();
+  const added = npiFillAddedText(summary);
   const cleared = npiFillClearedText(summary);
   const kept = npiFillKeptText(summary);
   const stale = npiFillStaleText(summary);
@@ -285,6 +287,7 @@ export function NpiRegistryPickSummary({
         From the NPI Registry
       </p>
       <p>{npiFillFilledText(summary)}</p>
+      {added ? <p>{added}</p> : null}
       {cleared ? <p>{cleared}</p> : null}
       {kept ? <p>{kept}</p> : null}
       {stale ? <p>{stale}</p> : null}

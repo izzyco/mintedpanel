@@ -237,8 +237,9 @@ function FormBody({
   // and license differences included, goes to the backend capture.
 
   // MINT-110: the last NPI Registry pick (its summary, and what it wrote so a
-  // second pick can replace it). Picking never adds a license row; staff add
-  // an offered one from the summary.
+  // second pick can replace it). A pick adds a row for each registry license
+  // in a state with none (A37); staff add any other offered one from the
+  // summary.
   const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
   // Which fields staff edited (set from their input only); a pick's values,
   // and a candidate staff used for Gender or Phone (A36), are the registry's

@@ -96,7 +96,7 @@ describe("applyRosterNpiPick", () => {
     pulledAt: PULLED,
   };
 
-  it("fills blanks, including a saved unverified row's blank number, and adds no row", () => {
+  it("fills blanks, including a saved unverified row's blank number, and adds a row for a state with none", () => {
     const next = applyRosterNpiPick(fields, [savedCo], boulder, "blank_fields", FRESH);
     expect(next.patch).toEqual({
       npi: "1902833742",
@@ -109,23 +109,32 @@ describe("applyRosterNpiPick", () => {
         licenseNumber: "PT-4471",
         npiOrigin: { kind: "number", touched: false, pulledAt: PULLED },
       },
+      // A37: unverified, no expiration date, marked as the registry's.
+      {
+        ...EMPTY_LICENSE_DRAFT,
+        state: "WY",
+        licenseNumber: "WY-0099",
+        npiOrigin: { kind: "added", touched: false, pulledAt: PULLED },
+      },
     ]);
-    expect(next.summary.licenseOffers).toEqual([{ state: "WY", number: "WY-0099", added: false }]);
+    expect(next.licenses[1]).toMatchObject({ verifiedStatus: "unverified", expirationDate: "" });
+    expect(next.summary.addedRows).toEqual(["WY WY-0099"]);
+    expect(next.summary.licenseOffers).toEqual([]);
   });
 
   it("never gives a verified row a registry number; the license is offered instead", () => {
     const verified = { ...savedCo, verifiedStatus: "verified" as const };
     const next = applyRosterNpiPick(fields, [verified], boulder, "blank_fields", FRESH);
-    expect(next.licenses).toEqual([verified]);
+    expect(next.licenses[0]).toEqual(verified);
     expect(next.summary.licenseOffers).toContainEqual({
       state: "CO",
       number: "PT-4471",
       added: false,
     });
     const failed = { ...savedCo, verifiedStatus: "failed" as const };
-    expect(applyRosterNpiPick(fields, [failed], boulder, "blank_fields", FRESH).licenses).toEqual([
-      failed,
-    ]);
+    expect(
+      applyRosterNpiPick(fields, [failed], boulder, "blank_fields", FRESH).licenses[0],
+    ).toEqual(failed);
   });
 
   it("replaces the first pick's untouched data on a second pick, and keeps what staff touched", () => {
@@ -155,7 +164,7 @@ describe("applyRosterNpiPick", () => {
       "blank_fields",
       { ...FRESH, lastPick: first.trace },
     );
-    expect(second.licenses).toEqual([{ ...savedCo, npiOrigin: null }]);
+    expect(second.licenses[0]).toEqual({ ...savedCo, npiOrigin: null });
     expect(second.summary.cleared).toContain("CO license number");
   });
 
@@ -175,9 +184,12 @@ describe("applyRosterNpiPick", () => {
         lastPick: first.trace,
       },
     );
-    expect(second.licenses).toEqual([
-      { ...savedCo, licenseNumber: "PT-1111", verifiedStatus: "failed", npiOrigin: null },
-    ]);
+    expect(second.licenses[0]).toEqual({
+      ...savedCo,
+      licenseNumber: "PT-1111",
+      verifiedStatus: "failed",
+      npiOrigin: null,
+    });
     expect(second.summary.staleRows).toEqual(["CO PT-1111"]);
     expect(second.summary.licenseOffers).toContainEqual({
       state: "CO",
@@ -186,21 +198,39 @@ describe("applyRosterNpiPick", () => {
     });
   });
 
-  it("roster create: pick A, add its offer into the empty row, pick B — the empty row is back", () => {
+  it("roster create: pick A adds its CO row into the empty row, pick B — only B's rows are left", () => {
     const start = [{ ...EMPTY_LICENSE_DRAFT }];
     const first = applyRosterNpiPick(fields, start, denver, "blank_fields", FRESH);
-    expect(first.summary.licenseOffers).toEqual([{ state: "CO", number: "PT-1111", added: false }]);
-    const added = addRegistryLicenseDraft(first.licenses, first.summary.licenseOffers[0], PULLED);
-    expect(added.licenses).toHaveLength(1);
+    expect(first.summary.licenseOffers).toEqual([]);
+    expect(first.licenses).toEqual([
+      {
+        ...EMPTY_LICENSE_DRAFT,
+        state: "CO",
+        licenseNumber: "PT-1111",
+        npiOrigin: { kind: "added", touched: false, replacedEmpty: true, pulledAt: PULLED },
+      },
+    ]);
     const second = applyRosterNpiPick(
       { ...fields, ...first.patch },
-      added.licenses,
+      first.licenses,
       boulder,
       "blank_fields",
       { ...FRESH, lastPick: first.trace },
     );
-    expect(second.licenses).toEqual([EMPTY_LICENSE_DRAFT]);
+    expect(second.licenses.map((draft) => `${draft.state}/${draft.licenseNumber}`)).toEqual([
+      "CO/PT-4471",
+      "WY/WY-0099",
+    ]);
     expect(second.summary.cleared).toContain("CO license row");
+    // With no licenses, B leaves the empty row as it was before A.
+    const third = applyRosterNpiPick(
+      { ...fields, ...first.patch },
+      first.licenses,
+      { ...boulder, taxonomies: [] },
+      "blank_fields",
+      { ...FRESH, lastPick: first.trace },
+    );
+    expect(third.licenses).toEqual([EMPTY_LICENSE_DRAFT]);
   });
 
   it("never fills Gender or Phone; offers the sex that maps to one of its options (A36)", () => {

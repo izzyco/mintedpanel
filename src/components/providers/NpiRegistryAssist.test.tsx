@@ -86,6 +86,7 @@ const NO_FILL: NpiFillSummary = {
   cleared: [],
   kept: [],
   staleRows: [],
+  addedRows: [],
   licenseOffers: [],
   details: [],
   taxonomyChoices: [],
@@ -336,6 +337,7 @@ describe("NpiRegistryPickSummary", () => {
     cleared: ["Taxonomy code"],
     kept: [{ field: "Credentials", registryValue: "DPT" }],
     staleRows: ["NM NM-7"],
+    addedRows: [],
     licenseOffers: [
       { state: "WY", number: "WY-0099", added: false },
       { state: "MT", number: "MT-12", added: true },
@@ -381,6 +383,23 @@ describe("NpiRegistryPickSummary", () => {
     expect(html.match(/<button[^>]*>/g)).toHaveLength(2);
     expect(html).toMatch(/<button[^>]*aria-disabled="true"[^>]*>On the form/);
     expect(html).not.toMatch(/<button[^>]*disabled=""/);
+  });
+
+  it("says which rows the pick added, after what it filled (A37)", () => {
+    const one = renderToStaticMarkup(
+      <NpiRegistryPickSummary
+        summary={{ ...NO_FILL, filled: ["NPI"], addedRows: ["WY WY-0099"] }}
+      />,
+    );
+    expect(text(one)).toContain(
+      "|Filled from the NPI Registry: NPI.|Added a license row from the NPI Registry: WY WY-0099, with no expiration date.|",
+    );
+    const two = renderToStaticMarkup(
+      <NpiRegistryPickSummary summary={{ ...NO_FILL, addedRows: ["CO PT-4471", "WY WY-0099"] }} />,
+    );
+    expect(text(two)).toContain(
+      "Added license rows from the NPI Registry: CO PT-4471, WY WY-0099, with no expiration dates.",
+    );
   });
 
   it("lists offers without buttons when the form cannot add them", () => {

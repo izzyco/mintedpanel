@@ -46,8 +46,9 @@ export interface ProviderNpiPickContext {
  * The NPI is set; at "blank_fields" credentials, the taxonomy and the number
  * of a license row whose state matches fill when blank. Blank includes the
  * untouched preset taxonomy and whatever the last pick wrote or added that
- * staff left alone; an untouched row added from the last pick's offer goes.
- * No license row is added: licenses not on the form come back as offers. */
+ * staff left alone; an untouched row the last pick added, or staff added
+ * from its offer, goes. A license for a state with no row is added the way
+ * staff add an offer (A37); one that can't be comes back as an offer. */
 export function applyNpiRegistryPick(
   form: ProviderFormState,
   record: NpiRegistryRecord,
@@ -81,29 +82,34 @@ export function applyNpiRegistryPick(
     fillOnPick,
     context.lastPick,
   );
+  const licenses = plan.addLicenses.reduce(
+    (rows, license) => addNpiLicenseOffer(rows, license, context.pulledAt).licenses,
+    applyNpiLicenseRows(
+      form.licenses,
+      plan,
+      (row, number, origin) => ({
+        ...row,
+        number,
+        npiOrigin: origin ? { ...origin, pulledAt: origin.pulledAt ?? context.pulledAt } : null,
+      }),
+      emptyLicenseRow,
+    ),
+  );
   return {
     form: {
       ...form,
       npi: plan.npi,
       credentials: plan.credentials ?? form.credentials,
       taxonomyCode: plan.taxonomyCode ?? form.taxonomyCode,
-      licenses: applyNpiLicenseRows(
-        form.licenses,
-        plan,
-        (row, number, origin) => ({
-          ...row,
-          number,
-          npiOrigin: origin ? { ...origin, pulledAt: origin.pulledAt ?? context.pulledAt } : null,
-        }),
-        emptyLicenseRow,
-      ),
+      licenses,
     },
     summary: plan.summary,
     trace: plan.trace,
   };
 }
 
-/** Staff added an offered registry license: it fills the untouched empty row
+/** A registry license added as a row — by a pick, for a state with no row
+ * (A37), or by staff from a pick's offer: it fills the untouched empty row
  * when there is one, or a new row, marked as added from the pick (so the next
  * pick can take it back while it is untouched). Type and dates stay blank
  * (NPPES has no expiration date). When a row already holds that license

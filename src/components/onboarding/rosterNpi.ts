@@ -1,7 +1,11 @@
 // The roster form's Type 1 NPI rule and its NPI Registry pick (MINT-7,
 // MINT-110). Non-component module so the form file exports only components
 // (react-refresh rule).
-import { EMPTY_LICENSE_DRAFT, type LicenseDraft } from "@/components/onboarding/licenseDraft";
+import {
+  EMPTY_LICENSE_DRAFT,
+  addRegistryLicenseDraft,
+  type LicenseDraft,
+} from "@/components/onboarding/licenseDraft";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import {
   applyNpiLicenseRows,
@@ -49,10 +53,12 @@ export const ROSTER_GENDER_VALUES = ["female", "male", "nonbinary"] as const;
  * and, at "blank_fields", credentials, the taxonomy and the number of a
  * license row whose state matches fill when blank — or when they still hold
  * what the last pick wrote and staff have not touched them. An untouched row
- * added from the last pick's offer goes unless this match lists it. A saved
- * row's blank number is filled only while its verification is Unverified
- * (a verified or failed row is skipped and its license offered instead), and
- * the save still goes through the form. No row is added. */
+ * the last pick added, or staff added from its offer, goes unless this match
+ * lists it. A saved row's blank number is filled only while its verification
+ * is Unverified (a verified or failed row is skipped and its license offered
+ * instead). A license for a state with no row is added as an unverified row
+ * with no expiration date, the way staff add an offer (A37). The save still
+ * goes through the form. */
 export function applyRosterNpiPick(
   fields: RosterNpiFields,
   licenses: LicenseDraft[],
@@ -105,15 +111,18 @@ export function applyRosterNpiPick(
   if (plan.taxonomyCode !== null) patch.taxonomyCode = plan.taxonomyCode;
   return {
     patch,
-    licenses: applyNpiLicenseRows(
-      licenses,
-      plan,
-      (draft, number, origin) => ({
-        ...draft,
-        licenseNumber: number,
-        npiOrigin: origin ? { ...origin, pulledAt: origin.pulledAt ?? context.pulledAt } : null,
-      }),
-      () => ({ ...EMPTY_LICENSE_DRAFT }),
+    licenses: plan.addLicenses.reduce(
+      (drafts, license) => addRegistryLicenseDraft(drafts, license, context.pulledAt).licenses,
+      applyNpiLicenseRows(
+        licenses,
+        plan,
+        (draft, number, origin) => ({
+          ...draft,
+          licenseNumber: number,
+          npiOrigin: origin ? { ...origin, pulledAt: origin.pulledAt ?? context.pulledAt } : null,
+        }),
+        () => ({ ...EMPTY_LICENSE_DRAFT }),
+      ),
     ),
     trace: plan.trace,
     summary: plan.summary,

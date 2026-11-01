@@ -12,12 +12,15 @@
 // typed, chose, or loaded from the record is never replaced; when it differs
 // from the registry the summary says so ("Kept yours").
 //
-// A pick never adds a license row. A registry license the form has no row for
-// is offered, and staff add it with one click: a row feeds the provider's
-// state footprint and readiness, NPPES has no expiration date, and NPPES
-// licenses are self-reported. A row added from an offer, and a number a pick
-// wrote, carry an NpiRowOrigin so the next pick can take them back. A license
-// row whose verification is recorded is never given a registry number.
+// A registry license for a state with no row on the form is added as a new
+// row (A37): unverified, the registry's state and number, no expiration date
+// (NPPES has none; the provider supplies it later, and a blank one never
+// blocks a save). A license that can't be added that way — a second number in
+// a state that has a row, or a state whose only row is verified or failed — is
+// offered, and staff add it with one click. A row a pick added, a row added
+// from an offer, and a number a pick wrote carry an NpiRowOrigin, so the next
+// pick takes them back while untouched. A license row whose verification is
+// recorded is never given a registry number.
 // Registry data with no field on the form is listed read-only and never
 // saved. At "npi_only" nothing but the NPI is set, and everything else is
 // listed.
@@ -149,7 +152,9 @@ export interface NpiFillSummary {
    * and numbers it filled into rows staff have since verified or failed.
    * Theirs to remove if they don't apply. */
   staleRows: string[];
-  /** Licenses the form has no row for, for staff to add. */
+  /** Rows this pick added, "WY WY-0099": a state with no row (A37). */
+  addedRows: string[];
+  /** Licenses the pick could not add, for staff to add. */
   licenseOffers: NpiLicenseOffer[];
   /** Several taxonomies and none flagged primary (A35): a pick list for the
    * one-value taxonomy field, nothing preselected — never the first. */
@@ -174,6 +179,9 @@ export interface NpiFillPlan {
   /** Rows to return to the form's empty row: like removeRows, for an added
    * row that had filled the form's untouched empty row. */
   resetRows: number[];
+  /** Licenses to add as rows (A37), after the other row changes: each the
+   * way staff add an offer (the untouched empty row, else a new row). */
+  addLicenses: { state: string; number: string }[];
   /** What this pick wrote; pass it to the next pick. */
   trace: NpiPickTrace;
   summary: NpiFillSummary;
@@ -351,9 +359,9 @@ function registryLicenses(record: NpiRegistryRecord): { state: string; number: s
 
 /** What a pick of `record` does to a form holding `form`, given what the last
  * pick wrote (null before the first pick). Never replaces a value of staff's,
- * never adds a license row, never fills a row whose verification is recorded,
- * and never leaves the form unsaveable: a taxonomy outside the form's list is
- * listed instead. At "npi_only" only the NPI is set. */
+ * adds a row only for a state with none, never fills a row whose verification
+ * is recorded, and never leaves the form unsaveable: a taxonomy outside the
+ * form's list is listed instead. At "npi_only" only the NPI is set. */
 export function planNpiRegistryFill(
   record: NpiRegistryRecord,
   form: NpiFillForm,
@@ -366,6 +374,7 @@ export function planNpiRegistryFill(
   const kept: NpiFillKept[] = [];
   const staleRows: string[] = [];
   const offers: NpiLicenseOffer[] = [];
+  const addLicenses: NpiFillPlan["addLicenses"] = [];
   const details: NpiRegistryDetail[] = [];
   const trace: NpiPickTrace = { credentials: null, taxonomyCode: null };
 
@@ -502,12 +511,23 @@ export function planNpiRegistryFill(
       rows[blankRow].filledHere = true;
       continue;
     }
-    // A number staff entered in that state is kept and named.
+    // A37: no row of that state stays on the form (an untouched row of the
+    // last pick's goes) and this pick added none: add one.
+    const stateHasRow =
+      inState.some((i) => !rows[i].removable) ||
+      addLicenses.some((added) => added.state === license.state);
+    if (!stateHasRow && STATE_SET.has(license.state) && form.licenseRowSaveable) {
+      addLicenses.push({ state: license.state, number: license.number });
+      continue;
+    }
+    // A number staff entered in that state is kept and named; a row of a
+    // pick's is not staff's.
     const staffNumber = inState.some(
       (i) =>
         !rows[i].removable &&
         !rows[i].filledHere &&
         !rows[i].lockedPickNumber &&
+        rows[i].origin?.kind !== "added" &&
         !isBlankField(rows[i].number),
     );
     if (staffNumber) {
@@ -610,12 +630,14 @@ export function planNpiRegistryFill(
     licenseRows,
     removeRows,
     resetRows,
+    addLicenses,
     trace,
     summary: {
       filled,
       cleared,
       kept,
       staleRows,
+      addedRows: addLicenses.map((added) => `${added.state} ${added.number}`),
       licenseOffers: offers,
       taxonomyChoices,
       candidates,
@@ -697,6 +719,16 @@ export function npiFillFilledText(summary: NpiFillSummary): string {
     : "Nothing blank to fill from the NPI Registry.";
 }
 
+/** "Added a license row from the NPI Registry: WY WY-0099, with no
+ * expiration date." (A37) */
+export function npiFillAddedText(summary: NpiFillSummary): string | null {
+  const rows = summary.addedRows;
+  if (rows.length === 0) return null;
+  return rows.length === 1
+    ? `Added a license row from the NPI Registry: ${rows[0]}, with no expiration date.`
+    : `Added license rows from the NPI Registry: ${rows.join(", ")}, with no expiration dates.`;
+}
+
 /** "Cleared from the previous pick: Credentials, CO license row." */
 export function npiFillClearedText(summary: NpiFillSummary): string | null {
   return summary.cleared.length > 0
@@ -751,6 +783,7 @@ export function npiFillAnnouncement(summary: NpiFillSummary): string {
               : null;
   return [
     npiFillFilledText(summary),
+    npiFillAddedText(summary),
     npiFillClearedText(summary),
     npiFillKeptText(summary),
     npiFillStaleText(summary),
