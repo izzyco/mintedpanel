@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthContext } from "./guard";
+import { ADVISORY_UUID_PATTERN } from "@/lib/advisoryChecks";
 import type { RosterExportSnapshot, RosterOverride } from "@/types";
 
 vi.mock("@/services/rosterEngineData", () => ({
@@ -373,6 +374,36 @@ describe("roster API route governance", () => {
     const response = await handleSaveRosterOverride(MAPPING_ID, overrideInput, ctx());
     expect(response.status).toBe(409);
     expect(recordServerAdvisory).not.toHaveBeenCalled();
+  });
+
+  // Review of MINT-136 (P3-1): UUID_RE accepts an uppercase path id, but the
+  // advisory helpers accept only a lowercase UUID and would drop the row.
+  it("records the advisory under the lowercase mapping id when the path is uppercase", async () => {
+    const lowerId = "abcdef12-3456-4789-8abc-def123456789";
+    const upperId = lowerId.toUpperCase();
+    expect(ADVISORY_UUID_PATTERN.test(upperId)).toBe(false);
+    vi.mocked(recordRosterOverride).mockResolvedValue({
+      id: "override-1",
+      mappingId: lowerId,
+      revision: mapping.revision,
+      inputFingerprint: FINGERPRINT,
+      rowKey: PROVIDER_ID,
+      ruleCode: "provider_npi_invalid",
+      fieldKey: "provider.npi",
+      reason: null,
+      createdAt: "2026-09-25T12:31:00Z",
+    });
+
+    const response = await handleSaveRosterOverride(upperId, overrideInput, ctx());
+    expect(response.status).toBe(201);
+    expect(recordServerAdvisory).toHaveBeenCalledWith(
+      expect.anything(),
+      "api",
+      "roster_export.override",
+      { table: "roster_mappings", id: lowerId },
+      { count: 1 },
+    );
+    expect(ADVISORY_UUID_PATTERN.test(lowerId)).toBe(true);
   });
 
   it("returns stale conflict when freshly read source differs from the requested export fingerprint", async () => {

@@ -29,6 +29,8 @@ table names, and vault release paths are not part of this work.
 | WP13-6 | Retrieve an unchanged historical export                                     | Atomic original bytes, database SHA-256, frozen schema/mapping/rows, applied overrides, actor/time/counts; scoped idempotent retries; authorized original-byte download after source changes                           |
 | WP13-7 | Keep organization data and ledger writes protected                          | Org RLS, explicit grants, service-only RPC execution, verified actor and current membership checks; wrong-org and billing write denials; append-only snapshot/override enforcement; real SQL rollback and tamper tests |
 
+WP13-4 superseded Nov 1 (MINT-136, U7): one click, no reason. "Export anyway" records the override with its row, rule and field; the 20-character reason above is retired, and older overrides keep theirs.
+
 ## Data and authorization contract
 
 | Surface          | Contract                                                                                                                                                       |

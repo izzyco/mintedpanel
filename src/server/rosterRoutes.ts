@@ -113,11 +113,7 @@ function safeError(error: unknown): Response {
     return noStore(fail(413, "Roster exceeds the 5,000 row or 3 MiB artifact limit"));
   if (/roster_location_scope_required/.test(message))
     return noStore(fail(422, "Select at least one location for this roster grain"));
-  if (
-    /reason_too_short|mapping_invalid|location_scope_required|provider_grain_group_ambiguous/.test(
-      message,
-    )
-  ) {
+  if (/mapping_invalid|location_scope_required|provider_grain_group_ambiguous/.test(message)) {
     return noStore(fail(422, "Roster request is incomplete or invalid"));
   }
   return noStore(fail(500, "Roster operation could not be completed"));
@@ -441,11 +437,13 @@ export function handleSaveRosterOverride(
       if (!issue || issue.severity !== "hard_error" || !issue.overrideable)
         throw new Error("roster_mapping_invalid");
       const override = await recordRosterOverride(service, id, input);
+      // UUID_RE takes any case; the advisory helpers take only a lowercase
+      // UUID, so an uppercase path id would drop the advisory silently.
       await recordServerAdvisory(
         ctx,
         "api",
         "roster_export.override",
-        { table: "roster_mappings", id },
+        { table: "roster_mappings", id: id.toLowerCase() },
         { count: result.validation.rowCount },
       );
       return override;
