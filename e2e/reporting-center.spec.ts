@@ -531,6 +531,9 @@ test("RC-06 — Provider Onboarding places each provider in one stage and lists 
       { ...providerRow("p-denied", "Fay", "Reapply"), ...complete, npi: null },
       // A member of Rose City Rehab whose only location is under another group.
       { ...providerRow("p-moved", "Gil", "Moved"), ...complete },
+      // A member whose only location is an in-home address under no group:
+      // it counts for any provider (A22), so he is Ready.
+      { ...providerRow("p-home", "Hal", "Homevisits"), ...complete },
     ],
     state_licenses: [
       license("l-1", "p-new", "TX", "verified"),
@@ -539,6 +542,7 @@ test("RC-06 — Provider Onboarding places each provider in one stage and lists 
       license("l-4", "p-case", "TX", "verified"),
       license("l-5", "p-unassigned", "NC", "verified"),
       license("l-6", "p-moved", "TX", "verified"),
+      license("l-7", "p-home", "TX", "verified"),
     ],
     provider_groups: [
       { id: GROUP_ID, org_id: ORG_A, name: "Rose City Rehab", is_active: true },
@@ -548,16 +552,19 @@ test("RC-06 — Provider Onboarding places each provider in one stage and lists 
       membership("m-1", "p-psv"),
       membership("m-2", "p-ready"),
       membership("m-3", "p-moved"),
+      membership("m-4", "p-home"),
     ],
     facilities: [
       facilityRow("f-tx", "Dallas", null),
       facilityRow("f-mo", "Kansas City", null, { state: "MO" }),
       facilityRow("f-austin", "Austin", null, { group_id: OTHER_GROUP_ID }),
+      facilityRow("f-home", "Home Visits", null, { group_id: null }),
     ],
     provider_facility_assignments: [
       { id: "a-1", org_id: ORG_A, provider_id: "p-psv", facility_id: "f-tx" },
       { id: "a-2", org_id: ORG_A, provider_id: "p-ready", facility_id: "f-mo" },
       { id: "a-3", org_id: ORG_A, provider_id: "p-moved", facility_id: "f-austin" },
+      { id: "a-4", org_id: ORG_A, provider_id: "p-home", facility_id: "f-home" },
     ],
     credential_cases: [
       caseRow("c-1", "p-case", "payer-1", "TX", "submitted"),
@@ -587,7 +594,7 @@ test("RC-06 — Provider Onboarding places each provider in one stage and lists 
   await expect(
     stages.getByRole("button", { name: /Verified, awaiting assignment\s*2/ }),
   ).toBeVisible();
-  await expect(stages.getByRole("button", { name: /Ready for credentialing\s*1/ })).toBeVisible();
+  await expect(stages.getByRole("button", { name: /Ready for credentialing\s*2/ })).toBeVisible();
   await expect(stages.getByRole("button", { name: /Credentialing\s*2/ })).toBeVisible();
   await expect(page.getByText("Awaiting verification")).toHaveCount(0);
   await expect(page.getByText("Invited", { exact: true })).toHaveCount(0);
@@ -616,14 +623,25 @@ test("RC-06 — Provider Onboarding places each provider in one stage and lists 
     exact: true,
   });
   await expect(awaiting.locator("tbody tr")).toHaveCount(2);
-  await expect(awaiting.locator("tr", { hasText: "Eve Unassigned" })).toContainText(
-    "Needs a group and a location",
-  );
+  // A missing group is a staff-side gap, listed here and never as the
+  // provider's reason in Submitted (A23).
+  const eve = awaiting.locator("tr", { hasText: "Eve Unassigned" });
+  await expect(eve).toContainText("Needs a location");
+  await expect(eve).toContainText("No group assigned yet");
   // A location under a group the provider is not a member of does not count.
   await expect(awaiting.locator("tr", { hasText: "Gil Moved" })).toContainText(
     "Location Austin is under Shelby Sports Rehab, not the provider's group",
   );
   await expect(awaiting.locator("tr", { hasText: "Bea Pending" })).toHaveCount(0);
+
+  // An ungrouped in-home location counts for any provider (A22).
+  await stages.getByRole("button", { name: /Ready for credentialing/ }).click();
+  const ready = page.getByRole("region", {
+    name: "Ready for credentialing providers",
+    exact: true,
+  });
+  await expect(ready.locator("tbody tr")).toHaveCount(2);
+  await expect(ready).toContainText("Hal Homevisits");
 
   // Any case is Credentialing, a denied one too, with no case-status breakdown.
   await stages.getByRole("button", { name: /Credentialing\s*2/ }).click();

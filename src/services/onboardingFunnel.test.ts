@@ -203,6 +203,26 @@ describe("onboarding funnel service", () => {
     }
   });
 
+  it("reads each location assignment's start date for the future-dated setting (A27)", async () => {
+    holder.tables.provider_facility_assignments = [
+      {
+        id: "a-1",
+        org_id: "org-1",
+        provider_id: "p-active",
+        facility_id: "f-on",
+        start_date: "2026-11-01",
+      },
+    ];
+    const input = await getOnboardingFunnelInput();
+    expect(holder.calls.provider_facility_assignments.select[0][0]).toContain("start_date");
+    expect(input.locations).toMatchObject([
+      { providerId: "p-active", locationId: "f-on", assignmentStartDate: "2026-11-01" },
+    ]);
+    // The configuration carries the CAQH window shared with enrollment
+    // readiness (A26), at its default while nothing is stored.
+    expect(input.config.caqhAttestationWindowDays).toBe(120);
+  });
+
   it("pages every read to completion and keeps only active licenses and locations", async () => {
     const input = await getOnboardingFunnelInput();
     expect(holder.calls.state_licenses.range).toEqual([
@@ -218,6 +238,7 @@ describe("onboarding funnel service", () => {
         state: "NC",
         groupId: "g-on",
         groupName: "Rose City Rehab",
+        assignmentStartDate: null,
       },
     ]);
     expect(input.cases).toEqual([{ providerId: "p-active", state: "NC", status: "submitted" }]);
@@ -343,7 +364,7 @@ describe("onboarding funnel service", () => {
     const [row] = buildOnboardingFunnelRows(input, "2026-10-20", input.config);
     expect(row).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Membership group not found", "Needs a location"],
+      gaps: ["Needs a location", "Membership group not found"],
     });
     expect(row.gaps.join(" ")).not.toMatch(/inactive/);
   });

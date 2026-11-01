@@ -80,6 +80,7 @@ function funnelInput(): OnboardingFunnelInput {
         state: "TX",
         groupId: "g-1",
         groupName: "Rose City Rehab",
+        assignmentStartDate: null,
       },
     ],
     groupMemberships: [
@@ -94,7 +95,9 @@ function funnelInput(): OnboardingFunnelInput {
     ],
     // Dee's only case was denied; by default every case counts.
     cases: [{ providerId: "p-denied", state: "TX", status: "denied" }],
-    intakeReadable: false,
+    // Read only while the intake tables can be (state.intakeReadable).
+    intakeReadable: state.intakeReadable,
+    intake: [{ providerId: "p-ready", intakeSubmitted: false }],
   };
 }
 
@@ -135,7 +138,8 @@ describe("Provider Onboarding report", () => {
     expect(html).toContain("Verified, awaiting assignment · 1");
     expect(html).toContain("What&#x27;s needed");
     expect(html).toContain("Bea Unassigned");
-    expect(html).toContain("Needs a group and a location");
+    expect(html).toContain("Needs a location");
+    expect(html).toContain("No group assigned yet");
     expect(html).not.toContain("Eve Pending");
   });
 
@@ -193,6 +197,7 @@ describe("Provider Onboarding report", () => {
         },
       ],
       rules: DEFAULT_ONBOARDING_FUNNEL_CONFIG.rules,
+      caqhAttestationWindowDays: 120,
     };
     const html = render();
     expect(cardTitles(html)).toEqual(["Not ready", "Ready to start", "Credentialing"]);
@@ -200,8 +205,18 @@ describe("Provider Onboarding report", () => {
     // Opens on the first stage that lists what is needed.
     expect(html).toContain("Not ready · 3");
     expect(html).toContain("No NPI");
-    expect(html).toContain("Needs a group and a location");
+    expect(html).toContain("Needs a location");
+    expect(html).toContain("No group assigned yet");
     expect(html).not.toContain("Submitted");
     expect(DEFAULT_ONBOARDING_FUNNEL_STAGES[2].label).toBe("Submitted");
+  });
+
+  it("tags a provider past Invited whose invite is outstanding (A28)", () => {
+    state.intakeReadable = true;
+    const html = render("ready_for_credentialing");
+    expect(html).toContain("Cal Ready");
+    expect(html).toContain("Invite outstanding");
+    state.intakeReadable = false;
+    expect(render("ready_for_credentialing")).not.toContain("Invite outstanding");
   });
 });

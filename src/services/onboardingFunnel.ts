@@ -17,6 +17,7 @@ import { supabase } from "@/integrations/supabase/externalClient";
 import { requireActiveOrg } from "@/lib/audit";
 import { isCaseStatus } from "@/lib/caseStatus";
 import { readCompletePages } from "@/lib/completePages";
+import { resolveCaqhAttestationWindowDays } from "@/lib/caqhAttestation";
 import { resolveOnboardingFunnelConfig, type OnboardingFunnelRead } from "@/lib/onboardingFunnel";
 
 type Row = Record<string, unknown>;
@@ -49,7 +50,7 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> 
     .order("id", { ascending: true });
   const assignmentsQuery = supabase
     .from("provider_facility_assignments")
-    .select("id, provider_id, facility_id", { count: "exact" })
+    .select("id, provider_id, facility_id, start_date", { count: "exact" })
     .eq("org_id", orgId)
     .order("id", { ascending: true });
   const groupsQuery = supabase
@@ -135,6 +136,8 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> 
           state: text(facility.state),
           groupId,
           groupName: groupId === null ? null : (groupNames.get(groupId) ?? null),
+          // Read for the future-dated assignment setting (A27).
+          assignmentStartDate: text(row.start_date),
         },
       ];
     }),
@@ -159,7 +162,9 @@ export async function getOnboardingFunnelInput(): Promise<OnboardingFunnelRead> 
       status: isCaseStatus(row.case_status) ? row.case_status : null,
     })),
     intakeReadable: false,
-    // Platform default, no organization override: neither is stored yet (MINT-125).
-    config: resolveOnboardingFunnelConfig(null, null),
+    // Platform default, no organization override: neither is stored yet
+    // (MINT-125). The CAQH window is the setting shared with enrollment
+    // readiness (A26), resolved the same way.
+    config: resolveOnboardingFunnelConfig(null, null, resolveCaqhAttestationWindowDays(null, null)),
   };
 }

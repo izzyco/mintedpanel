@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS } from "@/lib/caqhAttestation";
 import { CASE_STATUSES, type CaseStatus } from "@/lib/caseStatus";
 import {
   buildOnboardingFunnelRows,
   DEFAULT_ONBOARDING_FUNNEL_CONFIG,
   DEFAULT_ONBOARDING_FUNNEL_RULES,
   DEFAULT_ONBOARDING_FUNNEL_STAGES,
+  explainOnboardingFunnelConfig,
+  INVITE_OUTSTANDING_TAG,
   MAX_ONBOARDING_FUNNEL_STAGES,
   ONBOARDING_FUNNEL_GATES,
   onboardingFunnelStageCounts,
   onboardingFunnelStates,
-  placeOnboardingFunnelStage,
+  NO_GROUP_GAP,
+  ONBOARDING_FUNNEL_PROFILE_FIELDS,
+  placeOnboardingFunnelStages,
   resolveOnboardingFunnelConfig,
   resolveOnboardingFunnelRules,
   STATELESS_LOCATION_GAP,
@@ -26,6 +31,7 @@ import {
   type OnboardingFunnelIntakeFacts,
   type OnboardingFunnelLocationInput,
   type OnboardingFunnelMembershipInput,
+  type OnboardingFunnelProfileField,
   type OnboardingFunnelProviderFacts,
   type OnboardingFunnelRules,
   type OnboardingFunnelRulesOverride,
@@ -34,6 +40,7 @@ import {
 
 const TODAY = "2026-10-20";
 const DEFAULT = DEFAULT_ONBOARDING_FUNNEL_RULES;
+const CAQH = DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS;
 const GROUP = "g-rose";
 const OTHER_GROUP = "g-shelby";
 
@@ -67,6 +74,7 @@ const at = (
   state,
   groupId: GROUP,
   groupName: "Rose City Rehab",
+  assignmentStartDate: null,
   ...over,
 });
 
@@ -127,6 +135,7 @@ function input(): OnboardingFunnelInput {
 const withRules = (rules: OnboardingFunnelRules): OnboardingFunnelConfig => ({
   stages: DEFAULT_ONBOARDING_FUNNEL_STAGES,
   rules,
+  caqhAttestationWindowDays: CAQH,
 });
 
 function rowsOf(data: OnboardingFunnelInput, rules: OnboardingFunnelRules = DEFAULT) {
@@ -179,11 +188,17 @@ describe("provider onboarding funnel", () => {
     data.locations = [at("both", "NC"), at("locationonly", "NC")];
     data.groupMemberships = [member("both"), member("grouponly")];
     data.cases = [];
+    // A23: the missing group is a staff-side gap, listed beside per-location
+    // reasons like anyone else's.
     expect(rowsOf(data).map((r) => [r.providerId, r.stage, r.gaps])).toEqual([
       ["both", "ready_for_credentialing", []],
       ["grouponly", "verified_awaiting_assignment", ["Needs a location"]],
-      ["locationonly", "verified_awaiting_assignment", ["Needs a group"]],
-      ["neither", "verified_awaiting_assignment", ["Needs a group and a location"]],
+      [
+        "locationonly",
+        "verified_awaiting_assignment",
+        ["Location NC Clinic is under Rose City Rehab, not the provider's group", NO_GROUP_GAP],
+      ],
+      ["neither", "verified_awaiting_assignment", ["Needs a location", NO_GROUP_GAP]],
     ]);
   });
 
@@ -273,14 +288,18 @@ describe("provider onboarding funnel", () => {
     });
   });
 
-  it("lists a stateless location next to the license and group gaps", () => {
+  it("lists a stateless location next to the license gap, never the missing group", () => {
     const data = input();
     data.groupMemberships = [];
     data.locations = [at("ready", "nowhere")];
     data.licenses = [{ ...verified("ready", "NC"), verifiedStatus: "unverified" }];
     expect(rowFor(data, "ready")).toMatchObject({
       stage: "submitted",
-      gaps: ["NC license not board-verified", "Needs a group", STATELESS_LOCATION_GAP],
+      gaps: [
+        "NC license not board-verified",
+        "Location nowhere Clinic is under Rose City Rehab, not the provider's group",
+        STATELESS_LOCATION_GAP,
+      ],
     });
   });
 
@@ -363,7 +382,7 @@ describe("Submitted and Verified, awaiting assignment", () => {
     ];
     data.licenses = data.providers.map((p) => verified(p.providerId, "NC"));
     data.locations = [
-      at("nogroup", "NC"),
+      at("nogroup", "NC", { groupId: null, groupName: null }),
       at("mismatch", "NC", underShelby),
       at("stateless", null),
       at("pending", "NC"),
@@ -372,7 +391,8 @@ describe("Submitted and Verified, awaiting assignment", () => {
     data.cases = [];
     const rows = rowsOf(data);
     expect(rows.map((r) => [r.providerId, r.stage, r.gaps])).toEqual([
-      ["nogroup", "verified_awaiting_assignment", ["Needs a group"]],
+      // Their ungrouped location counts (A22); only the group is missing.
+      ["nogroup", "verified_awaiting_assignment", [NO_GROUP_GAP]],
       [
         "mismatch",
         "verified_awaiting_assignment",
@@ -397,11 +417,16 @@ describe("Submitted and Verified, awaiting assignment", () => {
         "Location TX Clinic is under Shelby Sports Rehab, not the provider's group",
       ],
     });
+    // A23: a missing group is never listed as the provider's reason.
     data.groupMemberships = [];
     expect(rowFor(data, "unverified")).toMatchObject({
       stage: "submitted",
-      gaps: ["TX license not board-verified", "Needs a group"],
+      gaps: [
+        "TX license not board-verified",
+        "Location TX Clinic is under Shelby Sports Rehab, not the provider's group",
+      ],
     });
+    expect(rowFor(data, "unverified")?.dimensions.groupGaps).toEqual([NO_GROUP_GAP]);
   });
 });
 
@@ -443,24 +468,41 @@ describe("a location must be under the provider's group", () => {
     });
   });
 
-  it("says only 'Needs a group' when the provider has no membership at all", () => {
+  it("lists a missing group as a staff-side gap, beside per-location reasons (A23)", () => {
     const data = input();
     data.groupMemberships = [];
     data.locations = [at("ready", "NC", { ...underShelby, locationName: "Austin" })];
     expect(rowFor(data, "ready")).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Needs a group"],
+      gaps: [
+        "Location Austin is under Shelby Sports Rehab, not the provider's group",
+        NO_GROUP_GAP,
+      ],
+    });
+    // An ungrouped location counts for them too (A22): only the group is left.
+    data.locations = [at("ready", "NC", { locationName: "Home", groupId: null, groupName: null })];
+    expect(rowFor(data, "ready")).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: [NO_GROUP_GAP],
     });
   });
 
-  it("names a location with no group", () => {
+  it("counts a location with no group for any provider by default (A22), and not when the rule is off", () => {
     const data = input();
     data.locations = [
       at("ready", "NC", { locationName: "Durham", groupId: null, groupName: null }),
     ];
-    expect(rowFor(data, "ready")).toMatchObject({
+    expect(rowFor(data, "ready")).toMatchObject({ stage: "ready_for_credentialing", gaps: [] });
+    const off = resolveOnboardingFunnelRules(null, { ungroupedLocationCounts: false });
+    expect(rowFor(data, "ready", off)).toMatchObject({
       stage: "verified_awaiting_assignment",
       gaps: ["Location Durham has no group"],
+    });
+    // A location under another group still never counts (A21).
+    data.locations = [at("ready", "NC", { ...underShelby, locationName: "Austin" })];
+    expect(rowFor(data, "ready")).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: ["Location Austin is under Shelby Sports Rehab, not the provider's group"],
     });
   });
 
@@ -540,7 +582,7 @@ describe("accurate reasons when the location's group is the provider's own", () 
     data.licenses = [verified("ready", "NC")];
     expect(rowFor(data, "ready")).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Group Rose City Rehab is inactive", "Needs a location"],
+      gaps: ["Needs a location", "Group Rose City Rehab is inactive"],
     });
   });
 });
@@ -635,11 +677,11 @@ describe("configurable rules", () => {
       gaps: ["Location Austin is under Shelby Sports Rehab, not the provider's group"],
     });
     expect(rowFor(data, "ready", off)).toMatchObject({ stage: "ready_for_credentialing" });
-    // A current group is still needed either way.
+    // A current group is still needed either way, as a staff-side gap (A23).
     data.groupMemberships = [];
     expect(rowFor(data, "ready", off)).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Needs a group"],
+      gaps: [NO_GROUP_GAP],
     });
   });
 
@@ -651,14 +693,16 @@ describe("configurable rules", () => {
     data.licenses = [verified("ready", "NC")];
     expect(rowFor(data, "ready")).toMatchObject({
       stage: "verified_awaiting_assignment",
-      gaps: ["Needs a group and a location"],
+      gaps: ["Needs a location", NO_GROUP_GAP],
     });
     const row = rowFor(data, "ready", off);
     expect(row).toMatchObject({ stage: "ready_for_credentialing", gaps: [] });
-    // The dimension is still computed; it just does not hold her.
+    // The dimensions are still computed; they just do not hold her.
     expect(row?.dimensions).toMatchObject({
       assigned: false,
-      assignmentGaps: ["Needs a group and a location"],
+      assignmentGaps: ["Needs a location"],
+      grouped: false,
+      groupGaps: [NO_GROUP_GAP],
     });
     // Submitted then lists the verification gaps alone.
     data.providers = [{ ...complete("ready", "Fay Ready"), pendingVerification: true }];
@@ -687,7 +731,11 @@ describe("per-provider dimensions", () => {
       verified: false,
       verificationGaps: ["Record pending verification"],
       assigned: false,
-      assignmentGaps: ["Needs a group and a location"],
+      assignmentGaps: ["Needs a location"],
+      grouped: false,
+      groupGaps: [NO_GROUP_GAP],
+      statesValid: true,
+      stateGaps: [],
       hasCase: true,
       caseCount: 1,
       caseStatuses: ["denied"],
@@ -710,7 +758,9 @@ describe("per-provider dimensions", () => {
       completenessGaps: ["No CAQH ID", "No state license"],
       verified: true,
       assigned: false,
-      assignmentGaps: ["Needs a group and a location"],
+      assignmentGaps: ["Needs a location"],
+      grouped: false,
+      groupGaps: [NO_GROUP_GAP],
       hasCase: true,
       caseCount: 1,
       caseStatuses: ["in_progress"],
@@ -773,6 +823,7 @@ describe("stage configuration", () => {
     expect(DEFAULT_ONBOARDING_FUNNEL_CONFIG).toEqual({
       stages: DEFAULT_ONBOARDING_FUNNEL_STAGES,
       rules: DEFAULT_ONBOARDING_FUNNEL_RULES,
+      caqhAttestationWindowDays: 120,
     });
     expect(Object.isFrozen(DEFAULT_ONBOARDING_FUNNEL_STAGES[2])).toBe(true);
   });
@@ -812,16 +863,24 @@ describe("stage configuration", () => {
     expect(rowsOf(input()).some((r) => r.stage === "invited")).toBe(false);
   });
 
-  it("hides a stage whose gate cannot match under the rules in force", () => {
-    const config = resolveOnboardingFunnelConfig(null, {
-      rules: { assignmentRequiredForReady: false },
-    });
-    expect(visibleOnboardingFunnelStages(config, false).map((s) => s.key)).toEqual([
+  it("hides a stage no provider could reach under the rules in force", () => {
+    const visible = (rules: OnboardingFunnelRulesOverride) =>
+      visibleOnboardingFunnelStages(
+        resolveOnboardingFunnelConfig(null, { rules }, CAQH),
+        false,
+      ).map((s) => s.key);
+    // A24: the two rules are independent, so Verified, awaiting assignment is
+    // hidden only when neither holds anyone.
+    expect(visible({ assignmentRequiredForReady: false, statelessLocationHolds: false })).toEqual([
       "profile_incomplete",
       "submitted",
       "ready_for_credentialing",
       "credentialing",
     ]);
+    expect(visible({ assignmentRequiredForReady: false })).toContain(
+      "verified_awaiting_assignment",
+    );
+    expect(visible({ statelessLocationHolds: false })).toContain("verified_awaiting_assignment");
   });
 
   it("lists gaps only for the stages whose gate has them", () => {
@@ -847,11 +906,15 @@ describe("stage configuration", () => {
   });
 
   it("lets an organization rename a stage without moving anyone", () => {
-    const config = resolveOnboardingFunnelConfig(null, {
-      stageText: {
-        submitted: { label: "Complete, not verified", description: "Waiting on verification." },
+    const config = resolveOnboardingFunnelConfig(
+      null,
+      {
+        stageText: {
+          submitted: { label: "Complete, not verified", description: "Waiting on verification." },
+        },
       },
-    });
+      CAQH,
+    );
     const rows = buildOnboardingFunnelRows(input(), TODAY, config);
     expect(rows.map((r) => r.stage)).toEqual(rowsOf(input()).map((r) => r.stage));
     expect(visibleOnboardingFunnelStages(config, false)[1]).toMatchObject({
@@ -872,14 +935,19 @@ describe("stage configuration", () => {
       { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
       { key: "credentialing", label: "Credentialing", description: "d", gate: "has_case" },
     ];
-    const config = resolveOnboardingFunnelConfig({ stages }, null);
+    const config = resolveOnboardingFunnelConfig({ stages }, null, CAQH);
     expect(config.stages.map((s) => s.key)).toEqual(stages.map((s) => s.key));
     const data = input();
     data.groupMemberships = data.groupMemberships.filter((m) => m.providerId !== "unverified");
     const rows = buildOnboardingFunnelRows(data, TODAY, config);
+    // A25: the merged view lists every gap, the staff-side group gap included.
     expect(rows.find((r) => r.providerId === "unverified")).toMatchObject({
       stage: "not_ready",
-      gaps: ["TX license not board-verified", "Needs a group"],
+      gaps: [
+        "TX license not board-verified",
+        "Location tx Clinic is under Rose City Rehab, not the provider's group",
+        NO_GROUP_GAP,
+      ],
     });
     expect(onboardingFunnelStageCounts(rows, config.stages)).toEqual({
       profile_incomplete: 3,
@@ -895,7 +963,11 @@ describe("stage configuration", () => {
       { key: "everyone_else", label: "Everyone else", description: "d", gate: "any" },
     ];
     expect(validateOnboardingFunnelConfig({ stages, rules: DEFAULT })).toEqual([]);
-    const rows = buildOnboardingFunnelRows(input(), TODAY, { stages, rules: DEFAULT });
+    const rows = buildOnboardingFunnelRows(input(), TODAY, {
+      stages,
+      rules: DEFAULT,
+      caqhAttestationWindowDays: CAQH,
+    });
     expect(onboardingFunnelStageCounts(rows, stages)).toEqual({
       credentialing: 1,
       everyone_else: 6,
@@ -909,7 +981,11 @@ describe("stage configuration", () => {
       [{ key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" }],
       [null],
     ] as unknown as OnboardingFunnelStageConfig[][]) {
-      const rows = buildOnboardingFunnelRows(input(), TODAY, { stages, rules: DEFAULT });
+      const rows = buildOnboardingFunnelRows(input(), TODAY, {
+        stages,
+        rules: DEFAULT,
+        caqhAttestationWindowDays: CAQH,
+      });
       expect(rows.map((r) => r.stage)).toEqual(expected);
       expect(rows.some((r) => r.stage === "")).toBe(false);
     }
@@ -925,71 +1001,104 @@ describe("the default configuration is exhaustive", () => {
     { invited: true, intakeSubmitted: true },
   ];
 
-  function dims(
-    complete: boolean,
-    verified: boolean,
-    assigned: boolean,
-    hasCountedCase: boolean,
-    intake: OnboardingFunnelIntakeFacts | null,
-  ): OnboardingFunnelDimensions {
-    return {
-      complete,
-      completenessGaps: complete ? [] : ["No NPI"],
-      verified,
-      verificationGaps: verified ? [] : ["Record pending verification"],
-      assigned,
-      assignmentGaps: assigned ? [] : ["Needs a group"],
-      hasCase: hasCountedCase,
-      caseCount: hasCountedCase ? 1 : 0,
-      caseStatuses: hasCountedCase ? ["in_progress"] : [],
-      hasCountedCase,
-      intake,
-    };
+  /** Every combination of the dimensions the gates read. */
+  function everyDimension(): OnboardingFunnelDimensions[] {
+    const all: OnboardingFunnelDimensions[] = [];
+    for (const complete of flags)
+      for (const verified of flags)
+        for (const assigned of flags)
+          for (const grouped of flags)
+            for (const statesValid of flags)
+              for (const hasCountedCase of flags)
+                for (const intake of intakes)
+                  all.push({
+                    complete,
+                    completenessGaps: complete ? [] : ["No NPI"],
+                    verified,
+                    verificationGaps: verified ? [] : ["Record pending verification"],
+                    assigned,
+                    assignmentGaps: assigned ? [] : ["Needs a location"],
+                    grouped,
+                    groupGaps: grouped ? [] : [NO_GROUP_GAP],
+                    statesValid,
+                    stateGaps: statesValid ? [] : [STATELESS_LOCATION_GAP],
+                    hasCase: hasCountedCase,
+                    caseCount: hasCountedCase ? 1 : 0,
+                    caseStatuses: hasCountedCase ? ["in_progress"] : [],
+                    hasCountedCase,
+                    intake,
+                  });
+    return all;
   }
 
-  /** The PM's placement, written out plainly. */
+  /** The PM's placement, written out plainly (D61 to D76, A23, A24, A28). */
   function expectedStage(d: OnboardingFunnelDimensions, rules: OnboardingFunnelRules): string {
     if (d.hasCountedCase) return "credentialing";
-    if (d.intake?.invited && !d.intake.intakeSubmitted) return "invited";
+    const invited = d.intake?.invited === true && !d.intake.intakeSubmitted;
+    if (invited && (!rules.completeRecordMovesPastInvite || !d.complete)) return "invited";
     if (!d.complete) return "profile_incomplete";
     if (!d.verified) return "submitted";
-    if (!d.assigned && rules.assignmentRequiredForReady) return "verified_awaiting_assignment";
+    const assignmentHeld = rules.assignmentRequiredForReady && (!d.assigned || !d.grouped);
+    const stateHeld = rules.statelessLocationHolds && !d.statesValid;
+    if (assignmentHeld || stateHeld) return "verified_awaiting_assignment";
     return "ready_for_credentialing";
   }
 
   it("places every combination of dimensions in exactly one visible stage, under every rule", () => {
+    const dimensions = everyDimension();
     let checked = 0;
-    for (const statelessLocationHolds of flags)
-      for (const futureMembershipCounts of flags)
-        for (const locationMustBeInProviderGroup of flags)
-          for (const assignmentRequiredForReady of flags)
-            for (const caseStatusesNotCountedAsCredentialing of [
-              [],
-              ["denied"],
-            ] as CaseStatus[][]) {
-              const rules: OnboardingFunnelRules = {
-                caseStatusesNotCountedAsCredentialing,
-                statelessLocationHolds,
-                futureMembershipCounts,
-                locationMustBeInProviderGroup,
-                assignmentRequiredForReady,
-              };
-              const config = withRules(rules);
-              expect(validateOnboardingFunnelConfig(config)).toEqual([]);
-              for (const complete of flags)
-                for (const verified of flags)
-                  for (const assigned of flags)
-                    for (const hasCountedCase of flags)
-                      for (const intake of intakes) {
-                        const d = dims(complete, verified, assigned, hasCountedCase, intake);
-                        const placed = placeOnboardingFunnelStage(d, config);
-                        expect(placed.stage).toBe(expectedStage(d, rules));
-                        const visible = visibleOnboardingFunnelStages(config, intake !== null);
-                        expect(visible.map((s) => s.key)).toContain(placed.stage);
-                        checked += 1;
+    for (const licenseWithoutExpiryHolds of flags)
+      for (const statelessLocationHolds of flags)
+        for (const assignmentRequiredForReady of flags)
+          for (const futureMembershipCounts of flags)
+            for (const futureLocationAssignmentCounts of flags)
+              for (const locationMustBeInProviderGroup of flags)
+                for (const ungroupedLocationCounts of flags)
+                  for (const completeRecordMovesPastInvite of flags)
+                    for (const caseStatusesNotCountedAsCredentialing of [
+                      [],
+                      ["denied"],
+                    ] as CaseStatus[][])
+                      for (const requiredProfileFields of [
+                        [...ONBOARDING_FUNNEL_PROFILE_FIELDS],
+                        ["npi"],
+                      ] as OnboardingFunnelProfileField[][]) {
+                        const rules: OnboardingFunnelRules = {
+                          caseStatusesNotCountedAsCredentialing,
+                          requiredProfileFields,
+                          licenseWithoutExpiryHolds,
+                          statelessLocationHolds,
+                          assignmentRequiredForReady,
+                          futureMembershipCounts,
+                          futureLocationAssignmentCounts,
+                          locationMustBeInProviderGroup,
+                          ungroupedLocationCounts,
+                          completeRecordMovesPastInvite,
+                        };
+                        const config = withRules(rules);
+                        expect(validateOnboardingFunnelConfig(config)).toEqual([]);
+                        const visible = {
+                          read: visibleOnboardingFunnelStages(config, true).map((s) => s.key),
+                          unread: visibleOnboardingFunnelStages(config, false).map((s) => s.key),
+                        };
+                        const placed = placeOnboardingFunnelStages(dimensions, config);
+                        dimensions.forEach((d, i) => {
+                          expect(placed[i].stage).toBe(expectedStage(d, rules));
+                          expect(visible[d.intake === null ? "unread" : "read"]).toContain(
+                            placed[i].stage,
+                          );
+                          // A23: a missing group is never the provider's
+                          // reason; it is listed under awaiting assignment.
+                          if (placed[i].stage === "submitted")
+                            expect(placed[i].gaps).not.toContain(NO_GROUP_GAP);
+                          if (placed[i].stage === "verified_awaiting_assignment")
+                            expect(placed[i].gaps.includes(NO_GROUP_GAP)).toBe(
+                              assignmentRequiredForReady && !d.grouped,
+                            );
+                          checked += 1;
+                        });
                       }
-            }
-    expect(checked).toBe(32 * 64);
+    expect(checked).toBe(1024 * 256);
   });
 });
 
@@ -1025,16 +1134,19 @@ describe("validateOnboardingFunnelConfig", () => {
       stage("credentialing", "has_case", "Credentialing"),
     ];
     const gap =
-      'A provider who is complete, verified, not assigned, with no case, would fit no stage when Ready requires assignment. Add a stage for them, or end with an "everyone else" stage ("any").';
+      'A provider who is complete, verified, with a location that counts, in a group, with a location missing its state, with no case, would fit no stage when Ready requires assignment; a location with no state holds; a complete record moves past Invited, and 6 other kinds of provider would too. Add a stage for them, or end with an "everyone else" stage ("any").';
     expect(valid(list)).toEqual([gap]);
-    // Even under rules that do not require assignment: an organization's
-    // rules could require it, so the list must hold either way.
-    expect(valid(list, { ...DEFAULT, assignmentRequiredForReady: false })).toEqual([gap]);
+    // Even under rules that hold nobody: an organization's rules could, so
+    // the list must hold under every combination of them (A24).
+    expect(
+      valid(list, { ...DEFAULT, assignmentRequiredForReady: false, statelessLocationHolds: false }),
+    ).toEqual([gap]);
   });
 
-  it("accepts a list whose last stage is reachable under only one value of a gate's rule", () => {
-    // Everyone else catches the unassigned while Ready requires assignment;
-    // when it does not, Ready takes them and Everyone else is empty (hidden).
+  it("accepts a list whose last stage is reachable under only some values of the gates' rules", () => {
+    // Everyone else catches the unassigned and the stateless while a rule
+    // holds them; with both rules off, Ready takes them and Everyone else is
+    // empty (hidden). The two rules are independent (A24).
     const list = [
       stage("incomplete", "incomplete", "Profile incomplete"),
       stage("submitted", "complete_unverified", "Submitted"),
@@ -1044,16 +1156,21 @@ describe("validateOnboardingFunnelConfig", () => {
     ];
     expect(valid(list)).toEqual([]);
     expect(valid(list, { ...DEFAULT, assignmentRequiredForReady: false })).toEqual([]);
-    const off = { stages: list, rules: { ...DEFAULT, assignmentRequiredForReady: false } };
-    expect(visibleOnboardingFunnelStages(off, false).map((s) => s.key)).toEqual([
+    const visible = (rules: Partial<OnboardingFunnelRules>) =>
+      visibleOnboardingFunnelStages(
+        { stages: list, rules: { ...DEFAULT, ...rules }, caqhAttestationWindowDays: CAQH },
+        false,
+      ).map((s) => s.key);
+    expect(visible({ assignmentRequiredForReady: false, statelessLocationHolds: false })).toEqual([
       "incomplete",
       "submitted",
       "ready",
       "cred",
     ]);
-    expect(
-      visibleOnboardingFunnelStages({ stages: list, rules: DEFAULT }, false).map((s) => s.key),
-    ).toContain("other");
+    // Either rule on its own still holds someone, so Everyone else shows.
+    expect(visible({ assignmentRequiredForReady: false })).toContain("other");
+    expect(visible({ statelessLocationHolds: false })).toContain("other");
+    expect(visible({})).toContain("other");
   });
 
   it("rejects a gate that is not on the menu", () => {
@@ -1153,10 +1270,15 @@ describe("resolveOnboardingFunnelRules", () => {
   it("defaults to today's behaviour", () => {
     expect(DEFAULT_ONBOARDING_FUNNEL_RULES).toEqual({
       caseStatusesNotCountedAsCredentialing: [],
+      requiredProfileFields: ["npi", "caqhId", "dateOfBirth", "ssnLast4", "stateLicense"],
+      licenseWithoutExpiryHolds: true,
       statelessLocationHolds: true,
-      futureMembershipCounts: true,
-      locationMustBeInProviderGroup: true,
       assignmentRequiredForReady: true,
+      futureMembershipCounts: true,
+      futureLocationAssignmentCounts: true,
+      locationMustBeInProviderGroup: true,
+      ungroupedLocationCounts: true,
+      completeRecordMovesPastInvite: true,
     });
     expect(resolveOnboardingFunnelRules()).toEqual(DEFAULT_ONBOARDING_FUNNEL_RULES);
     expect(resolveOnboardingFunnelRules(null, null)).toEqual(DEFAULT_ONBOARDING_FUNNEL_RULES);
@@ -1166,10 +1288,15 @@ describe("resolveOnboardingFunnelRules", () => {
   it("takes the organization's value, else the platform's, else the default, field by field", () => {
     const platform: OnboardingFunnelRules = {
       caseStatusesNotCountedAsCredentialing: ["not_pursuing"],
+      requiredProfileFields: ["npi", "stateLicense"],
+      licenseWithoutExpiryHolds: false,
       statelessLocationHolds: false,
-      futureMembershipCounts: false,
-      locationMustBeInProviderGroup: false,
       assignmentRequiredForReady: false,
+      futureMembershipCounts: false,
+      futureLocationAssignmentCounts: false,
+      locationMustBeInProviderGroup: false,
+      ungroupedLocationCounts: false,
+      completeRecordMovesPastInvite: false,
     };
     expect(resolveOnboardingFunnelRules(platform)).toEqual(platform);
     expect(
@@ -1256,8 +1383,12 @@ describe("resolveOnboardingFunnelConfig", () => {
   const MINTED = DEFAULT_ONBOARDING_FUNNEL_CONFIG;
 
   it("is the platform default when nothing overrides it", () => {
-    expect(resolveOnboardingFunnelConfig()).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
-    expect(resolveOnboardingFunnelConfig(null, null)).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
+    expect(resolveOnboardingFunnelConfig(null, null, CAQH)).toEqual(
+      DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+    );
+    expect(resolveOnboardingFunnelConfig(null, null, CAQH)).toEqual(
+      DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+    );
   });
 
   it("takes Minted's stage list, with an organization's labels, and rules field by field", () => {
@@ -1267,6 +1398,7 @@ describe("resolveOnboardingFunnelConfig", () => {
         stageText: { not_ready: { label: "Still to do" } },
         rules: { futureMembershipCounts: false },
       },
+      CAQH,
     );
     expect(config.stages).toEqual([
       { key: "not_ready", label: "Still to do", description: "d", gate: "not_ready" },
@@ -1291,12 +1423,12 @@ describe("resolveOnboardingFunnelConfig", () => {
       { key: "other", label: "Everyone else", description: "d", gate: "any" },
     ];
     const org: OnboardingFunnelOrganizationOverride = {
-      rules: { assignmentRequiredForReady: false },
+      rules: { assignmentRequiredForReady: false, statelessLocationHolds: false },
       stageText: { other: { label: "Others" } },
     };
-    const mintedConfig = resolveOnboardingFunnelConfig({ stages: minted }, null);
+    const mintedConfig = resolveOnboardingFunnelConfig({ stages: minted }, null, CAQH);
     expect(validateOnboardingFunnelOrganizationOverride(org, mintedConfig)).toEqual([]);
-    const config = resolveOnboardingFunnelConfig({ stages: minted }, org);
+    const config = resolveOnboardingFunnelConfig({ stages: minted }, org, CAQH);
     expect(config.stages.map((s) => [s.key, s.gate, s.label])).toEqual([
       ["incomplete", "incomplete", "Profile incomplete"],
       ["submitted", "complete_unverified", "Submitted"],
@@ -1305,7 +1437,8 @@ describe("resolveOnboardingFunnelConfig", () => {
       ["other", "any", "Others"],
     ]);
     expect(config.rules.assignmentRequiredForReady).toBe(false);
-    // The organization's rule empties Everyone else, so it is hidden: intended.
+    // The organization's rules empty Everyone else, so it is hidden: intended.
+    // (Either rule left on would still hold someone there, A24.)
     expect(visibleOnboardingFunnelStages(config, false).map((s) => s.key)).toEqual([
       "incomplete",
       "submitted",
@@ -1338,7 +1471,7 @@ describe("resolveOnboardingFunnelConfig", () => {
         submitted: { description: "Complete; verification is next." },
       },
     };
-    const config = resolveOnboardingFunnelConfig(null, org);
+    const config = resolveOnboardingFunnelConfig(null, org, CAQH);
     expect(config.stages.map((s) => [s.key, s.gate])).toEqual(
       DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) => [s.key, s.gate]),
     );
@@ -1357,7 +1490,7 @@ describe("resolveOnboardingFunnelConfig", () => {
     expect(validateOnboardingFunnelOrganizationOverride(reordered, MINTED)).toEqual([
       "An organization cannot change the stage list: Minted sets the stages, their order and their gates. Change labels and descriptions instead.",
     ]);
-    expect(resolveOnboardingFunnelConfig(null, reordered)).toEqual(
+    expect(resolveOnboardingFunnelConfig(null, reordered, CAQH)).toEqual(
       DEFAULT_ONBOARDING_FUNNEL_CONFIG,
     );
   });
@@ -1367,7 +1500,9 @@ describe("resolveOnboardingFunnelConfig", () => {
       stages: custom,
       rules: { assignmentRequiredForReady: false },
     } as unknown as OnboardingFunnelOrganizationOverride;
-    expect(resolveOnboardingFunnelConfig(null, withList)).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
+    expect(resolveOnboardingFunnelConfig(null, withList, CAQH)).toEqual(
+      DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+    );
     // Probe3 G: good copy and a good rule beside an unknown rule key.
     const mixed = {
       stageText: { submitted: { label: "S2" } },
@@ -1376,7 +1511,7 @@ describe("resolveOnboardingFunnelConfig", () => {
     expect(validateOnboardingFunnelOrganizationOverride(mixed, MINTED)).toEqual([
       '"bogus" is not a funnel rule.',
     ]);
-    const config = resolveOnboardingFunnelConfig(null, mixed);
+    const config = resolveOnboardingFunnelConfig(null, mixed, CAQH);
     expect(config.stages[2].label).toBe("Submitted");
     expect(config.rules.futureMembershipCounts).toBe(true);
   });
@@ -1392,7 +1527,7 @@ describe("resolveOnboardingFunnelConfig", () => {
       '"on_hold" is not one of Minted\'s stages, so it cannot be relabelled.',
     ]);
     // Not even the valid part goes live: Minted's copy stays.
-    expect(resolveOnboardingFunnelConfig(null, org).stages).toEqual(
+    expect(resolveOnboardingFunnelConfig(null, org, CAQH).stages).toEqual(
       DEFAULT_ONBOARDING_FUNNEL_STAGES,
     );
     // Checked against Minted's list, not the default one.
@@ -1415,7 +1550,7 @@ describe("resolveOnboardingFunnelConfig", () => {
       '"submitted": "Ready for credentialing" is Minted\'s label for "ready_for_credentialing".',
       '"ready_for_credentialing": "Submitted" is Minted\'s label for "submitted".',
     ]);
-    expect(resolveOnboardingFunnelConfig(null, swap).stages).toEqual(
+    expect(resolveOnboardingFunnelConfig(null, swap, CAQH).stages).toEqual(
       DEFAULT_ONBOARDING_FUNNEL_STAGES,
     );
     // Case and spaces do not get around it, and a hidden stage's label counts.
@@ -1470,16 +1605,16 @@ describe("resolveOnboardingFunnelConfig", () => {
     expect(validateOnboardingFunnelOrganizationOverride(proto, MINTED)).toEqual([
       '"__proto__" is not one of Minted\'s stages, so it cannot be relabelled.',
     ]);
-    expect(resolveOnboardingFunnelConfig(null, proto).stages[2].label).toBe("Submitted");
+    expect(resolveOnboardingFunnelConfig(null, proto, CAQH).stages[2].label).toBe("Submitted");
   });
 
   it("never lets a platform list that fails validation go live", () => {
-    expect(resolveOnboardingFunnelConfig({ stages: broken }, null).stages).toEqual(
+    expect(resolveOnboardingFunnelConfig({ stages: broken }, null, CAQH).stages).toEqual(
       DEFAULT_ONBOARDING_FUNNEL_STAGES,
     );
     for (const stages of [[null], [1, null], [custom[0], null], "abc", {}, [{}]]) {
       const platform = { stages } as unknown as OnboardingFunnelPlatformOverride;
-      expect(resolveOnboardingFunnelConfig(platform, null).stages).toEqual(
+      expect(resolveOnboardingFunnelConfig(platform, null, CAQH).stages).toEqual(
         DEFAULT_ONBOARDING_FUNNEL_STAGES,
       );
       expect(
@@ -1490,12 +1625,16 @@ describe("resolveOnboardingFunnelConfig", () => {
 
   it("copies only the stage fields, so the default cannot be changed through them", () => {
     const extra = custom.map((s) => ({ ...s, note: "stray" }));
-    const config = resolveOnboardingFunnelConfig({ stages: extra }, null);
+    const config = resolveOnboardingFunnelConfig({ stages: extra }, null, CAQH);
     expect(config.stages[0]).toEqual(custom[0]);
     expect(config.stages[0]).not.toHaveProperty("note");
-    const fallback = resolveOnboardingFunnelConfig(null, {
-      stageText: { submitted: { label: "Complete, not verified" } },
-    });
+    const fallback = resolveOnboardingFunnelConfig(
+      null,
+      {
+        stageText: { submitted: { label: "Complete, not verified" } },
+      },
+      CAQH,
+    );
     expect(fallback.stages[2]).not.toBe(DEFAULT_ONBOARDING_FUNNEL_STAGES[2]);
     expect(DEFAULT_ONBOARDING_FUNNEL_STAGES[2].label).toBe("Submitted");
     expect(fallback.rules).not.toBe(DEFAULT_ONBOARDING_FUNNEL_RULES);
@@ -1514,7 +1653,9 @@ describe("stored keys that name built-in properties", () => {
       expect(validateOnboardingFunnelOrganizationOverride(org, MINTED)).toEqual([
         `"${key}" is not a funnel rule.`,
       ]);
-      expect(resolveOnboardingFunnelConfig(null, org)).toEqual(DEFAULT_ONBOARDING_FUNNEL_CONFIG);
+      expect(resolveOnboardingFunnelConfig(null, org, CAQH)).toEqual(
+        DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+      );
     });
 
     it(`reports "${key}" as an unknown rule in Minted's layer, and never crashes`, () => {
@@ -1524,14 +1665,17 @@ describe("stored keys that name built-in properties", () => {
       expect(validateOnboardingFunnelPlatformOverride(platform)).toEqual([
         `"${key}" is not a funnel rule.`,
       ]);
-      expect(resolveOnboardingFunnelConfig(platform, null)).toEqual(
+      expect(resolveOnboardingFunnelConfig(platform, null, CAQH)).toEqual(
         DEFAULT_ONBOARDING_FUNNEL_CONFIG,
       );
       // A whole configuration carrying the key is refused too, and the
       // funnel still runs on the default.
-      const full = JSON.parse(
-        JSON.stringify(DEFAULT_ONBOARDING_FUNNEL_CONFIG).replace(/}}$/, `,"${key}":true}}`),
-      ) as OnboardingFunnelConfig;
+      const full: OnboardingFunnelConfig = {
+        ...DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+        rules: JSON.parse(
+          JSON.stringify(DEFAULT_ONBOARDING_FUNNEL_RULES).replace(/}$/, `,"${key}":true}`),
+        ) as OnboardingFunnelRules,
+      };
       expect(Object.hasOwn(full.rules, key)).toBe(true);
       expect(validateOnboardingFunnelConfig(full)).toEqual([`"${key}" is not a funnel rule.`]);
       expect(buildOnboardingFunnelRows(input(), TODAY, full).map((r) => r.stage)).toEqual(
@@ -1574,6 +1718,248 @@ describe("validateOnboardingFunnelPlatformOverride", () => {
           { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
         ],
       }),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+  });
+});
+
+describe("Oct 31 answers (Addendum 8)", () => {
+  it("A24: assignment and the no-state hold are independent settings", () => {
+    const data = input();
+    // Fay: a stateless location next to a valid one, in her group.
+    data.locations = [at("ready", null), at("ready", "NC")];
+    const assignmentOff = resolveOnboardingFunnelRules(null, { assignmentRequiredForReady: false });
+    expect(rowFor(data, "ready", assignmentOff)).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: [STATELESS_LOCATION_GAP],
+    });
+    // No location at all, with the no-state hold off: assignment still holds.
+    data.locations = [];
+    data.licenses = [verified("ready", "NC")];
+    const statelessOff = resolveOnboardingFunnelRules(null, { statelessLocationHolds: false });
+    expect(rowFor(data, "ready", statelessOff)).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: ["Needs a location"],
+    });
+  });
+
+  it("A26: the fields that make a profile complete are a setting", () => {
+    const data = input();
+    data.providers = [
+      { ...complete("ready", "Fay Ready"), dobPresent: false, ssnLast4Present: false },
+    ];
+    expect(rowFor(data, "ready")).toMatchObject({
+      stage: "profile_incomplete",
+      gaps: ["No date of birth", "No SSN last 4"],
+    });
+    const fewer = resolveOnboardingFunnelRules(null, {
+      requiredProfileFields: ["stateLicense", "npi", "caqhId"],
+    });
+    expect(fewer.requiredProfileFields).toEqual(["npi", "caqhId", "stateLicense"]);
+    expect(rowFor(data, "ready", fewer)).toMatchObject({ stage: "ready_for_credentialing" });
+    // Without a required license, a provider with none is complete.
+    data.licenses = [];
+    const noLicense = resolveOnboardingFunnelRules(null, { requiredProfileFields: ["npi"] });
+    expect(rowFor(data, "ready", noLicense)?.dimensions.complete).toBe(true);
+  });
+
+  it("A26: CAQH attestation is held only when a CAQH ID is required or on file", () => {
+    const data = input();
+    data.providers = [
+      { ...complete("ready", "Fay Ready"), caqhIdPresent: false, caqhLastAttestedDate: null },
+    ];
+    const noCaqh = resolveOnboardingFunnelRules(null, {
+      requiredProfileFields: ["npi", "dateOfBirth", "ssnLast4", "stateLicense"],
+    });
+    expect(rowFor(data, "ready", noCaqh)).toMatchObject({ stage: "ready_for_credentialing" });
+    // A CAQH ID on file is still attested, required or not.
+    data.providers = [{ ...complete("ready", "Fay Ready"), caqhLastAttestedDate: null }];
+    expect(rowFor(data, "ready", noCaqh)).toMatchObject({
+      stage: "submitted",
+      gaps: ["CAQH never attested"],
+    });
+  });
+
+  it("A26: the CAQH window is the shared setting the configuration carries", () => {
+    const data = input();
+    // Attested 2026-09-01: 49 days before TODAY.
+    const withWindow = (days: number): OnboardingFunnelConfig => ({
+      ...withRules(DEFAULT),
+      caqhAttestationWindowDays: days,
+    });
+    expect(
+      buildOnboardingFunnelRows(data, TODAY, withWindow(30)).find((r) => r.providerId === "ready"),
+    ).toMatchObject({ stage: "submitted", gaps: ["CAQH attestation older than 30 days"] });
+    expect(
+      buildOnboardingFunnelRows(data, TODAY, withWindow(60)).find((r) => r.providerId === "ready"),
+    ).toMatchObject({ stage: "ready_for_credentialing" });
+    expect(resolveOnboardingFunnelConfig(null, null, 45).caqhAttestationWindowDays).toBe(45);
+    // A bad value never runs: the platform default does.
+    expect(resolveOnboardingFunnelConfig(null, null, 0).caqhAttestationWindowDays).toBe(120);
+  });
+
+  it("A26: a license with no expiry is not current by default, and counts when the rule is off", () => {
+    const data = input();
+    data.licenses = [{ ...verified("ready", "NC"), expirationDate: null }];
+    expect(rowFor(data, "ready")).toMatchObject({
+      stage: "submitted",
+      gaps: ["NC license has no expiration date"],
+    });
+    const off = resolveOnboardingFunnelRules(null, { licenseWithoutExpiryHolds: false });
+    expect(rowFor(data, "ready", off)).toMatchObject({ stage: "ready_for_credentialing" });
+    // With the rule off, a no-expiry license outranks an expired one.
+    data.licenses = [
+      { ...verified("ready", "NC"), expirationDate: "2025-01-01" },
+      { ...verified("ready", "NC"), expirationDate: null },
+    ];
+    expect(rowFor(data, "ready", off)).toMatchObject({ stage: "ready_for_credentialing" });
+    expect(rowFor(data, "ready")).toMatchObject({ gaps: ["NC license expired"] });
+  });
+
+  it("A27: future-dated location assignments count by default, and not when the rule is off", () => {
+    const off = resolveOnboardingFunnelRules(null, { futureLocationAssignmentCounts: false });
+    const data = input();
+    data.locations = [
+      at("ready", "NC", { locationName: "Durham", assignmentStartDate: "2026-11-01" }),
+    ];
+    expect(rowFor(data, "ready")).toMatchObject({ stage: "ready_for_credentialing" });
+    expect(rowFor(data, "ready", off)).toMatchObject({
+      stage: "verified_awaiting_assignment",
+      gaps: ["Assignment to Durham starts 2026-11-01"],
+    });
+    // Started today, or no start date: counts either way.
+    for (const assignmentStartDate of [TODAY, null]) {
+      data.locations = [at("ready", "NC", { assignmentStartDate })];
+      expect(rowFor(data, "ready", off)).toMatchObject({ stage: "ready_for_credentialing" });
+    }
+    // A separate setting from future-dated memberships.
+    expect(off.futureMembershipCounts).toBe(true);
+  });
+
+  it("A28: a complete record moves past Invited, with the invite as a tag", () => {
+    const data = input();
+    data.intakeReadable = true;
+    data.intake = [
+      { providerId: "ready", intakeSubmitted: false },
+      { providerId: "missing", intakeSubmitted: false },
+      { providerId: "enrolling", intakeSubmitted: false },
+    ];
+    expect(rowFor(data, "ready")).toMatchObject({
+      stage: "ready_for_credentialing",
+      tags: [INVITE_OUTSTANDING_TAG],
+    });
+    // An incomplete record still sits in Invited, with no tag.
+    expect(rowFor(data, "missing")).toMatchObject({ stage: "invited", tags: [] });
+    // A case wins, and the invite still shows.
+    expect(rowFor(data, "enrolling")).toMatchObject({
+      stage: "credentialing",
+      tags: [INVITE_OUTSTANDING_TAG],
+    });
+    // The precedence is a setting: off, Invited outranks the complete record.
+    const off = resolveOnboardingFunnelRules(null, { completeRecordMovesPastInvite: false });
+    expect(rowFor(data, "ready", off)).toMatchObject({ stage: "invited", tags: [] });
+    // While intake cannot be read, nobody is tagged.
+    data.intakeReadable = false;
+    expect(rowsOf(data).every((r) => r.tags.length === 0)).toBe(true);
+  });
+
+  it("A29: nothing checks or warns on label wording", () => {
+    const worded = DEFAULT_ONBOARDING_FUNNEL_STAGES.map((s) =>
+      s.key === "submitted" ? { ...s, label: "Sent to payer", description: "Transmitted." } : s,
+    );
+    expect(validateOnboardingFunnelConfig({ stages: worded, rules: DEFAULT })).toEqual([]);
+    expect(
+      validateOnboardingFunnelOrganizationOverride(
+        { stageText: { submitted: { label: "Submitted to payer" } } },
+        DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("A19: explainOnboardingFunnelConfig says which layer was ignored and why", () => {
+  const broken: OnboardingFunnelStageConfig[] = [
+    { key: "ready_for_credentialing", label: "Ready", description: "d", gate: "ready" },
+  ];
+
+  it("reports nothing when every stored layer was used", () => {
+    expect(explainOnboardingFunnelConfig(null, null, CAQH)).toEqual({
+      config: DEFAULT_ONBOARDING_FUNNEL_CONFIG,
+      ignored: [],
+    });
+    const used = explainOnboardingFunnelConfig(
+      { rules: { futureMembershipCounts: false } },
+      { stageText: { submitted: { label: "Complete" } } },
+      CAQH,
+    );
+    expect(used.ignored).toEqual([]);
+    expect(used.config.stages[2].label).toBe("Complete");
+  });
+
+  it("reports an invalid organization layer, which falls back to Minted's setup", () => {
+    const org = {
+      stageText: { submitted: { label: "Complete" } },
+      rules: { statelessLocationHolds: "no" },
+    } as unknown as OnboardingFunnelOrganizationOverride;
+    const result = explainOnboardingFunnelConfig(
+      { rules: { futureMembershipCounts: false } },
+      org,
+      CAQH,
+    );
+    expect(result.ignored).toEqual([
+      {
+        layer: "organization",
+        part: "layer",
+        reasons: ['The rule "statelessLocationHolds" must be on or off.'],
+      },
+    ]);
+    // Minted's setup ran: its rule, and none of the organization's copy.
+    expect(result.config.rules.futureMembershipCounts).toBe(false);
+    expect(result.config.stages[2].label).toBe("Submitted");
+  });
+
+  it("reports an invalid platform stage list or rule, which fall back to the default", () => {
+    const platform = {
+      stages: broken,
+      rules: { ungroupedLocationCounts: "yes", bogus: 1 },
+    } as unknown as OnboardingFunnelPlatformOverride;
+    const result = explainOnboardingFunnelConfig(platform, null, CAQH);
+    expect(result.ignored).toEqual([
+      {
+        layer: "platform",
+        part: "rules",
+        reasons: [
+          'The rule "ungroupedLocationCounts" must be on or off.',
+          '"bogus" is not a funnel rule.',
+        ],
+      },
+      {
+        layer: "platform",
+        part: "stages",
+        reasons: [expect.stringContaining("would fit no stage")],
+      },
+    ]);
+    expect(result.config.stages).toEqual(DEFAULT_ONBOARDING_FUNNEL_STAGES);
+    expect(result.config.rules).toEqual(DEFAULT);
+    expect(
+      explainOnboardingFunnelConfig(
+        "abc" as unknown as OnboardingFunnelPlatformOverride,
+        null,
+        CAQH,
+      ).ignored,
+    ).toEqual([
+      {
+        layer: "platform",
+        part: "layer",
+        reasons: ["Minted's funnel settings must be an object."],
+      },
+    ]);
+  });
+
+  it("matches resolveOnboardingFunnelConfig", () => {
+    const platform = { stages: broken };
+    const org = { stageText: { submitted: { label: "Complete" } } };
+    expect(resolveOnboardingFunnelConfig(platform, org, CAQH)).toEqual(
+      explainOnboardingFunnelConfig(platform, org, CAQH).config,
+    );
   });
 });

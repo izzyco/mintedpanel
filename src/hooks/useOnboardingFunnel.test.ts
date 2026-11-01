@@ -69,7 +69,7 @@ describe("useOnboardingFunnel", () => {
       {
         providerId: "p-1",
         stage: "verified_awaiting_assignment",
-        gaps: ["Needs a group and a location"],
+        gaps: ["Needs a location", "No group assigned yet"],
       },
     ]);
   });
@@ -81,9 +81,11 @@ describe("useOnboardingFunnel", () => {
     expect(useOnboardingFunnel().rows?.[0].stage).toBe("credentialing");
     holder.data = {
       ...read,
-      config: resolveOnboardingFunnelConfig(null, {
-        rules: { caseStatusesNotCountedAsCredentialing: ["not_pursuing"] },
-      }),
+      config: resolveOnboardingFunnelConfig(
+        null,
+        { rules: { caseStatusesNotCountedAsCredentialing: ["not_pursuing"] } },
+        120,
+      ),
     };
     expect(useOnboardingFunnel().rows?.[0].stage).toBe("verified_awaiting_assignment");
   });

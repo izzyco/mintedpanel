@@ -4,6 +4,11 @@
 // and the advisory case-key summary (TE-10).
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS,
+  resolveCaqhAttestationWindowDays,
+  validateCaqhAttestationWindowDays,
+} from "./caqhAttestation";
+import {
   daysBetween,
   evaluateEnrollmentReadiness,
   filterReadinessRows,
@@ -42,6 +47,7 @@ const baseInput = (over: Partial<EnrollmentReadinessInput> = {}): EnrollmentRead
     { groupId: "g-1", docType: "voided_check", expirationDate: null },
   ],
   groupInsurancePolicies: [],
+  caqhAttestationWindowDays: DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS,
   ...over,
 });
 
@@ -60,12 +66,44 @@ describe("date helpers", () => {
     expect(daysBetween("2026-07-12", "2026-03-14")).toBe(-120);
   });
 
-  it("CAQH window boundary: 119/120 current, 121 stale (locked 120 days)", () => {
-    expect(isCaqhCurrent("2026-03-15", TODAY)).toBe(true); // 119
-    expect(isCaqhCurrent("2026-03-14", TODAY)).toBe(true); // 120
-    expect(isCaqhCurrent("2026-03-13", TODAY)).toBe(false); // 121
-    expect(isCaqhCurrent(null, TODAY)).toBe(false);
-    expect(isCaqhCurrent("2026-08-01", TODAY)).toBe(false); // future-dated
+  it("CAQH window boundary: 119/120 current, 121 stale (default 120 days)", () => {
+    const window = DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS;
+    expect(window).toBe(120);
+    expect(isCaqhCurrent("2026-03-15", TODAY, window)).toBe(true); // 119
+    expect(isCaqhCurrent("2026-03-14", TODAY, window)).toBe(true); // 120
+    expect(isCaqhCurrent("2026-03-13", TODAY, window)).toBe(false); // 121
+    expect(isCaqhCurrent(null, TODAY, window)).toBe(false);
+    expect(isCaqhCurrent("2026-08-01", TODAY, window)).toBe(false); // future-dated
+  });
+});
+
+describe("the shared CAQH attestation window (A26)", () => {
+  it("is one setting: organization, else platform, else 120 days", () => {
+    expect(resolveCaqhAttestationWindowDays()).toBe(120);
+    expect(resolveCaqhAttestationWindowDays(90)).toBe(90);
+    expect(resolveCaqhAttestationWindowDays(90, 60)).toBe(60);
+    expect(resolveCaqhAttestationWindowDays(90, null)).toBe(90);
+    // A stored value that is not a whole number of days from 1 to 365 is skipped.
+    for (const bad of [0, -5, 12.5, 366, Number.NaN, "90" as unknown as number])
+      expect(resolveCaqhAttestationWindowDays(90, bad)).toBe(90);
+    expect(validateCaqhAttestationWindowDays(null)).toEqual([]);
+    expect(validateCaqhAttestationWindowDays(45)).toEqual([]);
+    expect(validateCaqhAttestationWindowDays(0)).toEqual([
+      "The CAQH attestation window must be a whole number of days from 1 to 365.",
+    ]);
+  });
+
+  it("drives the readiness check and its label", () => {
+    // Attested 2026-06-15, 27 days before TODAY.
+    const shortWindow = baseInput({ caqhAttestationWindowDays: 20 });
+    expect(check(shortWindow, "caqh_current")).toMatchObject({
+      pass: false,
+      label: "CAQH attested within 20 days",
+    });
+    expect(check(baseInput(), "caqh_current")).toMatchObject({
+      pass: true,
+      label: "CAQH attested within 120 days",
+    });
   });
 });
 

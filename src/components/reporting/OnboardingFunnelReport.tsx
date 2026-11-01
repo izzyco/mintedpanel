@@ -4,11 +4,13 @@
 // Verified awaiting assignment, Ready for credentialing, Credentialing, with
 // Invited first once the intake tables can be read). Labels and descriptions
 // come from the configuration. Click a stage to see who is in it and what
-// holds them there. Credentialing is one stage, never split by case status:
-// that belongs on the case board. State filter only, per the Oct 19 Luna prep
-// (no date range). Read-only.
+// holds them there; a fact such as an outstanding invite shows as a tag
+// beside the name (A28). Credentialing is one stage, never split by case
+// status: that belongs on the case board. State filter only, per the Oct 19
+// Luna prep (no date range). Read-only.
 import { useMemo, useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
+import { StatusPill } from "@/components/StatusPill";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -188,7 +190,14 @@ export function OnboardingFunnelReport() {
                 <TableBody>
                   {inStage.slice(0, visibleCount).map((row) => (
                     <TableRow key={row.providerId}>
-                      <TableCell className="text-[13px] font-medium">{row.name}</TableCell>
+                      <TableCell className="text-[13px] font-medium">
+                        <span className="inline-flex flex-wrap items-center gap-1.5">
+                          {row.name}
+                          {row.tags.map((tag) => (
+                            <StatusPill key={tag} status="neutral" label={tag} />
+                          ))}
+                        </span>
+                      </TableCell>
                       <TableCell className="text-[12.5px] tabular-nums">
                         {row.npi ?? "Not recorded"}
                       </TableCell>
