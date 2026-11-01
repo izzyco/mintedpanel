@@ -34,8 +34,8 @@ Journey B — the consolidated people record.
   it when needed.
 - **A facility assignment can be saved without a start date.** Add
   Provider starts the assignments today when Start date is left blank. A
-  missing date never blocks a save: the record reads "Start date needed" and
-  Billing Readiness holds until it is entered.
+  missing date never blocks a save: the record reads "Start date needed"
+  until it is entered.
 - **The first facility you pick is the primary location** (payer forms ask
   for one). A lone location is marked primary automatically; with several,
   the first stays primary until you change it on the record with **Make

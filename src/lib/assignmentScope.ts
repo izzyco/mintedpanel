@@ -5,7 +5,7 @@
 //   (F1.4.3 — the DB partial unique caps at one; the lower bound lives
 //   here). Removing the primary while others remain therefore forces a
 //   re-pick before save. A blank start date saves as missing ("Start date
-//   needed"); Billing Readiness holds on it.
+//   needed").
 // - The diff planner mirrors the E1.3 pattern; the actual primary swap runs
 //   through the atomic set_primary_assignment RPC in the service.
 import type { Facility } from "@/types";
