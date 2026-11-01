@@ -1,9 +1,11 @@
-// MINT-91 Addendum 8 (A5): a phone left blank on a new record is written to the
-// run's durable report at commit, naming the column. Provider runs write the
-// warnings before the commit RPC (which appends its blocked entries after
-// them); group and facility runs write them with the committed flip.
+// MINT-91 Addendum 8 (A5): a phone replaced or left blank on a new record is
+// written to the run's durable report, naming the column, on every path:
+//   providers — after the commit RPC succeeds, so a failed commit leaves the
+//     report as it was; a replayed commit adds what's missing, never twice;
+//   groups and facilities — before the creates, so a record that lands before
+//     a later create fails keeps its warning; a retry never writes one twice.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommitPlan, ImportRowWarning } from "@/lib/importDedupe";
+import type { CommitPlan, ImportRowWarning, SectionCreateEntry } from "@/lib/importDedupe";
 import type { ImportRunErrorEntry } from "@/types";
 
 const mocks = vi.hoisted(() => ({
@@ -36,83 +38,182 @@ vi.mock("@/services/orgSettings", () => ({
 
 import { commitImportRun, commitSectionImportRun } from "./importRuns";
 
-const WARNING: ImportRowWarning = {
-  line: 2,
-  column: "phone",
-  reason: "Warning: phone is not a 10-digit US phone number, so it is left blank",
-};
-const SCAN_ERROR: ImportRunErrorEntry = { line: 7, column: "npi", reason: "npi is required" };
-
+const warning = (line: number, column = "phone"): ImportRowWarning => ({
+  line,
+  column,
+  reason: "Warning: Phone isn't a US number, so it was left blank.",
+  review: `Phone "abc-${line}" isn't a US number, so it will be left blank.`,
+  leftBlank: true,
+});
+const entry = (w: ImportRowWarning): ImportRunErrorEntry => ({
+  line: w.line,
+  column: w.column,
+  reason: w.reason,
+  severity: "warning",
+});
+const SCAN_ERROR: ImportRunErrorEntry = { line: 9, column: "npi", reason: "npi is required" };
 const EMPTY_PLAN: CommitPlan = { creates: [], updates: [], skipped_count: 0, blocked_entries: [] };
 
-// One run row; import_runs updates are captured in call order alongside the RPC.
-function installTransport(errorReport: ImportRunErrorEntry[] | null) {
-  const calls: Array<{ kind: "update" | "rpc"; payload: unknown }> = [];
-  mocks.rpc.mockImplementation((fn: string, args: unknown) => {
-    calls.push({ kind: "rpc", payload: { fn, args } });
-    return Promise.resolve({ data: { created: 0, updated: 0 }, error: null });
+interface Run {
+  id: string;
+  org_id: string;
+  state: string;
+  error_report: ImportRunErrorEntry[] | null;
+}
+
+// A stateful run row: an update applies only while its `state` filter still
+// matches, like PostgREST. The commit RPC flips the run (or fails on demand).
+function installTransport(run: Run, opts: { rpcFails?: boolean; failReportWrites?: number } = {}) {
+  const log: string[] = [];
+  let failReportWrites = opts.failReportWrites ?? 0;
+  mocks.rpc.mockImplementation((fn: string) => {
+    log.push(`rpc:${fn}`);
+    if (opts.rpcFails) return Promise.resolve({ data: null, error: { message: "commit failed" } });
+    const already = run.state === "committed";
+    run.state = "committed";
+    return Promise.resolve({ data: { already_committed: already }, error: null });
   });
   mocks.from.mockImplementation((table: string) => {
+    let update: Partial<Run> | null = null;
+    const filters: Record<string, unknown> = {};
     const builder = {
       select: () => builder,
-      eq: () => builder,
       order: () => builder,
       delete: () => builder,
-      update: (payload: unknown) => {
-        if (table === "import_runs") calls.push({ kind: "update", payload });
+      eq: (column: string, value: unknown) => {
+        filters[column] = value;
+        return builder;
+      },
+      update: (payload: Partial<Run>) => {
+        update = payload;
         return builder;
       },
       maybeSingle: () =>
-        Promise.resolve({
-          data:
-            table === "import_runs"
-              ? {
-                  id: "run-1",
-                  org_id: "org-1",
-                  state: "ready_for_review",
-                  error_report: errorReport,
-                }
-              : null,
-          error: null,
-        }),
-      then: (resolve: (value: { data: unknown; error: null }) => unknown) =>
-        Promise.resolve({ data: [], error: null }).then(resolve),
+        Promise.resolve({ data: table === "import_runs" ? { ...run } : null, error: null }),
+      then: (resolve: (value: { data: unknown; error: unknown }) => unknown) => {
+        if (table === "import_runs" && update) {
+          const isReportOnly = !("state" in update);
+          if (isReportOnly && failReportWrites > 0) {
+            failReportWrites -= 1;
+            log.push("report:failed");
+            return Promise.resolve({ data: null, error: { message: "write failed" } }).then(
+              resolve,
+            );
+          }
+          if (filters.state === undefined || filters.state === run.state) {
+            Object.assign(run, update);
+            log.push(isReportOnly ? "report" : `flip:${String(update.state)}`);
+          }
+        }
+        return Promise.resolve({ data: [], error: null }).then(resolve);
+      },
     };
     return builder;
   });
-  return calls;
+  return log;
 }
+
+const readyRun = (report: ImportRunErrorEntry[] | null = null): Run => ({
+  id: "run-1",
+  org_id: "org-1",
+  state: "ready_for_review",
+  error_report: report,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("commitImportRun — phone warnings join the run report", () => {
-  it("writes the warnings after the existing entries, before the commit RPC", async () => {
-    const calls = installTransport([SCAN_ERROR]);
-    await commitImportRun("run-1", EMPTY_PLAN, [WARNING]);
-    expect(calls.map((c) => c.kind)).toEqual(["update", "rpc"]);
-    expect(calls[0].payload).toMatchObject({ error_report: [SCAN_ERROR, WARNING] });
+describe("commitImportRun — provider warnings are written after the commit (P2-2)", () => {
+  it("leaves the run's report untouched when the commit RPC fails", async () => {
+    const run = readyRun([SCAN_ERROR]);
+    const log = installTransport(run, { rpcFails: true });
+    await expect(commitImportRun("run-1", EMPTY_PLAN, [entry(warning(2))])).rejects.toThrow(
+      "commit failed",
+    );
+    expect(log).toEqual(["rpc:commit_import_run"]);
+    expect(run).toMatchObject({ state: "ready_for_review", error_report: [SCAN_ERROR] });
   });
 
-  it("does not write a warning the report already holds (a retried commit)", async () => {
-    const calls = installTransport([SCAN_ERROR, WARNING]);
-    await commitImportRun("run-1", EMPTY_PLAN, [WARNING]);
-    expect(calls.map((c) => c.kind)).toEqual(["rpc"]);
+  it("appends the warnings once the commit succeeds", async () => {
+    const run = readyRun([SCAN_ERROR]);
+    const log = installTransport(run);
+    await commitImportRun("run-1", EMPTY_PLAN, [entry(warning(2))]);
+    expect(log).toEqual(["rpc:commit_import_run", "report"]);
+    expect(run.error_report).toEqual([SCAN_ERROR, entry(warning(2))]);
   });
 
-  it("writes nothing extra when there are no warnings", async () => {
-    const calls = installTransport(null);
-    await commitImportRun("run-1", EMPTY_PLAN);
-    expect(calls.map((c) => c.kind)).toEqual(["rpc"]);
+  it("says so when the report write fails, and a replayed commit adds it exactly once", async () => {
+    const run = readyRun(null);
+    installTransport(run, { failReportWrites: 1 });
+    await expect(commitImportRun("run-1", EMPTY_PLAN, [entry(warning(2))])).rejects.toThrow(
+      "The import committed, but its phone warnings weren't added to the run's report. Commit again to add them.",
+    );
+    expect(run).toMatchObject({ state: "committed", error_report: null });
+
+    await commitImportRun("run-1", EMPTY_PLAN, [entry(warning(2))]);
+    await commitImportRun("run-1", EMPTY_PLAN, [entry(warning(2))]);
+    expect(run.error_report).toEqual([entry(warning(2))]);
   });
 });
 
-describe("commitSectionImportRun — phone warnings join the run report", () => {
-  it("appends the creates' warnings after the blocked entries, and creates without the phone", async () => {
+describe("commitSectionImportRun — section warnings are written before the creates (P2-2)", () => {
+  const groupCreate = (line: number): SectionCreateEntry => ({
+    line,
+    displayName: `Group ${line}`,
+    mapped: { name: `Group ${line}`, tin: `55500${line}000`, billing_phone: null },
+    groupId: null,
+    notes: [],
+    warnings: [warning(line, "billing_phone")],
+  });
+
+  it("keeps a landed group's warning when a later create fails, and a retry never repeats one", async () => {
+    const run = readyRun([SCAN_ERROR]);
+    const log = installTransport(run);
+    mocks.createProviderGroup
+      .mockResolvedValueOnce({ id: "group-2" })
+      .mockRejectedValueOnce(new Error("insert failed"))
+      .mockResolvedValue({ id: "group-3" });
+
+    await expect(
+      commitSectionImportRun({
+        runId: "run-1",
+        entityKind: "provider_group",
+        creates: [groupCreate(2), groupCreate(3)],
+        skippedCount: 0,
+        blocked: [],
+      }),
+    ).rejects.toThrow("insert failed");
+    expect(run.state).toBe("ready_for_review");
+    expect(run.error_report).toEqual([
+      SCAN_ERROR,
+      entry(warning(2, "billing_phone")),
+      entry(warning(3, "billing_phone")),
+    ]);
+
+    // On the retry the landed group reads as existing, so only row 3 creates.
+    const blocked = { line: 4, column: "group_tin", displayName: "Ghost", reason: "Missing TIN" };
+    await commitSectionImportRun({
+      runId: "run-1",
+      entityKind: "provider_group",
+      creates: [groupCreate(3)],
+      skippedCount: 1,
+      blocked: [blocked],
+    });
+    expect(run.state).toBe("committed");
+    expect(run.error_report).toEqual([
+      SCAN_ERROR,
+      entry(warning(2, "billing_phone")),
+      entry(warning(3, "billing_phone")),
+      { line: 4, column: "group_tin", reason: "Missing TIN" },
+    ]);
+    expect(log.filter((l) => l === "report")).toHaveLength(1);
+  });
+
+  it("creates the facility with the phone the rule chose", async () => {
     mocks.createFacility.mockResolvedValue({ id: "facility-new" });
-    const calls = installTransport([SCAN_ERROR]);
-    const blocked = { line: 3, column: "group_name", displayName: "Ghost", reason: "not found" };
+    const run = readyRun(null);
+    installTransport(run);
     await commitSectionImportRun({
       runId: "run-1",
       entityKind: "facility",
@@ -123,17 +224,13 @@ describe("commitSectionImportRun — phone warnings join the run report", () => 
           mapped: { facility_name: "River Clinic", phone: null, appointment_phone: null },
           groupId: "group-1",
           notes: [],
-          warnings: [WARNING],
+          warnings: [warning(2)],
         },
       ],
       skippedCount: 0,
-      blocked: [blocked],
+      blocked: [],
     });
     expect(mocks.createFacility).toHaveBeenCalledWith(expect.objectContaining({ phone: null }));
-    expect(calls).toHaveLength(1);
-    expect(calls[0].payload).toMatchObject({
-      state: "committed",
-      error_report: [SCAN_ERROR, { line: 3, column: "group_name", reason: "not found" }, WARNING],
-    });
+    expect(run.error_report).toEqual([entry(warning(2))]);
   });
 });

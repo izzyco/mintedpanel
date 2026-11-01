@@ -286,8 +286,11 @@ export function useImportPreview(runId: string | null) {
   // and warned about, or blocked (PhoneValidationRules.importInvalidPhone).
   const phoneRules = usePhoneValidationRules();
   const reviewed = useMemo(
-    () => (dispositions ? applyProviderImportPhoneRule(dispositions, phoneRules) : null),
-    [dispositions, phoneRules],
+    () =>
+      dispositions && rowsQ.data
+        ? applyProviderImportPhoneRule(dispositions, rowsQ.data, phoneRules)
+        : null,
+    [dispositions, rowsQ.data, phoneRules],
   );
 
   return { run: runQ.data ?? null, dispositions: reviewed, isLoading, isError };
@@ -347,6 +350,7 @@ export function useSectionImportPreview(
       return applySectionImportPhoneRule(
         dedupeGroupRows(rowsQ.data, groups),
         entityKind,
+        rowsQ.data,
         phoneRules,
       );
     }
@@ -362,6 +366,7 @@ export function useSectionImportPreview(
     return applySectionImportPhoneRule(
       dedupeFacilityRows(rowsQ.data, groups, facilities),
       entityKind,
+      rowsQ.data,
       phoneRules,
     );
   }, [rowsQ.data, groupsQ.data, facilitiesQ.data, entityKind, phoneRules]);

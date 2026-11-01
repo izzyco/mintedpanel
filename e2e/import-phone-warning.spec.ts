@@ -1,10 +1,14 @@
-// MINT-91 Addendum 8 (A5) — a NEW import row with an invalid phone is created
-// without the phone and warned about, not blocked:
-//   PW-01  provider run: the warning names the column on the new provider in
-//          review; Commit sends the provider with no phone and writes the
-//          warning to the run's report before the commit RPC.
+// MINT-91 Addendum 8 (A5) — a NEW import row with an invalid phone is not
+// blocked: it takes a valid phone from the record's other rows, or is created
+// without the phone, and is warned about:
+//   PW-01  provider run: the review row shows the label and the user's value;
+//          the confirmation counts the phones left blank; Commit sends the
+//          provider with no phone, then writes the label-only warning to the
+//          run's report AFTER the commit RPC.
 //   PW-02  facility run: the same on the New facilities list; the facility is
 //          created without the phone and the warning joins the run's report.
+//   PW-03  a later row of the same provider supplies a valid phone: it is used,
+//          and nothing is left blank (P2-1).
 import { test, expect, type BrowserContext, type Route } from "./fixtures/legacy-access-context";
 
 const AUTH_KEY = "sb-example-auth-token";
@@ -35,7 +39,7 @@ type Rows = Record<string, Record<string, unknown>[]>;
 
 function fixtures(
   entityKind: "provider" | "facility",
-  mapped: Record<string, string | null>,
+  ...staged: Record<string, string | null>[]
 ): Rows {
   return {
     organizations: [
@@ -75,8 +79,8 @@ function fixtures(
         entity_kind: entityKind,
         file_name: "roster.csv",
         state: "ready_for_review",
-        total_rows: 1,
-        staged_rows: 1,
+        total_rows: staged.length,
+        staged_rows: staged.length,
         error_rows: 0,
         error_report: null,
         committed_at: null,
@@ -86,20 +90,18 @@ function fixtures(
         updated_at: NOW,
       },
     ],
-    import_rows: [
-      {
-        id: "import-row-2",
-        org_id: ORG_ID,
-        run_id: RUN_ID,
-        line: 2,
-        raw: mapped,
-        mapped,
-        row_state: "staged",
-        error_column: null,
-        error_reason: null,
-        created_at: NOW,
-      },
-    ],
+    import_rows: staged.map((mapped, i) => ({
+      id: `import-row-${i + 2}`,
+      org_id: ORG_ID,
+      run_id: RUN_ID,
+      line: i + 2,
+      raw: mapped,
+      mapped,
+      row_state: "staged",
+      error_column: null,
+      error_reason: null,
+      created_at: NOW,
+    })),
   };
 }
 
@@ -206,18 +208,27 @@ async function serve(context: BrowserContext, data: Rows): Promise<Call[]> {
 
 const reportOf = (data: Rows) => data.import_runs[0].error_report as Array<Record<string, unknown>>;
 
+const nora = (phone: string | null): Record<string, string | null> => ({
+  group_name: "Shelby Group 1",
+  group_tin: "111111111",
+  provider_first_name: "Nora",
+  provider_last_name: "Newton",
+  npi: "1112223338",
+  phone,
+});
+
+const LEFT_BLANK_REPORT = {
+  line: 2,
+  column: "phone",
+  reason: "Warning: Phone isn't a US number, so it was left blank.",
+  severity: "warning",
+};
+
 test("PW-01: a new provider with an invalid phone is created without it, warned in review and in the run report", async ({
   context,
   page,
 }) => {
-  const data = fixtures("provider", {
-    group_name: "Shelby Group 1",
-    group_tin: "111111111",
-    provider_first_name: "Nora",
-    provider_last_name: "Newton",
-    npi: "1112223338",
-    phone: "abc-def-ghij",
-  });
+  const data = fixtures("provider", nora("abc-def-ghij"));
   const calls = await serve(context, data);
 
   await page.goto(`/import/${RUN_ID}`);
@@ -228,13 +239,14 @@ test("PW-01: a new provider with an invalid phone is created without it, warned 
   await page.getByRole("button", { name: /New providers \(1\)/ }).click();
   const noraRow = page.getByRole("row", { name: /Nora Newton/ });
   await expect(
-    noraRow.getByText("Warning: phone is not a 10-digit US phone number, so it is left blank"),
+    noraRow.getByText('Phone "abc-def-ghij" isn\'t a US number, so it will be left blank.'),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Blocked rows/ })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Commit Changes" }).click();
+  await expect(page.getByText(/1 phone will be left blank\./)).toBeVisible();
   await page.getByRole("button", { name: "Yes, commit changes" }).click();
-  await expect.poll(() => calls.filter((c) => c.kind === "rpc").length).toBe(1);
+  await expect.poll(() => reportOf(data)).toEqual([LEFT_BLANK_REPORT]);
 
   const rpc = calls.find((c) => c.kind === "rpc")?.body as {
     p_plan: { creates: Array<{ provider: Record<string, unknown> }>; blocked_entries: unknown[] };
@@ -242,17 +254,11 @@ test("PW-01: a new provider with an invalid phone is created without it, warned 
   expect(rpc.p_plan.creates).toHaveLength(1);
   expect(rpc.p_plan.creates[0].provider).toMatchObject({ npi: "1112223338", phone: null });
   expect(rpc.p_plan.blocked_entries).toEqual([]);
-  // The warning was written to the run's report BEFORE the commit RPC.
+  // The warning was written to the run's report AFTER the commit RPC, and the
+  // stored report never holds the phone itself.
   const reportWrite = calls.findIndex((c) => c.table === "import_runs" && c.method === "PATCH");
-  expect(reportWrite).toBeGreaterThanOrEqual(0);
-  expect(reportWrite).toBeLessThan(calls.findIndex((c) => c.kind === "rpc"));
-  expect(reportOf(data)).toEqual([
-    {
-      line: 2,
-      column: "phone",
-      reason: "Warning: phone is not a 10-digit US phone number, so it is left blank",
-    },
-  ]);
+  expect(reportWrite).toBeGreaterThan(calls.findIndex((c) => c.kind === "rpc"));
+  expect(JSON.stringify(reportOf(data))).not.toContain("abc-def-ghij");
 });
 
 test("PW-02: a new facility with an invalid phone is created without it, warned in review and in the run report", async ({
@@ -276,10 +282,11 @@ test("PW-02: a new facility with an invalid phone is created without it, warned 
   await page.goto(`/import/${RUN_ID}`);
   await page.getByRole("button", { name: /New facilities \(1\)/ }).click({ timeout: 30000 });
   await expect(
-    page.getByText("Warning: phone is not a 10-digit US phone number, so it is left blank"),
+    page.getByText('Phone "CALL-NOW" isn\'t a US number, so it will be left blank.'),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Commit Changes" }).click();
+  await expect(page.getByText(/1 phone will be left blank\./)).toBeVisible();
   await page.getByRole("button", { name: "Yes, commit changes" }).click();
   await expect.poll(() => data.import_runs[0].state).toBe("committed");
 
@@ -292,11 +299,46 @@ test("PW-02: a new facility with an invalid phone is created without it, warned 
     phone: null,
     appointment_phone: "910-555-0100",
   });
-  expect(reportOf(data)).toEqual([
-    {
-      line: 2,
-      column: "phone",
-      reason: "Warning: phone is not a 10-digit US phone number, so it is left blank",
-    },
-  ]);
+  expect(reportOf(data)).toEqual([LEFT_BLANK_REPORT]);
+  expect(JSON.stringify(reportOf(data))).not.toContain("CALL-NOW");
+});
+
+test("PW-03: a later row's valid phone is used when the provider's first row has a bad one", async ({
+  context,
+  page,
+}) => {
+  const data = fixtures("provider", nora("abc-def-ghij"), nora("910-555-0100"));
+  const calls = await serve(context, data);
+
+  await page.goto(`/import/${RUN_ID}`);
+  await page.getByRole("button", { name: /New providers \(1\)/ }).click({ timeout: 30000 });
+  await expect(
+    page
+      .getByRole("row", { name: /Nora Newton/ })
+      .getByText("Phone \"abc-def-ghij\" isn't a US number, so row 3's phone is used."),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Commit Changes" }).click();
+  await expect(
+    page.getByText("Commit is final and cannot be undone.", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText(/will be left blank/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Yes, commit changes" }).click();
+  await expect.poll(() => calls.filter((c) => c.kind === "rpc").length).toBe(1);
+
+  const rpc = calls.find((c) => c.kind === "rpc")?.body as {
+    p_plan: { creates: Array<{ provider: Record<string, unknown> }> };
+  };
+  expect(rpc.p_plan.creates).toHaveLength(1);
+  expect(rpc.p_plan.creates[0].provider).toMatchObject({ phone: "910-555-0100" });
+  await expect
+    .poll(() => reportOf(data))
+    .toEqual([
+      {
+        line: 2,
+        column: "phone",
+        reason: "Warning: Phone isn't a US number, so row 3's phone was used.",
+        severity: "warning",
+      },
+    ]);
 });

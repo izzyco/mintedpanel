@@ -1,3 +1,4 @@
+import { isValidUsPhone } from "@/lib/phone";
 import { matchGroupLocator } from "@/lib/groupLocator";
 
 // E3.1 — the pure five-part dedupe / conflict-review / commit-plan core
@@ -152,7 +153,13 @@ export interface CreateDisposition {
 export interface ImportRowWarning {
   line: number;
   column: string;
+  /** For the run's stored report: names the column, never the value. */
   reason: string;
+  /** For the live review only: the column's label and the value from the
+   * user's own file. Never stored. */
+  review: string;
+  /** True when the record is created with this column blank. */
+  leftBlank: boolean;
 }
 
 export interface UpdateDisposition {
@@ -250,9 +257,13 @@ const CREATE_SCALAR_LABELS = [
 
 function noteCreateScalarDisagreements(create: CreateDisposition, row: StagedImportRow): void {
   const later = createProviderDraft(row);
-  const labels = CREATE_SCALAR_LABELS.filter(([key]) => create.provider[key] !== later[key]).map(
-    ([, label]) => label,
-  );
+  // MINT-91: a first-row phone that isn't a US number is not used; the phone
+  // rule (src/lib/importPhoneRule.ts) picks the phone and says which.
+  const firstPhoneReplaced =
+    Boolean(create.provider.phone) && !isValidUsPhone(create.provider.phone ?? "");
+  const labels = CREATE_SCALAR_LABELS.filter(([key]) => create.provider[key] !== later[key])
+    .filter(([key]) => !(key === "phone" && firstPhoneReplaced))
+    .map(([, label]) => label);
   if (labels.length === 0) return;
   pushNote(
     create.notes,
@@ -1028,6 +1039,8 @@ export interface SectionCreateEntry {
   notes: string[];
   /** MINT-91: a value left out of the create (see CreateDisposition). */
   warnings?: ImportRowWarning[];
+  /** Later rows in the file for the same record, skipped as duplicates. */
+  duplicateLines?: number[];
 }
 
 export interface SectionSkipEntry {
@@ -1071,6 +1084,7 @@ export function dedupeGroupRows(
   }
   const result: SectionDedupeResult = { creates: [], skips: [], blocked: [] };
   const seenTins = new Set<string>();
+  const createByTin = new Map<string, SectionCreateEntry>();
   for (const row of rows) {
     if (!row.mapped) {
       result.blocked.push({
@@ -1108,16 +1122,20 @@ export function dedupeGroupRows(
         displayName,
         reason: `Duplicate TIN ${tin} in this file`,
       });
+      const first = createByTin.get(tin);
+      if (first) (first.duplicateLines ??= []).push(row.line);
       continue;
     }
     seenTins.add(tin);
-    result.creates.push({
+    const create: SectionCreateEntry = {
       line: row.line,
       displayName,
       mapped: row.mapped,
       groupId: null,
       notes: [],
-    });
+    };
+    createByTin.set(tin, create);
+    result.creates.push(create);
   }
   return result;
 }
@@ -1134,6 +1152,7 @@ export function dedupeFacilityRows(
 ): SectionDedupeResult {
   const result: SectionDedupeResult = { creates: [], skips: [], blocked: [] };
   const seen = new Set<string>();
+  const createByKey = new Map<string, SectionCreateEntry>();
   for (const row of rows) {
     if (!row.mapped) {
       result.blocked.push({
@@ -1210,16 +1229,20 @@ export function dedupeFacilityRows(
         displayName,
         reason: "Duplicate facility (same group, name and address) in this file",
       });
+      const first = createByKey.get(key);
+      if (first) (first.duplicateLines ??= []).push(row.line);
       continue;
     }
     seen.add(key);
-    result.creates.push({
+    const create: SectionCreateEntry = {
       line: row.line,
       displayName,
       mapped: row.mapped,
       groupId: group.id,
       notes: [],
-    });
+    };
+    createByKey.set(key, create);
+    result.creates.push(create);
   }
   return result;
 }

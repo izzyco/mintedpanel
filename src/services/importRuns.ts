@@ -417,10 +417,6 @@ export async function commitImportRun(
   warnings: ImportRunErrorEntry[] = [],
 ): Promise<CommitImportRunResult> {
   requireActiveOrg();
-  // MINT-91: the review's warnings (a phone left blank on a new provider) join
-  // the run's durable report first; the RPC appends its blocked entries after
-  // them, and they survive the staged-row purge.
-  await recordRunReportWarnings(runId, warnings);
   // Snapshot the staged rows BEFORE the RPC — commit purges import_rows
   // (TE-7), and the relationship pass reads the scan-resolved ids off them.
   const stagedSnapshot = await listStagedImportRows(runId);
@@ -466,30 +462,42 @@ export async function commitImportRun(
     );
     await ensureFirstFacilityPrimary([...result.createdProviderIds, ...result.updatedProviderIds]);
   }
+  // MINT-91: the review's warnings (a phone replaced or left blank on a new
+  // provider) join the committed run's durable report, after the commit, so a
+  // failed commit leaves the run's report as it was. A replayed commit
+  // (alreadyCommitted) adds any that are missing and never repeats one.
+  try {
+    if (warnings.length > 0) await recordRunReportWarnings(runId, warnings, "committed");
+  } catch {
+    throw new Error(
+      "The import committed, but its phone warnings weren't added to the run's report. Commit again to add them.",
+    );
+  }
   return { ...result, relationships };
 }
 
-/** Append warnings to a ready run's error report, skipping any it already
- * holds, so a retried commit never writes one twice. A committed run is left
- * alone: its commit replays as a no-op. */
+/** Append warnings to the run's error report while it is in `state`, skipping
+ * any it already holds, so a retried commit never writes one twice. Returns
+ * the report as it now stands. */
 async function recordRunReportWarnings(
   runId: string,
   warnings: ImportRunErrorEntry[],
-): Promise<void> {
-  if (warnings.length === 0) return;
+  state: ImportRun["state"],
+): Promise<ImportRunErrorEntry[] | null> {
   const orgId = requireActiveOrg();
   const run = await getImportRun(runId);
-  if (!run || run.state !== "ready_for_review") return;
+  if (!run || run.state !== state) return null;
   const current = run.errorReport ?? [];
   const next = withReportEntries(current, warnings);
-  if (next.length === current.length) return;
+  if (next.length === current.length) return current;
   const { error } = await supabase
     .from("import_runs")
     .update({ error_report: next as never, updated_at: new Date().toISOString() })
     .eq("org_id", orgId)
     .eq("id", runId)
-    .eq("state", "ready_for_review");
+    .eq("state", state);
   if (error) throw error;
+  return next;
 }
 
 export interface BatchAssignmentResult {
@@ -686,6 +694,17 @@ export async function commitSectionImportRun(input: {
     throw new Error(`Import run is not ready to commit (state ${run.state})`);
   }
 
+  // MINT-91: the creates' warnings join the durable report BEFORE the creates,
+  // so a create that lands before a later one fails keeps its warning; a retry
+  // re-reads the report and never writes one twice.
+  const warnings = importWarningEntries(input.creates);
+  const reportBefore =
+    (warnings.length > 0
+      ? await recordRunReportWarnings(input.runId, warnings, "ready_for_review")
+      : null) ??
+    run.errorReport ??
+    [];
+
   let created = 0;
   for (const entry of input.creates) {
     if (input.entityKind === "provider_group") {
@@ -697,19 +716,14 @@ export async function commitSectionImportRun(input: {
     created += 1;
   }
 
-  // Flip the run to committed, append blocked entries and the creates'
-  // warnings (MINT-91) to the durable error report (they survive the purge),
-  // and purge the staged rows.
+  // Flip the run to committed, append blocked entries to the durable error
+  // report (they survive the purge), and purge the staged rows.
   const blockedEntries: ImportRunErrorEntry[] = input.blocked.map((b) => ({
     line: b.line,
     column: b.column,
     reason: b.reason,
   }));
-  const nextReport = [
-    ...(run.errorReport ?? []),
-    ...blockedEntries,
-    ...importWarningEntries(input.creates),
-  ];
+  const nextReport = [...reportBefore, ...blockedEntries];
   const { error } = await supabase
     .from("import_runs")
     .update({
