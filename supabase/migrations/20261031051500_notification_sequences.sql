@@ -57,7 +57,7 @@
 -- org's revision or touch updated_by: those describe the org's own settings,
 -- so an admin editing at that moment is not told someone else saved.
 --
--- Two decided policies are settings, not code (policy as configuration;
+-- Three decided policies are settings, not code (policy as configuration;
 -- Mission Control edits them, MINT-113; resolveNotificationPolicyRules in
 -- src/lib/notificationSequences.ts):
 --   * digest_frequency (digest): daily, weekly or twice_daily (A8). Minted's
