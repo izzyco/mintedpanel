@@ -50,9 +50,14 @@ describe("addProviderStartDates", () => {
       expect(addProviderStartDates(r, "2026-11-15", TODAY)).toEqual({
         providerStartDate: "2026-11-15",
         assignmentStartDate: "2026-11-15",
+        assignmentStartDateDefaulted: false,
       });
-      // A prefilled today that is still in the field is what gets saved.
-      expect(addProviderStartDates(r, TODAY, TODAY).providerStartDate).toBe(TODAY);
+      // A prefilled today that is still in the field is what gets saved, as
+      // an entered date.
+      expect(addProviderStartDates(r, TODAY, TODAY)).toMatchObject({
+        providerStartDate: TODAY,
+        assignmentStartDateDefaulted: false,
+      });
     }
   });
 
@@ -63,16 +68,24 @@ describe("addProviderStartDates", () => {
     }
   });
 
-  it("by default a blank field starts the assignments today", () => {
-    expect(addProviderStartDates(DEFAULT, "", TODAY).assignmentStartDate).toBe(TODAY);
+  it("by default a blank field starts the assignments today, as a filled-in date", () => {
+    expect(addProviderStartDates(DEFAULT, "", TODAY)).toEqual({
+      providerStartDate: null,
+      assignmentStartDate: TODAY,
+      assignmentStartDateDefaulted: true,
+    });
     // A cleared prefill behaves like any blank field.
-    expect(addProviderStartDates(PREFILL_TODAY, "", TODAY).assignmentStartDate).toBe(TODAY);
+    expect(addProviderStartDates(PREFILL_TODAY, "", TODAY)).toMatchObject({
+      assignmentStartDate: TODAY,
+      assignmentStartDateDefaulted: true,
+    });
   });
 
   it('under assignmentStartDateDefault "none" a blank field fills nothing', () => {
     expect(addProviderStartDates(ASSIGNMENT_NONE, "", TODAY)).toEqual({
       providerStartDate: null,
       assignmentStartDate: null,
+      assignmentStartDateDefaulted: false,
     });
   });
 });

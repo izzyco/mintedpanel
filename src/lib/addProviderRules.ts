@@ -128,6 +128,9 @@ export interface AddProviderStartDates {
   /** What every facility assignment starts on: the field's date, else the
    * rule's fill; null only under "none" with the field blank. */
   assignmentStartDate: string | null;
+  /** True only when the rule filled the assignments' date in (the field was
+   * blank): the fact the audit row records. Never for an entered date. */
+  assignmentStartDateDefaulted: boolean;
 }
 
 /** The two dates a save writes, from the Start date field as it stands. */
@@ -139,7 +142,11 @@ export function addProviderStartDates(
   const providerStartDate = fieldStartDate.trim() || null;
   const assignmentStartDate =
     providerStartDate ?? (rules.assignmentStartDateDefault === "today" ? today : null);
-  return { providerStartDate, assignmentStartDate };
+  return {
+    providerStartDate,
+    assignmentStartDate,
+    assignmentStartDateDefaulted: providerStartDate === null && assignmentStartDate !== null,
+  };
 }
 
 export interface AddProviderStartDateField {

@@ -348,6 +348,10 @@ export interface CreateProviderWithDetailsInput {
    * an assignment whose date was filled in rather than entered is marked
    * `startDateDefaulted` in the provider's CREATE audit row. */
   assignmentStartDate?: string | null;
+  /** With `assignmentStartDate`: true when the caller's rule filled that
+   * date in rather than the coordinator entering it (addProviderStartDates).
+   * Recorded on the audit row; omitted means entered. */
+  assignmentStartDateDefaulted?: boolean;
 }
 
 /** Thrown before any write when facilities are selected and nothing gives
@@ -442,9 +446,13 @@ export async function createProviderWithDetails(
   // F1.4.3: first selected facility is primary until the coordinator changes
   // it on the record — Add Provider has no primary picker.
   const assignmentStart = resolvedStart ?? localCalendarDate(new Date());
-  // MINT-96 A7: "start date defaulted" is a fact. With no start date entered
-  // on the provider, the assignments' date was filled in, not entered.
-  const startDateDefaulted = enteredStart === null;
+  // MINT-96 A7: "start date defaulted" is a fact, set only when a date was
+  // filled in: by the caller's rule (it says so), or here, when the caller
+  // gave no date and the provider has none to take.
+  const startDateDefaulted =
+    input.assignmentStartDate === undefined
+      ? enteredStart === null
+      : input.assignmentStartDateDefaulted === true;
   const facilityRows = markFirstFacilityPrimary(input.facilityIds);
   let insertedFacilityIds: string[] = [];
   if (facilityRows.length > 0) {
@@ -498,15 +506,19 @@ export async function createProviderWithDetails(
       facilityIds: insertedFacilityIds,
       // One entry per saved facility assignment with the date written;
       // `startDateDefaulted: true` marks a date that was filled in, and an
-      // entered date never carries it.
-      facilityAssignments: facilityRows
-        .filter((r) => insertedFacilityIds.includes(r.facilityId))
-        .map(({ facilityId, isPrimary }) => ({
-          facilityId,
-          isPrimary,
-          startDate: assignmentStart,
-          ...(startDateDefaulted ? { startDateDefaulted: true } : {}),
-        })),
+      // entered date never carries it. No key at all when none was saved.
+      ...(insertedFacilityIds.length > 0
+        ? {
+            facilityAssignments: facilityRows
+              .filter((r) => insertedFacilityIds.includes(r.facilityId))
+              .map(({ facilityId, isPrimary }) => ({
+                facilityId,
+                isPrimary,
+                startDate: assignmentStart,
+                ...(startDateDefaulted ? { startDateDefaulted: true } : {}),
+              })),
+          }
+        : {}),
       groupAssignments: insertedAssignments,
     },
     description: `Created provider ${created.firstName} ${created.lastName}`,
