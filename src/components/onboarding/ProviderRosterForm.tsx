@@ -53,6 +53,7 @@ import {
 } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import {
+  npiCandidatesOnForm,
   npiOffersOnForm,
   npiRegistrySourceLabel,
   npiRegistrySourcedFields,
@@ -239,13 +240,25 @@ function FormBody({
   // second pick can replace it). Picking never adds a license row; staff add
   // an offered one from the summary.
   const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
-  // Which fields staff edited (set from their input only); a pick's values
-  // are the pick's until then.
-  const [npiTouched, setNpiTouched] = useState({ credentials: false, taxonomyCode: false });
+  // Which fields staff edited (set from their input only); a pick's values,
+  // and a candidate staff used for Gender or Phone (A36), are the registry's
+  // until then.
+  const [npiTouched, setNpiTouched] = useState({
+    credentials: false,
+    taxonomyCode: false,
+    gender: false,
+    phone: false,
+  });
   const npiErrorId = useId();
   const pickFromRegistry = (record: NpiRegistryRecord, pulledAt: string) => {
     const next = applyRosterNpiPick(
-      { npi: form.npi, credentials: form.credentials, taxonomyCode: form.taxonomyCode },
+      {
+        npi: form.npi,
+        credentials: form.credentials,
+        taxonomyCode: form.taxonomyCode,
+        gender: form.gender,
+        phone: form.phone,
+      },
       licenses,
       record,
       npiPolicy.fillOnPick,
@@ -276,6 +289,8 @@ function FormBody({
       number: draft.licenseNumber,
       origin: draft.npiOrigin,
     })),
+    gender: { value: form.gender, touched: npiTouched.gender },
+    phone: { value: form.phone, touched: npiTouched.phone },
   });
   const npiSourceLabel = npiPick ? npiRegistrySourceLabel(npiPick.pulledAt) : null;
   const recordAfterSave = (recordId: string) =>
@@ -502,7 +517,13 @@ function FormBody({
               <Label htmlFor="prov-gender" className="text-[12px]">
                 Gender
               </Label>
-              <Select value={form.gender} onValueChange={(v) => set({ gender: v })}>
+              <Select
+                value={form.gender}
+                onValueChange={(v) => {
+                  set({ gender: v });
+                  setNpiTouched((touched) => ({ ...touched, gender: true }));
+                }}
+              >
                 <SelectTrigger id="prov-gender" className="h-9">
                   <SelectValue />
                 </SelectTrigger>
@@ -513,6 +534,9 @@ function FormBody({
                   <SelectItem value="nonbinary">Nonbinary</SelectItem>
                 </SelectContent>
               </Select>
+              {npiSourced.gender && npiSourceLabel ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
+              ) : null}
             </div>
             <div>
               <Label htmlFor="prov-dob" className="text-[12px]">
@@ -564,9 +588,15 @@ function FormBody({
               <Input
                 id="prov-phone"
                 value={form.phone}
-                onChange={(e) => set({ phone: e.target.value })}
+                onChange={(e) => {
+                  set({ phone: e.target.value });
+                  setNpiTouched((touched) => ({ ...touched, phone: true }));
+                }}
                 className="h-9"
               />
+              {npiSourced.phone && npiSourceLabel ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
+              ) : null}
             </div>
           </div>
         </div>
@@ -651,12 +681,15 @@ function FormBody({
               npiPick
                 ? {
                     ...npiPick,
-                    summary: npiOffersOnForm(
-                      npiPick.summary,
-                      licenses.map((draft) => ({
-                        state: draft.state,
-                        number: draft.licenseNumber,
-                      })),
+                    summary: npiCandidatesOnForm(
+                      npiOffersOnForm(
+                        npiPick.summary,
+                        licenses.map((draft) => ({
+                          state: draft.state,
+                          number: draft.licenseNumber,
+                        })),
+                      ),
+                      { gender: form.gender, phone: form.phone },
                     ),
                   }
                 : null
@@ -666,6 +699,12 @@ function FormBody({
             onChooseTaxonomy={(code) => {
               set({ taxonomyCode: code });
               setNpiTouched((touched) => ({ ...touched, taxonomyCode: true }));
+            }}
+            // A registry value for Gender or Phone (A36): marked as the
+            // registry's until staff edit the field.
+            onUseCandidate={(candidate) => {
+              set({ [candidate.field]: candidate.value });
+              setNpiTouched((touched) => ({ ...touched, [candidate.field]: false }));
             }}
             onAddLicense={(offer) => {
               const next = addRegistryLicenseDraft(

@@ -32,12 +32,18 @@ export function rosterNpiError(npi: string, check: boolean): string | null {
   return null;
 }
 
-/** The roster form's fields a pick can set. */
+/** The roster form's fields a pick can set, and (A36) the Gender and Phone
+ * it offers candidates for. */
 export interface RosterNpiFields {
   npi: string;
   credentials: string;
   taxonomyCode: string;
+  gender?: string;
+  phone?: string;
 }
+
+/** The values of the roster form's Gender options (ProviderRosterForm). */
+export const ROSTER_GENDER_VALUES = ["female", "male", "nonbinary"] as const;
 
 /** A picked NPI Registry match applied to the roster form: the NPI is set
  * and, at "blank_fields", credentials, the taxonomy and the number of a
@@ -60,7 +66,7 @@ export function applyRosterNpiPick(
     pulledAt: string;
   },
 ): {
-  patch: Partial<RosterNpiFields>;
+  patch: Partial<Pick<RosterNpiFields, "npi" | "credentials" | "taxonomyCode">>;
   licenses: LicenseDraft[];
   trace: NpiPickTrace;
   summary: NpiFillSummary;
@@ -83,11 +89,18 @@ export function applyRosterNpiPick(
       })),
       // A row needs only its state to save; the expiration date is optional.
       licenseRowSaveable: true,
+      gender:
+        fields.gender === undefined
+          ? undefined
+          : { value: fields.gender, options: ROSTER_GENDER_VALUES },
+      phone: fields.phone,
     },
     fillOnPick,
     context.lastPick,
   );
-  const patch: Partial<RosterNpiFields> = { npi: plan.npi };
+  const patch: Partial<Pick<RosterNpiFields, "npi" | "credentials" | "taxonomyCode">> = {
+    npi: plan.npi,
+  };
   if (plan.credentials !== null) patch.credentials = plan.credentials;
   if (plan.taxonomyCode !== null) patch.taxonomyCode = plan.taxonomyCode;
   return {

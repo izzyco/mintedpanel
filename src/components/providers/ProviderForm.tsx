@@ -95,7 +95,12 @@ export function ProviderForm({
   const npiPolicy = useNpiRegistryPolicy();
   const recordNpiAdvisories = useRecordNpiAdvisoriesAfterSave();
   const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
-  const [npiTouched, setNpiTouched] = useState({ credentials: false, taxonomyCode: false });
+  const [npiTouched, setNpiTouched] = useState({
+    credentials: false,
+    taxonomyCode: false,
+    gender: false,
+    phone: false,
+  });
   const [npiConfirmed, setNpiConfirmed] = useState<ReadonlySet<string>>(() => new Set());
   const [focusField, setFocusField] = useState<string | null>(null);
   // A32: the preset taxonomy is the chosen group's (then the organization's,
@@ -126,12 +131,16 @@ export function ProviderForm({
       number: row.number,
       origin: row.npiOrigin,
     })),
+    gender: { value: form.gender, touched: npiTouched.gender },
+    phone: { value: form.phone, touched: npiTouched.phone },
   });
   const registrySource = npiPick
     ? {
         label: npiRegistrySourceLabel(npiPick.pulledAt),
         credentials: npiSourced.credentials,
         taxonomyCode: npiSourced.taxonomyCode,
+        gender: npiSourced.gender,
+        phone: npiSourced.phone,
       }
     : null;
   // A review-step fix: the field's step, then focus on the field.
@@ -145,7 +154,7 @@ export function ProviderForm({
   }, [focusField, step]);
 
   const update: UpdateProviderField = (key, value) => {
-    if (key === "credentials" || key === "taxonomyCode") {
+    if (key === "credentials" || key === "taxonomyCode" || key === "gender" || key === "phone") {
       setNpiTouched((touched) => ({ ...touched, [key]: true }));
     }
     setForm((p) => ({ ...p, [key]: value }));
@@ -269,6 +278,12 @@ export function ProviderForm({
                 npiPick,
                 touched: npiTouched,
                 applyNpi,
+                // A registry value for Gender or Phone (A36): marked as the
+                // registry's until staff edit the field.
+                applyCandidate: (candidate) => {
+                  setForm((f) => ({ ...f, [candidate.field]: candidate.value }));
+                  setNpiTouched((touched) => ({ ...touched, [candidate.field]: false }));
+                },
                 taxonomyPreset: appliedPreset,
                 registrySource,
               }}

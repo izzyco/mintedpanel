@@ -128,6 +128,8 @@ describe("toNpiRegistryRecord", () => {
       enumerationDate: "2015-03-02",
       otherNames: [{ firstName: "JANE", lastName: "SMITH", middleName: "Q", type: "Former Name" }],
       suffix: "JR",
+      // A36: a candidate for Gender, never filled.
+      sex: "F",
       // The primary first, then registry order.
       taxonomies: [
         {
@@ -176,10 +178,10 @@ describe("toNpiRegistryRecord", () => {
       ],
       identifiers: [{ identifier: "MEDICAID-1", type: "MEDICAID", state: "CO", issuer: null }],
     });
-    // Registry fields with no use here stay behind: sex, sole proprietor,
-    // dates other than enumeration, fax numbers, the prefix placeholder.
+    // Registry fields with no use here stay behind: sole proprietor, dates
+    // other than enumeration, fax numbers, the prefix placeholder.
     const json = JSON.stringify(toNpiRegistryRecord(NPPES_INDIVIDUAL));
-    for (const dropped of ["sex", "sole", "2024-01-01", "2020-01-01", "303-555-0111", "--"]) {
+    for (const dropped of ["sole", "2024-01-01", "2020-01-01", "303-555-0111", "--"]) {
       expect(json).not.toContain(dropped);
     }
   });
@@ -245,6 +247,18 @@ describe("toNpiRegistryRecord", () => {
     });
   });
 
+  it("carries only F or M as the sex, from basic.sex or an older reply's basic.gender (A36)", () => {
+    const withBasic = (basic: Record<string, unknown>) =>
+      toNpiRegistryRecord({ ...NPPES_INDIVIDUAL, basic: { ...NPPES_INDIVIDUAL.basic, ...basic } })
+        ?.sex;
+    expect(withBasic({ sex: "M" })).toBe("M");
+    expect(withBasic({ sex: " f " })).toBe("F");
+    expect(withBasic({ sex: undefined, gender: "M" })).toBe("M");
+    for (const value of ["U", "X", "Female", "", 1, null]) {
+      expect(withBasic({ sex: value, gender: undefined })).toBeNull();
+    }
+  });
+
   it("names an organization and skips malformed rows", () => {
     const org = toNpiRegistryRecord({
       number: "1902833742",
@@ -259,6 +273,7 @@ describe("toNpiRegistryRecord", () => {
       firstName: null,
       primaryTaxonomy: null,
       suffix: null,
+      sex: null,
       taxonomies: [],
       practiceAddress: null,
       mailingAddress: null,

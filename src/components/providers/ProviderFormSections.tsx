@@ -17,9 +17,11 @@ import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
 import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
 import { addNpiLicenseOffer, applyNpiRegistryPick } from "@/components/providers/providerNpiPick";
 import {
+  npiCandidatesOnForm,
   npiOffersOnForm,
   npiRegistrySourceLabel,
   touchNpiRowOrigin,
+  type NpiFieldCandidate,
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
 
@@ -43,13 +45,16 @@ interface SectionProps {
 }
 
 /** MINT-110 (A35): whether Credentials and the taxonomy still hold what a
- * pick filled, untouched, and the "From NPI Registry, <date>" they show until
- * the review step confirms them. Null before any pick. (A license row carries
- * its own pull date on npiOrigin.) */
+ * pick filled, untouched, and Gender and Phone a registry value staff used
+ * (A36), and the "From NPI Registry, <date>" they show until the review step
+ * confirms them. Null before any pick. (A license row carries its own pull
+ * date on npiOrigin.) */
 export type RegistrySource = {
   label: string;
   credentials: boolean;
   taxonomyCode: boolean;
+  gender: boolean;
+  phone: boolean;
 } | null;
 
 export function PersonalSection({
@@ -81,7 +86,7 @@ export function PersonalSection({
           onChange={(e) => update("credentials", e.target.value)}
         />
       </Field>
-      <Field label="Gender">
+      <Field label="Gender" helper={registrySource?.gender ? registrySource.label : undefined}>
         {(control) => (
           <Select
             value={form.gender || PROVIDER_GENDER_UNSET_VALUE}
@@ -132,7 +137,7 @@ export function PersonalSection({
       <Field label="Email" error={errors.email}>
         <Input type="email" value={form.email} onChange={(e) => update("email", e.target.value)} />
       </Field>
-      <Field label="Phone">
+      <Field label="Phone" helper={registrySource?.phone ? registrySource.label : undefined}>
         <Input value={form.phone} onChange={(e) => update("phone", e.target.value)} />
       </Field>
     </div>
@@ -148,6 +153,9 @@ export interface CredentialsNpiProps {
   touched: { credentials: boolean; taxonomyCode: boolean };
   /** Set the form and the pick together, marking nothing as staff's. */
   applyNpi: (form: ProviderFormState, pick: NpiPickState | null) => void;
+  /** Put a registry candidate into Gender or Phone (A36), as the registry's
+   * until staff edit the field. */
+  applyCandidate: (candidate: NpiFieldCandidate) => void;
   /** The preset taxonomy applied for the group (A32). */
   taxonomyPreset: string;
   registrySource: RegistrySource;
@@ -161,11 +169,17 @@ export function CredentialsSection({
 }: SectionProps & { npi: CredentialsNpiProps }) {
   const npiNoticeId = useId();
   const npiPolicy = useNpiRegistryPolicy();
-  const { npiPick, touched, applyNpi, taxonomyPreset, registrySource } = npi;
-  // Whether each offer is on the form is read from the rows, so a removed row
-  // can be added again.
+  const { npiPick, touched, applyNpi, applyCandidate, taxonomyPreset, registrySource } = npi;
+  // Whether each offer and candidate is on the form is read from the form, so
+  // a removed row can be added again.
   const shownPick = npiPick
-    ? { ...npiPick, summary: npiOffersOnForm(npiPick.summary, form.licenses) }
+    ? {
+        ...npiPick,
+        summary: npiCandidatesOnForm(npiOffersOnForm(npiPick.summary, form.licenses), {
+          gender: form.gender,
+          phone: form.phone,
+        }),
+      }
     : null;
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -205,6 +219,7 @@ export function CredentialsSection({
           }}
           // One of several taxonomies (A35): staff chose it, so it is theirs.
           onChooseTaxonomy={(code) => update("taxonomyCode", code)}
+          onUseCandidate={applyCandidate}
           onAddLicense={(offer) => {
             const next = addNpiLicenseOffer(
               form.licenses,

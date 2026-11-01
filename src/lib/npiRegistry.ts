@@ -93,6 +93,9 @@ export interface NpiRegistryRecord {
   // them reads as "the registry listed none".
   /** NPI-1 only ("JR", "III"). */
   suffix?: string | null;
+  /** NPI-1 only: the sex NPPES records, "F" or "M". Offered as a candidate
+   * for the form's Gender, never filled by a pick (A36). */
+  sex?: "F" | "M" | null;
   /** Every taxonomy, the primary first. */
   taxonomies?: NpiRegistryTaxonomy[];
   practiceAddress?: NpiRegistryAddress | null;

@@ -203,6 +203,21 @@ describe("applyRosterNpiPick", () => {
     expect(second.summary.cleared).toContain("CO license row");
   });
 
+  it("never fills Gender or Phone; offers the sex that maps to one of its options (A36)", () => {
+    const next = applyRosterNpiPick(
+      { ...fields, gender: "__none__", phone: "" },
+      [savedCo],
+      jane({ sex: "M" }),
+      "blank_fields",
+      FRESH,
+    );
+    expect(next.patch).not.toHaveProperty("gender");
+    expect(next.patch).not.toHaveProperty("phone");
+    expect(next.summary.candidates).toEqual([
+      expect.objectContaining({ field: "gender", value: "male", registryText: "sex: Male" }),
+    ]);
+  });
+
   it("sets only the NPI under npi_only", () => {
     const next = applyRosterNpiPick(fields, [savedCo], boulder, "npi_only", FRESH);
     expect(next.patch).toEqual({ npi: "1902833742" });

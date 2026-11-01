@@ -8,12 +8,14 @@ import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import {
   applyNpiLicenseRows,
   formatRegistryAddress,
+  npiCandidatesOnForm,
   npiFillAnnouncement,
   npiOffersOnForm,
   npiRegistrySourceLabel,
   npiRegistrySourcedFields,
   planNpiRegistryFill,
   touchNpiRowOrigin,
+  usPhoneCandidate,
   type NpiPickState,
   type NpiFillForm,
   type NpiFillLicenseRow,
@@ -209,6 +211,7 @@ describe("planNpiRegistryFill — blank fields", () => {
       licenseOffers: [],
       details: [],
       taxonomyChoices: [],
+      candidates: [],
     });
   });
 });
@@ -725,8 +728,113 @@ describe("npiFillAnnouncement", () => {
         licenseOffers: [],
         details: [],
         taxonomyChoices: [],
+        candidates: [],
       }),
     ).toBe("Nothing blank to fill from the NPI Registry.");
+  });
+
+  it("says the registry's sex and practice phone are there to use (A36)", () => {
+    const next = plan(
+      record({ sex: "F", taxonomies: [] }),
+      blankForm({
+        credentials: "DPT",
+        taxonomyCode: "2251X0800X",
+        gender: { value: "", options: GENDERS },
+        phone: "",
+      }),
+    );
+    expect(npiFillAnnouncement(next.summary)).toBe(
+      "Filled from the NPI Registry: NPI. " +
+        "The registry also lists sex: Female and practice phone: 303-555-0199. " +
+        "Use them below if they apply.",
+    );
+  });
+});
+
+// A36: Gender and Phone are never filled by a pick; the registry's sex and
+// practice phone are candidates staff may use, nothing preselected.
+const GENDERS = ["female", "male", "nonbinary", "prefer_not_to_say"];
+describe("planNpiRegistryFill — Gender and Phone candidates (A36)", () => {
+  const withFields = (gender: string, phone: string, over: Partial<NpiFillForm> = {}) =>
+    blankForm({ gender: { value: gender, options: GENDERS }, phone, ...over });
+
+  it("offers the sex that maps to a Gender option and the practice phone, filling neither", () => {
+    const next = plan(record({ sex: "F" }), withFields("", ""));
+    expect(next.summary.candidates).toEqual([
+      {
+        field: "gender",
+        label: "Gender",
+        value: "female",
+        registryText: "sex: Female",
+        inUse: false,
+      },
+      {
+        field: "phone",
+        label: "Phone",
+        value: "303-555-0199",
+        registryText: "practice phone: 303-555-0199",
+        inUse: false,
+      },
+    ]);
+    expect(next.summary.filled).not.toContain("Gender");
+    expect(next.summary.filled).not.toContain("Phone");
+    expect(plan(record({ sex: "M" }), withFields("", "")).summary.candidates[0]).toMatchObject({
+      value: "male",
+      registryText: "sex: Male",
+    });
+  });
+
+  it("offers nothing a field already holds, a sex with no option, or a form without the field", () => {
+    expect(
+      plan(record({ sex: "F" }), withFields("female", "(303) 555-0199")).summary.candidates,
+    ).toEqual([]);
+    expect(
+      plan(
+        record({ sex: "F" }),
+        blankForm({ gender: { value: "", options: ["nonbinary"] }, phone: "303-555-0199" }),
+      ).summary.candidates,
+    ).toEqual([]);
+    expect(plan(record({ sex: null }), blankForm()).summary.candidates).toEqual([]);
+    // A value staff typed differs: the registry's is offered, never put in.
+    const typed = plan(record({ sex: "F" }), withFields("male", "252-555-0142"));
+    expect(typed.summary.candidates.map((candidate) => candidate.value)).toEqual([
+      "female",
+      "303-555-0199",
+    ]);
+  });
+
+  it("takes the primary practice location's phone, never the mailing one, and only a US number", () => {
+    const practice = record().practiceAddress!;
+    const phoneOf = (over: Partial<NpiRegistryRecord>) =>
+      plan(record(over), withFields("", "")).summary.candidates.map((c) => c.value);
+    expect(
+      phoneOf({
+        practiceAddress: { ...practice, phone: null },
+        mailingAddress: { ...practice, phone: "303-555-0100" },
+      }),
+    ).toEqual([]);
+    expect(phoneOf({ practiceAddress: { ...practice, countryCode: "CA" } })).toEqual([]);
+    for (const phone of ["+44 20 7946 0958", "303-555-019", "303-555-0199 x12", "1-303-555-0199"]) {
+      expect(phoneOf({ practiceAddress: { ...practice, phone } })).toEqual([]);
+    }
+    expect(phoneOf({ practiceAddress: { ...practice, phone: "(303) 555 0199" } })).toEqual([
+      "303-555-0199",
+    ]);
+    expect(usPhoneCandidate("3035550199")).toBe("303-555-0199");
+  });
+
+  it("offers nothing under npi_only", () => {
+    expect(plan(record({ sex: "F" }), withFields("", ""), "npi_only").summary.candidates).toEqual(
+      [],
+    );
+  });
+
+  it("reads whether a candidate is on the form from the field, so one staff change comes back", () => {
+    const { summary } = plan(record({ sex: "F" }), withFields("", ""));
+    const used = npiCandidatesOnForm(summary, { gender: "female", phone: "303 555 0199" });
+    expect(used.candidates.map((candidate) => candidate.inUse)).toEqual([true, true]);
+    const changed = npiCandidatesOnForm(summary, { gender: "male", phone: "" });
+    expect(changed.candidates.map((candidate) => candidate.inUse)).toEqual([false, false]);
   });
 });
 
@@ -916,7 +1024,40 @@ describe("registry-sourced values (A35)", () => {
     expect(npiRegistrySourcedFields(null, { ...form, licenses: [] })).toEqual({
       credentials: false,
       taxonomyCode: false,
+      gender: false,
+      phone: false,
       lines: [],
     });
+  });
+
+  it("marks a used Gender or Phone candidate until staff edit the field (A36)", () => {
+    const withCandidates = pick({
+      summary: plan(record({ sex: "F" }), {
+        ...blankForm(),
+        gender: { value: "", options: GENDERS },
+        phone: "",
+      }).summary,
+    });
+    const used = npiRegistrySourcedFields(withCandidates, {
+      ...form,
+      licenses: [],
+      gender: { value: "female", touched: false },
+      phone: { value: "303-555-0199", touched: false },
+    });
+    expect(used).toMatchObject({ gender: true, phone: true });
+    expect(used.lines[0].values).toEqual([
+      "Credentials DPT",
+      "Gender Female",
+      "Phone 303-555-0199",
+      "Taxonomy code 2251X0800X",
+    ]);
+    // Edited, or holding something else: staff's.
+    expect(
+      npiRegistrySourcedFields(withCandidates, {
+        ...form,
+        gender: { value: "female", touched: true },
+        phone: { value: "252-555-0142", touched: false },
+      }),
+    ).toMatchObject({ gender: false, phone: false });
   });
 });

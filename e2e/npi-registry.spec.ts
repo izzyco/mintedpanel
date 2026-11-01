@@ -14,6 +14,8 @@
 //      offered; adding one twice adds one row; removing it makes the offer
 //      available again; the summary survives a step change; each pick and add
 //      is announced once. Filled values say "From NPI Registry, <date>" (A35).
+//      The registry's sex and practice phone are offered for Gender and Phone,
+//      never filled; using them marks them too (A36).
 //      The Review step lists the credentials mismatch with one-click fixes;
 //      the provider is created without confirming it.
 //   2. Roster form (/onboarding/wizard → Add provider): a name that differs
@@ -295,6 +297,7 @@ const BOULDER_JANE = registryRecord({
   npi: "1902833742",
   middleName: "M",
   credential: "DPT",
+  sex: "F",
   primaryTaxonomy: { code: "2251X0800X", description: "Physical Therapist, Orthopedic" },
   practiceCity: "BOULDER",
   taxonomies: [
@@ -482,8 +485,9 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     .poll(() =>
       announcements(
         page,
-        `${filledText} ${clearedText} ${keptText} ${offersText} Add them below if they apply. ` +
-          "Found in the NPI Registry. JANE M DOE, DPT",
+        `${filledText} ${clearedText} ${keptText} ${offersText} ` +
+          "The registry also lists sex: Female and practice phone: 303-555-0199. " +
+          "Add or use them below if they apply. Found in the NPI Registry. JANE M DOE, DPT",
       ),
     )
     .toBe(1);
@@ -499,6 +503,15 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
   // A35: the taxonomy the pick filled says where it came from, and when; the
   // credentials staff typed do not.
   await expect(page.getByText(PULLED_LABEL, { exact: true })).toHaveCount(1);
+
+  // A36: the registry's sex and practice phone are offered, never filled.
+  await expect(summary).toContainText("NPI Registry lists sex: Female");
+  await expect(summary).toContainText("NPI Registry lists practice phone: 303-555-0199");
+  await summary.getByRole("button", { name: "Use for Gender" }).click();
+  await expect(summary.getByRole("button", { name: "On the form for Gender" })).toBeFocused();
+  await expect.poll(() => announcements(page, "Gender set to Female.")).toBe(1);
+  await summary.getByRole("button", { name: "Use for Phone" }).click();
+  await expect.poll(() => announcements(page, "Phone set to 303-555-0199.")).toBe(1);
 
   // Staff add B's CO license; focus stays on the button, the add is announced.
   await summary.getByRole("button", { name: "Add license row for CO PT-4471" }).click();
@@ -529,6 +542,13 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
   await expect
     .poll(() => announcements(page, "Added a CO license row with number PT-4471."))
     .toBe(2);
+
+  // The Gender and Phone staff took from the registry say so on Personal.
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByRole("combobox", { name: "Gender" })).toContainText("Female");
+  await expect(page.getByLabel("Phone", { exact: true })).toHaveValue("303-555-0199");
+  await expect(page.getByText(PULLED_LABEL, { exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "Next" }).click();
 
   // The added license row says where its number came from (A35).
   await page.getByRole("button", { name: "Next" }).click();
@@ -562,7 +582,8 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     "false",
   );
   await expect(check).toContainText(
-    `${PULLED_LABEL}: Taxonomy code 2251X0800X; CO license PT-4471. Submitting confirms them.`,
+    `${PULLED_LABEL}: Gender Female; Phone 303-555-0199; Taxonomy code 2251X0800X; ` +
+      "CO license PT-4471. Submitting confirms them.",
   );
   await expect(check.locator("input, textarea")).toHaveCount(0);
   // The mismatch stays unconfirmed, and the provider is still created.
@@ -576,6 +597,8 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     first_name: "Jane",
     last_name: "Doe",
     credentials: "PT",
+    gender: "female",
+    phone: "303-555-0199",
     npi: "1902833742",
     taxonomy_code: "2251X0800X",
     caqh_last_attested_date: "2026-07-01",
@@ -675,6 +698,9 @@ test("MINT-110: roster form saves through a mismatch and an outage; pick A then 
   await dialog.locator("#prov-taxonomy").click();
   await page.getByRole("option", { name: /^225200000X/ }).click();
 
+  // Typed by staff: a pick never replaces it (A36).
+  await dialog.locator("#prov-phone").fill("252-555-0142");
+
   // Pick B: the right Jane. A's untouched data is replaced, never "kept".
   await search.click();
   await matches.getByRole("button", { name: /^JANE M DOE, DPT NPI 1902833742/ }).click();
@@ -697,6 +723,13 @@ test("MINT-110: roster form saves through a mismatch and an outage; pick A then 
   // A35: credentials and the license number the pick filled are marked; the
   // taxonomy staff chose is not.
   await expect(dialog.getByText(PULLED_LABEL, { exact: true })).toHaveCount(2);
+  // A36: the registry's sex and practice phone are offered, never filled.
+  await expect(dialog.locator("#prov-phone")).toHaveValue("252-555-0142");
+  await expect(summary).toContainText("NPI Registry lists practice phone: 303-555-0199");
+  await summary.getByRole("button", { name: "Use for Gender" }).click();
+  await expect(dialog.locator("#prov-gender")).toContainText("Female");
+  await expect(dialog.getByText(PULLED_LABEL, { exact: true })).toHaveCount(3);
+  await expect.poll(() => announcements(page, "Gender set to Female.")).toBe(1);
   // No row was added for WY.
   await expect(dialog.locator("#lic-1-state")).toHaveCount(0);
   // The picks seeded the check, the outage NPI's too: no lookup call.
@@ -717,6 +750,8 @@ test("MINT-110: roster form saves through a mismatch and an outage; pick A then 
     first_name: "Jane",
     last_name: "Doe",
     credentials: "DPT",
+    gender: "female",
+    phone: "252-555-0142",
     npi: "1902833742",
     taxonomy_code: "225200000X",
   });

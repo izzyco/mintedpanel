@@ -215,6 +215,37 @@ describe("Add Provider NPI Registry pick", () => {
     expect(summary.filled).toContain("CO license number");
   });
 
+  it("never fills Gender or Phone; offers the registry's sex and practice phone (A36)", () => {
+    const withPractice = record({
+      sex: "F",
+      practiceAddress: {
+        line1: "200 CLINIC WAY",
+        line2: null,
+        city: "DENVER",
+        state: "CO",
+        postalCode: "80202",
+        countryCode: "US",
+        phone: "303-555-0199",
+      },
+    });
+    const { form, summary } = applyNpiRegistryPick(base, withPractice, "blank_fields", FRESH);
+    expect(form.gender).toBe("");
+    expect(form.phone).toBe("");
+    expect(summary.candidates.map(({ field, value }) => ({ field, value }))).toEqual([
+      { field: "gender", value: "female" },
+      { field: "phone", value: "303-555-0199" },
+    ]);
+    // A typed phone stays; the registry's is only offered.
+    const typed = applyNpiRegistryPick(
+      { ...base, gender: "female", phone: "252-555-0142" },
+      withPractice,
+      "blank_fields",
+      FRESH,
+    );
+    expect(typed.form).toMatchObject({ gender: "female", phone: "252-555-0142" });
+    expect(typed.summary.candidates.map((candidate) => candidate.field)).toEqual(["phone"]);
+  });
+
   it("sets only the NPI under npi_only", () => {
     const { form, summary } = applyNpiRegistryPick(withCoRow, boulderJane, "npi_only", FRESH);
     expect(form).toEqual({ ...withCoRow, npi: "1902833742" });

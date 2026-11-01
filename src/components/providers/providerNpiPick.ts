@@ -13,6 +13,7 @@ import {
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import type { NpiFillOnPick } from "@/lib/npiRegistryPolicy";
+import { PROVIDER_GENDER_OPTIONS } from "@/lib/providerGender";
 import {
   emptyLicenseRow,
   type LicenseRow,
@@ -71,6 +72,11 @@ export function applyNpiRegistryPick(
       })),
       // Add Provider saves a license row with any subset of its fields.
       licenseRowSaveable: true,
+      gender: {
+        value: form.gender,
+        options: PROVIDER_GENDER_OPTIONS.map((option) => option.value),
+      },
+      phone: form.phone,
     },
     fillOnPick,
     context.lastPick,
