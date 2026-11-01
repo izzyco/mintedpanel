@@ -102,9 +102,15 @@ jobs:
             && jq -e '.data.outcome == "succeeded"' "${body}" >/dev/null 2>&1; then
             ran=1
           fi
+          failures="$(jq -r '.data.counts.send_failures // 0' "${body}" 2>/dev/null)" || failures=0
           rm -f "${body}"
           echo "HTTP ${status}: ${summary}"
           if [ "${ran}" -ne 1 ]; then
             echo "::error title=Follow-up digest tick::The job did not run to completion (HTTP ${status})."
             exit 1
+          fi
+          # A run whose sends were all rejected (a revoked SendGrid key, an
+          # unverified sender) still succeeds, so say so where someone looks.
+          if [ "${failures}" != "0" ]; then
+            echo "::warning title=Follow-up digest tick::${failures} digest send(s) were rejected this run. Check the SendGrid key and sender."
           fi

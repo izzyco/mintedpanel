@@ -49,8 +49,10 @@
 // second carries the same list. A zone change can move an org's local date:
 // westward across the date line (Honolulu to Tokyo, say) a local date can be
 // skipped; eastward the org can get a digest for an earlier date a few hours
-// after the last. A frequency change takes effect at the next run: the day's
-// sends made so far keep their slots, so none is repeated.
+// after the last. A frequency change takes effect at the next run, and the day's
+// sends made so far keep their slots. A slot the new frequency names that the
+// old one didn't is new: switching a twice-a-day org to daily after its 2 pm
+// send (slot D:2) can still send slot D that day.
 //
 // Logging: ctx.log.error only, with closed snake_case events. Nothing here
 // logs an address, a name, a case, a date or a count.

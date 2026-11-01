@@ -141,7 +141,11 @@ describe("the follow-up digest's hourly GitHub Actions tick", () => {
     );
     expect(tick).not.toContain("skipped");
     expect(script).toMatch(
-      /if \[ "\$\{ran\}" -ne 1 \]; then\n\s+echo "::error[^\n]*"\n\s+exit 1\n\s+fi\s*$/,
+      /if \[ "\$\{ran\}" -ne 1 \]; then\n\s+echo "::error[^\n]*"\n\s+exit 1\n\s+fi\n/,
+    );
+    // A run with rejected sends stays green but warns, after the success check.
+    expect(script).toMatch(
+      /exit 1\n\s+fi\n(?:\s*#[^\n]*\n)*\s+if \[ "\$\{failures\}" != "0" \]; then\n\s+echo "::warning[^\n]*"\n\s+fi\s*$/,
     );
     // No response at all is its own clear failure, never "HTTP 000:".
     expect(script).toMatch(
@@ -185,6 +189,7 @@ describe("the follow-up digest's hourly GitHub Actions tick", () => {
       '"::error title=Follow-up digest tick::No response from the job route (curl exit ${code})."',
       '"HTTP ${status}: ${summary}"',
       '"::error title=Follow-up digest tick::The job did not run to completion (HTTP ${status})."',
+      '"::warning title=Follow-up digest tick::${failures} digest send(s) were rejected this run. Check the SendGrid key and sender."',
     ]);
     expect(script).toContain(
       "jq -c '{outcome: .data.outcome, counts: .data.counts, error: .error}'",
