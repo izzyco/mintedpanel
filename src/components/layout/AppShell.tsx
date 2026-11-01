@@ -66,7 +66,7 @@ export function AppShell({ children }: AppShellProps) {
             type="button"
             aria-label="Close navigation"
             onClick={closeDrawer}
-            className="absolute top-3 right-3 w-8 h-8 rounded-[var(--mp-radius-sm)] flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+            className="absolute top-3 right-3 w-8 h-8 rounded-[var(--mp-radius-sm)] flex items-center justify-center text-mp-sidebar-ink-60 hover:text-mp-sidebar-ink hover:bg-mp-sidebar-ink/10 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
