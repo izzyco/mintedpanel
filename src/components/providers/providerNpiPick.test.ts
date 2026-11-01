@@ -10,6 +10,7 @@ import {
   type ProviderFormState,
 } from "./providerFormShared";
 import { addNpiLicenseOffer, applyNpiRegistryPick, isUntouchedLicenseRow } from "./providerNpiPick";
+import { npiPickWithCandidate } from "@/lib/npiRegistryFill";
 
 const base = { ...emptyProviderFormState, firstName: "Taylor", lastName: "Provider" };
 const PULLED = "2026-10-31T15:00:00.000Z";
@@ -293,6 +294,43 @@ describe("Add Provider NPI Registry pick", () => {
     );
     expect(typed.form).toMatchObject({ gender: "female", phone: "252-555-0142" });
     expect(typed.summary.candidates.map((candidate) => candidate.field)).toEqual(["phone"]);
+  });
+
+  it("pick A, use A's sex and phone, pick B who lists neither: both go back (review P2)", () => {
+    const wrongJane = record({
+      sex: "F",
+      practiceAddress: {
+        line1: "1 MAIN ST",
+        line2: null,
+        city: "DENVER",
+        state: "CO",
+        postalCode: "80202",
+        countryCode: "US",
+        phone: "303-555-0199",
+      },
+    });
+    const first = applyNpiRegistryPick(base, wrongJane, "blank_fields", FRESH);
+    const pickA = {
+      seq: 1,
+      npi: wrongJane.npi,
+      trace: first.trace,
+      summary: first.summary,
+      pulledAt: PULLED,
+    };
+    // Staff use both candidates (what the form's Use buttons do).
+    const used = npiPickWithCandidate(
+      npiPickWithCandidate(pickA, { field: "gender", value: "female" }, ""),
+      { field: "phone", value: "303-555-0199" },
+      "",
+    );
+    const afterUse = { ...first.form, gender: "female", phone: "303-555-0199" };
+    const second = applyNpiRegistryPick(afterUse, boulderJane, "blank_fields", {
+      ...FRESH,
+      touched: { credentials: false, taxonomyCode: false, gender: false, phone: false },
+      lastPick: used.trace,
+    });
+    expect(second.form).toMatchObject({ gender: "", phone: "" });
+    expect(second.summary.cleared).toEqual(expect.arrayContaining(["Gender", "Phone"]));
   });
 
   it("sets only the NPI under npi_only", () => {

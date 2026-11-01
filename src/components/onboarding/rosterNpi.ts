@@ -67,13 +67,13 @@ export function applyRosterNpiPick(
   fillOnPick: NpiFillOnPick,
   context: {
     /** Staff edited the field since the last pick wrote it (or at all). */
-    touched: { credentials: boolean; taxonomyCode: boolean };
+    touched: { credentials: boolean; taxonomyCode: boolean; gender?: boolean; phone?: boolean };
     lastPick: NpiPickTrace | null;
     /** When this pick's registry data was pulled (ISO timestamp). */
     pulledAt: string;
   },
 ): {
-  patch: Partial<Pick<RosterNpiFields, "npi" | "credentials" | "taxonomyCode">>;
+  patch: Partial<RosterNpiFields>;
   licenses: LicenseDraft[];
   trace: NpiPickTrace;
   summary: NpiFillSummary;
@@ -101,15 +101,18 @@ export function applyRosterNpiPick(
           ? undefined
           : { value: fields.gender, options: ROSTER_GENDER_VALUES },
       phone: fields.phone,
+      genderTouched: context.touched.gender,
+      phoneTouched: context.touched.phone,
     },
     fillOnPick,
     context.lastPick,
   );
-  const patch: Partial<Pick<RosterNpiFields, "npi" | "credentials" | "taxonomyCode">> = {
-    npi: plan.npi,
-  };
+  const patch: Partial<RosterNpiFields> = { npi: plan.npi };
   if (plan.credentials !== null) patch.credentials = plan.credentials;
   if (plan.taxonomyCode !== null) patch.taxonomyCode = plan.taxonomyCode;
+  // A36: a Gender or Phone used from the last pick, taken back.
+  if (plan.gender !== null) patch.gender = plan.gender;
+  if (plan.phone !== null) patch.phone = plan.phone;
   return {
     patch,
     licenses: plan.addLicenses.reduce(

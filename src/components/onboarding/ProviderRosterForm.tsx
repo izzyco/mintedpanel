@@ -57,6 +57,7 @@ import {
   npiCandidatesOnForm,
   npiOffersOnForm,
   npiRegistrySourceLabel,
+  npiPickWithCandidate,
   npiRegistrySourcedFields,
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
@@ -705,6 +706,11 @@ function FormBody({
             // A registry value for Gender or Phone (A36): marked as the
             // registry's until staff edit the field.
             onUseCandidate={(candidate) => {
+              // The trace keeps what the field held, so the next pick can take
+              // the value back.
+              if (npiPick) {
+                setNpiPick(npiPickWithCandidate(npiPick, candidate, form[candidate.field]));
+              }
               set({ [candidate.field]: candidate.value });
               setNpiTouched((touched) => ({ ...touched, [candidate.field]: false }));
             }}

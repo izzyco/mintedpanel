@@ -150,7 +150,7 @@ export function PersonalSection({
 export interface CredentialsNpiProps {
   npiPick: NpiPickState | null;
   /** Staff edited Credentials / chose the taxonomy (from user input only). */
-  touched: { credentials: boolean; taxonomyCode: boolean };
+  touched: { credentials: boolean; taxonomyCode: boolean; gender: boolean; phone: boolean };
   /** Set the form and the pick together, marking nothing as staff's. */
   applyNpi: (form: ProviderFormState, pick: NpiPickState | null) => void;
   /** Put a registry candidate into Gender or Phone (A36), as the registry's

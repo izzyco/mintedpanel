@@ -28,7 +28,10 @@
 // Gender and Phone are never filled by a pick (A36). The registry's sex (when
 // it maps to one of the form's Gender options) and its primary practice
 // location's US phone are offered as candidates, one "Use" each, when they
-// differ from what the field holds; nothing is preselected.
+// differ from what the field holds; nothing is preselected. A value staff
+// used is the pick's, like a field it filled (the form records it in the
+// trace): the next pick takes it back while untouched, unless that match
+// lists the same value.
 //
 // The form adapters (providerFormShared.ts for Add Provider, rosterNpi.ts for
 // the roster form) describe their fields with NpiFillForm, keep the last
@@ -90,6 +93,9 @@ export interface NpiFillForm {
    * and its Phone. Left out, nothing is offered for that field. */
   gender?: { value: string; options: readonly string[] };
   phone?: string;
+  /** Staff edited Gender / Phone since using a candidate (or at all). */
+  genderTouched?: boolean;
+  phoneTouched?: boolean;
 }
 
 /** One value a pick wrote, and what the field held before it. */
@@ -103,6 +109,10 @@ export interface NpiPickWrite {
 export interface NpiPickTrace {
   credentials: NpiPickWrite | null;
   taxonomyCode: NpiPickWrite | null;
+  /** A36: a registry candidate staff used for Gender or Phone (set by the
+   * form, npiPickWithCandidate; a pick never writes these itself). */
+  gender?: NpiPickWrite | null;
+  phone?: NpiPickWrite | null;
 }
 
 /** A registry license the form has no row for. */
@@ -170,6 +180,10 @@ export interface NpiFillPlan {
   /** The value to set, or null to leave the field as it is. */
   credentials: string | null;
   taxonomyCode: string | null;
+  /** A36: a candidate used from the last pick, taken back (a pick only offers
+   * Gender and Phone, never sets a new value). */
+  gender: string | null;
+  phone: string | null;
   /** Rows whose number or origin changes; every other row is untouched. ""
    * clears a number the previous pick wrote. */
   licenseRows: { rowIndex: number; number: string; origin: NpiRowOrigin | null }[];
@@ -302,15 +316,15 @@ function phoneDigits(value: string): string {
   return value.replace(/\D/g, "");
 }
 
-// The registry's sex and practice phone, where they differ from the form
-// (A36). The practice phone is the primary practice location's, never the
-// mailing address's, and only a US number.
-function fieldCandidates(record: NpiRegistryRecord, form: NpiFillForm): NpiFieldCandidate[] {
+// The registry's values for Gender and Phone (A36), whatever the form holds:
+// the sex when it maps to one of the form's Gender options, and the primary
+// practice location's phone (never the mailing address's), US only.
+function registryCandidates(record: NpiRegistryRecord, form: NpiFillForm): NpiFieldCandidate[] {
   const candidates: NpiFieldCandidate[] = [];
   const sex = record.sex;
   if (form.gender && (sex === "F" || sex === "M")) {
     const value = SEX_GENDER[sex];
-    if (form.gender.options.includes(value) && form.gender.value !== value) {
+    if (form.gender.options.includes(value)) {
       candidates.push({
         field: "gender",
         label: NPI_FILL_FIELD.gender,
@@ -323,7 +337,7 @@ function fieldCandidates(record: NpiRegistryRecord, form: NpiFillForm): NpiField
   const practice = record.practiceAddress;
   const us = !practice?.countryCode || practice.countryCode === "US";
   const phone = us ? usPhoneCandidate(practice?.phone) : null;
-  if (form.phone !== undefined && phone && phoneDigits(form.phone) !== phoneDigits(phone)) {
+  if (form.phone !== undefined && phone) {
     candidates.push({
       field: "phone",
       label: NPI_FILL_FIELD.phone,
@@ -333,6 +347,10 @@ function fieldCandidates(record: NpiRegistryRecord, form: NpiFillForm): NpiField
     });
   }
   return candidates;
+}
+
+function sameFieldValue(field: NpiFieldCandidate["field"], left: string, right: string): boolean {
+  return field === "phone" ? phoneDigits(left) === phoneDigits(right) : left === right;
 }
 
 function nameLine(name: NpiRegistryName): string {
@@ -630,13 +648,39 @@ export function planNpiRegistryFill(
   });
   if (identifiers.length > 0) details.push({ label: "Other identifiers", lines: identifiers });
 
-  // Offered under blank_fields, like license offers and taxonomy choices.
-  const candidates = fillBlanks ? fieldCandidates(record, form) : [];
+  // 4. Gender and Phone (A36), offered under blank_fields like license offers
+  // and taxonomy choices, when they differ from the field. A candidate used
+  // from the last pick, untouched since, is the last pick's: kept, and still
+  // marked, when this match lists the same value; else taken back to what
+  // the field held before.
+  const offered = fillBlanks ? registryCandidates(record, form) : [];
+  const candidates: NpiFieldCandidate[] = [];
+  const takenBack: { gender: string | null; phone: string | null } = { gender: null, phone: null };
+  for (const field of ["gender", "phone"] as const) {
+    const current = field === "gender" ? form.gender?.value : form.phone;
+    if (current === undefined) continue;
+    const touched = field === "gender" ? form.genderTouched : form.phoneTouched;
+    const candidate = offered.find((item) => item.field === field);
+    const write = lastPick?.[field];
+    let value = current;
+    if (write && !touched && current === write.written) {
+      if (candidate && sameFieldValue(field, candidate.value, write.written)) {
+        trace[field] = write;
+      } else {
+        value = write.previous;
+        takenBack[field] = value;
+        cleared.push(NPI_FILL_FIELD[field]);
+      }
+    }
+    if (candidate && !sameFieldValue(field, candidate.value, value)) candidates.push(candidate);
+  }
 
   return {
     npi: record.npi,
     credentials: credentials !== form.credentials ? credentials : null,
     taxonomyCode: taxonomyChanged ? taxonomy : null,
+    gender: takenBack.gender,
+    phone: takenBack.phone,
     licenseRows,
     removeRows,
     resetRows,
@@ -719,6 +763,20 @@ export function npiCandidatesOnForm(
           ? form.gender === candidate.value
           : phoneDigits(form.phone) === phoneDigits(candidate.value),
     })),
+  };
+}
+
+/** The pick after staff use one of its candidates (A36): the trace keeps what
+ * the field held, so the value is marked as the registry's until staff edit
+ * it, and the next pick takes it back unless that match lists it too. */
+export function npiPickWithCandidate(
+  pick: NpiPickState,
+  candidate: Pick<NpiFieldCandidate, "field" | "value">,
+  previous: string,
+): NpiPickState {
+  return {
+    ...pick,
+    trace: { ...pick.trace, [candidate.field]: { written: candidate.value, previous } },
   };
 }
 
@@ -825,8 +883,8 @@ export function npiRegistrySourcedFields(
     taxonomyCode: string;
     taxonomyTouched: boolean;
     licenses: { state: string; number: string; origin: NpiRowOrigin | null | undefined }[];
-    /** A36: a used candidate is the registry's while the field holds it and
-     * staff have not edited the field since. */
+    /** A36: a used candidate (in the pick's trace) is the registry's while
+     * the field holds it and staff have not edited the field since. */
     gender?: { value: string; touched: boolean };
     phone?: { value: string; touched: boolean };
   },
@@ -841,18 +899,12 @@ export function npiRegistrySourcedFields(
     Boolean(write) && !touched && value === write?.written;
   const credentials = holds(pick?.trace.credentials, form.credentials, form.credentialsTouched);
   const taxonomyCode = holds(pick?.trace.taxonomyCode, form.taxonomyCode, form.taxonomyTouched);
-  const used = (field: NpiFieldCandidate["field"]) => {
-    const current = form[field];
-    return Boolean(
-      current &&
-      !current.touched &&
-      pick?.summary.candidates.some(
-        (candidate) => candidate.field === field && candidate.value === current.value,
-      ),
-    );
-  };
-  const gender = used("gender");
-  const phone = used("phone");
+  const gender = Boolean(
+    form.gender && holds(pick?.trace.gender, form.gender.value, form.gender.touched),
+  );
+  const phone = Boolean(
+    form.phone && holds(pick?.trace.phone, form.phone.value, form.phone.touched),
+  );
   const lines: { label: string; values: string[] }[] = [];
   const put = (pulledAt: string, value: string) => {
     const label = npiRegistrySourceLabel(pulledAt);

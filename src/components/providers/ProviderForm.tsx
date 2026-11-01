@@ -27,6 +27,7 @@ import {
 } from "@/components/providers/providerFormShared";
 import {
   npiRegistrySourceLabel,
+  npiPickWithCandidate,
   npiRegistrySourcedFields,
   touchNpiRowOrigin,
   type NpiPickState,
@@ -281,6 +282,11 @@ export function ProviderForm({
                 // A registry value for Gender or Phone (A36): marked as the
                 // registry's until staff edit the field.
                 applyCandidate: (candidate) => {
+                  // The trace keeps what the field held, so the next pick can
+                  // take the value back.
+                  if (npiPick) {
+                    setNpiPick(npiPickWithCandidate(npiPick, candidate, form[candidate.field]));
+                  }
                   setForm((f) => ({ ...f, [candidate.field]: candidate.value }));
                   setNpiTouched((touched) => ({ ...touched, [candidate.field]: false }));
                 },

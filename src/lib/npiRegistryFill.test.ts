@@ -12,6 +12,7 @@ import {
   npiCandidatesOnForm,
   npiFillAnnouncement,
   npiOffersOnForm,
+  npiPickWithCandidate,
   npiRegistrySourceLabel,
   npiRegistrySourcedFields,
   planNpiRegistryFill,
@@ -930,6 +931,72 @@ describe("planNpiRegistryFill — Gender and Phone candidates (A36)", () => {
     expect(usPhoneCandidate("3035550199")).toBe("303-555-0199");
   });
 
+  it("takes back what staff used from the last pick when the next match lists other values", () => {
+    // Pick A offered sex F and its practice phone; staff used both.
+    const first = plan(record({ sex: "F" }), withFields("", "252-555-0142"));
+    const afterUse = withFields("female", "303-555-0199");
+    const lastPick: NpiPickTrace = {
+      ...first.trace,
+      gender: { written: "female", previous: "" },
+      phone: { written: "303-555-0199", previous: "252-555-0142" },
+    };
+    // Pick B lists neither: both go back, said in the summary.
+    const bare = record({ npi: "1234567893", sex: null, practiceAddress: null });
+    const second = plan(bare, afterUse, "blank_fields", lastPick);
+    expect(second).toMatchObject({ gender: "", phone: "252-555-0142" });
+    expect(second.summary.cleared).toEqual(["Gender", "Phone"]);
+    expect(second.trace.gender).toBeUndefined();
+    expect(second.summary.candidates).toEqual([]);
+    // B lists other values: taken back, and B's are offered against that.
+    const other = record({
+      npi: "1234567893",
+      sex: "M",
+      practiceAddress: { ...record().practiceAddress!, phone: "720-555-0100" },
+    });
+    const third = plan(other, afterUse, "blank_fields", lastPick);
+    expect(third).toMatchObject({ gender: "", phone: "252-555-0142" });
+    expect(third.summary.candidates.map((candidate) => candidate.value)).toEqual([
+      "male",
+      "720-555-0100",
+    ]);
+  });
+
+  it("keeps a used value, still marked, when the next match lists the same one", () => {
+    const afterUse = withFields("female", "303-555-0199");
+    const lastPick: NpiPickTrace = {
+      credentials: null,
+      taxonomyCode: null,
+      gender: { written: "female", previous: "" },
+      phone: { written: "(303) 555-0199", previous: "" },
+    };
+    const next = plan(
+      record({ sex: "F" }),
+      { ...afterUse, phone: "(303) 555-0199" },
+      "blank_fields",
+      lastPick,
+    );
+    expect(next).toMatchObject({ gender: null, phone: null });
+    expect(next.summary.cleared).toEqual([]);
+    expect(next.summary.candidates).toEqual([]);
+    expect(next.trace).toMatchObject({ gender: lastPick.gender, phone: lastPick.phone });
+  });
+
+  it("never takes back a used value staff edited since", () => {
+    const next = plan(
+      record({ npi: "1234567893", sex: null, practiceAddress: null }),
+      { ...withFields("female", "303-555-0199"), genderTouched: true, phoneTouched: true },
+      "blank_fields",
+      {
+        credentials: null,
+        taxonomyCode: null,
+        gender: { written: "female", previous: "" },
+        phone: { written: "303-555-0199", previous: "" },
+      },
+    );
+    expect(next).toMatchObject({ gender: null, phone: null });
+    expect(next.summary.cleared).toEqual([]);
+  });
+
   it("offers nothing under npi_only", () => {
     expect(plan(record({ sex: "F" }), withFields("", ""), "npi_only").summary.candidates).toEqual(
       [],
@@ -1138,12 +1205,15 @@ describe("registry-sourced values (A35)", () => {
   });
 
   it("marks a used Gender or Phone candidate until staff edit the field (A36)", () => {
-    const withCandidates = pick({
-      summary: plan(record({ sex: "F" }), {
-        ...blankForm(),
-        gender: { value: "", options: GENDERS },
-        phone: "",
-      }).summary,
+    const base = pick();
+    const withCandidates = npiPickWithCandidate(
+      npiPickWithCandidate(base, { field: "gender", value: "female" }, ""),
+      { field: "phone", value: "303-555-0199" },
+      "",
+    );
+    expect(withCandidates.trace).toMatchObject({
+      gender: { written: "female", previous: "" },
+      phone: { written: "303-555-0199", previous: "" },
     });
     const used = npiRegistrySourcedFields(withCandidates, {
       ...form,
@@ -1158,12 +1228,19 @@ describe("registry-sourced values (A35)", () => {
       "Phone 303-555-0199",
       "Taxonomy code 2251X0800X",
     ]);
-    // Edited, or holding something else: staff's.
+    // Edited, or holding something else: staff's. Never used: not marked.
     expect(
       npiRegistrySourcedFields(withCandidates, {
         ...form,
         gender: { value: "female", touched: true },
         phone: { value: "252-555-0142", touched: false },
+      }),
+    ).toMatchObject({ gender: false, phone: false });
+    expect(
+      npiRegistrySourcedFields(base, {
+        ...form,
+        gender: { value: "female", touched: false },
+        phone: { value: "303-555-0199", touched: false },
       }),
     ).toMatchObject({ gender: false, phone: false });
   });

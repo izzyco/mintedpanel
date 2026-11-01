@@ -32,7 +32,7 @@ export interface ProviderNpiPickContext {
   /** Staff edited the field since the last pick wrote it (or at all), from
    * user input only. A taxonomy staff never chose is the preset, a default
    * nobody chose. */
-  touched: { credentials: boolean; taxonomyCode: boolean };
+  touched: { credentials: boolean; taxonomyCode: boolean; gender?: boolean; phone?: boolean };
   /** What the last pick wrote, or null before the first pick. */
   lastPick: NpiPickTrace | null;
   /** The preset taxonomy the form applied for its group (A32). While the
@@ -78,6 +78,8 @@ export function applyNpiRegistryPick(
         options: PROVIDER_GENDER_OPTIONS.map((option) => option.value),
       },
       phone: form.phone,
+      genderTouched: context.touched.gender,
+      phoneTouched: context.touched.phone,
     },
     fillOnPick,
     context.lastPick,
@@ -101,6 +103,9 @@ export function applyNpiRegistryPick(
       npi: plan.npi,
       credentials: plan.credentials ?? form.credentials,
       taxonomyCode: plan.taxonomyCode ?? form.taxonomyCode,
+      // A36: a Gender or Phone used from the last pick, taken back.
+      gender: plan.gender ?? form.gender,
+      phone: plan.phone ?? form.phone,
       licenses,
     },
     summary: plan.summary,

@@ -252,6 +252,28 @@ describe("applyRosterNpiPick", () => {
     ]);
   });
 
+  it("takes back a Gender used from the last pick when the next lists none (review P2)", () => {
+    const first = applyRosterNpiPick(
+      { ...fields, gender: "__none__", phone: "" },
+      [savedCo],
+      jane({ sex: "M" }),
+      "blank_fields",
+      FRESH,
+    );
+    const second = applyRosterNpiPick(
+      { ...fields, ...first.patch, gender: "male", phone: "" },
+      first.licenses,
+      boulder,
+      "blank_fields",
+      {
+        ...FRESH,
+        lastPick: { ...first.trace, gender: { written: "male", previous: "__none__" } },
+      },
+    );
+    expect(second.patch).toMatchObject({ gender: "__none__" });
+    expect(second.summary.cleared).toContain("Gender");
+  });
+
   it("sets only the NPI under npi_only", () => {
     const next = applyRosterNpiPick(fields, [savedCo], boulder, "npi_only", FRESH);
     expect(next.patch).toEqual({ npi: "1902833742" });

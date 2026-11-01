@@ -959,6 +959,51 @@ test("MINT-110: in the roster form an NPI typed before the name says name not ch
   expect(fixtures.providers).toHaveLength(1);
 });
 
+test("MINT-110: a Gender and Phone used from one pick go back when the next match lists neither", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = makeFixtures();
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await mockRegistry(context);
+  await recordAnnouncements(context);
+  await seedAuth(context);
+
+  await page.goto("/onboarding/wizard");
+  const card = page.locator("#wizard-providers");
+  await card.getByRole("button", { name: "Add provider" }).click({ timeout: 30000 });
+  const dialog = page.getByRole("dialog", { name: "Add provider" });
+  await dialog.getByLabel("Assign Tree Hill Sports Therapy LLC").click();
+  await dialog.locator("#prov-first").fill("Jane");
+  await dialog.locator("#prov-last").fill("Doe");
+  const search = dialog.getByRole("button", { name: "Search NPI Registry" });
+  const matches = dialog.getByRole("list", { name: "NPI Registry matches" });
+  const summary = dialog.getByRole("region", { name: "From the NPI Registry" });
+
+  // Pick the Boulder Jane and use her sex and practice phone.
+  await search.click();
+  await matches.getByRole("button", { name: /^JANE M DOE, DPT NPI 1902833742/ }).click();
+  await summary.getByRole("button", { name: "Use for Gender" }).click();
+  await summary.getByRole("button", { name: "Use for Phone" }).click();
+  await expect(dialog.locator("#prov-gender")).toContainText("Female");
+  await expect(dialog.locator("#prov-phone")).toHaveValue("303-555-0199");
+
+  // Then the Denver Jane, who lists neither: both go back, and the summary
+  // says so (review P2: never the wrong person's values, unmarked).
+  await search.click();
+  await matches.getByRole("button", { name: /^JANE DOE, PT NPI 1234567893/ }).click();
+  await expect(summary).toContainText("Cleared from the previous pick:");
+  await expect(summary).toContainText("Gender, Phone.");
+  await expect(dialog.locator("#prov-gender")).toContainText("Not set");
+  await expect(dialog.locator("#prov-phone")).toHaveValue("");
+
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(card).toContainText("Jane Doe", { timeout: 15000 });
+  expect(fixtures.providers[0]).toMatchObject({ npi: "1234567893", gender: null, phone: null });
+});
+
 test("MINT-110: the roster form saves a provider with no NPI and asks the registry nothing (B3)", async ({
   context,
   page,

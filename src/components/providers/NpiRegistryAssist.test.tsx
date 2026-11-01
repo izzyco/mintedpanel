@@ -95,7 +95,7 @@ const NO_FILL: NpiFillSummary = {
 // What the stepper hands the Credentials step.
 const NO_PICK = {
   npiPick: null,
-  touched: { credentials: false, taxonomyCode: false },
+  touched: { credentials: false, taxonomyCode: false, gender: false, phone: false },
   applyNpi: () => undefined,
   applyCandidate: () => undefined,
   taxonomyPreset: "225100000X",
