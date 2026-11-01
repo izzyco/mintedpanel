@@ -4,8 +4,8 @@
 -- are accepted, an unknown key, table or value is still refused, and the
 -- replaced functions keep #568's owner, grants and search_path.
 --
--- Run by hand after all migrations, in a disposable PostgreSQL database,
--- never against hosted. CI does not run it yet:
+-- Run after all migrations, in a disposable PostgreSQL database, never
+-- against hosted. CI's Migration dry-run job runs it after #568's packet:
 --   psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-registry-additions.sql
 -- It needs a superuser connection and the anon, authenticated and
 -- service_role roles (CI's seed creates them). Every row it writes is

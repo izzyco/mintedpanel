@@ -100,21 +100,42 @@ function outsideValues(body: string): string {
     .trim();
 }
 
-/** The `WHEN '<key>' THEN EXISTS (SELECT 1 FROM public.<table> AS r ...)`
- *  branches of a CASE, with their full text. */
+/** A CASE branch `WHEN '<key>' THEN EXISTS (SELECT 1 FROM public.<table> AS
+ *  r ...)`, up to its closing parenthesis (one nested pair allowed). */
+const CASE_BRANCH =
+  /WHEN '([a-z_]+)' THEN EXISTS \(\s*SELECT 1 FROM public\.([a-z_]+) AS r(?:[^()]|\([^()]*\))*\)/g;
+
+/** The CASE branches of a body, with their full text. */
 function caseBranches(body: string): { key: string; table: string; text: string }[] {
-  return [
-    ...body.matchAll(
-      /WHEN '([a-z_]+)' THEN EXISTS \(\s*SELECT 1 FROM public\.([a-z_]+) AS r[^)]*\)/g,
-    ),
-  ].map((m) => ({ key: m[1], table: m[2], text: m[0].replace(/\s+/g, " ") }));
+  return [...body.matchAll(CASE_BRANCH)].map((m) => ({
+    key: m[1],
+    table: m[2],
+    text: m[0].replace(/\s+/g, " "),
+  }));
 }
 
 /** The guarded branch for a table that may not exist yet. */
-function guardedBranch(body: string, variable: string, key: string, table: string): boolean {
+function guardPattern(variable: string, key: string, table: string): RegExp {
   return new RegExp(
     `IF ${variable} = '${key}' THEN\\s+IF pg_catalog\\.to_regclass\\('public\\.${table}'\\) IS NULL THEN\\s+RETURN false;\\s+END IF;\\s+RETURN EXISTS \\(\\s*SELECT 1 FROM public\\.${table} AS r WHERE r\\.id = p_[a-z_]+ AND r\\.org_id = p_org_id\\);\\s+END IF;`,
-  ).test(body);
+  );
+}
+
+function guardedBranch(body: string, variable: string, key: string, table: string): boolean {
+  return guardPattern(variable, key, table).test(body);
+}
+
+/** A body with its lists and branches taken out: the guarded branches, the
+ *  CASE branches and the record-table list, whitespace squashed. What is left
+ *  is the logic around them, which a replacement must not change. */
+function skeleton(body: string): string {
+  return body
+    .replace(guardPattern("p_record_table", "notification_sequences", "notification_sequences"), "")
+    .replace(guardPattern("p_key", "sequence_id", "notification_sequences"), "")
+    .replace(CASE_BRANCH, "")
+    .replace(/\bp_record_table\s+NOT\s+IN\s*\([^)]*\)/g, "p_record_table NOT IN ()")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function count(haystack: string, needle: string): number {
@@ -314,6 +335,16 @@ describe("MINT-134 migration mirrors the registry", () => {
       const [first, last] = [definitions(name)[0].body, functionBody(name)];
       expect(outsideValues(last), name).toBe(outsideValues(first));
     }
+    // So are the argument check and the org checks around their lists and
+    // branches: no check dropped, no fallback changed.
+    for (const name of [
+      "private.workflow_advisory_assert_args",
+      "private.workflow_advisory_record_in_org",
+      "private.workflow_advisory_context_id_in_org",
+    ]) {
+      const [first, last] = [definitions(name)[0].body, functionBody(name)];
+      expect(skeleton(last), name).toBe(skeleton(first));
+    }
     const original = createTableBody(sql, "workflow_advisories") ?? "";
     const before = quotedList(
       /CONSTRAINT workflow_advisories_record_table_check CHECK \(\s*record_table IN \(([^)]*)\)/.exec(
@@ -322,12 +353,13 @@ describe("MINT-134 migration mirrors the registry", () => {
     );
     expect(before).toHaveLength(9);
     for (const table of before) expect(recordTableCheck().tables).toContain(table);
-    // Only REVOKEs: it grants nothing, adds no SECURITY DEFINER and drops no
-    // function.
+    // Only REVOKEs: it grants nothing, adds no SECURITY DEFINER, drops no
+    // function and changes no owner.
     const additions = executable(read(ADDITIONS_FILE));
     expect(additions).not.toMatch(/^GRANT /m);
     expect(additions).not.toMatch(/SECURITY DEFINER/);
     expect(additions).not.toMatch(/DROP FUNCTION/);
+    expect(additions).not.toMatch(/\bOWNER\s+TO\b/i);
   });
 
   it("closes source, severity and actor_role to the registry's sets", () => {

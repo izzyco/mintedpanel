@@ -392,6 +392,12 @@ jobs:
       - name: Run MINT-134 workflow advisories SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-workflow-advisories.sql
 
+      # MINT-134 registry additions: the added check keys, record tables and
+      # context keys accepted, unknown ones refused, owners and grants kept.
+      # Rollback-only; any failed check raises.
+      - name: Run MINT-134 registry additions SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-registry-additions.sql
+
       - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
         run: node scripts/security/verify-portal-field-map-learning.mjs
 
