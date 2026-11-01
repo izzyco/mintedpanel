@@ -8,7 +8,8 @@
 // advisory: the action proceeds, the front end stays quiet, and one
 // public.workflow_advisories row records what was bypassed, by whom, on which
 // record, and why it matters (supabase/migrations/
-// 20261101090000_mint134_workflow_advisories.sql). Mission Control lists them
+// 20261101090000_mint134_workflow_advisories.sql, extended in one place by
+// 20261102140000_mint134_registry_additions.sql). Mission Control lists them
 // as "Bypassed checks" later.
 //
 // A check is defined once, here. `critical` is true exactly when `protects` is
@@ -16,7 +17,9 @@
 // stopped the action, and someone must know). advisoryChecks.test.ts pins
 // both. The database accepts only these keys (the SQL list in
 // private.workflow_advisory_check_key_valid), so a new check key is a
-// migration; advisoryChecks.contract.test.ts compares the two.
+// migration; advisoryChecks.contract.test.ts compares the two, reading each
+// function's latest definition. The wiring PRs' additions share one
+// migration, so no PR's replacement can drop another's.
 //
 // Privacy is a hard boundary. A context holds only keys from CONTEXT_KEYS,
 // each of one kind: a count under its own bound, a UUID of an existing org
@@ -46,6 +49,7 @@ export const CHECK_DOMAINS = [
   "npi",
   "npi_registry",
   "import",
+  "contact",
   "phone",
   "provider",
   "generation",
@@ -59,8 +63,9 @@ export const CHECK_DOMAINS = [
 ] as const;
 export type CheckDomain = (typeof CHECK_DOMAINS)[number];
 
-/** Tables a row may name. Each exists on main and carries org_id; the RPCs
- *  check that the record belongs to the org. */
+/** Tables a row may name. The RPCs check that the record belongs to the org:
+ *  by org_id; for organizations, the org's own row; notification_sequences
+ *  (#561) is refused until that table exists. */
 export const ADVISORY_RECORD_TABLES = [
   "providers",
   "provider_groups",
@@ -71,6 +76,10 @@ export const ADVISORY_RECORD_TABLES = [
   "import_runs",
   "roster_mappings",
   "sop_templates",
+  "parties",
+  "organizations",
+  "memberships",
+  "notification_sequences",
 ] as const;
 export type AdvisoryRecordTable = (typeof ADVISORY_RECORD_TABLES)[number];
 
@@ -200,8 +209,67 @@ export const ADVISORY_SURFACES = ["add_provider", "roster_form", "record_edit", 
 /** Configuration layers (policy is configuration: platform, then org). */
 export const CONFIG_LAYERS = ["platform", "org"] as const;
 
-/** Every context key any check may declare. A key ending in _id is an id, one
- *  ending in _ids is ids, and no other key is either. The record RPCs also
+/** Why an org's digest step can't be sent (#563: digestStepProblem in
+ *  src/server/jobs/followupDigestRun.ts, with templateSendProblem in
+ *  src/lib/notificationTemplates.ts), sorted. */
+export const DIGEST_STEP_PROBLEMS = [
+  "channel_unsupported",
+  "no_step",
+  "not_registered",
+  "not_selectable",
+  "several_steps",
+  "unknown_template",
+  "wrong_purpose",
+] as const;
+
+/** The overrideable hard errors of src/lib/rosterValidation.ts, sorted: the
+ *  only rules a roster export can go past. */
+export const ROSTER_OVERRIDE_RULES = [
+  "active_state_license_missing",
+  "date_invalid",
+  "facility_city_missing",
+  "facility_state_missing",
+  "facility_street_missing",
+  "facility_zip_plus_4_invalid",
+  "npi_invalid",
+  "phone_invalid",
+  "provider_npi_invalid",
+  "required_value_missing",
+] as const;
+
+/** The field keys those rules name, with "." written "_" (a token has no
+ *  dot), sorted: the seeded payer templates' column keys
+ *  (roster_engine_seed_templates) and the row checks' source fields. */
+export const ROSTER_OVERRIDE_FIELDS = [
+  "address_1",
+  "city",
+  "dob",
+  "facility_city",
+  "facility_state",
+  "facility_street",
+  "facility_zip",
+  "first_name",
+  "group_name",
+  "group_npi",
+  "individual_npi",
+  "last_name",
+  "license_expiration",
+  "license_license_number",
+  "license_number",
+  "location_name",
+  "npi",
+  "phone",
+  "practice_name",
+  "provider_npi",
+  "state",
+  "taxonomy",
+  "tin",
+  "zip_plus_4",
+] as const;
+
+/** Every context key any check may declare (one context holds at most
+ *  CONTEXT_MAX_KEYS; each check declares far fewer). A key ending in _id is
+ *  an id, one ending in _ids is ids, and no other key is either. The record RPCs also
  *  check that every id names an existing record of the org. Bounds fit real
  *  use:
  *    line                an import line. Imports have no line cap, only the
@@ -221,12 +289,16 @@ export const CONTEXT_KEYS = {
   count: { kind: "count", max: 9_999 },
   earlier_open_count: { kind: "count", max: 99 },
   facility_ids: { kind: "ids" },
+  field_key: { kind: "token", values: ROSTER_OVERRIDE_FIELDS },
   import_run_id: { kind: "id" },
   layer: { kind: "token", values: CONFIG_LAYERS },
   line: { kind: "count", max: 100_000 },
   payer_id: { kind: "id" },
+  problem: { kind: "token", values: DIGEST_STEP_PROBLEMS },
   recipient_id: { kind: "id" },
   removed_count: { kind: "count", max: 20 },
+  rule_code: { kind: "token", values: ROSTER_OVERRIDE_RULES },
+  sequence_id: { kind: "id" },
   step_order: { kind: "count", max: 99 },
   step_position: { kind: "count", max: 10 },
   surface: { kind: "token", values: ADVISORY_SURFACES },
@@ -401,6 +473,36 @@ export const CHECKS = {
     contextKeys: NPI_SAVE_CONTEXT,
     recheck: "npi_registry",
   },
+  "npi_registry.credentials_differ": {
+    key: "npi_registry.credentials_differ",
+    domain: "npi_registry",
+    protects: "completeness",
+    critical: false,
+    help: "The credentials entered differ from the ones the NPI Registry lists for this number. Payers compare the two, so a difference can hold up an enrollment.",
+    recordTables: ["providers"],
+    contextKeys: NPI_SAVE_CONTEXT,
+    recheck: "npi_registry",
+  },
+  "npi_registry.taxonomy_differs": {
+    key: "npi_registry.taxonomy_differs",
+    domain: "npi_registry",
+    protects: "completeness",
+    critical: false,
+    help: "The taxonomy entered differs from the primary taxonomy the NPI Registry lists for this number. Payers check it against the specialty, so a difference can lead to denials.",
+    recordTables: ["providers"],
+    contextKeys: NPI_SAVE_CONTEXT,
+    recheck: "npi_registry",
+  },
+  "npi_registry.license_differs": {
+    key: "npi_registry.license_differs",
+    domain: "npi_registry",
+    protects: "completeness",
+    critical: false,
+    help: "A license number entered differs from the one the NPI Registry lists in that state for this number. Payers verify licenses, so a difference can hold up an enrollment.",
+    recordTables: ["providers"],
+    contextKeys: NPI_SAVE_CONTEXT,
+    recheck: "npi_registry",
+  },
   // -- Import (#566, #556) ---------------------------------------------------
   "import.npi_missing": {
     key: "import.npi_missing",
@@ -440,6 +542,16 @@ export const CHECKS = {
     recordTables: IMPORT_ROW_RECORDS,
     contextKeys: IMPORT_COLUMN_CONTEXT,
   },
+  // -- Contacts (#556, U8) ---------------------------------------------------
+  "contact.phone_missing": {
+    key: "contact.phone_missing",
+    domain: "contact",
+    protects: "completeness",
+    critical: false,
+    help: "The contact was saved without an office phone, so payer forms and rosters that list this contact show the phone blank until someone adds it.",
+    recordTables: ["parties"],
+    contextKeys: [],
+  },
   // -- Facility assignments (#551) ------------------------------------------
   "assignment.start_date_missing": {
     key: "assignment.start_date_missing",
@@ -457,7 +569,7 @@ export const CHECKS = {
     protects: "business_policy",
     critical: false,
     help: "Someone on a reminder step's cc list is no longer a member of the organization, so they were removed. The escalation list is shorter than it was set up.",
-    recordTables: [],
+    recordTables: ["notification_sequences"],
     contextKeys: ["step_position", "removed_count"],
   },
   "notification.sms_disabled": {
@@ -484,7 +596,7 @@ export const CHECKS = {
     protects: "business_policy",
     critical: false,
     help: "A reminder sequence's schedule couldn't be used as saved, so Minted's default schedule ran instead of the organization's own.",
-    recordTables: [],
+    recordTables: ["notification_sequences"],
     contextKeys: [],
   },
   // -- Daily digest job (#563) ----------------------------------------------
@@ -494,7 +606,7 @@ export const CHECKS = {
     protects: "factual_accuracy",
     critical: true,
     help: "A coordinator with follow-ups due has no usable email address, so their daily digest couldn't be sent and nobody was reminded.",
-    recordTables: [],
+    recordTables: ["memberships"],
     contextKeys: ["recipient_id"],
     recheck: "profile_email",
   },
@@ -504,8 +616,8 @@ export const CHECKS = {
     protects: "business_policy",
     critical: false,
     help: "The organization's digest step couldn't be used, so its coordinators got no digest. Nothing else goes out in its place. Only Minted can fix the step.",
-    recordTables: [],
-    contextKeys: [],
+    recordTables: ["organizations"],
+    contextKeys: ["problem", "sequence_id"],
   },
   "digest.rules_fallback": {
     key: "digest.rules_fallback",
@@ -513,7 +625,7 @@ export const CHECKS = {
     protects: "business_policy",
     critical: false,
     help: "The organization's digest catch-up rule couldn't be used, so the default cut-off at midnight applied instead.",
-    recordTables: [],
+    recordTables: ["organizations"],
     contextKeys: [],
   },
   "digest.send_time_fallback": {
@@ -522,7 +634,7 @@ export const CHECKS = {
     protects: "business_policy",
     critical: false,
     help: "The organization's digest send time or time zone couldn't be used, so the digest went out at Minted's default time instead.",
-    recordTables: [],
+    recordTables: ["organizations"],
     contextKeys: [],
   },
   "digest.org_failed": {
@@ -531,7 +643,7 @@ export const CHECKS = {
     protects: "factual_accuracy",
     critical: true,
     help: "The organization's follow-ups couldn't be read completely, so no digest went out this hour rather than one built on a partial list.",
-    recordTables: [],
+    recordTables: ["organizations"],
     contextKeys: [],
   },
   "digest.unassigned_follow_ups": {
@@ -540,7 +652,7 @@ export const CHECKS = {
     protects: "business_policy",
     critical: false,
     help: "Follow-ups due on cases with no assigned coordinator were left out of every digest, so nobody was reminded about them.",
-    recordTables: [],
+    recordTables: ["organizations"],
     contextKeys: ["count"],
   },
   // -- Configuration (#560, Mission Control overrides) ----------------------
@@ -550,7 +662,7 @@ export const CHECKS = {
     protects: "business_policy",
     critical: false,
     help: "A stored setting couldn't be used, so the default from the layer above applied instead of the value someone chose.",
-    recordTables: [],
+    recordTables: ["organizations"],
     contextKeys: ["layer"],
   },
   // -- Pre-existing blocks (follow-up PRs) ----------------------------------
@@ -615,7 +727,7 @@ export const CHECKS = {
     critical: false,
     help: "A roster was exported past a validation error, so the payer may receive a value in a format it rejects.",
     recordTables: ["roster_mappings"],
-    contextKeys: [],
+    contextKeys: ["rule_code", "field_key", "count"],
   },
 } as const satisfies Record<string, CheckDefinition>;
 
