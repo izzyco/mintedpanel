@@ -319,6 +319,8 @@ export const ETA_MIN_DONE = 20;
  *   counted from `windowOpensInMs` (when the current window opened, negative,
  *   or the next one opens, from a 429's Retry-After), and `sentInWindow` NPIs
  *   of this run already went in it.
+ * Until the first 429 the window is taken to open with the run, so a window an
+ * earlier run already opened isn't known yet; the estimate corrects on that 429.
  * Null while the estimate would not be reliable — fewer than ETA_MIN_DONE of
  * this run's rows done, or nothing left. */
 export function estimateRemainingMs(input: {

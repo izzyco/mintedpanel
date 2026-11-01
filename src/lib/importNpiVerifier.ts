@@ -34,8 +34,9 @@ export type VerifyNpiBatch = (
 
 /** Failed requests in a row before the rest are marked not checked. */
 const MAX_FAILURES_IN_A_ROW = 2;
-/** The wait after a 429 that names no Retry-After. */
-const DEFAULT_RETRY_AFTER_SECONDS = 5;
+/** The wait after a 429 that names no Retry-After: a full budget window, so the
+ * time left never claims a few seconds while a minute remains. */
+const DEFAULT_RETRY_AFTER_SECONDS = 60;
 
 function readNumber(error: unknown, key: "status" | "retryAfterSeconds"): number | null {
   if (!error || typeof error !== "object") return null;

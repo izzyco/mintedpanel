@@ -240,7 +240,7 @@ describe("ImportNpiVerifier", () => {
     expect(h.calls).toHaveLength(6);
   });
 
-  it("waits 5 s on a 429 that names no Retry-After", async () => {
+  it("waits a full minute-long window on a 429 that names no Retry-After", async () => {
     const h = harness((npis, call) => {
       if (call === 1) throw new HttpError(429);
       return allChecked(npis);
@@ -248,7 +248,7 @@ describe("ImportNpiVerifier", () => {
     const verifier = new ImportNpiVerifier(items(5), h.verifyBatch);
     verifier.start();
     await settle(verifier);
-    expect(h.calls[1].at - h.calls[0].at).toBe(1_000 + 5_000);
+    expect(h.calls[1].at - h.calls[0].at).toBe(1_000 + 60_000);
   });
 
   it("marks a failed batch not checked, and gives up after two failures in a row", async () => {
