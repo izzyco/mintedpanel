@@ -1524,39 +1524,6 @@ export type Database = {
           },
         ];
       };
-      job_runs: {
-        Row: {
-          counts: Json;
-          error_code: string | null;
-          finished_at: string | null;
-          id: string;
-          job: string;
-          outcome: string;
-          run_key: string;
-          started_at: string;
-        };
-        Insert: {
-          counts?: Json;
-          error_code?: string | null;
-          finished_at?: string | null;
-          id?: string;
-          job: string;
-          outcome?: string;
-          run_key: string;
-          started_at?: string;
-        };
-        Update: {
-          counts?: Json;
-          error_code?: string | null;
-          finished_at?: string | null;
-          id?: string;
-          job?: string;
-          outcome?: string;
-          run_key?: string;
-          started_at?: string;
-        };
-        Relationships: [];
-      };
       launches: {
         Row: {
           address: string | null;
@@ -1995,12 +1962,7 @@ export type Database = {
           bounce_escalation_step: number | null;
           created_at: string;
           digest_cc_allowed: boolean | null;
-          digest_frequency: string | null;
-          digest_weekday: number | null;
           purpose: string;
-          second_send_hour: number | null;
-          send_hour: number | null;
-          send_time_zone: string | null;
           stop_conditions: string[] | null;
           target_days_to_ready: number | null;
           updated_at: string;
@@ -2009,12 +1971,7 @@ export type Database = {
           bounce_escalation_step?: number | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
-          digest_frequency?: string | null;
-          digest_weekday?: number | null;
           purpose: string;
-          second_send_hour?: number | null;
-          send_hour?: number | null;
-          send_time_zone?: string | null;
           stop_conditions?: string[] | null;
           target_days_to_ready?: number | null;
           updated_at?: string;
@@ -2023,12 +1980,7 @@ export type Database = {
           bounce_escalation_step?: number | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
-          digest_frequency?: string | null;
-          digest_weekday?: number | null;
           purpose?: string;
-          second_send_hour?: number | null;
-          send_hour?: number | null;
-          send_time_zone?: string | null;
           stop_conditions?: string[] | null;
           target_days_to_ready?: number | null;
           updated_at?: string;
@@ -3948,6 +3900,51 @@ export type Database = {
           },
         ];
       };
+      sms_consent_archive: {
+        Row: {
+          archived_at: string;
+          consent_text_version: string;
+          consented_at: string;
+          created_at: string;
+          id: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id: string | null;
+          recorded_by: string | null;
+          revoked_at: string | null;
+          revoked_source: string | null;
+          source: string;
+        };
+        Insert: {
+          archived_at?: string;
+          consent_text_version: string;
+          consented_at: string;
+          created_at: string;
+          id: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source: string;
+        };
+        Update: {
+          archived_at?: string;
+          consent_text_version?: string;
+          consented_at?: string;
+          created_at?: string;
+          id?: string;
+          org_id?: string;
+          phone_e164?: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source?: string;
+        };
+        Relationships: [];
+      };
       sms_consents: {
         Row: {
           consent_text_version: string;
@@ -4861,10 +4858,6 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      claim_job_run: {
-        Args: { p_job: string; p_run_key: string };
-        Returns: string;
-      };
       claim_notification_send: {
         Args: {
           p_job: string;
@@ -4876,15 +4869,6 @@ export type Database = {
       };
       complete_notification_org_slot: {
         Args: { p_job: string; p_org_id: string; p_slot: string };
-        Returns: boolean;
-      };
-      finish_job_run: {
-        Args: {
-          p_counts: Json;
-          p_error_code?: string;
-          p_id: string;
-          p_outcome: string;
-        };
         Returns: boolean;
       };
       finish_notification_send: {

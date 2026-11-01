@@ -1,8 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { JOB_COUNT_KEY_RE, MAX_JOB_COUNT_KEYS } from "./counts";
-import { JOB_STALE_AFTER_MINUTES } from "./ledger";
 import {
   NOTIFICATION_SEND_ERROR_CODES,
   NOTIFICATION_SEND_MAX_FAILURES,
@@ -10,93 +8,10 @@ import {
   NOTIFICATION_SLOT_RE,
   PROVIDER_MESSAGE_ID_RE,
 } from "./notificationSends";
-import { JOB_NAME_RE, RUN_KEY_RE } from "./registry";
-import { JOB_ERROR_CODES } from "./types";
+import { JOB_NAME_RE } from "./registry";
 
-// MINT-106 lockstep pins. The fake ledger in src/__fixtures__/jobRunsFakeDb.ts
-// stands in for SQL that cannot run in vitest, so the limits it borrows from
-// code must be the ones the migration enforces.
+// MINT-106: jobs log only through safeLog (ctx.log.error → logServerError).
 const root = process.cwd();
-const MIGRATION = readFileSync(
-  join(root, "supabase/migrations/20261031050000_job_runs.sql"),
-  "utf8",
-);
-const ledgerSource = readFileSync(join(root, "src/server/jobs/ledger.ts"), "utf8");
-
-describe("job_runs migration and code agree", () => {
-  it("sweeps every slot of the job under the stale timeout the runner documents", () => {
-    // No run_key filter: a daily job never claims an earlier day's slot again.
-    expect(MIGRATION).toContain(
-      [
-        "  UPDATE public.job_runs",
-        "     SET outcome = 'failed', error_code = 'timed_out', finished_at = now()",
-        "   WHERE job = p_job",
-        "     AND outcome = 'running'",
-        `     AND started_at < now() - interval '${JOB_STALE_AFTER_MINUTES} minutes';`,
-      ].join("\n"),
-    );
-    expect(MIGRATION).toContain(
-      "PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('job_runs:' || p_job, 0));",
-    );
-  });
-
-  it("names the partial index as the ON CONFLICT target, so other conflicts raise", () => {
-    expect(MIGRATION).toContain(
-      "ON CONFLICT (job, run_key) WHERE outcome IN ('running', 'succeeded') DO NOTHING",
-    );
-    expect(MIGRATION).not.toMatch(/ON CONFLICT DO NOTHING/);
-  });
-
-  it("closes error_code to the codes the runner writes, in the CHECK and in finish_job_run", () => {
-    const list = JOB_ERROR_CODES.map((code) => `'${code}'`).join(", ");
-    expect(MIGRATION).toContain(`error_code IS NULL OR error_code IN (${list})`);
-    expect(MIGRATION).toContain(`AND p_error_code NOT IN (${list}) THEN`);
-  });
-
-  it("allows one running or succeeded row per (job, run_key)", () => {
-    expect(MIGRATION).toMatch(
-      /CREATE UNIQUE INDEX IF NOT EXISTS job_runs_one_live_run\s+ON public\.job_runs \(job, run_key\) WHERE outcome IN \('running', 'succeeded'\);/,
-    );
-  });
-
-  it("checks job names, run keys and count keys with the code's patterns", () => {
-    const sqlPattern = (re: RegExp) => `'${re.source}'`;
-    expect(MIGRATION).toContain(`CHECK (job ~ ${sqlPattern(JOB_NAME_RE)})`);
-    expect(MIGRATION).toContain(`CHECK (run_key ~ ${sqlPattern(RUN_KEY_RE)})`);
-    expect(MIGRATION).toContain(`v_key !~ ${sqlPattern(JOB_COUNT_KEY_RE)}`);
-    expect(MIGRATION).toContain(`IF v_keys > ${MAX_JOB_COUNT_KEYS} OR`);
-  });
-
-  it("calls the RPCs by the names and arguments the migration defines", () => {
-    expect(MIGRATION).toContain(
-      "CREATE OR REPLACE FUNCTION public.claim_job_run(p_job text, p_run_key text)",
-    );
-    expect(MIGRATION).toMatch(
-      /FUNCTION public\.finish_job_run\(\s+p_id uuid,\s+p_outcome text,\s+p_counts jsonb,\s+p_error_code text DEFAULT NULL\s+\)/,
-    );
-    expect(ledgerSource).toContain('db.rpc("claim_job_run", { p_job: job, p_run_key: runKey })');
-    for (const arg of ["p_id:", "p_outcome:", "p_counts:", "p_error_code:"]) {
-      expect(ledgerSource).toContain(arg);
-    }
-  });
-
-  it("is service_role only: RLS on, no policy, nothing for anon or authenticated", () => {
-    expect(MIGRATION).toContain("ALTER TABLE public.job_runs ENABLE ROW LEVEL SECURITY;");
-    expect(MIGRATION).not.toMatch(/CREATE POLICY/i);
-    expect(MIGRATION).toContain(
-      "REVOKE ALL ON TABLE public.job_runs FROM public, anon, authenticated, service_role;",
-    );
-    expect(MIGRATION).toContain("GRANT SELECT ON TABLE public.job_runs TO service_role;");
-    expect(MIGRATION).not.toMatch(/GRANT [^;]* TO [^;]*\b(anon|authenticated)\b/);
-    for (const fn of ["claim_job_run(text, text)", "finish_job_run(uuid, text, jsonb, text)"]) {
-      expect(MIGRATION).toContain(
-        `REVOKE ALL ON FUNCTION public.${fn} FROM public, anon, authenticated;`,
-      );
-      expect(MIGRATION).toContain(`GRANT EXECUTE ON FUNCTION public.${fn} TO service_role;`);
-    }
-    expect(MIGRATION.match(/SECURITY DEFINER\nSET search_path = ''/g)).toHaveLength(2);
-  });
-});
 
 // MINT-108: the fake in src/__fixtures__/followUpDigestFakeDb.ts stands in for
 // notification_sends, so its limits must be the migration's.
@@ -108,7 +23,7 @@ const sendsLedgerSource = readFileSync(join(root, "src/server/jobs/notificationS
 const runSource = readFileSync(join(root, "src/server/jobs/followupDigestRun.ts"), "utf8");
 
 describe("notification_sends migration and code agree", () => {
-  it("sorts after the job_runs and notification sequences migrations it follows", () => {
+  it("sorts after the notification sequences migration it follows", () => {
     const order = readdirSync(join(root, "supabase/migrations"))
       .filter((file) => file.endsWith(".sql"))
       .sort();
@@ -116,10 +31,7 @@ describe("notification_sends migration and code agree", () => {
     expect(at("20261031060000_notification_sends.sql")).toBeGreaterThan(
       at("20261031051500_notification_sequences.sql"),
     );
-    expect(at("20261031051500_notification_sequences.sql")).toBeGreaterThan(
-      at("20261031050000_job_runs.sql"),
-    );
-    expect(at("20261031050000_job_runs.sql")).toBeGreaterThan(-1);
+    expect(at("20261031051500_notification_sequences.sql")).toBeGreaterThan(-1);
   });
 
   it("allows one claimed or sent row per (job, slot, org_id, recipient_user_id)", () => {
@@ -164,8 +76,6 @@ describe("notification_sends migration and code agree", () => {
     );
     const window = /v_claimed_at > now\(\) - interval '(\d+) minutes'/.exec(SENDS_MIGRATION)?.[1];
     expect(Number(window)).toBe(NOTIFICATION_SEND_RECENT_MINUTES);
-    // The job_runs stale window: an older claim's run has finished or timed out.
-    expect(NOTIFICATION_SEND_RECENT_MINUTES).toBe(JOB_STALE_AFTER_MINUTES);
     // A changed return type needs DROP + CREATE, never CREATE OR REPLACE.
     expect(SENDS_MIGRATION).toContain(
       "DROP FUNCTION IF EXISTS public.claim_notification_send(text, text, uuid, uuid);",
@@ -194,7 +104,6 @@ describe("notification_sends migration and code agree", () => {
     ).toHaveLength(3);
     // A local date (the digest's slot) fits it.
     expect("2026-10-31").toMatch(NOTIFICATION_SLOT_RE);
-    expect(NOTIFICATION_SLOT_RE.source).toBe(RUN_KEY_RE.source);
     expect(SENDS_MIGRATION).toContain(
       `provider_message_id IS NULL OR provider_message_id ~ ${sqlPattern(PROVIDER_MESSAGE_ID_RE)}`,
     );

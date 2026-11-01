@@ -6,8 +6,10 @@
 --
 --   followup_digest  the coordinator follow-up digest (a later PR). One step,
 --                    sent to coordinators only (no cc list), daily, weekly or
---                    twice a day, at a local send hour in a time zone that
---                    Minted sets.
+--                    twice a day, at a local send hour in a time zone. Minted
+--                    sets that schedule up per org. There is no default
+--                    schedule (G2): until Minted sets an org's, its digest is
+--                    not set up and nothing sends.
 --   intake_reminder  reminders to a provider with an open onboarding invite
 --                    (after the intake back end merges). Up to 10 steps with
 --                    ordered cc lists, plus stop conditions (at least one) and
@@ -30,27 +32,26 @@
 --     on only when its own row says so, and no row means off. It is also
 --     Minted's to set (A9: off until Minted turns notifications on at
 --     kickoff), so an org admin can neither turn it on nor off.
---   * The send time is one group per layer (A10): send_hour, send_time_zone
---     and second_send_hour are all set on a row or all NULL, and a reader
---     takes all three from the same layer.
+--   * The digest's schedule is on the org row only (G2: no default) and is
+--     one group (A10): digest_frequency, digest_weekday, send_hour,
+--     send_time_zone and second_send_hour are all set (Minted set the digest
+--     up) or all NULL (not set up, so nothing sends).
 --
 --   The resolution (org row + default -> effective sequence) is
 --   resolveNotificationSequence() in src/lib/notificationSequences.ts. Every
 --   consumer calls it rather than re-deriving it.
 --
 -- Platform-managed settings. Org admins never set these, by any path; Minted
--- sets them (Mission Control later), on the default or as an org override
--- written with the service key:
+-- sets them (Mission Control later) with the service key:
 --   * enabled (both purposes; an org row only). false until Minted turns it on.
---   * send_hour (0-23), send_time_zone (an IANA zone) and second_send_hour
---     (0-23, later than send_hour; the twice-a-day second send) (digest). The
---     default is 8 and 14 in America/Chicago (8 am Central was the old fixed
---     cron's 13:00 UTC in CDT).
---   * digest_frequency (digest): daily, weekly or twice_daily (A8). The
---     default is daily. Minted picks it per org in v1 (Addendum 10, Q2).
---   * digest_weekday (digest; ISO 1 = Monday to 7 = Sunday): the weekly
---     digest's day. The default is 1, Monday.
---   * digest_cc_allowed (digest). The default is false: coordinators only.
+--   * The digest's schedule (an org row only; G2: there is no default):
+--     digest_frequency (daily, weekly or twice_daily, A8; Minted picks it per
+--     org, Addendum 10), digest_weekday (ISO 1 = Monday to 7 = Sunday, the
+--     weekly digest's day), send_hour (0-23), send_time_zone (an IANA zone)
+--     and second_send_hour (0-23, later than send_hour; the twice-a-day
+--     second send). All five together, or none.
+--   * digest_cc_allowed (digest), on the default or as an org override. The
+--     default is false: coordinators only.
 -- On notification_sequences, authenticated holds no INSERT or UPDATE privilege
 -- on those columns (column grants); the stamp trigger, as a second wall,
 -- refuses a change to them from any role but Minted's own (an allow-list:
@@ -59,12 +60,9 @@
 -- org's revision or touch updated_by: those describe the org's own settings,
 -- so an admin editing at that moment is not told someone else saved.
 --
--- Three decided policies are settings, not code (policy as configuration;
+-- Two decided policies are settings, not code (policy as configuration;
 -- Mission Control edits them, MINT-113; resolveNotificationPolicyRules in
 -- src/lib/notificationSequences.ts):
---   * digest_frequency (digest): daily, weekly or twice_daily (A8). Minted's
---     default is daily; an org row may override it (NULL inherits), but like
---     send_hour only Minted writes either (Addendum 10, Q2).
 --   * bounce_escalation_step (intake): the one step whose bounce escalates to
 --     that step's cc list. Minted's default is 1 (Oct 30: "a bounce escalates
 --     on email 1"); 0 means no bounce escalates. Org-owned, like the cc lists:
@@ -72,7 +70,7 @@
 --     admin write.
 --   * digest_cc_allowed (digest): whether a digest step may carry a cc list.
 --     Minted's default is false (D59 / S7: coordinators only); an org row may
---     override it (NULL inherits), but like send_hour only Minted writes
+--     override it (NULL inherits), but like enabled only Minted writes
 --     either. The RPC and the deferred step check read the org's effective
 --     value (org row, else default, else false), so Mission Control can relax
 --     it per org without a migration. Relaxing it only lets an org store a
@@ -100,6 +98,15 @@
 --     deleted, the foreign key nulling provider_id (ON DELETE SET NULL
 --     (provider_id)): the number, the timestamps, the source, the text version
 --     and any revocation stay. No provider data is copied onto the row.
+--   * Consent evidence also survives an org delete (D5, a compliance floor).
+--     A row is deleted only by the org FK's cascade (nothing grants DELETE),
+--     and a BEFORE DELETE trigger first copies it, whatever deleted it, to
+--     sms_consent_archive: the row's columns, org_id as a plain uuid with no
+--     foreign key, and archived_at. RLS is forced there with no policies and
+--     only service_role holds a grant (SELECT). Forced RLS applies to the
+--     owner too, so only roles with BYPASSRLS get in: service_role reads it,
+--     and the owner reads and writes it through BYPASSRLS (the archiving
+--     trigger's insert relies on that).
 --   * Stop conditions are a validated, non-empty subset of submitted, paused,
 --     withdrawn, provider_replied (intake only; A11: at least one is
 --     required). Each is switchable per org, submitted included.
@@ -114,11 +121,12 @@
 --     template exists yet; the rule is a constraint on the template catalog
 --     (src/lib/notificationTemplates.ts), checked by its unit test.
 --
--- Access. RLS on all five tables. Any member of an org reads its own
+-- Access. RLS on all six tables. Any member of an org reads its own
 -- sequences, steps and consents, and nobody reads another org's. Any member of
 -- any org reads the platform defaults. Only an org admin
 -- (user_role(org_id) = 'admin') writes the org's sequences and steps.
--- sms_consents and the defaults have no authenticated write grant at all.
+-- sms_consents and the defaults have no authenticated write grant at all, and
+-- sms_consent_archive no authenticated grant of any kind.
 -- save_notification_sequence() is the save path: SECURITY INVOKER (RLS stays
 -- the wall), admin-checked, one transaction, revision-checked against
 -- concurrent editors, and it writes its own audit_log row. Direct admin writes
@@ -140,7 +148,8 @@
 -- days 1/2/3 intake default, and Addendum 8: digest frequency A8, enabled
 -- Minted-managed A9, the send-time group A10, a required stop condition A11,
 -- intake offsets from day 1 A12, compression removed A13; Nov 1, Addendum
--- 10: digest_frequency Minted-managed). It has never been
+-- 10: digest_frequency Minted-managed; Nov 1, Addendum 11: consent evidence
+-- archived on delete D5, no default digest schedule G2). It has never been
 -- applied to a hosted database; it has only run in CI's ephemeral Migration
 -- dry-run. Once it is
 -- applied anywhere, further changes go in a new migration.
@@ -155,24 +164,37 @@
 --          to_regclass('public.notification_sequence_steps'),
 --          to_regclass('public.notification_sequence_defaults'),
 --          to_regclass('public.notification_sequence_default_steps'),
---          to_regclass('public.sms_consents');           -- all five non-null
---   SELECT purpose, send_hour, send_time_zone, second_send_hour, digest_frequency,
---          digest_weekday, bounce_escalation_step, digest_cc_allowed
+--          to_regclass('public.sms_consents'),
+--          to_regclass('public.sms_consent_archive');    -- all six non-null
+--   SELECT purpose, bounce_escalation_step, digest_cc_allowed
 --     FROM public.notification_sequence_defaults ORDER BY 1;
---     -> followup_digest | 8    | America/Chicago | 14   | daily | 1    | NULL | false
---        intake_reminder | NULL | NULL            | NULL | NULL  | NULL | 1    | NULL
+--     -> followup_digest | NULL | false
+--        intake_reminder | 1    | NULL
+--   SELECT count(*) FROM information_schema.columns
+--    WHERE table_name = 'notification_sequence_defaults'
+--      AND column_name IN ('digest_frequency', 'digest_weekday', 'send_hour',
+--                          'send_time_zone', 'second_send_hour');  -- 0 (G2)
 --   SELECT count(*) FROM information_schema.columns
 --    WHERE column_name = 'compress_toward_start_date'
 --      AND table_name LIKE 'notification_sequence%';       -- 0 (A13)
 --   SELECT confdeltype, confdelsetcols FROM pg_constraint
 --    WHERE conname = 'sms_consents_provider_fkey';
 --     -> n | {<attnum of provider_id>}         (SET NULL (provider_id))
+--   SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+--    WHERE oid = 'public.sms_consent_archive'::regclass;  -- true | true (D5)
+--   SELECT tgname FROM pg_trigger
+--    WHERE tgrelid = 'public.sms_consents'::regclass
+--      AND tgname = 'sms_consents_archive_before_delete';  -- one row
+--   SELECT r.rolbypassrls OR r.rolsuper FROM pg_proc AS p
+--     JOIN pg_roles AS r ON r.oid = p.proowner
+--    WHERE p.oid = 'private.sms_consents_archive_before_delete()'::regprocedure;
+--     -> true   (the trigger's owner gets past the archive's forced RLS)
 --   SELECT pg_get_function_identity_arguments(oid), prosecdef
 --     FROM pg_proc WHERE proname = 'save_notification_sequence';
 --     -> p_org_id uuid, p_purpose text, p_payload jsonb | false
 --   SELECT tablename, policyname, cmd FROM pg_policies
---    WHERE tablename LIKE 'notification_sequence%' OR tablename = 'sms_consents'
---    ORDER BY 1, 2;                                     -- 10 policies
+--    WHERE tablename LIKE 'notification_sequence%' OR tablename LIKE 'sms_consent%'
+--    ORDER BY 1, 2;                    -- 10 policies, none on sms_consent_archive
 --   Then run supabase/tests/mint107-notification-sequences.sql (rolled back).
 
 -- ---------------------------------------------------------------------------
@@ -268,9 +290,10 @@ $function$;
 -- of the row, even one that leaves the zone alone. The trigger checks only
 -- when the zone is written, and pg_restore creates triggers after loading the
 -- data. A stored zone a later tzdata no longer knows is still possible, so a
--- reader that cannot format in it uses Minted's default zone instead:
--- resolveNotificationSequence() in src/lib/notificationSequences.ts does
--- that, and falls back to America/Chicago if the default is unusable too.
+-- reader that cannot format in it reads the org's digest as not set up (G2:
+-- there is no default schedule to fall back to; nothing sends until Minted
+-- sets it again): resolveNotificationSequence() in
+-- src/lib/notificationSequences.ts does that.
 CREATE OR REPLACE FUNCTION private.notification_time_zone_valid(p_zone text)
 RETURNS boolean
 LANGUAGE sql
@@ -302,13 +325,17 @@ COMMENT ON FUNCTION private.notification_stop_conditions_valid(text[]) IS
 COMMENT ON FUNCTION private.notification_cc_recipients_valid(jsonb) IS
   'MINT-107: true when the value is an array of at most 20 distinct entries, each exactly {"kind":"user","user_id":<lower-case uuid>} or {"kind":"role","role":"admin"|"specialist"|"billing"}. Used by notification_sequence_steps_cc_recipients_check. Membership is checked by a trigger, not here.';
 COMMENT ON FUNCTION private.notification_time_zone_valid(text) IS
-  'MINT-107: true when the value is an IANA zone name (Area/Location, or UTC) listed in pg_timezone_names. Used by the notification_send_time_zone_check triggers, checked when a zone is written (not a CHECK: tzdata can change under stored rows).';
+  'MINT-107: true when the value is an IANA zone name (Area/Location, or UTC) listed in pg_timezone_names. Used by the notification_sequences_send_time_zone_check trigger, checked when a zone is written (not a CHECK: tzdata can change under stored rows).';
 
 -- ---------------------------------------------------------------------------
 -- 2. Tables.
 -- ---------------------------------------------------------------------------
 
 -- Minted's platform default, one row per purpose. No org_id and no enabled.
+-- No digest schedule either (G2): how often and when the digest goes out
+-- exist only on an org row, once Minted sets the digest up for that org. The
+-- digest default keeps what is not a schedule: digest_cc_allowed and its one
+-- step (the template a sender renders).
 CREATE TABLE IF NOT EXISTS public.notification_sequence_defaults (
   purpose text PRIMARY KEY,
   -- Intake: the default stop conditions and target.
@@ -318,15 +345,6 @@ CREATE TABLE IF NOT EXISTS public.notification_sequence_defaults (
   bounce_escalation_step smallint,
   -- Digest: whether its step may carry a cc list (false: coordinators only).
   digest_cc_allowed boolean,
-  -- Digest: how often (daily, weekly, twice_daily) and, for weekly, the ISO
-  -- weekday (1 = Monday).
-  digest_frequency text,
-  digest_weekday smallint,
-  -- Digest: the local hour, the zone it goes out in, and the twice-a-day
-  -- second hour. Set together (A10).
-  send_hour smallint,
-  send_time_zone text,
-  second_send_hour smallint,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT notification_sequence_defaults_purpose_check
@@ -335,18 +353,8 @@ CREATE TABLE IF NOT EXISTS public.notification_sequence_defaults (
     CHECK (stop_conditions IS NULL OR private.notification_stop_conditions_valid(stop_conditions)),
   CONSTRAINT notification_sequence_defaults_target_days_check
     CHECK (target_days_to_ready IS NULL OR target_days_to_ready BETWEEN 1 AND 90),
-  CONSTRAINT notification_sequence_defaults_send_hour_check
-    CHECK (send_hour IS NULL OR send_hour BETWEEN 0 AND 23),
   CONSTRAINT notification_sequence_defaults_bounce_escalation_step_check
     CHECK (bounce_escalation_step IS NULL OR bounce_escalation_step BETWEEN 0 AND 10),
-  CONSTRAINT notification_sequence_defaults_digest_frequency_check
-    CHECK (digest_frequency IS NULL OR digest_frequency IN ('daily', 'weekly', 'twice_daily')),
-  CONSTRAINT notification_sequence_defaults_digest_weekday_check
-    CHECK (digest_weekday IS NULL OR digest_weekday BETWEEN 1 AND 7),
-  CONSTRAINT notification_sequence_defaults_second_send_hour_check
-    CHECK (second_send_hour IS NULL
-           OR (second_send_hour BETWEEN 0 AND 23 AND second_send_hour > send_hour)),
-  -- send_time_zone is checked by the notification_send_time_zone_check trigger.
   -- A default is complete for its purpose and carries nothing of the other's.
   CONSTRAINT notification_sequence_defaults_purpose_settings_check CHECK (
     (
@@ -355,11 +363,6 @@ CREATE TABLE IF NOT EXISTS public.notification_sequence_defaults (
       AND target_days_to_ready IS NOT NULL
       AND bounce_escalation_step IS NOT NULL
       AND digest_cc_allowed IS NULL
-      AND digest_frequency IS NULL
-      AND digest_weekday IS NULL
-      AND send_hour IS NULL
-      AND send_time_zone IS NULL
-      AND second_send_hour IS NULL
     )
     OR (
       purpose = 'followup_digest'
@@ -367,11 +370,6 @@ CREATE TABLE IF NOT EXISTS public.notification_sequence_defaults (
       AND target_days_to_ready IS NULL
       AND bounce_escalation_step IS NULL
       AND digest_cc_allowed IS NOT NULL
-      AND digest_frequency IS NOT NULL
-      AND digest_weekday IS NOT NULL
-      AND send_hour IS NOT NULL
-      AND send_time_zone IS NOT NULL
-      AND second_send_hour IS NOT NULL
     )
   )
 );
@@ -412,12 +410,15 @@ CREATE TABLE IF NOT EXISTS public.notification_sequences (
   target_days_to_ready integer,
   -- 0: no bounce escalates.
   bounce_escalation_step smallint,
-  -- Digest, platform-managed (service_role only). NULL: Minted's default.
+  -- Digest, platform-managed (service_role only). The schedule (how often,
+  -- the weekly day, the hour, the zone, the twice-a-day second hour) is one
+  -- group with no default (G2): all NULL until Minted sets the digest up.
   digest_frequency text,
   send_hour smallint,
   send_time_zone text,
   second_send_hour smallint,
   digest_weekday smallint,
+  -- NULL: Minted's default (false).
   digest_cc_allowed boolean,
   revision integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -444,10 +445,13 @@ CREATE TABLE IF NOT EXISTS public.notification_sequences (
   CONSTRAINT notification_sequences_second_send_hour_check
     CHECK (second_send_hour IS NULL
            OR (second_send_hour BETWEEN 0 AND 23 AND second_send_hour > send_hour)),
-  -- A10: the send time is one group per layer, all set or all NULL.
-  CONSTRAINT notification_sequences_send_time_group_check CHECK (
+  -- A10 and G2: the digest's schedule is one group, all set (Minted set the
+  -- digest up) or all NULL (not set up: nothing sends).
+  CONSTRAINT notification_sequences_digest_schedule_check CHECK (
     (send_hour IS NULL) = (send_time_zone IS NULL)
     AND (send_hour IS NULL) = (second_send_hour IS NULL)
+    AND (send_hour IS NULL) = (digest_frequency IS NULL)
+    AND (send_hour IS NULL) = (digest_weekday IS NULL)
   ),
   -- send_time_zone is checked by the notification_send_time_zone_check trigger.
   -- Each purpose's row carries only its own settings.
@@ -523,7 +527,9 @@ CREATE TABLE IF NOT EXISTS public.sms_consents (
   -- synthetic providers, and RESTRICT would fail it once any of them has a
   -- consent row; a row detached here stays, synthetic, until its org goes.
   -- No app path deletes a provider; terminating one keeps its row. The org
-  -- FK still cascades: deleting a tenant deletes its data.
+  -- FK still cascades (deleting a tenant deletes its data), but the
+  -- sms_consents_archive_before_delete trigger first copies each consent row
+  -- to sms_consent_archive (D5).
   CONSTRAINT sms_consents_provider_fkey FOREIGN KEY (org_id, provider_id)
     REFERENCES public.providers (org_id, id) ON DELETE SET NULL (provider_id),
   CONSTRAINT sms_consents_phone_check CHECK (phone_e164 ~ '^\+[1-9][0-9]{7,14}$'),
@@ -543,6 +549,28 @@ CREATE TABLE IF NOT EXISTS public.sms_consents (
 -- One live consent per provider and number; a revoked row stays as history.
 CREATE UNIQUE INDEX IF NOT EXISTS sms_consents_one_active
   ON public.sms_consents (org_id, provider_id, phone_e164) WHERE revoked_at IS NULL;
+
+-- D5: consent evidence survives an org delete. Every deleted sms_consents
+-- row lands here first (sms_consents_archive_before_delete), with its own
+-- columns as they were and when it was archived. org_id is a plain uuid, no
+-- foreign key, so the org's delete cannot take the row with it; provider_id
+-- likewise (it may already be NULL: an org delete removes the org's
+-- providers too, and their delete can detach the consent first). No CHECKs:
+-- the row was checked when it was written to sms_consents.
+CREATE TABLE IF NOT EXISTS public.sms_consent_archive (
+  id uuid PRIMARY KEY,
+  org_id uuid NOT NULL,
+  provider_id uuid,
+  phone_e164 text NOT NULL,
+  consented_at timestamptz NOT NULL,
+  source text NOT NULL,
+  consent_text_version text NOT NULL,
+  recorded_by uuid,
+  revoked_at timestamptz,
+  revoked_source text,
+  created_at timestamptz NOT NULL,
+  archived_at timestamptz NOT NULL DEFAULT now()
+);
 
 -- ---------------------------------------------------------------------------
 -- 3. Triggers. Trigger functions live in `private` (off the API surface);
@@ -898,8 +926,8 @@ BEGIN
 END;
 $function$;
 
--- The digest's send_time_zone, on an org row or the default, checked when it
--- is written (see private.notification_time_zone_valid for why not a CHECK).
+-- The digest's send_time_zone on an org row (the default has none, G2),
+-- checked when it is written (see private.notification_time_zone_valid for why not a CHECK).
 -- SECURITY DEFINER only so the lookup of the `private` validator works for
 -- every writer (authenticated has no USAGE on `private`); it reads NEW and
 -- nothing else.
@@ -977,6 +1005,33 @@ BEGIN
 END;
 $function$;
 
+-- D5: copy a consent row to sms_consent_archive before it is deleted,
+-- whatever deletes it (the org FK's cascade is the only path today). Every
+-- delete is archived: consent rows are not otherwise deleted, so this is the
+-- simplest rule. SECURITY DEFINER so the copy works for any deleting role
+-- (none but the owner and service_role holds a grant on the archive); it
+-- writes only the archive, from OLD. The archive's RLS is forced, so being
+-- its owner is not enough: the insert works because the owner has BYPASSRLS
+-- (hosted Supabase's postgres does, as does a superuser). Without it, the
+-- insert, and so the delete, would be refused: nothing is lost.
+CREATE OR REPLACE FUNCTION private.sms_consents_archive_before_delete()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $function$
+BEGIN
+  INSERT INTO public.sms_consent_archive
+    (id, org_id, provider_id, phone_e164, consented_at, source, consent_text_version,
+     recorded_by, revoked_at, revoked_source, created_at)
+  VALUES
+    (OLD.id, OLD.org_id, OLD.provider_id, OLD.phone_e164, OLD.consented_at, OLD.source,
+     OLD.consent_text_version, OLD.recorded_by, OLD.revoked_at, OLD.revoked_source,
+     OLD.created_at);
+  RETURN OLD;
+END;
+$function$;
+
 REVOKE ALL ON FUNCTION private.notification_sequences_stamp()
   FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION private.notification_sequence_steps_stamp()
@@ -996,6 +1051,8 @@ REVOKE ALL ON FUNCTION private.notification_defaults_refuse_delete()
 REVOKE ALL ON FUNCTION private.sms_consents_guard_update()
   FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION private.sms_consents_guard_insert()
+  FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION private.sms_consents_archive_before_delete()
   FROM PUBLIC, anon, authenticated, service_role;
 
 DROP TRIGGER IF EXISTS notification_sequences_stamp ON public.notification_sequences;
@@ -1057,12 +1114,6 @@ CREATE TRIGGER notification_sequences_send_time_zone_check
   BEFORE INSERT OR UPDATE OF send_time_zone ON public.notification_sequences
   FOR EACH ROW EXECUTE FUNCTION private.notification_send_time_zone_check();
 
-DROP TRIGGER IF EXISTS notification_sequence_defaults_send_time_zone_check
-  ON public.notification_sequence_defaults;
-CREATE TRIGGER notification_sequence_defaults_send_time_zone_check
-  BEFORE INSERT OR UPDATE OF send_time_zone ON public.notification_sequence_defaults
-  FOR EACH ROW EXECUTE FUNCTION private.notification_send_time_zone_check();
-
 DROP TRIGGER IF EXISTS sms_consents_guard_update ON public.sms_consents;
 CREATE TRIGGER sms_consents_guard_update
   BEFORE UPDATE ON public.sms_consents
@@ -1073,6 +1124,11 @@ CREATE TRIGGER sms_consents_guard_insert
   BEFORE INSERT ON public.sms_consents
   FOR EACH ROW EXECUTE FUNCTION private.sms_consents_guard_insert();
 
+DROP TRIGGER IF EXISTS sms_consents_archive_before_delete ON public.sms_consents;
+CREATE TRIGGER sms_consents_archive_before_delete
+  BEFORE DELETE ON public.sms_consents
+  FOR EACH ROW EXECUTE FUNCTION private.sms_consents_archive_before_delete();
+
 -- ---------------------------------------------------------------------------
 -- 4. RLS and grants.
 -- ---------------------------------------------------------------------------
@@ -1081,6 +1137,12 @@ ALTER TABLE public.notification_sequence_default_steps ENABLE ROW LEVEL SECURITY
 ALTER TABLE public.notification_sequences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notification_sequence_steps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sms_consents ENABLE ROW LEVEL SECURITY;
+-- D5: forced, with no policies, so it binds the owner too. Only roles with
+-- BYPASSRLS get in: service_role (its SELECT grant) and the owner, which
+-- reads and writes it through BYPASSRLS; the grants below keep every other
+-- role out as well.
+ALTER TABLE public.sms_consent_archive ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sms_consent_archive FORCE ROW LEVEL SECURITY;
 
 -- The defaults: any member of any org reads them (they carry no org and no
 -- PHI); a signed-in user with no membership reads nothing. No write policy:
@@ -1149,6 +1211,7 @@ REVOKE ALL ON TABLE public.notification_sequence_default_steps
 REVOKE ALL ON TABLE public.notification_sequences FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON TABLE public.notification_sequence_steps FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON TABLE public.sms_consents FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON TABLE public.sms_consent_archive FROM PUBLIC, anon, authenticated, service_role;
 
 GRANT SELECT ON TABLE public.notification_sequence_defaults TO authenticated;
 GRANT SELECT ON TABLE public.notification_sequence_default_steps TO authenticated;
@@ -1176,9 +1239,13 @@ GRANT SELECT ON TABLE public.sms_consents TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.notification_sequences TO service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.notification_sequence_steps TO service_role;
 -- No DELETE: consent rows are evidence. A provider delete only detaches them
--- (SET NULL (provider_id)); an org delete still removes them. Referential
--- actions run as the table owner, so neither needs a grant here.
+-- (SET NULL (provider_id)); an org delete removes them after the trigger
+-- copies them to the archive. Referential actions run as the table owner, so
+-- neither needs a grant here.
 GRANT SELECT, INSERT, UPDATE ON TABLE public.sms_consents TO service_role;
+-- The archive is read-only to service_role (compliance retrieval); only the
+-- archiving trigger (SECURITY DEFINER) writes it, and nothing deletes from it.
+GRANT SELECT ON TABLE public.sms_consent_archive TO service_role;
 
 -- ---------------------------------------------------------------------------
 -- 5. Seed Minted's defaults. Only when the purpose has no default yet, so a
@@ -1209,13 +1276,10 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest'
   ) THEN
-    -- One email a day (A8) at 8 am Central (13:00 UTC in CDT, the old fixed
-    -- cron), to coordinators only (D59). Weekly goes on Monday; twice a day
-    -- adds 2 pm.
-    INSERT INTO public.notification_sequence_defaults
-      (purpose, send_hour, send_time_zone, second_send_hour, digest_frequency, digest_weekday,
-       digest_cc_allowed)
-    VALUES ('followup_digest', 8, 'America/Chicago', 14, 'daily', 1, false);
+    -- One email to each coordinator only (D59), with no schedule: how often
+    -- and when exist only once Minted sets the digest up for an org (G2).
+    INSERT INTO public.notification_sequence_defaults (purpose, digest_cc_allowed)
+    VALUES ('followup_digest', false);
     INSERT INTO public.notification_sequence_default_steps
       (purpose, position, offset_days, channel, template_key)
     VALUES ('followup_digest', 1, 0, 'email', 'followup_digest_daily');
@@ -1529,26 +1593,16 @@ GRANT EXECUTE ON FUNCTION public.save_notification_sequence(uuid, text, jsonb) T
 -- 7. Comments.
 -- ---------------------------------------------------------------------------
 COMMENT ON TABLE public.notification_sequence_defaults IS
-  'MINT-107: Minted''s platform default for one purpose (followup_digest | intake_reminder), which every org inherits field by field. No org, no PHI, no enabled column: a default never switches an org on. Never deleted (trigger notification_sequence_defaults_no_delete): change it instead. Any member of any org reads it; only service_role writes it (Mission Control M6 adds the platform-admin write policy). Seeded by migration 20261031051500.';
+  'MINT-107: Minted''s platform default for one purpose (followup_digest | intake_reminder), which every org inherits field by field. No org, no PHI, no enabled column: a default never switches an org on. No digest schedule (G2): how often and when the digest goes out exist only on an org row, once Minted sets it up. Never deleted (trigger notification_sequence_defaults_no_delete): change it instead. Any member of any org reads it; only service_role writes it (Mission Control M6 adds the platform-admin write policy). Seeded by migration 20261031051500.';
 COMMENT ON COLUMN public.notification_sequence_defaults.bounce_escalation_step IS
   'Intake: the one step whose bounce escalates, to that step''s own cc list, with the bounce notice (bounceEscalationRecipients). 1 by default (Oct 30); 0 = no bounce escalates. An org row overrides it. Mission Control edits it (MINT-113).';
 COMMENT ON COLUMN public.notification_sequence_defaults.digest_cc_allowed IS
   'Digest: whether a digest step may carry a cc list. Platform-managed; false by default (D59 / S7: coordinators only); an org row may override it (notification_sequences.digest_cc_allowed). save_notification_sequence and notification_sequence_steps_set_check read the org''s effective value. Turning it on only lets an org store a digest cc list: nothing renders or sends a cc copy of the digest yet. Mission Control edits it (MINT-113).';
-COMMENT ON COLUMN public.notification_sequence_defaults.digest_frequency IS
-  'Digest: daily, weekly or twice_daily (A8). Platform-managed; daily by default; an org row may carry Minted''s override (Addendum 10).';
-COMMENT ON COLUMN public.notification_sequence_defaults.digest_weekday IS
-  'Digest: the weekly digest''s ISO weekday (1 = Monday to 7 = Sunday). Platform-managed; Monday by default.';
-COMMENT ON COLUMN public.notification_sequence_defaults.second_send_hour IS
-  'Digest: the twice-a-day second send''s local hour, in send_time_zone and later than send_hour. Platform-managed; 14 by default. Set with send_hour and send_time_zone (A10).';
-COMMENT ON COLUMN public.notification_sequence_defaults.send_hour IS
-  'Digest: the local hour (0 to 23) the digest goes out, in send_time_zone. Platform-managed; 8 by default.';
-COMMENT ON COLUMN public.notification_sequence_defaults.send_time_zone IS
-  'Digest: the IANA time zone of send_hour. Platform-managed; America/Chicago by default.';
 COMMENT ON TABLE public.notification_sequence_default_steps IS
   'MINT-107: the ordered steps of a platform default. An org with no steps of its own uses these. No cc list: a default names no one. Same bounds as notification_sequence_steps; every default has at least one step, the digest exactly one, offsets strictly increasing (deferred constraint triggers on both default tables).';
 
 COMMENT ON TABLE public.notification_sequences IS
-  'MINT-107: one org''s notification settings for one purpose (followup_digest | intake_reminder). No row = off. A NULL setting uses Minted''s default (notification_sequence_defaults); enabled is never inherited and only Minted sets it (A9). Members read; admins write the org-owned columns (stop conditions, target, bounce step), normally through save_notification_sequence. Config only; nothing sends from this table yet.';
+  'MINT-107: one org''s notification settings for one purpose (followup_digest | intake_reminder). No row = off. A NULL setting uses Minted''s default (notification_sequence_defaults), except the digest schedule, which has no default (G2: all NULL means Minted has not set the digest up, so it is not due); enabled is never inherited and only Minted sets it (A9). Members read; admins write the org-owned columns (stop conditions, target, bounce step), normally through save_notification_sequence. Config only; nothing sends from this table yet.';
 COMMENT ON COLUMN public.notification_sequences.enabled IS
   'Whether the purpose sends at all for this org. Defaults to false (A9: off until Minted turns notifications on at kickoff); never inherited from Minted''s default. Platform-managed: no authenticated grant, stamp-trigger allow-list, the save RPC refuses it; a change to it alone keeps revision and updated_by.';
 COMMENT ON COLUMN public.notification_sequences.stop_conditions IS
@@ -1558,15 +1612,15 @@ COMMENT ON COLUMN public.notification_sequences.target_days_to_ready IS
 COMMENT ON COLUMN public.notification_sequences.bounce_escalation_step IS
   'Intake only, org-owned: the step whose bounce escalates to that step''s cc list, 0 to 10 (0 = none). NULL uses Minted''s default (1). Always NULL for the digest.';
 COMMENT ON COLUMN public.notification_sequences.send_hour IS
-  'Digest only, platform-managed: an org override of the local send hour (0 to 23). NULL uses Minted''s default (8).';
+  'Digest only, platform-managed: the local hour (0 to 23) the digest goes out, in send_time_zone. Part of the digest schedule (with digest_frequency, digest_weekday, send_time_zone and second_send_hour): all set or all NULL. NULL: Minted has not set the digest up for this org, so it is not due (G2: no default).';
 COMMENT ON COLUMN public.notification_sequences.send_time_zone IS
-  'Digest only, platform-managed: an org override of the IANA zone of send_hour. NULL uses Minted''s default (America/Chicago).';
+  'Digest only, platform-managed: the IANA zone of send_hour. Part of the digest schedule; NULL: not set up (G2).';
 COMMENT ON COLUMN public.notification_sequences.digest_frequency IS
-  'Digest only, platform-managed: an org override of how often the digest goes out, daily, weekly or twice_daily (A8). NULL uses Minted''s default (daily). Only Minted writes it (Addendum 10: no authenticated grant; stamp-trigger allow-list; the save RPC refuses it); a change to it alone keeps revision and updated_by.';
+  'Digest only, platform-managed: how often the digest goes out, daily, weekly or twice_daily (A8). Part of the digest schedule; NULL: not set up (G2). Only Minted writes it (Addendum 10: no authenticated grant; stamp-trigger allow-list; the save RPC refuses it); a change to it alone keeps revision and updated_by.';
 COMMENT ON COLUMN public.notification_sequences.digest_weekday IS
-  'Digest only, platform-managed: an org override of the weekly digest''s ISO weekday (1 = Monday). NULL uses Minted''s default (Monday).';
+  'Digest only, platform-managed: the weekly digest''s ISO weekday (1 = Monday to 7 = Sunday). Part of the digest schedule, so set whatever the frequency; NULL: not set up (G2).';
 COMMENT ON COLUMN public.notification_sequences.second_send_hour IS
-  'Digest only, platform-managed: an org override of the twice-a-day second hour, later than send_hour. Set with send_hour and send_time_zone, or all three NULL (A10: Minted''s default send time).';
+  'Digest only, platform-managed: the twice-a-day second hour, later than send_hour. Part of the digest schedule, so set whatever the frequency; NULL: not set up (G2).';
 COMMENT ON COLUMN public.notification_sequences.digest_cc_allowed IS
   'Digest only, platform-managed: an org override of whether its digest step may carry a cc list. NULL uses Minted''s default (false: coordinators only). Only Minted writes it (no authenticated grant; stamp-trigger allow-list; the save RPC refuses it); a change to it alone keeps revision and updated_by. Turning it on only lets the org store a digest cc list: nothing sends a cc copy of the digest yet. Mission Control edits it (MINT-113).';
 COMMENT ON COLUMN public.notification_sequences.revision IS
@@ -1586,7 +1640,9 @@ COMMENT ON COLUMN public.notification_sequence_steps.cc_recipients IS
   'Ordered escalation list for this step, empty by default and empty for the digest while the org''s effective digest_cc_allowed is off: [{"kind":"user","user_id":uuid} | {"kind":"role","role":"admin"|"specialist"|"billing"}]. Users must be org members when saved. A cc''d copy never carries SSN, date of birth or document contents.';
 
 COMMENT ON TABLE public.sms_consents IS
-  'MINT-107: a provider''s recorded agreement to receive texts at one number: when, how (source), which consent text version, and revocation. Evidence: the allowed updates are stamping revoked_at + revoked_source once and the provider FK nulling provider_id when the provider row is deleted (ON DELETE SET NULL (provider_id)); no DELETE grant. Members read; only service_role writes (the intake form, later). staff_recorded rows name recorded_by.';
+  'MINT-107: a provider''s recorded agreement to receive texts at one number: when, how (source), which consent text version, and revocation. Evidence: the allowed updates are stamping revoked_at + revoked_source once and the provider FK nulling provider_id when the provider row is deleted (ON DELETE SET NULL (provider_id)); no DELETE grant; a row deleted anyway (the org FK''s cascade) is first copied to sms_consent_archive (D5). Members read; only service_role writes (the intake form, later). staff_recorded rows name recorded_by.';
+COMMENT ON TABLE public.sms_consent_archive IS
+  'MINT-107 D5: every deleted sms_consents row, copied by the sms_consents_archive_before_delete trigger before the delete (an org delete''s cascade is the only path today), so consent evidence survives the org. The consent''s own columns as they were, org_id as a plain uuid with no foreign key, and archived_at. RLS forced with no policies; service_role SELECT only. Only roles with BYPASSRLS get in: service_role reads it, and the owner reads and writes it through BYPASSRLS (the trigger''s insert relies on it). Nothing deletes from it.';
 COMMENT ON COLUMN public.sms_consents.provider_id IS
   'The provider who consented; required on insert. NULL only after that provider row was deleted: the consent and any revocation stay as evidence, with the number and timestamps, and no copy of the provider''s data.';
 COMMENT ON COLUMN public.sms_consents.phone_e164 IS 'The consented number in E.164 form, e.g. +15555550123.';

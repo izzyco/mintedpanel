@@ -21,16 +21,11 @@
 //     (19:00 UTC or later), which relies on the hourly tick.
 // crons.test.ts pins both.
 //
-// Two keys, on purpose:
-//   * The run key (job_runs) is the UTC hour (`utcHourKey`), so each hourly
-//     call is its own slot: a second call in the same hour (the Vercel backup
-//     and the tick in hour 18, say) is skipped, and a failed run is retried
-//     by the next call in that hour.
-//   * The send slot (notification_sends, notification_org_slots) is the
-//     scheduled send's: the org's local date, or `YYYY-MM-DD:2` for a
-//     twice-a-day digest's second send. Each coordinator gets each scheduled
-//     send at most once per org, whatever the hour, the zone, the frequency
-//     or the number of calls.
+// There is no run ledger (MINT-106): every call runs the job. The send slot
+// (notification_sends, notification_org_slots) is the scheduled send's: the
+// org's local date, or `YYYY-MM-DD:2` for a twice-a-day digest's second send.
+// Each coordinator gets each scheduled send at most once per org, whatever
+// the hour, the zone, the frequency or the number of calls.
 //
 // The work lives in ./followupDigestRun.ts and is imported when the job runs,
 // so the registry, the cron route and their tests stay free of the Supabase
@@ -38,13 +33,6 @@
 import type { JobDefinition } from "./types";
 
 export const FOLLOWUP_DIGEST_JOB_NAME = "followup-digest";
-
-/** The UTC hour of `now`, `YYYY-MM-DDTHH`: the digest's run key, one slot per
- *  hourly cron call. It matches RUN_KEY_RE as that stands, so neither the
- *  pattern nor its job_runs CHECK changes. */
-export function utcHourKey(now: Date): string {
-  return now.toISOString().slice(0, 13);
-}
 
 /** Every count the digest reports. Integers only (./counts.ts). */
 export const FOLLOWUP_DIGEST_COUNT_KEYS = [
@@ -109,7 +97,6 @@ export type FollowUpDigestCounts = Record<FollowUpDigestCountKey, number>;
 
 export const followupDigestJob: JobDefinition = {
   name: FOLLOWUP_DIGEST_JOB_NAME,
-  runKey: utcHourKey,
   countKeys: FOLLOWUP_DIGEST_COUNT_KEYS,
   async run(ctx) {
     const { runFollowUpDigest } = await import("./followupDigestRun");

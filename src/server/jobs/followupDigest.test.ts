@@ -10,13 +10,11 @@ import {
   type FakeDigestDb,
   type FakeRow,
 } from "@/__fixtures__/followUpDigestFakeDb";
-import { createFakeJobDb } from "@/__fixtures__/jobRunsFakeDb";
 import type { EmailEnv } from "../email/env";
 import { EmailError, buildMailPayload, type SendEmailInput } from "../email/sendgrid";
 import {
   FOLLOWUP_DIGEST_COUNT_KEYS,
   followupDigestJob,
-  utcHourKey,
   type FollowUpDigestCounts,
 } from "./followupDigest";
 import { DIGEST_TOUCH_CASE_CHUNK, DIGEST_TOUCH_FILTER } from "@/services/followUpDigest";
@@ -31,8 +29,7 @@ import {
   type FollowUpDigestDeps,
 } from "./followupDigestRun";
 import { parseNotificationSendClaim, supabaseNotificationSendLedger } from "./notificationSends";
-import { supabaseJobLedger } from "./ledger";
-import { JOB_REGISTRY, RUN_KEY_RE } from "./registry";
+import { JOB_REGISTRY } from "./registry";
 import { jobLogger, runJob } from "./runner";
 import type { JobContext } from "./types";
 
@@ -338,7 +335,7 @@ function mailer(fail: (input: DigestSend) => unknown = () => null) {
 function ctx(now = NOW): JobContext {
   clock = now;
   fake.clock.now = now.getTime();
-  return { db: fake.db, now, runKey: utcHourKey(now), log: jobLogger(JOB, SITE) };
+  return { db: fake.db, now, log: jobLogger(JOB, SITE) };
 }
 
 function deps(overrides: Partial<FollowUpDigestDeps> = {}): Partial<FollowUpDigestDeps> {
@@ -1084,9 +1081,7 @@ describe("followup-digest: at-least-once runs, once-per-day sends", () => {
     expect(logged()).toContain("[jobs:followup-digest] org_failed");
   });
 
-  it("through the runner: one slot per UTC hour; a failed hour is retried in that hour, then skipped", async () => {
-    const jobDb = createFakeJobDb(NOW.getTime());
-    fake = createFollowUpDigestFakeDb(world().tables, jobDb);
+  it("through the runner: every call runs; a failed run answers failed, the next retries only the rejected send", async () => {
     let failJane = true;
     const send = mailer((input) =>
       failJane && input.to === "jane@example.test"
@@ -1101,25 +1096,16 @@ describe("followup-digest: at-least-once runs, once-per-day sends", () => {
         return runFollowUpDigest(jobCtx, deps({ send }));
       },
     };
-    const runAt = (date: Date) => {
-      jobDb.clock.now = date.getTime();
-      return runJob(job, {
-        ledger: supabaseJobLedger(fake.db),
-        db: fake.db,
-        now: date,
-        site: SITE,
-      });
-    };
+    const runAt = (date: Date) => runJob(job, { db: fake.db, now: date, site: SITE });
 
     const first = await runAt(NOW);
-    expect(first).toMatchObject({ outcome: "failed", runKey: "2026-10-31T13", counts: {} });
+    expect(first).toMatchObject({ outcome: "failed", counts: {} });
     expect(sent).toHaveLength(2);
 
     failJane = false;
     const second = await runAt(new Date("2026-10-31T13:30:00Z"));
     expect(second).toEqual({
       job: JOB,
-      runKey: "2026-10-31T13",
       outcome: "succeeded",
       counts: counts({
         orgs_enabled: 2,
@@ -1134,20 +1120,8 @@ describe("followup-digest: at-least-once runs, once-per-day sends", () => {
     expect(sent).toHaveLength(3);
 
     const third = await runAt(new Date("2026-10-31T13:45:00Z"));
-    expect(third.outcome).toBe("skipped");
-
-    const nextHour = await runAt(new Date("2026-10-31T14:00:00Z"));
-    expect(nextHour).toMatchObject({
-      runKey: "2026-10-31T14",
-      outcome: "succeeded",
-      counts: ALREADY,
-    });
+    expect(third).toMatchObject({ outcome: "succeeded", counts: ALREADY });
     expect(sent).toHaveLength(3);
-    expect(jobDb.rows.map((r) => [r.run_key, r.outcome])).toEqual([
-      ["2026-10-31T13", "failed"],
-      ["2026-10-31T13", "succeeded"],
-      ["2026-10-31T14", "succeeded"],
-    ]);
   });
 });
 
@@ -1536,24 +1510,10 @@ describe("followup-digest: the touches read", () => {
 });
 
 describe("followup-digest: registry entry", () => {
-  it("is registered under its cron name, with integer count keys and an hourly run key", () => {
+  it("is registered under its cron name, with integer count keys", () => {
     expect(JOB_REGISTRY.get(JOB)).toBe(followupDigestJob);
     expect(followupDigestJob.countKeys).toEqual(FOLLOWUP_DIGEST_COUNT_KEYS);
-    expect(followupDigestJob.runKey).toBe(utcHourKey);
-    // Every count key is declared and integer-valued in a real run.
     for (const key of FOLLOWUP_DIGEST_COUNT_KEYS) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
-  });
-
-  it("keys a run on the UTC hour, inside the existing run-key pattern", () => {
-    for (const [iso, key] of [
-      ["2026-10-31T13:00:00Z", "2026-10-31T13"],
-      ["2026-10-31T13:59:59.999Z", "2026-10-31T13"],
-      ["2026-11-01T06:00:00Z", "2026-11-01T06"],
-      ["2026-11-01T07:00:00Z", "2026-11-01T07"],
-    ] as const) {
-      expect(utcHourKey(new Date(iso))).toBe(key);
-      expect(key).toMatch(RUN_KEY_RE);
-    }
   });
 });
 

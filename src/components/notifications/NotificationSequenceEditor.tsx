@@ -7,9 +7,10 @@
 // Minted's default sits under every setting. A setting the org has not set
 // shows the default and says so; the admin can override it (type a target,
 // tick a stop condition, "Customize steps") or go back to it (clear the
-// target, "Use Minted's default"). On/off (A9) and the digest's frequency,
-// send time and weekday are Minted's alone (Addendum 10): shown read-only,
-// never editable here.
+// target, "Use Minted's default"). On/off (A9) and the digest's schedule
+// (how often and when) are Minted's alone (Addendum 10): shown read-only,
+// never editable here, and "Not set up" until Minted sets the digest up for
+// the org (G2: there is no default schedule).
 //
 // Step slots are keyed by position, because the offset belongs to the slot.
 // Moving a step's message therefore leaves focus in the old slot, so after a
@@ -42,6 +43,7 @@ import {
   defaultStepsCcNote,
   describeDigestSchedule,
   describeStep,
+  digestScheduleOf,
   enabledStatusNote,
   draftBounceEscalationStep,
   moveStep,
@@ -155,7 +157,7 @@ export function NotificationSequenceEditor({
   // The step whose bounce escalates to its cc list (the org's, else Minted's).
   const bounceStep = draftBounceEscalationStep(draft, platformDefault);
   // The saved row over Minted's default, for what only Minted sets: the
-  // digest's frequency, send time and weekday. The draft never holds them.
+  // digest's schedule, the org's alone (G2). The draft never holds it.
   const effective = resolveNotificationSequence(purpose, saved, platformDefault);
   const schedule = rules.hasSendTime ? describeDigestSchedule(effective) : null;
   // Whether this purpose's steps may cc anyone (the digest: digest_cc_allowed,
@@ -190,8 +192,11 @@ export function NotificationSequenceEditor({
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
-      {/* A9: only Minted switches notifications on or off. */}
-      <p className="text-[13px] text-foreground">{enabledStatusNote(saved?.enabled ?? false)}</p>
+      {/* A9: only Minted switches notifications on or off. A digest with no
+          schedule says it isn't set up instead (G2), so on/off waits for one. */}
+      {!rules.hasSendTime || digestScheduleOf(saved) != null ? (
+        <p className="text-[13px] text-foreground">{enabledStatusNote(saved?.enabled ?? false)}</p>
+      ) : null}
 
       {ownSteps && rules.stepsEditable ? (
         <>
@@ -408,7 +413,7 @@ export function NotificationSequenceEditor({
                     channel: step.channel,
                     templateKey: step.templateKey,
                   },
-                  effective.digestFrequency ?? undefined,
+                  effective.digestFrequency,
                 )}
               </li>
             ))}
@@ -488,7 +493,7 @@ export function NotificationSequenceEditor({
         </div>
       ) : null}
 
-      {/* Addendum 10: how often and when are Minted's, read-only like on/off. */}
+      {/* Addendum 10 and G2: how often and when are Minted's, read-only like on/off. */}
       {schedule ? <p className="text-[13px] text-foreground">{schedule}</p> : null}
 
       {usesSms ? (

@@ -31,14 +31,13 @@ const SEQUENCE_ROW = {
   updated_by: USER,
 };
 
-// Minted's seeded defaults, as PostgREST returns them.
+// Minted's seeded defaults, as PostgREST returns them. The digest's has no
+// schedule (G2): its frequency and send time exist only on an org row.
 const DEFAULT_ROWS = [
   {
     purpose: "intake_reminder",
     stop_conditions: ["submitted", "paused", "withdrawn", "provider_replied"],
     target_days_to_ready: 14,
-    send_hour: null,
-    send_time_zone: null,
     created_at: "2026-10-31T00:00:00Z",
     updated_at: "2026-10-31T00:00:00Z",
   },
@@ -46,8 +45,6 @@ const DEFAULT_ROWS = [
     purpose: "followup_digest",
     stop_conditions: null,
     target_days_to_ready: null,
-    send_hour: 8,
-    send_time_zone: "America/Chicago",
     created_at: "2026-10-31T00:00:00Z",
     updated_at: "2026-10-31T00:00:00Z",
   },
@@ -104,15 +101,16 @@ function ctxFor(db: unknown): NotificationSequenceServiceCtx {
 type FakeError = { code: string; message: string };
 
 function fakeReads(tables: Record<string, unknown[]>, errors: Record<string, FakeError> = {}) {
-  const calls: Array<{ table: string; filters: Array<[string, unknown]>; order?: string }> = [];
+  type Call = { table: string; filters: Array<[string, unknown]>; order?: string; select?: string };
+  const calls: Call[] = [];
   const from = vi.fn((table: string) => {
-    const call: { table: string; filters: Array<[string, unknown]>; order?: string } = {
-      table,
-      filters: [],
-    };
+    const call: Call = { table, filters: [] };
     calls.push(call);
     const builder = {
-      select: () => builder,
+      select: (columns?: string) => {
+        call.select = columns;
+        return builder;
+      },
       eq: (column: string, value: unknown) => {
         call.filters.push([column, value]);
         return builder;
@@ -179,7 +177,7 @@ describe("notification sequences service", () => {
   });
 
   it("returns no entry for a purpose with no row (off), and Minted's defaults (answer 3)", async () => {
-    const { from } = fakeReads({
+    const { from, calls } = fakeReads({
       ...WITH_DEFAULTS,
       notification_sequences: [],
       notification_sequence_steps: [],
@@ -191,25 +189,35 @@ describe("notification sequences service", () => {
       purpose: "intake_reminder",
       stopConditions: ["submitted", "paused", "withdrawn", "provider_replied"],
       targetDaysToReady: 14,
-      sendHour: null,
-      sendTimeZone: null,
     });
     expect(listed.defaults.intake_reminder.steps.map((s) => [s.position, s.offsetDays])).toEqual([
       [1, 1],
       [2, 2],
       [3, 3],
     ]);
-    expect(listed.defaults.followup_digest).toMatchObject({
-      sendHour: 8,
-      sendTimeZone: "America/Chicago",
-      stopConditions: null,
-    });
+    expect(listed.defaults.followup_digest).toMatchObject({ stopConditions: null });
+    // G2: a default carries no schedule, so there is nothing to inherit, and
+    // the read names none of those columns (they are not on the table).
+    const defaultsRead = calls.find((c) => c.table === "notification_sequence_defaults");
+    expect(defaultsRead?.select).toMatch(/digest_cc_allowed/);
+    expect(defaultsRead?.select).not.toMatch(
+      /send_hour|send_time_zone|second_send_hour|digest_frequency|digest_weekday/,
+    );
+    for (const key of [
+      "sendHour",
+      "sendTimeZone",
+      "secondSendHour",
+      "digestFrequency",
+      "digestWeekday",
+    ]) {
+      expect(key in listed.defaults.followup_digest).toBe(false);
+    }
     expect(listed.defaults.followup_digest.steps.map((s) => s.templateKey)).toEqual([
       "followup_digest_daily",
     ]);
   });
 
-  it("keeps an org's unset settings as null, so they inherit, and reads Minted's overrides", async () => {
+  it("keeps an org's unset settings as null, so they inherit, and reads the schedule Minted set", async () => {
     const { from } = fakeReads({
       ...WITH_DEFAULTS,
       notification_sequences: [

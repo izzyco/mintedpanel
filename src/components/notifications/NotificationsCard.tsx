@@ -7,10 +7,12 @@
 // would only surprise them. RLS gives members the same read and admins alone
 // the write.
 //
-// A purpose with no saved row is off. "Set up" opens the editor on Minted's
-// default (switched off, cc'ing no one); nothing is written until Save. Every
-// setting the org leaves alone follows Minted's default, which only Minted
-// changes (Mission Control later).
+// A purpose with no saved row is off. For intake reminders, "Set up" opens the
+// editor on Minted's default (switched off, cc'ing no one); nothing is written
+// until Save. The follow-up digest has nothing an org sets up: Minted sets it
+// up per org (its schedule, G2: there is no default), so until then the card
+// says it isn't set up, with no button. Every setting the org leaves alone
+// follows Minted's default, which only Minted changes (Mission Control later).
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { StatusPill } from "@/components/StatusPill";
@@ -25,11 +27,13 @@ import {
 import { useMemberships } from "@/hooks/useOrgSettings";
 import { useIsAdmin } from "@/lib/permissions";
 import {
+  DIGEST_NOT_SET_UP_NOTE,
   NOTIFICATION_PURPOSES,
   PLATFORM_DEFAULT_LABEL,
   PURPOSE_RULES,
   buildSavePayload,
   describeOffsets,
+  digestScheduleOf,
   draftFromSequence,
   draftsEqual,
   reconcileWithServer,
@@ -45,13 +49,20 @@ import type { NotificationPurpose } from "@/types";
 import { NotificationSequenceEditor } from "./NotificationSequenceEditor";
 import { NotificationSequenceSummary } from "./NotificationSequenceSummary";
 
-function starterSummary(
+/**
+ * Whether the purpose is set up for the org: a saved row, and for the digest
+ * a schedule Minted set (G2: no row, or a row with no schedule, isn't).
+ */
+function isSetUp(
   purpose: NotificationPurpose,
-  platformDefault: NotificationSequenceDefaultConfig,
-): string {
-  if (purpose === "followup_digest") {
-    return `Set up starts you with ${PLATFORM_DEFAULT_LABEL}: one email a day to each coordinator. Minted switches it on at kickoff.`;
-  }
+  saved: NotificationSequenceConfig | undefined,
+): saved is NotificationSequenceConfig {
+  if (!saved) return false;
+  return !PURPOSE_RULES[purpose].hasSendTime || digestScheduleOf(saved) != null;
+}
+
+/** Intake's starting point behind "Set up": Minted's default steps and settings. */
+function starterSummary(platformDefault: NotificationSequenceDefaultConfig): string {
   const steps = [...platformDefault.steps].sort((a, b) => a.position - b.position);
   const allEmail = steps.every((s) => s.channel === "email");
   const noun = allEmail ? (steps.length === 1 ? "email" : "emails") : "messages";
@@ -107,11 +118,13 @@ function AdminSequence({
   };
 
   if (!draft) {
+    // G2: the digest is Minted's to set up, so an admin has nothing to start.
+    if (PURPOSE_RULES[purpose].hasSendTime) {
+      return <p className="text-[13px] text-muted-foreground">{DIGEST_NOT_SET_UP_NOTE}</p>;
+    }
     return (
       <div className="space-y-2">
-        <p className="text-[13px] text-muted-foreground">
-          {starterSummary(purpose, platformDefault)}
-        </p>
+        <p className="text-[13px] text-muted-foreground">{starterSummary(platformDefault)}</p>
         <Button
           type="button"
           variant="outline"
@@ -192,7 +205,7 @@ function SequenceSection({
         <h3 id={headingId} className="text-[13.5px] font-semibold text-foreground">
           {rules.label}
         </h3>
-        {saved ? (
+        {isSetUp(purpose, saved) ? (
           <StatusPill
             status={saved.enabled ? "green" : "neutral"}
             label={saved.enabled ? "On" : "Off"}
@@ -219,7 +232,9 @@ function SequenceSection({
           membersLoaded={membersLoaded}
         />
       ) : (
-        <p className="text-[13px] text-muted-foreground">Not set up. An admin can set this up.</p>
+        <p className="text-[13px] text-muted-foreground">
+          {rules.hasSendTime ? DIGEST_NOT_SET_UP_NOTE : "Not set up. An admin can set this up."}
+        </p>
       )}
     </section>
   );

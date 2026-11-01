@@ -2337,7 +2337,8 @@ export interface RosterExportSnapshot {
 // MINT-107 organization notification sequences (migration 20261031051500).
 // Configuration only: nothing in the app sends these messages yet. Minted's
 // platform default (one per purpose) is inherited field by field by each
-// org's own row; resolveNotificationSequence() in
+// org's own row, except the digest's schedule, which only an org row has
+// (G2: no default); resolveNotificationSequence() in
 // src/lib/notificationSequences.ts gives the effective sequence. The pure
 // rules (resolution, validation, ordering, the start-date cadence) live
 // there; the template catalog in src/lib/notificationTemplates.ts.
@@ -2353,8 +2354,9 @@ export type NotificationCcRecipient =
 
 /**
  * notification_sequences: one org's own settings for one purpose. A null
- * setting uses Minted's default (NotificationSequenceDefault); `enabled` is
- * never inherited.
+ * setting uses Minted's default (NotificationSequenceDefault), except the
+ * digest's schedule: all null means Minted has not set the digest up for the
+ * org (G2: no default). `enabled` is never inherited.
  */
 export interface NotificationSequence {
   id: string;
@@ -2371,18 +2373,20 @@ export interface NotificationSequence {
    * (0: none); null uses Minted's default. Always null for the digest.
    */
   bounceEscalationStep: number | null;
-  /** Digest only, platform-managed (Addendum 10): daily, weekly or twice a day, set by Minted per org; null uses Minted's default. */
-  digestFrequency: DigestFrequency | null;
-  /** Digest only, platform-managed: the weekly ISO weekday (1 = Monday); null uses Minted's default. */
-  digestWeekday: number | null;
-  /** Digest only, platform-managed: the local send hour (0 to 23); null uses Minted's default. */
-  sendHour: number | null;
-  /** Digest only, platform-managed: the IANA zone of sendHour; null uses Minted's default. */
-  sendTimeZone: string | null;
   /**
-   * Digest only, platform-managed: the twice-a-day second hour, later than
-   * sendHour. Set with sendHour and sendTimeZone, or all three null (A10).
+   * Digest only, platform-managed (Addendum 10): daily, weekly or twice a
+   * day. Part of the digest schedule, which Minted sets per org as one
+   * group with digestWeekday, sendHour, sendTimeZone and secondSendHour
+   * (A10): all set, or all null when the digest is not set up (G2).
    */
+  digestFrequency: DigestFrequency | null;
+  /** Digest only, platform-managed: the weekly ISO weekday (1 = Monday). Part of the schedule. */
+  digestWeekday: number | null;
+  /** Digest only, platform-managed: the local send hour (0 to 23). Part of the schedule. */
+  sendHour: number | null;
+  /** Digest only, platform-managed: the IANA zone of sendHour. Part of the schedule. */
+  sendTimeZone: string | null;
+  /** Digest only, platform-managed: the twice-a-day second hour, later than sendHour. Part of the schedule. */
   secondSendHour: number | null;
   /**
    * Digest only, platform-managed: Minted's per-org override of whether the
@@ -2414,8 +2418,9 @@ export interface NotificationSequenceStep {
 
 /**
  * notification_sequence_defaults: Minted's platform default for one purpose,
- * inherited by every org. No org, no `enabled`, no cc list. Only Minted
- * writes it (Mission Control later).
+ * inherited by every org. No org, no `enabled`, no cc list, and no digest
+ * schedule (G2: only an org row has one). Only Minted writes it (Mission
+ * Control later).
  */
 export interface NotificationSequenceDefault {
   purpose: NotificationPurpose;
@@ -2423,20 +2428,10 @@ export interface NotificationSequenceDefault {
   stopConditions: NotificationStopCondition[] | null;
   /** Intake: set. Digest: null. */
   targetDaysToReady: number | null;
-  /** Digest: set (daily). Intake: null. */
-  digestFrequency: DigestFrequency | null;
-  /** Digest: set (1, Monday). Intake: null. */
-  digestWeekday: number | null;
   /** Intake: set (1: a bounce on step 1 escalates; 0: none). Digest: null. */
   bounceEscalationStep: number | null;
   /** Digest: set (false: coordinators only, D59). Intake: null. Minted's alone. */
   digestCcAllowed: boolean | null;
-  /** Digest: set (8). Intake: null. */
-  sendHour: number | null;
-  /** Digest: set (America/Chicago). Intake: null. */
-  sendTimeZone: string | null;
-  /** Digest: set (14). Intake: null. */
-  secondSendHour: number | null;
   createdAt: string;
   updatedAt: string;
 }

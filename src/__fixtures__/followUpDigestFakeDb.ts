@@ -17,12 +17,10 @@
 // else {status:"claimed", id}; the finish takes only a closed error code and a safe
 // message id, and touches only a claimed row. The org-slot completion inserts
 // into `tables.notification_org_slots` once per (job, org, slot), so the job's
-// own read of that table sees it. job_runs RPCs go to an optional FakeJobDb,
-// so one fake can back runJob end to end. The SQL itself is exercised by
+// own read of that table sees it. The SQL itself is exercised by
 // supabase/tests/mint108-notification-sends.sql.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-import type { FakeJobDb } from "@/__fixtures__/jobRunsFakeDb";
 import { JOB_NAME_RE } from "@/server/jobs/registry";
 import {
   NOTIFICATION_SEND_ERROR_CODES,
@@ -107,10 +105,7 @@ function compare(a: unknown, b: unknown): number {
   return String(a) < String(b) ? -1 : 1;
 }
 
-export function createFollowUpDigestFakeDb(
-  tables: Record<string, FakeRow[]> = {},
-  jobDb?: FakeJobDb,
-): FakeDigestDb {
+export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {}): FakeDigestDb {
   const state: FakeDigestDb = {
     db: undefined as unknown as SupabaseClient<Database>,
     tables,
@@ -278,10 +273,6 @@ export function createFollowUpDigestFakeDb(
   };
 
   const rpc = async (fn: string, args: Record<string, unknown>): Promise<Result> => {
-    if (fn === "claim_job_run" || fn === "finish_job_run") {
-      if (!jobDb) return { data: null, error: { code: "PGRST202", message: "no job_runs" } };
-      return (await jobDb.db.rpc(fn, args as never)) as unknown as Result;
-    }
     state.rpcCalls.push({ fn, args });
     if (
       fn === "claim_notification_send" ||

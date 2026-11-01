@@ -59,7 +59,7 @@ const SEQUENCE_COLUMNS =
 const STEP_COLUMNS =
   "id, sequence_id, org_id, position, offset_days, channel, template_key, cc_recipients, created_at, updated_at";
 const DEFAULT_COLUMNS =
-  "purpose, stop_conditions, target_days_to_ready, bounce_escalation_step, digest_cc_allowed, digest_frequency, digest_weekday, send_hour, send_time_zone, second_send_hour, created_at, updated_at";
+  "purpose, stop_conditions, target_days_to_ready, bounce_escalation_step, digest_cc_allowed, created_at, updated_at";
 const DEFAULT_STEP_COLUMNS =
   "id, purpose, position, offset_days, channel, template_key, created_at, updated_at";
 
@@ -103,7 +103,7 @@ function isPurpose(value: string): value is NotificationPurpose {
   return (NOTIFICATION_PURPOSES as readonly string[]).includes(value);
 }
 
-/** Unknown or missing reads as unset (Minted's default). */
+/** Unknown or missing reads as unset: with the rest of the schedule, not set up (G2). */
 function toFrequency(value: string | null | undefined): DigestFrequency | null {
   return isDigestFrequency(value) ? value : null;
 }
@@ -213,11 +213,6 @@ function toDefaults(rows: DefaultRow[], steps: DefaultStepRow[]): NotificationSe
       // Missing reads as unset; the resolver then uses the decided value.
       bounceEscalationStep: row.bounce_escalation_step ?? null,
       digestCcAllowed: row.digest_cc_allowed ?? null,
-      digestFrequency: toFrequency(row.digest_frequency),
-      digestWeekday: row.digest_weekday ?? null,
-      sendHour: row.send_hour,
-      sendTimeZone: row.send_time_zone,
-      secondSendHour: row.second_send_hour ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       steps: steps
