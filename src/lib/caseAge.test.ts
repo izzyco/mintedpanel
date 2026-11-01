@@ -8,7 +8,6 @@ import {
   caseDaysOpenWhenKnown,
   DEFAULT_CASE_AGE_RULES,
   resolveCaseAgeRules,
-  validateCaseAgeRules,
   type CaseAgeRules,
   type CaseAgeTransition,
 } from "./caseAge";
@@ -45,7 +44,7 @@ describe("caseDaysOpen", () => {
 // ---------------------------------------------------------------------------
 // D22 (Sowmya, Oct 30): "Days open" stops when the case is approved or denied.
 
-const NEVER: CaseAgeRules = { start: "created", freezeAt: "never" };
+const NEVER: CaseAgeRules = { freezeAt: "never" };
 
 const move = (
   caseId: string,
@@ -60,8 +59,8 @@ const created = "2026-09-01T12:00:00";
 const approvedCase = { id: "c1", createdAt: created, caseStatus: "approved" as const };
 
 describe("CaseAgeRules", () => {
-  it("defaults to counting from creation and stopping at approval or denial (D22)", () => {
-    expect(DEFAULT_CASE_AGE_RULES).toEqual({ start: "created", freezeAt: "approved_or_denied" });
+  it("defaults to stopping at approval or denial (D22)", () => {
+    expect(DEFAULT_CASE_AGE_RULES).toEqual({ freezeAt: "approved_or_denied" });
     expect(Object.isFrozen(DEFAULT_CASE_AGE_RULES)).toBe(true);
     expect(resolveCaseAgeRules()).toEqual(DEFAULT_CASE_AGE_RULES);
   });
@@ -81,52 +80,13 @@ describe("CaseAgeRules", () => {
       DEFAULT_CASE_AGE_RULES,
     );
     expect(resolveCaseAgeRules(null, { freezeAt: "never" })).toEqual(NEVER);
-    expect(resolveCaseAgeRules({ freezeAt: "never" }, { freezeAt: null, start: null })).toEqual(
-      NEVER,
-    );
+    expect(resolveCaseAgeRules({ freezeAt: "never" }, { freezeAt: null })).toEqual(NEVER);
   });
 
   it("ignores a stored value of the wrong shape, like a missing one", () => {
-    const bad = { start: "submitted", freezeAt: "closed" } as unknown as CaseAgeRules;
+    const bad = { freezeAt: "closed" } as unknown as CaseAgeRules;
     expect(resolveCaseAgeRules(bad)).toEqual(DEFAULT_CASE_AGE_RULES);
     expect(resolveCaseAgeRules({ freezeAt: "never" }, bad)).toEqual(NEVER);
-  });
-
-  it("validates an override in plain language", () => {
-    expect(validateCaseAgeRules(undefined)).toEqual([]);
-    expect(validateCaseAgeRules(null)).toEqual([]);
-    expect(validateCaseAgeRules({})).toEqual([]);
-    expect(validateCaseAgeRules({ start: "created", freezeAt: "never" })).toEqual([]);
-    expect(validateCaseAgeRules({ start: null, freezeAt: undefined })).toEqual([]);
-    expect(validateCaseAgeRules({ start: "submitted" })).toEqual([
-      'Days open can only count from when the case was created ("created"), not "submitted".',
-    ]);
-    expect(validateCaseAgeRules({ freezeAt: "not_pursuing" })).toEqual([
-      'Days open stops either when the case is approved or denied ("approved_or_denied") or never ("never"), not "not_pursuing".',
-    ]);
-    expect(validateCaseAgeRules({ countWeekends: true })).toEqual([
-      '"countWeekends" is not a Days open setting.',
-    ]);
-    expect(validateCaseAgeRules("never")).toEqual([
-      "Days open settings must be a set of named settings.",
-    ]);
-    expect(validateCaseAgeRules([])).toEqual([
-      "Days open settings must be a set of named settings.",
-    ]);
-  });
-
-  it("names a rejected value that is not text by its kind, never [object Object]", () => {
-    const freezeAt = (shown: string) => [
-      `Days open stops either when the case is approved or denied ("approved_or_denied") or never ("never"), not ${shown}.`,
-    ];
-    expect(validateCaseAgeRules({ freezeAt: { a: 1 } })).toEqual(freezeAt("a set of values"));
-    expect(validateCaseAgeRules({ freezeAt: new Date(0) })).toEqual(freezeAt("a set of values"));
-    expect(validateCaseAgeRules({ freezeAt: ["never"] })).toEqual(freezeAt("a list"));
-    expect(validateCaseAgeRules({ freezeAt: 3 })).toEqual(freezeAt("3"));
-    expect(validateCaseAgeRules({ freezeAt: true })).toEqual(freezeAt("true"));
-    expect(validateCaseAgeRules({ start: 10n })).toEqual([
-      'Days open can only count from when the case was created ("created"), not a bigint value.',
-    ]);
   });
 });
 

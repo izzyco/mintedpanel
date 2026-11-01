@@ -3,11 +3,11 @@
 // the same case never shows two different numbers. Whole calendar days in the
 // viewer's local time, not 24-hour periods, and never negative. No I/O.
 //
-// What counts is policy, so it is configuration (CaseAgeRules), resolved
-// field by field: the organization's value, else the platform's, else the
-// default. The defaults are Sowmya's decisions: count from when the case was
-// created, and stop counting once the case is approved or denied (Oct 30,
-// D22). Nothing stores an override yet; the Mission Control setting is
+// The count starts when the case was created. When it stops is policy, so it
+// is configuration (CaseAgeRules), resolved field by field: the
+// organization's value, else the platform's, else the default. The default is
+// Sowmya's decision: stop counting once the case is approved or denied (Oct
+// 30, D22). Nothing stores an override yet; the Mission Control setting is
 // MINT-129. Counting from submission is an open question and is not built.
 //
 // The stop is a fact, never a guess. It is the recorded case_status_history
@@ -35,15 +35,10 @@ export function caseDaysOpen(createdAt: string, now: Date): number {
 // ---------------------------------------------------------------------------
 // Rules
 
-/** Where "Days open" starts counting. */
-export type CaseAgeStart = "created";
 /** When "Days open" stops counting. */
 export type CaseAgeFreezeAt = "approved_or_denied" | "never";
 
 export interface CaseAgeRules {
-  /** "created" (default and, today, the only choice): from when the case was
-   * created. */
-  start: CaseAgeStart;
   /** "approved_or_denied" (default): the count stops at the recorded
    * transition that closed the case as Approved or Denied, and stays there
    * while the case stays closed. "never": it keeps counting whatever the
@@ -51,9 +46,8 @@ export interface CaseAgeRules {
   freezeAt: CaseAgeFreezeAt;
 }
 
-/** The platform default: Sowmya's decisions (D22, Oct 30, 2026). */
+/** The platform default: Sowmya's decision (D22, Oct 30, 2026). */
 export const DEFAULT_CASE_AGE_RULES: Readonly<CaseAgeRules> = Object.freeze({
-  start: "created",
   freezeAt: "approved_or_denied",
 });
 
@@ -62,7 +56,6 @@ export type CaseAgeRulesOverride = {
   readonly [K in keyof CaseAgeRules]?: CaseAgeRules[K] | null;
 };
 
-const START_CHOICES: readonly CaseAgeStart[] = ["created"];
 const FREEZE_CHOICES: readonly CaseAgeFreezeAt[] = ["approved_or_denied", "never"];
 
 /** The statuses at which each freeze choice stops the count. */
@@ -72,20 +65,8 @@ const FREEZE_STATUSES: Record<CaseAgeFreezeAt, readonly CaseStatus[]> = {
 };
 
 const RULE_CHECKS: { [K in keyof CaseAgeRules]: (value: unknown) => boolean } = {
-  start: (value) => (START_CHOICES as readonly unknown[]).includes(value),
   freezeAt: (value) => (FREEZE_CHOICES as readonly unknown[]).includes(value),
 };
-
-const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof CaseAgeRules>;
-
-/** A rejected value as an error message shows it: text in quotes, anything
- * that is not text or a number named by its kind. */
-function shownValue(value: unknown): string {
-  if (typeof value === "string") return `"${value}"`;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return "a list";
-  return typeof value === "object" ? "a set of values" : `a ${typeof value} value`;
-}
 
 /** Field by field: the organization's value, else the platform's, else the
  * default. A stored value of the wrong shape is skipped like a missing one. */
@@ -100,32 +81,7 @@ export function resolveCaseAgeRules(
     }
     return DEFAULT_CASE_AGE_RULES[key];
   };
-  return { start: pick("start"), freezeAt: pick("freezeAt") };
-}
-
-/** The check an override must pass before it is stored. Plain-language
- * errors; an empty list means it is valid. Null or missing fields inherit and
- * are always valid. */
-export function validateCaseAgeRules(override: unknown): string[] {
-  if (override == null) return [];
-  if (typeof override !== "object" || Array.isArray(override)) {
-    return ["Days open settings must be a set of named settings."];
-  }
-  const errors: string[] = [];
-  const entries = Object.entries(override as Record<string, unknown>);
-  for (const [key, value] of entries) {
-    if (!(RULE_KEYS as string[]).includes(key)) {
-      errors.push(`"${key}" is not a Days open setting.`);
-      continue;
-    }
-    if (value == null || RULE_CHECKS[key as keyof CaseAgeRules](value)) continue;
-    errors.push(
-      key === "start"
-        ? `Days open can only count from when the case was created ("created"), not ${shownValue(value)}.`
-        : `Days open stops either when the case is approved or denied ("approved_or_denied") or never ("never"), not ${shownValue(value)}.`,
-    );
-  }
-  return errors;
+  return { freezeAt: pick("freezeAt") };
 }
 
 /** The statuses at which "Days open" stops under these rules. */
@@ -188,14 +144,7 @@ export function caseDaysOpenStop(
   return stopTimes.get(c.id) ?? null;
 }
 
-function caseAgeStart(c: CaseAgeCase, rules: CaseAgeRules): string {
-  switch (rules.start) {
-    case "created":
-      return c.createdAt;
-  }
-}
-
-/** "Days open" under the rules: calendar days from the start to `now`, or to
+/** "Days open" under the rules: calendar days from creation to `now`, or to
  * the stop when the case has one. */
 export function caseDaysOpenFor(
   c: CaseAgeCase,
@@ -203,11 +152,10 @@ export function caseDaysOpenFor(
   stopTimes: ReadonlyMap<string, string>,
   rules: CaseAgeRules = DEFAULT_CASE_AGE_RULES,
 ): number {
-  const start = caseAgeStart(c, rules);
   const stop = caseDaysOpenStop(c, stopTimes, rules);
-  if (stop === null) return caseDaysOpen(start, now);
+  if (stop === null) return caseDaysOpen(c.createdAt, now);
   const stoppedAt = parseISO(stop);
-  return caseDaysOpen(start, stoppedAt < now ? stoppedAt : now);
+  return caseDaysOpen(c.createdAt, stoppedAt < now ? stoppedAt : now);
 }
 
 const NO_STOPS: ReadonlyMap<string, string> = new Map();

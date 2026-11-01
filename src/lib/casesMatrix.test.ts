@@ -493,7 +493,7 @@ describe("buildCasesMatrix Days open (MINT-73, D22)", () => {
   it("keeps counting under the 'never' rule", () => {
     const result = buildCasesMatrix({
       ...twoCases("approved"),
-      caseAgeRules: { start: "created", freezeAt: "never" },
+      caseAgeRules: { freezeAt: "never" },
     });
     expect(caseCell(result, "payer-2").daysOpen).toBe(24);
   });
