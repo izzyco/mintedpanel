@@ -199,25 +199,20 @@ export const BILLING_FEED_KIND_LABELS: Record<BillingFeedKind, string> = {
 // Oct 20, 2026. Nothing stores an override yet; the Mission Control setting
 // is MINT-129.
 //
-// Not configurable, because they are facts about the enrollment rather than
-// policy: an Active clinician is billable-eligible, and every other stop
-// (no exact case, a case that is not effective, an inactive payer, facility
-// or group, a passed termination date, a missing or failed license) stays as
-// built.
+// Not configurable, because they are facts about the enrollment or a
+// compliance floor rather than policy: an Active clinician is
+// billable-eligible, a terminated clinician is Do Not Bill, and every other
+// stop (no exact case, a case that is not effective, an inactive payer,
+// facility or group, a passed termination date, a missing or failed license)
+// stays as built.
 
-/** How a clinician status other than Active counts against billing. */
+/** How an Onboarding clinician counts against billing. */
 export type BillingStatusSeverity = BillingReason["severity"];
 
 export interface BillingProviderStatusSeverity {
-  /** Always "stop" (Do Not Bill). A terminated clinician's claims are a
-   * compliance floor, so an override can never relax it to a hold. */
-  terminated: "stop";
   /** "hold" (default): Onboarding is the create default and is rarely
    * flipped, so it holds rather than stops. "stop": Do Not Bill. */
   onboarding: BillingStatusSeverity;
-  /** "hold" (default): any status this rule does not know yet. "stop": Do
-   * Not Bill. */
-  other: BillingStatusSeverity;
 }
 
 export interface BillingReadinessRules {
@@ -230,11 +225,7 @@ export interface BillingReadinessRules {
 
 /** The platform default: the PM's decisions of Oct 20, 2026. */
 export const DEFAULT_BILLING_READINESS_RULES: Readonly<BillingReadinessRules> = Object.freeze({
-  providerStatusSeverity: Object.freeze({
-    terminated: "stop",
-    onboarding: "hold",
-    other: "hold",
-  } as const),
+  providerStatusSeverity: Object.freeze({ onboarding: "hold" } as const),
   membershipWithoutStartDate: "current",
 });
 
@@ -252,123 +243,31 @@ export interface BillingReadinessRulesOverride {
 
 const SEVERITIES: readonly unknown[] = ["hold", "stop"];
 const MEMBERSHIP_CHOICES: readonly unknown[] = ["current", "not_current"];
-const STATUS_SEVERITY_CHECKS: {
-  [K in keyof BillingProviderStatusSeverity]: (value: unknown) => boolean;
-} = {
-  terminated: (value) => value === "stop",
-  onboarding: (value) => SEVERITIES.includes(value),
-  other: (value) => SEVERITIES.includes(value),
-};
-const STATUS_SEVERITY_KEYS = Object.keys(STATUS_SEVERITY_CHECKS) as Array<
-  keyof BillingProviderStatusSeverity
->;
-const STATUS_LABELS: Record<keyof BillingProviderStatusSeverity, string> = {
-  terminated: "a terminated clinician",
-  onboarding: "an Onboarding clinician",
-  other: "a clinician status this rule does not recognize",
-};
-
-/** A plain object (a parsed JSON object), else null. A list, a Date or any
- * other object with its own prototype is not a set of settings. */
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null) return null;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-/** A rejected value as an error message shows it: text in quotes, anything
- * that is not text or a number named by its kind. */
-function shownValue(value: unknown): string {
-  if (typeof value === "string") return `"${value}"`;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return "a list";
-  return typeof value === "object" ? "a set of values" : `a ${typeof value} value`;
-}
-
 /** Field by field: the organization's value, else the platform's, else the
  * default. A stored value of the wrong shape is skipped like a missing one. */
 export function resolveBillingReadinessRules(
   platform?: BillingReadinessRulesOverride | null,
   organization?: BillingReadinessRulesOverride | null,
 ): BillingReadinessRules {
-  const layers = [organization, platform];
-  const pick = <T>(
-    read: (layer: Record<string, unknown>) => unknown,
-    ok: (v: unknown) => boolean,
-    fallback: T,
-  ): T => {
-    for (const layer of layers) {
-      const record = asRecord(layer);
-      const value = record ? read(record) : undefined;
-      if (value != null && ok(value)) return value as T;
-    }
-    return fallback;
-  };
-  const severity = <K extends keyof BillingProviderStatusSeverity>(key: K) =>
-    pick<BillingProviderStatusSeverity[K]>(
-      (layer) => asRecord(layer.providerStatusSeverity)?.[key],
-      STATUS_SEVERITY_CHECKS[key],
-      DEFAULT_BILLING_READINESS_RULES.providerStatusSeverity[key],
-    );
+  const pick = <T>(values: readonly unknown[], choices: readonly unknown[], fallback: T): T =>
+    (values.find((value) => value != null && choices.includes(value)) as T | undefined) ?? fallback;
   return {
     providerStatusSeverity: {
-      terminated: severity("terminated"),
-      onboarding: severity("onboarding"),
-      other: severity("other"),
+      onboarding: pick(
+        [
+          organization?.providerStatusSeverity?.onboarding,
+          platform?.providerStatusSeverity?.onboarding,
+        ],
+        SEVERITIES,
+        DEFAULT_BILLING_READINESS_RULES.providerStatusSeverity.onboarding,
+      ),
     },
     membershipWithoutStartDate: pick(
-      (layer) => layer.membershipWithoutStartDate,
-      (value) => MEMBERSHIP_CHOICES.includes(value),
+      [organization?.membershipWithoutStartDate, platform?.membershipWithoutStartDate],
+      MEMBERSHIP_CHOICES,
       DEFAULT_BILLING_READINESS_RULES.membershipWithoutStartDate,
     ),
   };
-}
-
-/** The check an override must pass before it is stored. Plain-language
- * errors; an empty list means it is valid. Null or missing fields inherit and
- * are always valid. */
-export function validateBillingReadinessRules(override: unknown): string[] {
-  if (override == null) return [];
-  const record = asRecord(override);
-  if (!record) return ["Billing Readiness settings must be a set of named settings."];
-  const errors: string[] = [];
-  for (const [key, value] of Object.entries(record)) {
-    if (key === "membershipWithoutStartDate") {
-      if (value != null && !MEMBERSHIP_CHOICES.includes(value))
-        errors.push(
-          `A group membership with no start date either counts as current ("current") or holds ("not_current"), not ${shownValue(value)}.`,
-        );
-    } else if (key === "providerStatusSeverity") {
-      if (value == null) continue;
-      const severities = asRecord(value);
-      if (!severities) {
-        errors.push("Clinician status settings must name a status and its effect.");
-        continue;
-      }
-      for (const [status, severity] of Object.entries(severities)) {
-        if (!(STATUS_SEVERITY_KEYS as string[]).includes(status)) {
-          errors.push(
-            `"${status}" is not a clinician status this setting covers. An Active clinician always counts; the statuses it covers are terminated, onboarding and other.`,
-          );
-          continue;
-        }
-        const statusKey = status as keyof BillingProviderStatusSeverity;
-        if (severity == null || STATUS_SEVERITY_CHECKS[statusKey](severity)) continue;
-        errors.push(
-          statusKey !== "terminated"
-            ? `For ${STATUS_LABELS[statusKey]}, choose a hold ("hold") or Do Not Bill ("stop"), not ${shownValue(severity)}.`
-            : severity === "hold"
-              ? "A terminated clinician is always Do Not Bill; it cannot be relaxed to a hold."
-              : `A terminated clinician is always Do Not Bill ("stop"), not ${shownValue(severity)}.`,
-        );
-      }
-    } else {
-      errors.push(`"${key}" is not a Billing Readiness setting.`);
-    }
-  }
-  return errors;
 }
 
 const PTA_TAXONOMY = "225200000X";
@@ -623,24 +522,23 @@ function clinicianReasons(
   rules: BillingReadinessRules,
 ): BillingReason[] {
   const reasons: BillingReason[] = [];
-  // An Active clinician is billable-eligible (a fact, not a setting). Any
-  // other status counts as the rules say; by default only a terminated
-  // clinician is Do Not Bill and "onboarding" (the create default, rarely
-  // flipped) holds, so an approved, effective enrollment never reads as a
-  // stop (PM decision 2026-10-20).
-  const severity = rules.providerStatusSeverity;
+  // An Active clinician is billable-eligible and a terminated one is Do Not
+  // Bill (a fact and a compliance floor, not settings). "onboarding" (the
+  // create default, rarely flipped) counts as the rules say, a hold by
+  // default, so an approved, effective enrollment never reads as a stop (PM
+  // decision 2026-10-20).
   if (provider.status === "terminated") {
-    reasons.push({ severity: severity.terminated, label: "The clinician is terminated." });
+    reasons.push({ severity: "stop", label: "The clinician is terminated." });
   } else if (provider.status === "onboarding") {
     reasons.push({
-      severity: severity.onboarding,
+      severity: rules.providerStatusSeverity.onboarding,
       label:
         "Clinician is still marked Onboarding. Mark them Active once they start seeing patients.",
     });
   } else if (provider.status !== "active") {
     // Unreachable under today's providers_status_check; a status added later
-    // counts as "other" until this rule learns it.
-    reasons.push({ severity: severity.other, label: "The clinician status is not recognized." });
+    // holds until this rule learns it.
+    reasons.push({ severity: "hold", label: "The clinician status is not recognized." });
   }
   if (provider.verificationState !== "verified") {
     reasons.push({ severity: "hold", label: "Clinician verification is incomplete." });
@@ -708,7 +606,7 @@ function providerFacilityEvidence(
       label: "Conflicting clinician-to-facility assignments are recorded.",
     });
   } else if (!assignments[0].startDate) {
-    reasons.push({ severity: "hold", label: "The facility assignment start date is missing." });
+    // No start date counts as started: it does not change readiness (D14).
   } else if (!validIsoDate(assignments[0].startDate)) {
     reasons.push({ severity: "hold", label: "The facility assignment start date is invalid." });
   } else if (assignments[0].startDate > today) {
@@ -1179,7 +1077,9 @@ export function buildBillingFeed(
     const providerId = license.providerId;
     const matchingAssignments = (index.assignmentsByProvider.get(providerId) ?? []).filter(
       (row) =>
-        row.facilityId && row.startDate && validIsoDate(row.startDate) && row.startDate <= today,
+        // An undated assignment counts as current (D14).
+        row.facilityId &&
+        (!row.startDate || (validIsoDate(row.startDate) && row.startDate <= today)),
     );
     for (const assignment of matchingAssignments) {
       const facility = assignment.facilityId
