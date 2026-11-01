@@ -1910,9 +1910,8 @@ export async function createMockApiServer(options = {}) {
                   );
                 });
         // At most meta.limit rows — the request's &limit= (a whole number from
-        // 1 to 50, else a 422), or the platform case-search limit, which is the
-        // default 5 until Mission Control M6 adds the setting
-        // (src/server/caseSearchLimit.ts). meta.limit is the limit applied,
+        // 1 to 50, else a 422), or the default 5 (CASE_SEARCH_DEFAULT_LIMIT in
+        // src/server/caseSearchLimit.ts). meta.limit is the limit applied,
         // meta.total counts every match and meta.truncated says whether data
         // holds all of them; all three are always sent on this mode.
         const rawLimit = url.searchParams.get("limit");
