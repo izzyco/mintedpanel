@@ -10,8 +10,6 @@
 //           provider is flagged (not generatable) until assigned.
 //   TS-130  PHI sweep: the roster's list read carries no DOB/SSN/home-address
 //           columns; the record masks DOB at rest and SSN to last-4.
-//   MINT-96 + Add facility with a blank start date saves it undated; the
-//           record reads "Start date needed".
 // TS-128 (the CSV relationship fold + reference sheet) is covered at the scan
 // grain by importSections.test.ts and the staged pipeline by
 // roster-import.spec.ts — the commit relationship pass is pinned here at the
