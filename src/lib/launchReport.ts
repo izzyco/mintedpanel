@@ -16,13 +16,11 @@
 //
 // The windows and which open cases count after go-live are business policy,
 // so they are configuration (LaunchReportRules), never constants: they
-// resolve from the decided
-// default, then a platform override, then an organization override, field by
-// field (resolveLaunchReportRules), and validateLaunchReportRules is the
-// check an override must pass before it goes live. Nothing stores an
-// override yet; the Mission Control setting is MINT-116. The rule text and
-// the empty state are built from the resolved rules, so the page always
-// states the rule it applies.
+// resolve from the decided default, then a platform override, then an
+// organization override, field by field (resolveLaunchReportRules). Nothing
+// stores an override yet; the Mission Control setting is MINT-116. The rule
+// text and the empty state are built from the resolved rules, so the page
+// always states the rule it applies.
 import type { CaseStatus } from "./caseStatus";
 import { isOpenCaseStatus } from "./caseStatus";
 import { isTestProvider, testProviderIds, type HasTestProviderFlag } from "./testProvider";
@@ -78,16 +76,6 @@ const isWindowDays = (value: unknown): value is number =>
   value > 0 &&
   value <= LAUNCH_REPORT_MAX_WINDOW_DAYS;
 
-type WindowKey = "overdueWindowDays" | "recentWindowDays" | "upcomingWindowDays";
-
-const WINDOW_LABELS: { [K in WindowKey]: string } = {
-  overdueWindowDays: "The overdue window",
-  recentWindowDays: "The recently launched window",
-  upcomingWindowDays: "The approaching window",
-};
-
-const WINDOW_KEYS = Object.keys(WINDOW_LABELS) as WindowKey[];
-
 const OVERDUE_OPEN_CASES: readonly OverdueOpenCases[] = ["opened_before_go_live", "any"];
 
 const isOverdueOpenCases = (value: unknown): value is OverdueOpenCases =>
@@ -100,13 +88,11 @@ const RULE_CHECKS: { [K in keyof LaunchReportRules]: (value: unknown) => boolean
   overdueOpenCases: isOverdueOpenCases,
 };
 
-const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof LaunchReportRules>;
-
-// Field by field: the organization's value, else the platform's, else the
-// default. A stored value of the wrong shape (a window that is not a whole
-// number of days from 1 to LAUNCH_REPORT_MAX_WINDOW_DAYS, an unknown
-// open-case rule) is skipped like a missing one.
-function mergeLaunchReportRules(
+/** The rules in force, field by field: the organization's value, else the
+ * platform's, else the default. A stored value of the wrong shape (a window
+ * that is not a whole number of days from 1 to LAUNCH_REPORT_MAX_WINDOW_DAYS,
+ * an unknown open-case rule) is skipped like a missing one. */
+export function resolveLaunchReportRules(
   platform?: LaunchReportRulesOverride | null,
   organization?: LaunchReportRulesOverride | null,
 ): LaunchReportRules {
@@ -123,63 +109,6 @@ function mergeLaunchReportRules(
     upcomingWindowDays: pick("upcomingWindowDays"),
     overdueOpenCases: pick("overdueOpenCases"),
   };
-}
-
-/** The rules in force, field by field (organization, else platform, else
- * default; a malformed value inherits). The layers can each be valid and
- * still combine into an overdue window shorter than the recent one (an
- * organization sets overdue 45, the platform later sets recent 60). That
- * would drop a location still at risk before one with nothing outstanding,
- * so the overdue window in force is never shorter than the recent window:
- * it is raised to match. validateLaunchReportRules still refuses to store
- * such an override. */
-export function resolveLaunchReportRules(
-  platform?: LaunchReportRulesOverride | null,
-  organization?: LaunchReportRulesOverride | null,
-): LaunchReportRules {
-  const merged = mergeLaunchReportRules(platform, organization);
-  return {
-    ...merged,
-    overdueWindowDays: Math.max(merged.overdueWindowDays, merged.recentWindowDays),
-  };
-}
-
-/** Plain-language problems with an override; empty when it can go live.
- * `base` is what the override sits on (for an organization override, the
- * resolved platform rules), so the windows are checked together as they
- * would apply. */
-export function validateLaunchReportRules(
-  override: unknown,
-  base: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
-): string[] {
-  if (override == null) return [];
-  if (typeof override !== "object" || Array.isArray(override))
-    return ["The Launches report rules must be a set of named rules."];
-  const errors: string[] = [];
-  const given = override as Record<string, unknown>;
-  for (const key of Object.keys(given)) {
-    if (!(RULE_KEYS as string[]).includes(key))
-      errors.push(`"${key}" is not a Launches report rule.`);
-  }
-  for (const key of WINDOW_KEYS) {
-    const value = given[key];
-    if (value != null && !isWindowDays(value))
-      errors.push(
-        `${WINDOW_LABELS[key]} must be a whole number of days from 1 to ${LAUNCH_REPORT_MAX_WINDOW_DAYS}.`,
-      );
-  }
-  const openCases = given.overdueOpenCases;
-  if (openCases != null && !isOverdueOpenCases(openCases))
-    errors.push(
-      'After go-live, open cases must count only when opened before go-live ("opened_before_go_live") or always ("any").',
-    );
-  if (errors.length > 0) return errors;
-  const rules = mergeLaunchReportRules(base, given as LaunchReportRulesOverride);
-  if (rules.overdueWindowDays < rules.recentWindowDays)
-    errors.push(
-      "The overdue window must be at least as long as the recently launched window, or a location still at risk would leave the report before one with nothing outstanding.",
-    );
-  return errors;
 }
 
 const dayCount = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
@@ -393,15 +322,6 @@ export function openCaseCountsByFacility(
       sinceGoLive.set(facilityId, (sinceGoLive.get(facilityId) ?? 0) + 1);
   }
   return { all, sinceGoLive };
-}
-
-/** Open cases per facility (the `all` count of openCaseCountsByFacility). */
-export function openCasesByFacility(
-  cases: readonly LaunchCaseInput[],
-  caseFacilities: readonly LaunchCaseFacilityInput[],
-  providers: readonly LaunchProviderInput[],
-): Map<string, number> {
-  return new Map(openCaseCountsByFacility(cases, caseFacilities, providers, []).all);
 }
 
 /**

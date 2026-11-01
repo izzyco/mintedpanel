@@ -14,10 +14,8 @@ import {
   launchEmptyStateText,
   launchRiskLabel,
   openCaseCountsByFacility,
-  openCasesByFacility,
   providerCountsByFacility,
   resolveLaunchReportRules,
-  validateLaunchReportRules,
   type LaunchFacilityInput,
   type LaunchOpenCases,
   type LaunchReportRules,
@@ -50,7 +48,7 @@ describe("daysUntil", () => {
   });
 });
 
-describe("openCasesByFacility", () => {
+describe("openCaseCountsByFacility: every open case (all)", () => {
   const providers = [
     { id: "pr1", status: "active" },
     { id: "pr2", status: "active" },
@@ -60,17 +58,18 @@ describe("openCasesByFacility", () => {
   it("attributes a case to its case_facilities locations only — never via the provider's assignments", () => {
     // pr1 is assigned to f1 AND f2, but the case holds only f1: it is pending
     // for f1's go-live, not f2's.
-    const counts = openCasesByFacility(
+    const counts = openCaseCountsByFacility(
       [{ id: "c1", providerId: "pr1", facilityId: "f1", status: "in_progress" }],
       [{ caseId: "c1", facilityId: "f1" }],
       providers,
-    );
+      [],
+    ).all;
     expect(counts.get("f1")).toBe(1);
     expect(counts.has("f2")).toBe(false);
   });
 
   it("a multi-location case counts once at each location it holds", () => {
-    const counts = openCasesByFacility(
+    const counts = openCaseCountsByFacility(
       [{ id: "c1", providerId: "pr1", facilityId: "f1", status: "submitted" }],
       [
         { caseId: "c1", facilityId: "f1" },
@@ -78,36 +77,39 @@ describe("openCasesByFacility", () => {
         { caseId: "c1", facilityId: "f2" },
       ],
       providers,
-    );
+      [],
+    ).all;
     expect(counts.get("f1")).toBe(1);
     expect(counts.get("f2")).toBe(1);
   });
 
   it("the primary mirror never adds a location the case's links leave out", () => {
-    const counts = openCasesByFacility(
+    const counts = openCaseCountsByFacility(
       [{ id: "c1", providerId: "pr1", facilityId: "f9", status: "submitted" }],
       [{ caseId: "c1", facilityId: "f1" }],
       providers,
-    );
+      [],
+    ).all;
     expect(Array.from(counts.keys())).toEqual(["f1"]);
   });
 
   it("a case with no case_facilities rows falls back to its facility_id mirror", () => {
     // Creation stamps facility_id without writing the child row.
-    const counts = openCasesByFacility(
+    const counts = openCaseCountsByFacility(
       [
         { id: "c1", providerId: "pr2", facilityId: "f3", status: "not_started" },
         { id: "c2", providerId: "pr2", facilityId: null, status: "not_started" },
       ],
       [],
       providers,
-    );
+      [],
+    ).all;
     expect(counts.get("f3")).toBe(1);
     expect(counts.size).toBe(1);
   });
 
   it("closed cases and the test provider's cases never count", () => {
-    const counts = openCasesByFacility(
+    const counts = openCaseCountsByFacility(
       [
         { id: "c1", providerId: "pr1", facilityId: "f1", status: "approved" },
         { id: "c2", providerId: "pr2", facilityId: "f1", status: "denied" },
@@ -119,7 +121,8 @@ describe("openCasesByFacility", () => {
         { caseId: "c3", facilityId: "f1" },
       ],
       providers,
-    );
+      [],
+    ).all;
     expect(counts.size).toBe(0);
   });
 });
@@ -586,36 +589,6 @@ describe("LaunchReportRules (MINT-116)", () => {
       ).toEqual({ ...DEFAULT, overdueWindowDays: 120 });
     });
 
-    it("never resolves an overdue window shorter than the recent window: it is raised to match", () => {
-      // Each layer passes on its own: the organization's 45 over the old
-      // platform, then the platform later sets recent 60.
-      expect(validateLaunchReportRules({ overdueWindowDays: 45 })).toEqual([]);
-      expect(validateLaunchReportRules({ recentWindowDays: 60 })).toEqual([]);
-      const rules = resolveLaunchReportRules({ recentWindowDays: 60 }, { overdueWindowDays: 45 });
-      expect(rules).toEqual({ ...DEFAULT, overdueWindowDays: 60, recentWindowDays: 60 });
-      expect(validateLaunchReportRules(rules)).toEqual([]);
-      // So a location still at risk 50 days past stays on the report, as one
-      // with nothing outstanding does.
-      const rows = buildLaunchReportRows(
-        [at("risk-past-50", -50), at("clean-past-50", -50)],
-        new Map([["clean-past-50", 1]]),
-        counted(new Map()),
-        TODAY,
-        rules,
-      );
-      expect(rows.map((r) => [r.facilityId, r.riskKind])).toEqual([
-        ["clean-past-50", null],
-        ["risk-past-50", "overdue"],
-      ]);
-      expect(launchAtRiskRuleText(rules)).toContain("passed within the last 60 days");
-      // The org-only and platform-only cases are untouched.
-      expect(resolveLaunchReportRules(null, { overdueWindowDays: 45 }).overdueWindowDays).toBe(45);
-      expect(resolveLaunchReportRules({ recentWindowDays: 60 })).toEqual({
-        ...DEFAULT,
-        recentWindowDays: 60,
-      });
-    });
-
     it("skips a value of the wrong shape like a missing one", () => {
       for (const bad of [
         0,
@@ -640,65 +613,6 @@ describe("LaunchReportRules (MINT-116)", () => {
         resolveLaunchReportRules(null, { overdueWindowDays: LAUNCH_REPORT_MAX_WINDOW_DAYS })
           .overdueWindowDays,
       ).toBe(LAUNCH_REPORT_MAX_WINDOW_DAYS);
-    });
-  });
-
-  describe("validateLaunchReportRules", () => {
-    it("passes the defaults, an empty override and whole-day windows", () => {
-      expect(validateLaunchReportRules(DEFAULT)).toEqual([]);
-      expect(validateLaunchReportRules({})).toEqual([]);
-      expect(validateLaunchReportRules(null)).toEqual([]);
-      expect(
-        validateLaunchReportRules({
-          overdueWindowDays: 365,
-          recentWindowDays: 1,
-          upcomingWindowDays: null,
-        }),
-      ).toEqual([]);
-    });
-
-    it("rejects windows that are not whole days from 1 to the maximum, in plain language", () => {
-      expect(validateLaunchReportRules({ overdueWindowDays: 0 })).toEqual([
-        "The overdue window must be a whole number of days from 1 to 365.",
-      ]);
-      expect(validateLaunchReportRules({ recentWindowDays: 7.5, upcomingWindowDays: 400 })).toEqual(
-        [
-          "The recently launched window must be a whole number of days from 1 to 365.",
-          "The approaching window must be a whole number of days from 1 to 365.",
-        ],
-      );
-      expect(validateLaunchReportRules({ upcomingWindowDays: "30" })).toEqual([
-        "The approaching window must be a whole number of days from 1 to 365.",
-      ]);
-    });
-
-    it("rejects unknown rules and a value that is not a set of rules", () => {
-      expect(validateLaunchReportRules({ overdueDays: 90 })).toEqual([
-        '"overdueDays" is not a Launches report rule.',
-      ]);
-      expect(validateLaunchReportRules(90)).toEqual([
-        "The Launches report rules must be a set of named rules.",
-      ]);
-      expect(validateLaunchReportRules([90])).toEqual([
-        "The Launches report rules must be a set of named rules.",
-      ]);
-    });
-
-    it("rejects an overdue window shorter than the recent window, against what it sits on", () => {
-      const tooShort = [
-        "The overdue window must be at least as long as the recently launched window, or a location still at risk would leave the report before one with nothing outstanding.",
-      ];
-      expect(validateLaunchReportRules({ overdueWindowDays: 20 })).toEqual(tooShort);
-      expect(validateLaunchReportRules({ recentWindowDays: 91 })).toEqual(tooShort);
-      expect(validateLaunchReportRules({ overdueWindowDays: 30 })).toEqual([]);
-      // An organization override over a platform that already shortened the
-      // recent window.
-      expect(
-        validateLaunchReportRules(
-          { overdueWindowDays: 20 },
-          resolveLaunchReportRules({ recentWindowDays: 14 }),
-        ),
-      ).toEqual([]);
     });
   });
 });
@@ -857,7 +771,7 @@ describe("MINT-100 A2: after go-live, only cases opened before it keep a locatio
     expect(row).toMatchObject({ openCaseCount: 1, atRisk: false });
   });
 
-  describe("resolver and validator", () => {
+  describe("resolver", () => {
     it("inherits and skips a malformed value", () => {
       expect(
         resolveLaunchReportRules({ overdueOpenCases: "any" }, { overdueOpenCases: null })
@@ -870,14 +784,6 @@ describe("MINT-100 A2: after go-live, only cases opened before it keep a locatio
           resolveLaunchReportRules({ overdueOpenCases: "any" }, override).overdueOpenCases,
         ).toBe("any");
       }
-    });
-
-    it("passes both values and rejects any other, in plain language", () => {
-      expect(validateLaunchReportRules({ overdueOpenCases: "any" })).toEqual([]);
-      expect(validateLaunchReportRules({ overdueOpenCases: "opened_before_go_live" })).toEqual([]);
-      expect(validateLaunchReportRules({ overdueOpenCases: "before" })).toEqual([
-        'After go-live, open cases must count only when opened before go-live ("opened_before_go_live") or always ("any").',
-      ]);
     });
   });
 });
