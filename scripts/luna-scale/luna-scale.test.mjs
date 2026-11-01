@@ -162,27 +162,35 @@ function classifyFunnel(source = tables, today = ANCHOR) {
     if (p.verification_state === "pending_verification") gaps.push("pending_verification");
     // Verified is not enough: Ready needs a current group, and a location
     // that counts: under one of their current groups, or under no group at
-    // all (an in-home address counts for anyone, A22). The missing group is a
-    // staff-side gap of its own (A23), listed next to the location reasons.
+    // all (an in-home address counts for anyone, A22). Group problems are
+    // staff-side (A23): with no current group, "No group assigned yet" comes
+    // first, and a location that fails only because its group is not theirs
+    // is a group gap too. Only staff-side lists (awaiting assignment) show
+    // group gaps; Submitted never does.
     const groups = groupsBy.get(p.id) ?? new Set();
-    const holds = [];
-    if (locations.length === 0) holds.push("needs_location");
+    const assignmentGaps = [];
+    const stateGaps = [];
+    const groupGaps = groups.size === 0 ? ["no_group_assigned"] : [];
+    if (locations.length === 0) assignmentGaps.push("needs_location");
     else if (locations.every((l) => l.group_id !== null && !groups.has(l.group_id)))
-      holds.push("location_other_group");
-    if (locations.some((l) => !validState(l.state))) holds.push("location_no_state");
-    if (groups.size === 0) holds.push("no_group_assigned");
-    if (gaps.length > 0) result.set(p.id, { stage: "submitted", gaps: [...gaps, ...holds] });
+      (groups.size === 0 ? groupGaps : assignmentGaps).push("location_other_group");
+    if (locations.some((l) => !validState(l.state))) stateGaps.push("location_no_state");
+    const placement = { assignmentGaps, groupGaps };
+    const locationHolds = [...assignmentGaps, ...stateGaps];
+    const holds = [...locationHolds, ...groupGaps];
+    if (gaps.length > 0)
+      result.set(p.id, { stage: "submitted", gaps: [...gaps, ...locationHolds], ...placement });
     else if (holds.length > 0)
-      result.set(p.id, { stage: "verified_awaiting_assignment", gaps: holds });
-    else result.set(p.id, { stage: "ready_for_credentialing", gaps });
+      result.set(p.id, { stage: "verified_awaiting_assignment", gaps: holds, ...placement });
+    else result.set(p.id, { stage: "ready_for_credentialing", gaps, ...placement });
   }
   return result;
 }
 
-/** The kinds of gap each scenario is built to show: one each. Ready
- * scenarios show none. "No group" must show the group gap; whether its
- * group's clinic is also listed as a location reason is #560's to settle
- * (NO_GROUP_ALSO_ALLOWED). */
+/** The kinds of gap each scenario is built to show, in the order the funnel
+ * lists them: one each, except "no group", whose two are both staff-side
+ * group gaps ("No group assigned yet", then "Location … is under …, not the
+ * provider's group"; #560 at bf0d3082). Ready scenarios show none. */
 const SCENARIO_GAPS = Object.freeze({
   missing_npi: ["no_npi"],
   missing_caqh: ["no_caqh"],
@@ -194,15 +202,12 @@ const SCENARIO_GAPS = Object.freeze({
   license_expired: ["license_expired"],
   caqh_stale: ["caqh_stale"],
   pending_verification: ["pending_verification"],
-  no_group: ["no_group_assigned"],
+  no_group: ["no_group_assigned", "location_other_group"],
   no_location: ["needs_location"],
   location_other_group: ["location_other_group"],
   location_no_group: [],
   location_no_state: ["location_no_state"],
 });
-
-/** Gap kinds a "no group" row may list besides the group gap. */
-const NO_GROUP_ALSO_ALLOWED = Object.freeze(["location_other_group"]);
 
 /** The scenarios that change a provider's group or location. */
 const ASSIGNMENT_SCENARIOS = Object.freeze([
@@ -314,15 +319,15 @@ test("every Provider Onboarding funnel stage and gap has members, as generated",
     }
     const row = funnel.get(providerId);
     assert.equal(row.stage, stageOf[scenario] ?? "credentialing", scenario);
-    const kinds = [...new Set(row.gaps)].sort();
-    const expected = [...(SCENARIO_GAPS[scenario] ?? [])].sort();
-    if (scenario === "no_group")
-      assert.deepEqual(
-        kinds.filter((kind) => !NO_GROUP_ALSO_ALLOWED.includes(kind)),
-        expected,
-        scenario,
-      );
-    else assert.deepEqual(kinds, expected, scenario);
+    assert.deepEqual([...new Set(row.gaps)], SCENARIO_GAPS[scenario] ?? [], scenario);
+    if (scenario === "no_group") {
+      // Both reasons are staff-side group gaps; the provider's own location
+      // list is empty.
+      assert.deepEqual(row.groupGaps, ["no_group_assigned", "location_other_group"]);
+      assert.deepEqual(row.assignmentGaps, []);
+    }
+    // No group text in Submitted.
+    if (row.stage === "submitted") assert.ok(!row.gaps.includes("no_group_assigned"));
   }
   const summary = summarizeDataset(dataset);
   for (const stage of FUNNEL_STAGES) assert.equal(summary.funnel[stage], byStage[stage], stage);
