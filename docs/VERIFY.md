@@ -101,8 +101,8 @@ npx playwright test e2e/<spec>.spec.ts
 | Wizard — Provider Roster section (+ roster upload card)    | `provider-roster.spec.ts`, `roster-import.spec.ts`          |
 | Wizard — Assignments section                               | `assignments-wizard.spec.ts`                                |
 | Wizard — Payer Network section                             | `payer-network.spec.ts`                                     |
-| Provider record — Readiness section (relocated 2026-07-21) | `provider-readiness.spec.ts`                                |
 | `/providers/new` (Add Provider wizard, Review step)        | `provider-add-wizard.spec.ts`, `providers-area.spec.ts`     |
+| Provider record — Readiness section (relocated 2026-07-21) | `provider-readiness.spec.ts`                                |
 
 ### Reporting & portfolio
 
