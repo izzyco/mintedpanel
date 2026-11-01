@@ -4,7 +4,7 @@
 // (the stages not shown by default, with the legacy inactive) are left out
 // until "Include offboarded" is ticked. Each row: name, slug, lifecycle stage,
 // member count, created date. No PHI.
-import { useState } from "react";
+import { useDeferredValue, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { EmptyState } from "@/components/EmptyState";
 import { TableSkeletonRows } from "@/components/TableSkeletonRows";
@@ -48,7 +48,15 @@ export function OrganizationsList() {
   const [includeHidden, setIncludeHidden] = useState(false);
   const [creating, setCreating] = useState(false);
 
-  const listQ = usePlatformOrgList({ search, sort, page, pageSize: PAGE_SIZE, includeHidden });
+  // The list follows the typing without a request per keystroke blocking it.
+  const deferredSearch = useDeferredValue(search);
+  const listQ = usePlatformOrgList({
+    search: deferredSearch,
+    sort,
+    page,
+    pageSize: PAGE_SIZE,
+    includeHidden,
+  });
   const total = listQ.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const rows = listQ.data?.rows ?? [];

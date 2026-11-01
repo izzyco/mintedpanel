@@ -12,7 +12,7 @@ export function GenerationStageNotice() {
       role="note"
       className="rounded-md border border-[var(--mp-border)] px-4 py-2.5 text-[12.5px] text-muted-foreground"
     >
-      This organization is in {stage.displayName}. Case generation normally starts once it is
+      This organization's stage is {stage.displayName}. Case generation normally starts once it is
       Active; you can still preview and create cases.
     </p>
   );

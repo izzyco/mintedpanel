@@ -209,7 +209,7 @@ function LifecycleCard({
         <li>
           {stage.generationAllowed
             ? "Case generation is in its normal stage."
-            : "Case generation shows a note until the organization is Active."}
+            : "Case generation shows a note in this stage; it still works."}
         </li>
       </ul>
       {next.length > 0 ? (
