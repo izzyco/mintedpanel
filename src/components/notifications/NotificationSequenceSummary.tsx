@@ -10,7 +10,7 @@ import {
   PURPOSE_RULES,
   STOP_CONDITION_LABELS,
   describeCcList,
-  describeSendTime,
+  describeDigestSchedule,
   describeStep,
   resolveNotificationSequence,
   type CcMemberOption,
@@ -35,7 +35,7 @@ export function NotificationSequenceSummary({
   const rules = PURPOSE_RULES[config.purpose];
   const effective = resolveNotificationSequence(config.purpose, config, platformDefault);
   const mark = (inherited: boolean) => (inherited ? DEFAULT_SUFFIX : "");
-  const sendTime = describeSendTime(effective.sendHour, effective.sendTimeZone);
+  const schedule = describeDigestSchedule(effective);
   return (
     <div className="space-y-3 text-[13px] text-foreground">
       {effective.inherited.steps ? (
@@ -44,7 +44,9 @@ export function NotificationSequenceSummary({
       <ol className="space-y-2">
         {effective.steps.map((step) => (
           <li key={step.position} className="rounded-md border border-[var(--mp-border)] px-3 py-2">
-            <div className="font-medium">{describeStep(config.purpose, step)}</div>
+            <div className="font-medium">
+              {describeStep(config.purpose, step, effective.digestFrequency ?? undefined)}
+            </div>
             {effective.ccAllowed ? (
               <div className="text-[12px] text-muted-foreground">
                 Cc: {describeCcList(step.ccRecipients, members, membersLoaded)}
@@ -64,28 +66,14 @@ export function NotificationSequenceSummary({
           <div>
             <dt className="inline text-muted-foreground">Stops when: </dt>
             <dd className="inline">
-              {`${
-                effective.stopConditions.length > 0
-                  ? effective.stopConditions
-                      .map((c) => STOP_CONDITION_LABELS[c].toLowerCase())
-                      .join("; ")
-                  : "never stops early"
-              }${mark(effective.inherited.stopConditions)}`}
-            </dd>
-          </div>
-          <div>
-            <dt className="inline text-muted-foreground">Near a start date: </dt>
-            <dd className="inline">
-              {`${
-                effective.compressTowardStartDate
-                  ? "reminders move closer together"
-                  : "reminders keep their days"
-              }. Minted sets this.`}
+              {`${effective.stopConditions
+                .map((c) => STOP_CONDITION_LABELS[c].toLowerCase())
+                .join("; ")}${mark(effective.inherited.stopConditions)}`}
             </dd>
           </div>
         </dl>
       ) : null}
-      {rules.hasSendTime && sendTime ? <p>{`Sent around ${sendTime}. Minted sets this.`}</p> : null}
+      {rules.hasSendTime && schedule ? <p>{schedule}</p> : null}
       {!effective.ccAllowed ? (
         <p className="text-[12px] text-muted-foreground">{COORDINATORS_ONLY_NOTE}</p>
       ) : null}

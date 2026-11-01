@@ -85,18 +85,26 @@ function defaultTables(): Record<string, FakeRow[]> {
         purpose: "intake_reminder",
         stop_conditions: ["submitted", "paused", "withdrawn", "provider_replied"],
         target_days_to_ready: 14,
-        compress_toward_start_date: false,
+        bounce_escalation_step: 1,
+        digest_cc_allowed: null,
+        digest_frequency: null,
+        digest_weekday: null,
         send_hour: null,
         send_time_zone: null,
+        second_send_hour: null,
         ...STAMP,
       },
       {
         purpose: "followup_digest",
         stop_conditions: null,
         target_days_to_ready: null,
-        compress_toward_start_date: null,
+        bounce_escalation_step: null,
+        digest_cc_allowed: false,
+        digest_frequency: "daily",
+        digest_weekday: 1,
         send_hour: 8,
         send_time_zone: "America/Chicago",
+        second_send_hour: 14,
         ...STAMP,
       },
     ],
@@ -132,15 +140,25 @@ function sequenceRow(orgId: string, enabled: boolean, overrides: Partial<FakeRow
     enabled,
     stop_conditions: null,
     target_days_to_ready: null,
-    compress_toward_start_date: null,
-    // Null: Minted's default (8, America/Chicago).
+    bounce_escalation_step: null,
+    // Null: Minted's default (daily).
+    digest_frequency: null,
+    // Null: Minted's (8, America/Chicago, 2 pm; Monday). Set together (A10).
     send_hour: null,
     send_time_zone: null,
+    second_send_hour: null,
+    digest_weekday: null,
+    digest_cc_allowed: null,
     revision: 1,
     updated_by: null,
     ...STAMP,
     ...overrides,
   };
+}
+
+/** An org's whole send time: hour, zone and second hour come together (A10). */
+function sendTime(hour: number, zone = "America/Chicago", second = Math.max(14, hour + 1)) {
+  return { send_hour: hour, send_time_zone: zone, second_send_hour: second };
 }
 
 function stepRow(orgId: string, overrides: Partial<FakeRow> = {}): FakeRow {
@@ -543,9 +561,7 @@ describe("followup-digest: the per-org send hour", () => {
   });
 
   it("uses each org's own send hour and zone when Minted set one, the default otherwise", async () => {
-    fake = createFollowUpDigestFakeDb(
-      world({ b: { send_hour: 10, send_time_zone: "America/Los_Angeles" } }).tables,
-    );
+    fake = createFollowUpDigestFakeDb(world({ b: sendTime(10, "America/Los_Angeles") }).tables);
     // 13:00 UTC: 8 am Central (A due), 6 am Pacific (B not yet).
     const first = await runFollowUpDigest(ctx(), deps());
     expect(first).toEqual(
@@ -576,34 +592,36 @@ describe("followup-digest: the per-org send hour", () => {
     expect(fake.sends.find((r) => r.recipient_user_id === BILL)?.slot).toBe(TODAY);
   });
 
-  it("falls back to Minted's zone for an org zone this runtime cannot use (#561), and sends", async () => {
-    fake = createFollowUpDigestFakeDb(world({ a: { send_time_zone: "Mars/Olympus" } }).tables);
+  it("falls back to Minted's whole send time for an org zone this runtime cannot use (#561, A10), and sends", async () => {
+    // Org A's own hour is 10 am: with its zone unusable, Minted's whole 8 am
+    // Central stands, not 10 am in Minted's zone.
+    fake = createFollowUpDigestFakeDb(world({ a: sendTime(10, "Mars/Olympus") }).tables);
     const result = await runFollowUpDigest(ctx(), deps());
     expect(result).toEqual(BASELINE);
     expect(result.orgs_skipped_send_time).toBe(0);
   });
 
-  it("still skips and logs an org with no usable send hour (a guard the data cannot reach)", async () => {
-    // Org A inherits Minted's hour; org B has its own. A default with no hour
-    // is refused by the database (notification_sequence_defaults CHECKs).
-    const w = world({ b: { send_hour: 8 } });
+  it("takes an org's send time whole from one layer: a partial row uses Minted's group (A10)", async () => {
+    // The database refuses an hour without its zone and second hour; a row
+    // that has one anyway gets none of it.
+    fake = createFollowUpDigestFakeDb(world({ b: { send_hour: 10 } }).tables);
+    // 8 am Central: org B is due on Minted's 8 am, not its own 10.
+    expect(await runFollowUpDigest(ctx(), deps())).toEqual(BASELINE);
+  });
+
+  it("never skips for the send time: an unusable default still sends at the last resort, 8 am Central", async () => {
+    // A default with no hour is refused by the database
+    // (notification_sequence_defaults CHECKs); since A10 the resolver falls
+    // back whole, so org_skipped_send_time stays a guard the data cannot reach.
+    const w = world({ b: sendTime(8) });
     const digestDefault = w.tables.notification_sequence_defaults.find(
       (r) => r.purpose === "followup_digest",
     ) as FakeRow;
     digestDefault.send_hour = null;
     fake = createFollowUpDigestFakeDb(w.tables);
     const result = await runFollowUpDigest(ctx(), deps());
-    expect(result).toEqual(
-      counts({
-        orgs_enabled: 2,
-        orgs_due: 1,
-        orgs_skipped_send_time: 1,
-        orgs_completed: 1,
-        digests_sent: 1,
-      }),
-    );
-    expect(recipients()).toEqual(["bill@example.test"]);
-    expect(logged()).toContain("[jobs:followup-digest] org_skipped_send_time");
+    expect(result).toEqual(BASELINE);
+    expect(logged()).not.toContain("org_skipped_send_time");
   });
 });
 
@@ -641,16 +659,16 @@ describe("followup-digest: at most one digest per coordinator per local date", (
   });
 
   it.each([
-    ["the send hour moves later", { send_hour: 10 }, "2026-10-31T15:00:00Z"],
-    ["the send hour moves earlier", { send_hour: 6 }, "2026-10-31T14:00:00Z"],
+    ["the send hour moves later", sendTime(10), "2026-10-31T15:00:00Z"],
+    ["the send hour moves earlier", sendTime(6), "2026-10-31T14:00:00Z"],
     [
       "the zone moves west, same local date",
-      { send_time_zone: "America/Los_Angeles" },
+      sendTime(8, "America/Los_Angeles"),
       "2026-10-31T15:00:00Z",
     ],
     [
       "the zone moves east, same local date",
-      { send_time_zone: "America/New_York" },
+      sendTime(8, "America/New_York"),
       "2026-10-31T14:00:00Z",
     ],
   ])("sends no second digest when %s", async (_label, change, at) => {
@@ -675,7 +693,7 @@ describe("followup-digest: at most one digest per coordinator per local date", (
     const sequence = fake.tables.notification_sequences.find(
       (r) => r.org_id === ORG_A && r.purpose === "followup_digest",
     ) as FakeRow;
-    sequence.send_time_zone = "Asia/Tokyo";
+    Object.assign(sequence, sendTime(8, "Asia/Tokyo"));
     // 23:00 UTC Oct 31 is 8 am Nov 1 in Tokyo: a new local date, one digest.
     await runFollowUpDigest(ctx(new Date("2026-10-31T23:00:00Z")), deps());
     const tokyo = sent.filter((input) => input.at === "2026-10-31T23:00:00.000Z");
@@ -718,7 +736,7 @@ describe("followup-digest: daylight saving time", () => {
   });
 
   it("DST ends: a 1 am send hour goes out in the first 1 am, not again in the repeated one", async () => {
-    fake = createFollowUpDigestFakeDb(world({ a: { send_hour: 1 }, b: { send_hour: 1 } }).tables);
+    fake = createFollowUpDigestFakeDb(world({ a: sendTime(1), b: sendTime(1) }).tables);
     // 06:00 UTC is 1 am CDT; 07:00 UTC is 1 am CST, the same local date.
     const first = await runFollowUpDigest(ctx(new Date("2026-11-01T06:00:00Z")), deps());
     expect(first.digests_sent).toBe(3);
@@ -729,7 +747,7 @@ describe("followup-digest: daylight saving time", () => {
   });
 
   it("DST starts (Mar 14, 2027): a 2 am send hour that does not exist goes out at 3 am, once", async () => {
-    fake = createFollowUpDigestFakeDb(world({ a: { send_hour: 2 }, b: { send_hour: 2 } }).tables);
+    fake = createFollowUpDigestFakeDb(world({ a: sendTime(2), b: sendTime(2) }).tables);
     // From local midnight (06:00 UTC, CST) to 10 am CDT.
     for (const at of hours("2027-03-14T06:00:00Z", 9)) {
       await runFollowUpDigest(ctx(at), deps());
@@ -753,7 +771,7 @@ describe("followup-digest: daylight saving time", () => {
 
 describe("followup-digest: today is the org's local date", () => {
   it("lists due today and overdue against the local date, not the UTC date", async () => {
-    const w = world({ b: { send_time_zone: "Asia/Tokyo" } });
+    const w = world({ b: sendTime(8, "Asia/Tokyo") });
     const billToday = caseRow(ORG_B, BILL);
     const billYesterday = caseRow(ORG_B, BILL);
     w.tables.credential_cases.push(billToday, billYesterday);
@@ -1350,11 +1368,10 @@ describe("followup-digest: paging and tenant scope", () => {
 
   it("finds every enabled org: the discovery read pages past the 1,000-row cap", async () => {
     const w = world();
-    // 1,100 enabled orgs that sort before A and B, each due only at 11 pm.
+    // 1,100 enabled orgs that sort before A and B, each due only from 10 pm
+    // (the latest a send hour can be, with its later second hour, A10).
     const filler = Array.from({ length: 1_100 }, (_, i) =>
-      sequenceRow(`0${String(i).padStart(7, "0")}-0000-4000-8000-000000000000`, true, {
-        send_hour: 23,
-      }),
+      sequenceRow(`0${String(i).padStart(7, "0")}-0000-4000-8000-000000000000`, true, sendTime(22)),
     );
     w.tables.notification_sequences.unshift(...filler);
     fake = createFollowUpDigestFakeDb(w.tables);
@@ -1609,7 +1626,7 @@ describe("followup-digest: FollowUpDigestRules per org (policy as configuration,
   it("keeps one attempt when DST start skips the send hour and the cut-off is the hour after", async () => {
     // Mar 14 2027 in Chicago: 1:59 am CST is followed by 3:00 am CDT. A 2 am
     // send hour with a 3 am cut-off would otherwise have no due hour at all.
-    fake = createFollowUpDigestFakeDb(world({ a: { send_hour: 2 }, b: { send_hour: 2 } }).tables);
+    fake = createFollowUpDigestFakeDb(world({ a: sendTime(2), b: sendTime(2) }).tables);
     const rules = () => resolveFollowUpDigestRules({ catchUpUntilLocalHour: 3 });
     // 1:07 am CST: before the send hour.
     const early = await runFollowUpDigest(ctx(new Date("2027-03-14T07:07:00Z")), deps({ rules }));

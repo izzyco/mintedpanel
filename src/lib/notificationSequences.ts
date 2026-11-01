@@ -2,22 +2,25 @@
 //
 // A sequence is one organization's settings for one purpose: whether it is
 // on, its ordered steps (offset in days, channel, template, ordered cc list),
-// and, for intake reminders only, the stop conditions, the target days from
-// invite to ready, and whether the schedule tightens as a known start date
-// approaches; for the digest, the local hour and time zone it goes out in.
-// Cadence is configuration, never a constant.
+// and, for intake reminders only, the stop conditions (at least one, A11) and
+// the target days from invite to ready; for the digest, how often it goes
+// out (daily, weekly or twice a day, A8) and when (the local hour and time
+// zone, the weekly weekday, the twice-a-day second hour). Cadence is
+// configuration, never a constant. Compression toward a start date was
+// removed (A13, which supersedes D56).
 //
 // Two layers. Minted's platform default (one per purpose, no org, no cc,
 // no on/off) and the org's own row, which overrides it field by field: a
 // null setting uses the default, and an org with no steps of its own uses
 // the default steps. `enabled` is never inherited, so a default can never
-// switch an org on. `resolveNotificationSequence` turns the two into the
-// effective sequence; every consumer calls it rather than re-deriving it.
-// Compression and the digest's send hour and time zone are platform-managed:
-// only Minted sets them, on the default or as an org override, never an org
-// admin.
+// switch an org on, and only Minted sets it (A9: off until Minted turns
+// notifications on at kickoff). `resolveNotificationSequence` turns the two
+// into the effective sequence; every consumer calls it rather than
+// re-deriving it. The digest's send time (hour, zone and second hour, one
+// group per layer, A10) and weekday are platform-managed: only Minted sets
+// them, on the default or as an org override, never an org admin.
 //
-// Two policy decisions are settings too, not code (NotificationPolicyRules,
+// Four policy decisions are settings too, not code (NotificationPolicyRules,
 // resolved by resolveNotificationPolicyRules; Mission Control edits them,
 // MINT-113):
 //   * Which intake step's bounce escalates to that step's cc list
@@ -26,8 +29,11 @@
 //   * Whether the digest's step may carry a cc list (digest_cc_allowed): no,
 //     coordinators only (D59, S7). Minted's default, which an org row may
 //     override; platform-managed, so only Minted writes either.
+//   * How often the digest goes out (digest_frequency): daily (A8), or weekly
+//     or twice a day. Org-owned: an org row overrides Minted's default.
+//   * The weekly digest's day (digest_weekday): Monday (A8). Platform-managed.
 //
-// Nothing here sends anything. The consumers (the daily follow-up digest, and
+// Nothing here sends anything. The consumers (the follow-up digest, and
 // intake reminders once the intake back end lands) resolve the effective
 // sequence and call `scheduleSequenceSends` and `bounceEscalationRecipients`
 // below, so the rules they apply are pinned by tests now.
@@ -41,17 +47,20 @@
 // can name a key the catalog does not have.
 //
 // The database enforces the same bounds (migration 20261031051500): offsets 0
-// to 90, at most 10 steps, offsets strictly increasing, the digest at most one
-// step and no cc unless Minted allows it, cc lists of at most 20 users or
-// roles, target 1 to 90 days, send hour 0 to 23 in an IANA zone, bounce
-// escalation step 0 to 10. Rules that
-// a later PR may relax without a migration (the digest offset fixed at 0,
-// intake offsets from day 1) are enforced here and in the card only.
+// to 90, intake offsets from day 1 (A12), at most 10 steps, offsets strictly
+// increasing, the digest at most one step and no cc unless Minted allows it,
+// cc lists of at most 20 users or roles, at least one stop condition (A11),
+// target 1 to 90 days, the digest's frequency and weekly weekday, its send
+// hour, zone and second hour as one group (0 to 23, an IANA zone, the second
+// later, A10), bounce escalation step 0 to 10. The one rule a later PR may
+// relax without a migration, the digest offset fixed at 0, is enforced here
+// and in the card only.
 //
 // All date math is date-only (YYYY-MM-DD, UTC) against passed-in dates. No
 // clock read.
 import type {
   AppRole,
+  DigestFrequency,
   NotificationCcRecipient,
   NotificationChannel,
   NotificationPurpose,
@@ -151,14 +160,15 @@ export const NOTIFICATION_LIMITS = {
 export interface PurposeRules {
   label: string;
   description: string;
-  enabledLabel: string;
   maxSteps: number;
   /** Earliest offset a step may use. */
   minOffsetDays: number;
   /** When set, every step uses this offset and the card shows no input. */
   fixedOffsetDays: number | null;
-  /** Stop conditions, target days, the bounce escalation step and start-date compression. */
+  /** Stop conditions, target days and the bounce escalation step. */
   hasIntakeSettings: boolean;
+  /** How often it goes out (A8): daily, weekly or twice a day. */
+  hasFrequency: boolean;
   /**
    * The card edits an ordered cc list on each step, and the purpose's
    * templates render a cc copy. False for the digest: whether its step may
@@ -177,32 +187,34 @@ export const PURPOSE_RULES: Record<NotificationPurpose, PurposeRules> = {
     label: "Provider intake reminders",
     description:
       "Reminders to a provider who has an onboarding invite but has not finished the intake form.",
-    enabledLabel: "Send intake reminders",
     maxSteps: NOTIFICATION_LIMITS.maxSteps,
-    // Day 0 is the invite itself; a reminder that day says nothing new.
+    // A12: nothing goes out on the invite day (the database refuses it too).
     minOffsetDays: 1,
     fixedOffsetDays: null,
     hasIntakeSettings: true,
+    hasFrequency: false,
     hasCcList: purposeHasCcList("intake_reminder"),
     stepsEditable: true,
     hasSendTime: false,
   },
   followup_digest: {
-    label: "Daily follow-up digest",
-    description: "One email a day to each coordinator listing their follow-ups that are due.",
-    enabledLabel: "Send the daily digest",
-    // The digest is one message a day.
+    label: "Follow-up digest",
+    description:
+      "An email to each coordinator listing their follow-ups that are overdue or due today.",
+    // The digest is one message each time it goes out.
     maxSteps: 1,
     minOffsetDays: 0,
-    // An offset has no meaning for a daily digest until the digest PR gives
-    // it one; 0 keeps the shared step shape. Relaxing this needs no migration.
+    // An offset has no meaning for the digest: when it goes out is its
+    // frequency and send time (A8). 0 keeps the shared step shape. Relaxing
+    // this needs no migration.
     fixedOffsetDays: 0,
     hasIntakeSettings: false,
+    hasFrequency: true,
     // Coordinators only (answer 2, D59): the card offers no digest cc list.
     // The rule itself is Minted's setting digest_cc_allowed (see
     // NotificationPolicyRules).
     hasCcList: purposeHasCcList("followup_digest"),
-    // One email, one message, no cc: nothing for an org to change but on/off.
+    // One email, one message, no cc: an org changes only how often (A8).
     stepsEditable: false,
     // Minted sets when it goes out (answer 5).
     hasSendTime: true,
@@ -242,6 +254,16 @@ export interface NotificationPolicyRules {
    * copy, and the MINT-108 sender writes to coordinators only).
    */
   digestCcAllowed: boolean;
+  /**
+   * Digest: how often it goes out (A8). Default "daily". Org-owned: an org
+   * admin may choose weekly or twice a day for the org.
+   */
+  digestFrequency: DigestFrequency;
+  /**
+   * Digest, weekly: the ISO weekday it goes out on (1 = Monday to 7 =
+   * Sunday). Default 1, Monday. Platform-managed, like the send hour.
+   */
+  digestWeekday: number;
 }
 
 /** bounceEscalationStep: no bounce escalates. */
@@ -251,7 +273,26 @@ export const BOUNCE_ESCALATION_OFF = 0;
 export const DEFAULT_NOTIFICATION_POLICY_RULES: Readonly<NotificationPolicyRules> = Object.freeze({
   bounceEscalationStep: 1,
   digestCcAllowed: false,
+  digestFrequency: "daily" as DigestFrequency,
+  digestWeekday: 1,
 });
+
+export const DIGEST_FREQUENCIES: readonly DigestFrequency[] = ["daily", "weekly", "twice_daily"];
+
+export const DIGEST_FREQUENCY_LABELS: Record<DigestFrequency, string> = {
+  daily: "Daily",
+  weekly: "Weekly",
+  twice_daily: "Twice a day",
+};
+
+export function isDigestFrequency(value: unknown): value is DigestFrequency {
+  return typeof value === "string" && (DIGEST_FREQUENCIES as readonly string[]).includes(value);
+}
+
+/** An ISO weekday, 1 (Monday) to 7 (Sunday). */
+export function isIsoWeekday(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 7;
+}
 
 /** A platform or organization layer. A null or missing field inherits. */
 export type NotificationPolicyRulesOverride = {
@@ -271,6 +312,8 @@ export function isBounceEscalationStep(value: unknown): value is number {
 const POLICY_CHECKS: { [K in keyof NotificationPolicyRules]: (value: unknown) => boolean } = {
   bounceEscalationStep: isBounceEscalationStep,
   digestCcAllowed: (value) => typeof value === "boolean",
+  digestFrequency: isDigestFrequency,
+  digestWeekday: isIsoWeekday,
 };
 
 /**
@@ -294,6 +337,8 @@ export function resolveNotificationPolicyRules(
   return {
     bounceEscalationStep: pick("bounceEscalationStep"),
     digestCcAllowed: pick("digestCcAllowed"),
+    digestFrequency: pick("digestFrequency"),
+    digestWeekday: pick("digestWeekday"),
   };
 }
 
@@ -322,13 +367,21 @@ export function validateNotificationPolicyRules(
     );
   }
   const cc = record.digestCcAllowed;
-  if (cc != null) {
-    if (typeof cc !== "boolean") {
-      errors.push("Whether the daily digest may cc anyone must be on or off.");
-    } else if (writer === "org_admin") {
-      // Platform-managed: Minted sets it, on the default or as an org override.
-      errors.push("Only Minted decides whether the daily digest may cc anyone.");
-    }
+  if (cc != null && typeof cc !== "boolean") {
+    errors.push("Whether the digest may cc anyone must be on or off.");
+  }
+  const frequency = record.digestFrequency;
+  if (frequency != null && !isDigestFrequency(frequency)) {
+    errors.push("The digest goes out daily, weekly or twice a day.");
+  }
+  const weekday = record.digestWeekday;
+  if (weekday != null && !isIsoWeekday(weekday)) {
+    errors.push("The weekly digest's day must be Monday (1) to Sunday (7).");
+  }
+  if (writer === "org_admin") {
+    // Platform-managed: Minted sets them, on the default or as an org override.
+    if (cc != null) errors.push("Only Minted decides whether the digest may cc anyone.");
+    if (weekday != null) errors.push("Only Minted sets the weekly digest's day.");
   }
   return errors;
 }
@@ -360,6 +413,13 @@ export function defaultStepsCcNote(bounceEscalationStep: number): string {
 /** The card's note on a purpose whose steps may not carry a cc list. */
 export const COORDINATORS_ONLY_NOTE = "Goes to each coordinator only. No one is cc'd.";
 
+/** The card's read-only on/off line (A9: only Minted switches notifications on or off). */
+export function enabledStatusNote(enabled: boolean): string {
+  return enabled
+    ? "On. Minted switched these on for your organization."
+    : "Off. Minted switches notifications on at kickoff.";
+}
+
 /**
  * A non-blocking note when the bounce escalation step reaches no one by
  * construction: escalation is off, or the step is past the sequence's last
@@ -389,12 +449,11 @@ export interface StepDraft {
 /**
  * What an org admin edits: the org-owned settings only. A null field uses
  * Minted's default; `steps: null` uses Minted's default steps. The
- * platform-managed settings (compression, the digest's send time) are not
- * here at all: the card cannot set them.
+ * platform-managed settings (on/off, the digest's send time and weekday,
+ * digest cc) are not here at all: the card cannot set them.
  */
 export interface SequenceDraft {
-  enabled: boolean;
-  /** Intake only. null: Minted's default. [] is a real choice: never stop early. */
+  /** Intake only. null: Minted's default. Otherwise at least one (A11). */
   stopConditions: NotificationStopCondition[] | null;
   /** Intake only. null: Minted's default (the input is blank). */
   targetDaysToReady: number | null;
@@ -404,6 +463,8 @@ export interface SequenceDraft {
    * it carries a saved value through a save unchanged.
    */
   bounceEscalationStep: number | null;
+  /** Digest only (A8): daily, weekly or twice a day. null: Minted's default. */
+  digestFrequency: DigestFrequency | null;
   /** null: Minted's default steps. Otherwise the org's own, never empty. */
   steps: StepDraft[] | null;
 }
@@ -419,16 +480,16 @@ export interface NotificationSequenceDefaultConfig extends NotificationSequenceD
 }
 
 /**
- * The starting point behind "Set up": switched OFF, with every setting left
- * to Minted's default. Saving it never emails anyone until an admin switches
- * the sequence on, and any setting can be changed before saving.
+ * The starting point behind "Set up": every setting left to Minted's
+ * default. Saving it never emails anyone: a new row is off until Minted
+ * switches it on at kickoff (A9). Any setting can be changed before saving.
  */
 export function starterDraft(): SequenceDraft {
   return {
-    enabled: false,
     stopConditions: null,
     targetDaysToReady: null,
     bounceEscalationStep: null,
+    digestFrequency: null,
     steps: null,
   };
 }
@@ -454,10 +515,10 @@ export function draftFromSequence(
       DEFAULT_NOTIFICATION_POLICY_RULES.digestCcAllowed,
   });
   return {
-    enabled: config.enabled,
     stopConditions: config.stopConditions ? [...config.stopConditions] : null,
     targetDaysToReady: config.targetDaysToReady,
     bounceEscalationStep: config.bounceEscalationStep ?? null,
+    digestFrequency: config.digestFrequency ?? null,
     steps:
       config.steps.length === 0
         ? null
@@ -487,10 +548,10 @@ export function stepsFromDefault(platformDefault: NotificationSequenceDefaultCon
 /** A draft in one key order, so equal drafts compare equal however they were built. */
 function canonicalDraft(draft: SequenceDraft): string {
   return JSON.stringify({
-    enabled: draft.enabled,
     stopConditions: draft.stopConditions,
     targetDaysToReady: draft.targetDaysToReady,
     bounceEscalationStep: draft.bounceEscalationStep ?? null,
+    digestFrequency: draft.digestFrequency ?? null,
     steps:
       draft.steps?.map((step) => ({
         offsetDays: step.offsetDays,
@@ -643,7 +704,8 @@ export type SequenceIssueField =
   | "ccRecipients"
   | "stopConditions"
   | "targetDaysToReady"
-  | "bounceEscalationStep";
+  | "bounceEscalationStep"
+  | "digestFrequency";
 
 export interface SequenceIssue {
   field: SequenceIssueField;
@@ -691,7 +753,7 @@ export function validateDraft(
     add("steps", null, "Add at least one step, or use Minted's default steps.");
   }
   if (purpose === "followup_digest" && steps.length > 1) {
-    add("steps", null, "The daily digest has exactly one step.");
+    add("steps", null, "The follow-up digest has exactly one step.");
   } else if (steps.length > rules.maxSteps) {
     add("steps", null, `A sequence can have at most ${rules.maxSteps} steps.`);
   }
@@ -703,7 +765,7 @@ export function validateDraft(
     if (!isWholeNumber(offset)) {
       add("offsetDays", index, `Enter a whole number of days for step ${n}.`);
     } else if (rules.fixedOffsetDays != null && offset !== rules.fixedOffsetDays) {
-      add("offsetDays", index, `The daily digest is sent on day ${rules.fixedOffsetDays}.`);
+      add("offsetDays", index, `The follow-up digest is sent on day ${rules.fixedOffsetDays}.`);
     } else if (offset < rules.minOffsetDays || offset > NOTIFICATION_LIMITS.maxOffsetDays) {
       add(
         "offsetDays",
@@ -737,7 +799,7 @@ export function validateDraft(
       add(
         "ccRecipients",
         index,
-        "The daily digest goes to coordinators only, so it has no cc list.",
+        "The follow-up digest goes to coordinators only, so it has no cc list.",
       );
     }
     if (step.ccRecipients.length > NOTIFICATION_LIMITS.maxCcRecipients) {
@@ -778,6 +840,9 @@ export function validateDraft(
         new Set(conditions).size !== conditions.length)
     ) {
       add("stopConditions", null, "Choose stop conditions from the list.");
+    } else if (conditions && conditions.length === 0) {
+      // A11: at least one is required.
+      add("stopConditions", null, "Choose at least one stop condition, or use Minted's default.");
     }
     const target = draft.targetDaysToReady;
     if (
@@ -802,14 +867,21 @@ export function validateDraft(
     }
   } else {
     if (draft.stopConditions != null) {
-      add("stopConditions", null, "The daily digest has no stop conditions.");
+      add("stopConditions", null, "The follow-up digest has no stop conditions.");
     }
     if (draft.targetDaysToReady != null) {
-      add("targetDaysToReady", null, "The daily digest has no target.");
+      add("targetDaysToReady", null, "The follow-up digest has no target.");
     }
     if (draft.bounceEscalationStep != null) {
-      add("bounceEscalationStep", null, "The daily digest has no bounce rule.");
+      add("bounceEscalationStep", null, "The follow-up digest has no bounce rule.");
     }
+  }
+  if (rules.hasFrequency) {
+    if (draft.digestFrequency != null && !isDigestFrequency(draft.digestFrequency)) {
+      add("digestFrequency", null, "Choose daily, weekly or twice a day, or Minted's default.");
+    }
+  } else if (draft.digestFrequency != null) {
+    add("digestFrequency", null, "Intake reminders follow their steps, not a frequency.");
   }
 
   return issues;
@@ -829,11 +901,11 @@ export interface SequenceStepPayload {
 
 /**
  * The `p_payload` of save_notification_sequence(p_org_id, p_purpose, p_payload).
- * A null setting uses Minted's default. There is no key for compression or the
- * send time: the RPC refuses them (notification_platform_setting).
+ * A null setting uses Minted's default. There is no key for on/off, the send
+ * time, the weekday or digest cc: the RPC refuses them
+ * (notification_platform_setting).
  */
 export interface SaveSequencePayload {
-  enabled: boolean;
   /** Intake only; null for Minted's default and always null for the digest. */
   stop_conditions: NotificationStopCondition[] | null;
   /** Intake only; null for Minted's default and always null for the digest. */
@@ -844,6 +916,8 @@ export interface SaveSequencePayload {
    * like every other optional setting.
    */
   bounce_escalation_step?: number;
+  /** Digest only (A8): the org's own frequency. Absent for Minted's default. */
+  digest_frequency?: DigestFrequency;
   /** The revision the editor loaded; null when no row existed yet. */
   expected_revision: number | null;
   /** null: Minted's default steps. */
@@ -875,12 +949,13 @@ export function buildSavePayload(
   const ccAllowed = draftAllowsCc(purpose, options);
   const stops = draft.stopConditions;
   const bounce = rules.hasIntakeSettings ? draft.bounceEscalationStep : null;
+  const frequency = rules.hasFrequency ? draft.digestFrequency : null;
   return {
-    enabled: draft.enabled,
     stop_conditions:
       rules.hasIntakeSettings && stops ? STOP_CONDITIONS.filter((c) => stops.includes(c)) : null,
     target_days_to_ready: rules.hasIntakeSettings ? draft.targetDaysToReady : null,
     ...(bounce != null ? { bounce_escalation_step: bounce } : {}),
+    ...(frequency != null ? { digest_frequency: frequency } : {}),
     expected_revision: expectedRevision,
     steps:
       draft.steps?.map((step) => ({
@@ -924,10 +999,10 @@ const SAVE_ERROR_MESSAGES: ReadonlyArray<[string, string]> = [
     "notification_cc_user_not_member",
     "Someone cc'd on a step is no longer a member of this organization. Remove them and save again.",
   ],
-  ["notification_digest_single_step", "The daily digest has exactly one step."],
+  ["notification_digest_single_step", "The follow-up digest has exactly one step."],
   [
     "notification_digest_has_no_cc",
-    "The daily digest goes to coordinators only, so it can't cc anyone.",
+    "The follow-up digest goes to coordinators only, so it can't cc anyone.",
   ],
   ["notification_platform_setting", "Minted sets that setting, so it can't be changed here."],
   ["notification_step_offsets_not_increasing", "Each step must go out after the one before it."],
@@ -1020,9 +1095,9 @@ export type InheritableSetting =
   | "targetDaysToReady"
   | "bounceEscalationStep"
   | "digestCcAllowed"
-  | "compressTowardStartDate"
-  | "sendHour"
-  | "sendTimeZone";
+  | "digestFrequency"
+  | "digestWeekday"
+  | "sendTime";
 
 /**
  * One purpose as it applies to one org: its own values where it set them,
@@ -1031,7 +1106,7 @@ export type InheritableSetting =
  */
 export interface EffectiveNotificationSequence {
   purpose: NotificationPurpose;
-  /** The org's own switch: false with no row. Never inherited. */
+  /** On or off: false with no row; never inherited; only Minted sets it (A9). */
   enabled: boolean;
   steps: EffectiveStep[];
   /** Intake; [] for the digest. */
@@ -1050,12 +1125,16 @@ export interface EffectiveNotificationSequence {
    * default (off: coordinators only).
    */
   ccAllowed: boolean;
-  /** Intake; false for the digest. */
-  compressTowardStartDate: boolean;
+  /** Digest: daily, weekly or twice a day (A8); null for intake. */
+  digestFrequency: DigestFrequency | null;
+  /** Digest: the weekly ISO weekday (1 = Monday); null for intake. */
+  digestWeekday: number | null;
   /** Digest: the local hour (0 to 23); null for intake. */
   sendHour: number | null;
   /** Digest: the IANA zone of sendHour, always one this runtime can use; null for intake. */
   sendTimeZone: string | null;
+  /** Digest: the twice-a-day second hour, later than sendHour; null for intake. */
+  secondSendHour: number | null;
   /** True where the value is Minted's default rather than the org's own. */
   inherited: Record<InheritableSetting, boolean>;
 }
@@ -1069,21 +1148,103 @@ function inherit<T>(own: T | null | undefined, fallback: T | null): [T | null, b
   return own != null ? [own, false] : [fallback, true];
 }
 
+/** The digest's send time: one group per layer (A10). */
+export interface SendTime {
+  sendHour: number;
+  sendTimeZone: string;
+  secondSendHour: number;
+}
+
+/** The decided twice-a-day second hour (2 pm), when a layer carries none. */
+export const DEFAULT_SECOND_SEND_HOUR = 14;
+
+function isHour(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 23;
+}
+
+/** A layer's send time when it is complete and usable here, else null. */
+function sendTimeLayer(
+  layer: Partial<Pick<NotificationSequence, "sendHour" | "sendTimeZone" | "secondSendHour">>,
+): SendTime | null {
+  const { sendHour, sendTimeZone, secondSendHour } = layer;
+  if (!isHour(sendHour) || sendTimeZone == null || !isIanaTimeZone(sendTimeZone)) return null;
+  if (!isHour(secondSendHour) || secondSendHour <= sendHour) return null;
+  return { sendHour, sendTimeZone, secondSendHour };
+}
+
 /**
- * The digest's zone, always one this runtime can format in. The database
- * checks a zone against its own tz database when it is written, but that can
- * change under a stored row, and JavaScript's Intl may not match it. So an
- * org zone that fails isIanaTimeZone gives way to Minted's default zone
- * (marked inherited), and an unusable default gives way to
- * LAST_RESORT_TIME_ZONE. It never throws and never returns an unusable zone.
+ * The digest's send time, all from one layer (A10: no separate inheritance):
+ * the org's group when it is complete and this runtime can use its zone,
+ * else Minted's default group. A zone the runtime cannot use (the database
+ * checks it on write, but tzdata can change under a stored row) makes the
+ * whole org group fall back. If even the default group is unusable, its
+ * hour stays and the zone becomes LAST_RESORT_TIME_ZONE (and the second hour
+ * the decided 2 pm, or none past it). It never throws.
  */
-function resolveTimeZone(
-  own: string | null | undefined,
-  fallback: string | null,
-): [string, boolean] {
-  if (own != null && isIanaTimeZone(own)) return [own, false];
-  if (fallback != null && isIanaTimeZone(fallback)) return [fallback, true];
-  return [LAST_RESORT_TIME_ZONE, true];
+export function resolveSendTime(
+  org:
+    Partial<Pick<NotificationSequence, "sendHour" | "sendTimeZone" | "secondSendHour">> | undefined,
+  platformDefault: Pick<
+    NotificationSequenceDefault,
+    "sendHour" | "sendTimeZone" | "secondSendHour"
+  >,
+): SendTime & { inherited: boolean } {
+  const own = org ? sendTimeLayer(org) : null;
+  if (own) return { ...own, inherited: false };
+  const fallback = sendTimeLayer(platformDefault);
+  if (fallback) return { ...fallback, inherited: true };
+  const sendHour = isHour(platformDefault.sendHour) ? platformDefault.sendHour : 8;
+  const sendTimeZone =
+    platformDefault.sendTimeZone != null && isIanaTimeZone(platformDefault.sendTimeZone)
+      ? platformDefault.sendTimeZone
+      : LAST_RESORT_TIME_ZONE;
+  const second = isHour(platformDefault.secondSendHour) ? platformDefault.secondSendHour : null;
+  const secondSendHour =
+    second != null && second > sendHour
+      ? second
+      : DEFAULT_SECOND_SEND_HOUR > sendHour
+        ? DEFAULT_SECOND_SEND_HOUR
+        : Math.min(23, sendHour + 1);
+  return { sendHour, sendTimeZone, secondSendHour, inherited: true };
+}
+
+/**
+ * Plain-language problems with one layer's send time (A10). All three
+ * values together or none (none: Minted's default); the second hour later
+ * than the first; an IANA zone this runtime can use. Mission Control runs
+ * it before saving an org override; the database refuses the same shapes.
+ */
+export function validateSendTime(layer: {
+  sendHour?: unknown;
+  sendTimeZone?: unknown;
+  secondSendHour?: unknown;
+}): string[] {
+  const values = [layer.sendHour, layer.sendTimeZone, layer.secondSendHour];
+  const set = values.filter((v) => v != null).length;
+  if (set === 0) return [];
+  const errors: string[] = [];
+  if (set !== 3) {
+    errors.push(
+      "Set the send hour, the time zone and the second send hour together, or leave all three to Minted's default.",
+    );
+  }
+  if (layer.sendHour != null && !isHour(layer.sendHour)) {
+    errors.push("The send hour must be a whole hour from 0 to 23.");
+  }
+  if (
+    layer.sendTimeZone != null &&
+    (typeof layer.sendTimeZone !== "string" || !isIanaTimeZone(layer.sendTimeZone))
+  ) {
+    errors.push("The time zone must be an IANA zone such as America/Chicago.");
+  }
+  if (layer.secondSendHour != null) {
+    if (!isHour(layer.secondSendHour)) {
+      errors.push("The second send hour must be a whole hour from 0 to 23.");
+    } else if (isHour(layer.sendHour) && layer.secondSendHour <= layer.sendHour) {
+      errors.push("The second send hour must be later than the first.");
+    }
+  }
+  return errors;
 }
 
 /**
@@ -1091,11 +1252,10 @@ function resolveTimeZone(
  * Minted's default. Field by field, a null org value takes the default's; an
  * org with no steps of its own takes the default steps, which cc no one.
  * `enabled` comes from the org's row alone, so a default cannot switch an
- * org on. The digest's zone is always usable (see resolveTimeZone): an org
- * zone this runtime cannot use reads as inherited. The policy settings
- * resolve through resolveNotificationPolicyRules: the bounce step from the
- * org's row over Minted's default, digest_cc_allowed from Minted's default
- * alone. Throws when the rows are for a different purpose.
+ * org on. The digest's send time comes whole from one layer and is always
+ * usable (resolveSendTime). The policy settings resolve field by field
+ * through resolveNotificationPolicyRules (the org's row over Minted's
+ * default). Throws when the rows are for a different purpose.
  */
 export function resolveNotificationSequence(
   purpose: NotificationPurpose,
@@ -1110,8 +1270,15 @@ export function resolveNotificationSequence(
     {
       bounceEscalationStep: platformDefault.bounceEscalationStep,
       digestCcAllowed: platformDefault.digestCcAllowed,
+      digestFrequency: platformDefault.digestFrequency,
+      digestWeekday: platformDefault.digestWeekday,
     },
-    { bounceEscalationStep: org?.bounceEscalationStep, digestCcAllowed: org?.digestCcAllowed },
+    {
+      bounceEscalationStep: org?.bounceEscalationStep,
+      digestCcAllowed: org?.digestCcAllowed,
+      digestFrequency: org?.digestFrequency,
+      digestWeekday: org?.digestWeekday,
+    },
   );
   const ccAllowed = purposeAllowsCc(purpose, policy);
   const ownSteps = org != null && org.steps.length > 0;
@@ -1144,19 +1311,12 @@ export function resolveNotificationSequence(
   const [targetDaysToReady, targetInherited] = intake
     ? inherit(org?.targetDaysToReady, platformDefault.targetDaysToReady)
     : none;
-  const [compress, compressInherited] = intake
-    ? inherit(org?.compressTowardStartDate, platformDefault.compressTowardStartDate)
-    : none;
   const [bounceEscalationStep, bounceInherited]: [number | null, boolean] = intake
     ? [policy.bounceEscalationStep, !isBounceEscalationStep(org?.bounceEscalationStep)]
     : none;
-  const digestCcInherited =
-    purpose === "followup_digest" && typeof org?.digestCcAllowed !== "boolean";
-  const timed = rules.hasSendTime;
-  const [sendHour, hourInherited] = timed ? inherit(org?.sendHour, platformDefault.sendHour) : none;
-  const [sendTimeZone, zoneInherited] = timed
-    ? resolveTimeZone(org?.sendTimeZone, platformDefault.sendTimeZone)
-    : none;
+  const digest = purpose === "followup_digest";
+  const digestCcInherited = digest && typeof org?.digestCcAllowed !== "boolean";
+  const sendTime = rules.hasSendTime ? resolveSendTime(org, platformDefault) : null;
 
   return {
     purpose,
@@ -1166,31 +1326,40 @@ export function resolveNotificationSequence(
     targetDaysToReady,
     bounceEscalationStep,
     ccAllowed,
-    compressTowardStartDate: compress ?? false,
-    sendHour,
-    sendTimeZone,
+    digestFrequency: rules.hasFrequency ? policy.digestFrequency : null,
+    digestWeekday: digest ? policy.digestWeekday : null,
+    sendHour: sendTime?.sendHour ?? null,
+    sendTimeZone: sendTime?.sendTimeZone ?? null,
+    secondSendHour: sendTime?.secondSendHour ?? null,
     inherited: {
       steps: !ownSteps,
       stopConditions: stopsInherited,
       targetDaysToReady: targetInherited,
       bounceEscalationStep: bounceInherited,
       digestCcAllowed: digestCcInherited,
-      compressTowardStartDate: compressInherited,
-      sendHour: hourInherited,
-      sendTimeZone: zoneInherited,
+      digestFrequency: rules.hasFrequency && !isDigestFrequency(org?.digestFrequency),
+      digestWeekday: digest && !isIsoWeekday(org?.digestWeekday),
+      sendTime: sendTime?.inherited ?? false,
     },
   };
 }
 
-/** "Step 1 · day 2 after the invite · Email · First reminder" for the read-only views. */
+const FREQUENCY_WHEN: Record<DigestFrequency, string> = {
+  daily: "once a day",
+  weekly: "once a week",
+  twice_daily: "twice a day",
+};
+
+/** "Step 1 · day 1 after the invite · Email · First reminder" for the read-only views. */
 export function describeStep(
   purpose: NotificationPurpose,
   step: Pick<EffectiveStep, "position" | "offsetDays" | "channel" | "templateKey">,
+  digestFrequency: DigestFrequency = DEFAULT_NOTIFICATION_POLICY_RULES.digestFrequency,
 ): string {
   const when =
     PURPOSE_RULES[purpose].fixedOffsetDays == null
       ? `day ${step.offsetDays} after the invite`
-      : "once a day";
+      : FREQUENCY_WHEN[digestFrequency];
   const label = getNotificationTemplate(step.templateKey)?.label ?? step.templateKey;
   return `Step ${step.position} · ${when} · ${CHANNEL_LABELS[step.channel]} · ${label}`;
 }
@@ -1270,6 +1439,45 @@ export function describeSendTime(hour: number | null, zone: string | null): stri
   return `${hourLabel(hour)} ${timeZoneName(zone)}`;
 }
 
+const WEEKDAY_PLURALS = [
+  "Mondays",
+  "Tuesdays",
+  "Wednesdays",
+  "Thursdays",
+  "Fridays",
+  "Saturdays",
+  "Sundays",
+];
+
+/**
+ * The digest's read-only schedule line, built from its settings (A8):
+ * "Sent around 8 am Central time. Minted sets this." (daily), "Sent on
+ * Mondays around 8 am Central time. Minted sets the day and time." (weekly),
+ * "Sent around 8 am and 2 pm Central time. Minted sets these times." (twice a
+ * day). Null when the send time cannot be shown.
+ */
+export function describeDigestSchedule(schedule: {
+  digestFrequency: DigestFrequency | null;
+  digestWeekday: number | null;
+  sendHour: number | null;
+  sendTimeZone: string | null;
+  secondSendHour: number | null;
+}): string | null {
+  const first = describeSendTime(schedule.sendHour, schedule.sendTimeZone);
+  if (!first || schedule.sendTimeZone == null) return null;
+  const frequency = schedule.digestFrequency ?? DEFAULT_NOTIFICATION_POLICY_RULES.digestFrequency;
+  if (frequency === "weekly") {
+    const day = isIsoWeekday(schedule.digestWeekday)
+      ? WEEKDAY_PLURALS[schedule.digestWeekday - 1]
+      : WEEKDAY_PLURALS[DEFAULT_NOTIFICATION_POLICY_RULES.digestWeekday - 1];
+    return `Sent on ${day} around ${first}. Minted sets the day and time.`;
+  }
+  if (frequency === "twice_daily" && isHour(schedule.secondSendHour)) {
+    return `Sent around ${hourLabel(schedule.sendHour as number)} and ${hourLabel(schedule.secondSendHour)} ${timeZoneName(schedule.sendTimeZone)}. Minted sets these times.`;
+  }
+  return `Sent around ${first}. Minted sets this.`;
+}
+
 /* ------------------------------ Bounce rule -------------------------------- */
 
 /**
@@ -1314,7 +1522,7 @@ export function draftBounceEscalationStep(
   ).bounceEscalationStep;
 }
 
-/* ------------------------- Start-date cadence rule ------------------------- */
+/* ------------------------------ Intake schedule ----------------------------- */
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 86_400_000;
@@ -1335,112 +1543,53 @@ function fromUtcDay(day: number): string {
 }
 
 export interface ScheduleInput {
-  /** Configured offsets in position order; must strictly increase. */
+  /** Configured offsets in position order; must strictly increase, each day 1 or later. */
   offsets: readonly number[];
   /** The invite date (YYYY-MM-DD). */
   inviteDate: string;
-  /** The provider's known start date, if any (YYYY-MM-DD). */
-  startDate?: string | null;
   targetDaysToReady: number;
-  compressTowardStartDate: boolean;
 }
 
 export interface ScheduledSend {
   position: number;
-  configuredOffsetDays: number;
-  /** Days after the invite this step actually goes out. */
+  /** Days after the invite this step goes out. */
   offsetDays: number;
   sendOn: string;
 }
 
-export interface SkippedSend {
-  position: number;
-  configuredOffsetDays: number;
-  reason: "start_date_reached";
-}
-
 export interface ScheduleResult {
-  /** True when the start date moved the schedule. */
-  compressed: boolean;
-  /** When the provider should be ready: invite + target, or the day before the start date if that is sooner and compression is on. */
+  /** When the provider should be ready: the invite plus the target. */
   readyBy: string;
   sends: ScheduledSend[];
-  skipped: SkippedSend[];
 }
 
 /**
- * The scheduled send dates for a sequence's steps.
- *
- * Without compression (the flag is off, there is no start date, or the start
- * date is far enough away), step i goes out `offsets[i]` days after the
- * invite.
- *
- * With compression on and a known start date, the last useful day for a
- * reminder is the day before the start date: D = (start - invite) - 1 days.
- * The schedule spans S = max(target, last offset) days. When D < S, every
- * offset is scaled by D / S and rounded down; each step then goes out at
- * least one day after the one before it (the first at least one day after
- * the invite). A step that would land after day D is skipped, as is every
- * step after it. When D < 0 (the start date is on or before the invite),
- * every step is skipped.
+ * The send dates for a sequence's steps: step i goes out `offsets[i]` days
+ * after the invite, and never on the invite day (A12). There is no
+ * start-date compression: it was removed (A13, which supersedes D56), and a
+ * report of providers whose start date is approaching with intake still
+ * incomplete replaces it (its own ticket).
  */
 export function scheduleSequenceSends(input: ScheduleInput): ScheduleResult {
   const invite = toUtcDay(input.inviteDate);
   const { offsets, targetDaysToReady: target } = input;
   offsets.forEach((offset, i) => {
-    if (!Number.isInteger(offset) || offset < 0) {
-      throw new RangeError(`Offset ${offset} must be a whole number of days`);
+    if (!Number.isInteger(offset) || offset < 1) {
+      throw new RangeError(`Offset ${offset} must be a whole number of days, day 1 or later`);
     }
     if (i > 0 && offset <= offsets[i - 1]) throw new RangeError("Offsets must strictly increase");
   });
   if (!Number.isInteger(target) || target < 1) {
     throw new RangeError("Target days must be a whole number of at least 1");
   }
-
-  const span = Math.max(target, offsets.at(-1) ?? 0);
-  const start = input.startDate ? toUtcDay(input.startDate) : null;
-  const lastUsefulDay = start == null ? null : start - invite - 1;
-  const compress = input.compressTowardStartDate && lastUsefulDay != null && lastUsefulDay < span;
-
-  const readyAfterDays =
-    input.compressTowardStartDate && lastUsefulDay != null
-      ? Math.max(0, Math.min(target, lastUsefulDay))
-      : target;
-
-  if (!compress || lastUsefulDay == null) {
-    return {
-      compressed: false,
-      readyBy: fromUtcDay(invite + readyAfterDays),
-      sends: offsets.map((offset, i) => ({
-        position: i + 1,
-        configuredOffsetDays: offset,
-        offsetDays: offset,
-        sendOn: fromUtcDay(invite + offset),
-      })),
-      skipped: [],
-    };
-  }
-
-  const sends: ScheduledSend[] = [];
-  const skipped: SkippedSend[] = [];
-  let previous: number | null = null;
-  for (const [i, offset] of offsets.entries()) {
-    const position = i + 1;
-    const floor: number = previous == null ? Math.min(1, offset) : previous + 1;
-    const scaled = Math.max(floor, Math.floor((offset * lastUsefulDay) / span));
-    if (lastUsefulDay < 0 || scaled > lastUsefulDay || skipped.length > 0) {
-      skipped.push({ position, configuredOffsetDays: offset, reason: "start_date_reached" });
-      continue;
-    }
-    sends.push({
-      position,
-      configuredOffsetDays: offset,
-      offsetDays: scaled,
-      sendOn: fromUtcDay(invite + scaled),
-    });
-    previous = scaled;
-  }
-  return { compressed: true, readyBy: fromUtcDay(invite + readyAfterDays), sends, skipped };
+  return {
+    readyBy: fromUtcDay(invite + target),
+    sends: offsets.map((offset, i) => ({
+      position: i + 1,
+      offsetDays: offset,
+      sendOn: fromUtcDay(invite + offset),
+    })),
+  };
 }
 
 /** "day 1, day 2 and day 3" for the card's one-line schedule summary. */

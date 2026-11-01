@@ -2344,6 +2344,8 @@ export interface RosterExportSnapshot {
 export type NotificationPurpose = "followup_digest" | "intake_reminder";
 export type NotificationChannel = "email" | "sms";
 export type NotificationStopCondition = "submitted" | "paused" | "withdrawn" | "provider_replied";
+/** How often the follow-up digest goes out (A8). */
+export type DigestFrequency = "daily" | "weekly" | "twice_daily";
 
 /** One cc'd escalation recipient on a step: a member, or everyone holding a role. */
 export type NotificationCcRecipient =
@@ -2358,6 +2360,7 @@ export interface NotificationSequence {
   id: string;
   orgId: string;
   purpose: NotificationPurpose;
+  /** Minted's to set (A9: off until Minted turns notifications on at kickoff). */
   enabled: boolean;
   /** Intake only; null uses Minted's default. Always null for the digest. */
   stopConditions: NotificationStopCondition[] | null;
@@ -2368,12 +2371,19 @@ export interface NotificationSequence {
    * (0: none); null uses Minted's default. Always null for the digest.
    */
   bounceEscalationStep: number | null;
-  /** Intake only, platform-managed (only Minted sets it); null uses Minted's default. */
-  compressTowardStartDate: boolean | null;
+  /** Digest only, org-owned (A8); null uses Minted's default. */
+  digestFrequency: DigestFrequency | null;
+  /** Digest only, platform-managed: the weekly ISO weekday (1 = Monday); null uses Minted's default. */
+  digestWeekday: number | null;
   /** Digest only, platform-managed: the local send hour (0 to 23); null uses Minted's default. */
   sendHour: number | null;
   /** Digest only, platform-managed: the IANA zone of sendHour; null uses Minted's default. */
   sendTimeZone: string | null;
+  /**
+   * Digest only, platform-managed: the twice-a-day second hour, later than
+   * sendHour. Set with sendHour and sendTimeZone, or all three null (A10).
+   */
+  secondSendHour: number | null;
   /**
    * Digest only, platform-managed: Minted's per-org override of whether the
    * digest step may carry a cc list; null uses Minted's default (false).
@@ -2413,8 +2423,10 @@ export interface NotificationSequenceDefault {
   stopConditions: NotificationStopCondition[] | null;
   /** Intake: set. Digest: null. */
   targetDaysToReady: number | null;
-  /** Intake: set (false in R1). Digest: null. */
-  compressTowardStartDate: boolean | null;
+  /** Digest: set (daily). Intake: null. */
+  digestFrequency: DigestFrequency | null;
+  /** Digest: set (1, Monday). Intake: null. */
+  digestWeekday: number | null;
   /** Intake: set (1: a bounce on step 1 escalates; 0: none). Digest: null. */
   bounceEscalationStep: number | null;
   /** Digest: set (false: coordinators only, D59). Intake: null. Minted's alone. */
@@ -2423,6 +2435,8 @@ export interface NotificationSequenceDefault {
   sendHour: number | null;
   /** Digest: set (America/Chicago). Intake: null. */
   sendTimeZone: string | null;
+  /** Digest: set (14). Intake: null. */
+  secondSendHour: number | null;
   createdAt: string;
   updatedAt: string;
 }
