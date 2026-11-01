@@ -1,8 +1,6 @@
 // E4.2 F4.2.1 — SOP wizard draft hooks (save-as-draft WIP, deleted on publish).
-import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
-import { resolveTemplateDraftRules, type TemplateDraftRules } from "@/lib/payerDetailView";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
 import {
   deleteSopTemplateDraft,
@@ -56,12 +54,4 @@ export function useDeleteSopTemplateDraft() {
       return qc.invalidateQueries({ queryKey: queryKeys.sopTemplateDrafts(orgId) });
     },
   });
-}
-
-/** What "New template" does when the payer has saved drafts, for the active
- * organization. Nothing stores a platform or organization override yet (the
- * Mission Control setting is MINT-129), so this resolves to the decided
- * default; when the setting lands, its read replaces the two nulls. */
-export function useTemplateDraftRules(): TemplateDraftRules {
-  return useMemo(() => resolveTemplateDraftRules(null, null), []);
 }

@@ -27,10 +27,8 @@ import { PAYER_KIND_LABELS } from "@/lib/payerDirectory";
 import {
   PAYER_DETAIL_TABS,
   PAYER_DETAIL_TAB_LABELS,
-  newTemplateSearch,
   type PayerDetailTab,
 } from "@/lib/payerDetailView";
-import { useTemplateDraftRules } from "@/hooks/useSopTemplateDrafts";
 import { resolvePayerNextAction } from "@/lib/payerNextAction";
 import { networkPayerIdsFromTargets } from "@/lib/payerSetup";
 import { useIsAdmin } from "@/lib/permissions";
@@ -338,7 +336,6 @@ function PayerNextStepBanner({
   archived: boolean;
 }) {
   const funnel = usePayerReadinessFunnel();
-  const draftRules = useTemplateDraftRules();
   const row = useMemo(
     () => (funnel.rows ?? []).find((r) => r.payerId === payerId) ?? null,
     [funnel.rows, payerId],
@@ -357,7 +354,7 @@ function PayerNextStepBanner({
         size="sm"
         className="h-8 flex-none bg-[#1B4D3E] text-white hover:bg-[#163F33]"
       >
-        <Link to="/admin/templates/new" search={newTemplateSearch(payerId, draftRules)}>
+        <Link to="/admin/templates/new" search={{ payerId, tier: "global" }}>
           {action.label} <ArrowRight className="ml-1 h-3.5 w-3.5" />
         </Link>
       </Button>
