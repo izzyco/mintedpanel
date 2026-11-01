@@ -17,8 +17,13 @@
 // Hard rules stay hard: the 10-digit rule and the check digit (the dedupe's,
 // not this module's). Results live in memory only; nothing is stored per row
 // and nothing from the registry reaches the run's error report.
-import type { ImportRowDisposition, StagedImportRow } from "@/lib/importDedupe";
-import type { CommitPlan } from "@/lib/importDedupe";
+import {
+  unresolvedConflicts,
+  type CommitPlan,
+  type ImportRowDisposition,
+  type RunResolutions,
+  type StagedImportRow,
+} from "@/lib/importDedupe";
 import { isValidNpi, stripNpiSeparators } from "@/lib/providerIdentity";
 import { advisoriesForRecord, type Advisory } from "@/lib/advisories";
 import {
@@ -30,7 +35,7 @@ import {
 import {
   DEFAULT_NPI_REGISTRY_POLICY,
   type NpiImportVerifyScope,
-  type NpiRegistryOutcome,
+  type NpiRegistryCheck,
   type NpiRegistryPolicy,
 } from "@/lib/npiRegistryPolicy";
 import {
@@ -39,11 +44,14 @@ import {
   type NpiReviewAdvisory,
 } from "@/lib/npiRegistryReview";
 
-/** A row's stable result kind: a registry answer about the NPI
- * (organizationNumber, notFound, nameMismatch, inactive), "found" (listed,
- * active, an individual, the name matches), "notChecked" (an outage, the rate
- * limit, Stop or a commit first) or "pending" (not checked yet). */
-export type ImportNpiResultKind = "found" | NpiRegistryOutcome | "notChecked" | "pending";
+/** A row's stable result kind, one per row: "found" exactly when the row
+ * shows "Found in the NPI Registry" (a full match with no advisory); else the
+ * registry's answer about the NPI (organizationNumber, notFound, nameMismatch,
+ * inactive); else the first value the file gives that differs from the record
+ * found (credentialsDiffer, taxonomyDiffers, licenseDiffers); else
+ * "notChecked" (an outage, the rate limit, Stop, a commit first, or a record
+ * found with no name to compare) or "pending" (not checked yet). */
+export type ImportNpiResultKind = "found" | NpiRegistryCheck | "notChecked" | "pending";
 
 export interface ImportNpiCheckItem {
   /** Separators stripped; passes the CMS check digit. */
@@ -227,7 +235,11 @@ export function importNpiRowResult(
   const fullMatch =
     registryOutcome === null && review.advisories.length === 0 && review.line?.tone === "ok";
   return {
-    kind: registryOutcome ?? (fullMatch || review.line?.tone === "ok" ? "found" : "notChecked"),
+    kind: fullMatch
+      ? "found"
+      : (registryOutcome ??
+        review.advisories.find((advisory) => advisory.policyCheck)?.policyCheck ??
+        "notChecked"),
     advisories: review.advisories,
     notes:
       shown.length > 0
@@ -244,17 +256,39 @@ export interface ImportNpiCounts {
   notes: number;
 }
 
+/** The anchor lines of the dispositions a commit would write right now: every
+ * create, and every update whose conflicts are all resolved (an update with
+ * one unresolved is held back by the commit plan itself). */
+export function importCommittedLines(
+  dispositions: readonly ImportRowDisposition[] | null | undefined,
+  resolutions: RunResolutions,
+): Set<number> {
+  const lines = new Set<number>();
+  for (const disposition of dispositions ?? []) {
+    if (disposition.kind === "create") lines.add(disposition.line);
+    else if (
+      disposition.kind === "update" &&
+      unresolvedConflicts(disposition, resolutions).length === 0
+    ) {
+      lines.add(disposition.line);
+    }
+  }
+  return lines;
+}
+
 /** Every row's result, keyed by its anchor line, plus the summary count and
- * how many rows that will be committed (creates and updates; never a skip,
- * which writes nothing) have no registry answer. */
+ * how many rows the commit would write without a registry answer: those in
+ * `committedLines` (importCommittedLines), or when it is not given every
+ * create and update (never a skip, which writes nothing). */
 export function summarizeImportNpiRows(
   items: readonly ImportNpiCheckItem[],
   snapshot: ImportNpiSnapshot,
   policy: NpiRegistryPolicy = DEFAULT_NPI_REGISTRY_POLICY,
+  committedLines?: ReadonlySet<number>,
 ): {
   byLine: Map<number, ImportNpiRowResult>;
   counts: ImportNpiCounts;
-  /** Rows to be committed (create / update) that were not checked. */
+  /** Rows the commit would write that were not checked. */
   unchecked: number;
 } {
   const byLine = new Map<number, ImportNpiRowResult>();
@@ -262,7 +296,8 @@ export function summarizeImportNpiRows(
   let unchecked = 0;
   for (const item of items) {
     const outcome = snapshot.results.get(item.npi);
-    if (item.disposition !== "skip" && outcome?.status !== "checked") unchecked += 1;
+    const committed = committedLines ? committedLines.has(item.line) : item.disposition !== "skip";
+    if (committed && outcome?.status !== "checked") unchecked += 1;
     const result = importNpiRowResult(outcome, item, snapshot.phase, policy);
     byLine.set(item.line, result);
     if (outcome?.status === "checked" && result.notes.some((note) => note.tone === "warn")) {
@@ -292,6 +327,8 @@ export function importCommitProviderIds(
 
 const NOT_CHECKED_WHY = {
   outage: "The NPI Registry could not be reached, so this NPI was saved without a registry check.",
+  rateLimited:
+    "The NPI Registry check reached its lookup limit, so this NPI was saved without a registry check.",
   committedFirst:
     "The import was committed before this NPI's registry check ran, so it was saved without one.",
 } as const;
@@ -324,12 +361,17 @@ export function importNpiCaptureAdvisories(input: {
       }
       continue;
     }
-    const outage = outcome?.status === "not_checked" && outcome.reason !== "stopped";
+    const reason = outcome?.status === "not_checked" ? outcome.reason : "stopped";
     captured.push({
       check: "npi_registry.not_checked",
       record: { table: "providers", id: providerId, field: "npi" },
       display: "review_step",
-      whyItMatters: outage ? NOT_CHECKED_WHY.outage : NOT_CHECKED_WHY.committedFirst,
+      whyItMatters:
+        reason === "unavailable"
+          ? NOT_CHECKED_WHY.outage
+          : reason === "rate_limited"
+            ? NOT_CHECKED_WHY.rateLimited
+            : NOT_CHECKED_WHY.committedFirst,
       context: facts,
     });
   }

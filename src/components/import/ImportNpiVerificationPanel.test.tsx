@@ -112,8 +112,10 @@ describe("ImportNpiVerificationPanel", () => {
 
   it("says a note never stops a row and committing never waits — no blocking copy", () => {
     const html = render(snapshot({}));
-    expect(html).toContain("A note never stops a row: every row is committed");
-    expect(html).toContain("committing never waits for the");
+    // Factual: the dedupe's blocked rows and unresolved updates are not
+    // committed, so the panel never says every row is.
+    expect(html).toContain("A note never holds a row back; committing never waits for the checks.");
+    expect(html).not.toContain("every row is committed");
     expect(html).not.toMatch(/block/i);
   });
 
@@ -125,7 +127,7 @@ describe("ImportNpiVerificationPanel", () => {
   it("names its scope and that a note never stops a row", () => {
     expect(render(snapshot({}))).toContain("New providers only.");
     expect(render(snapshot({}), { notes: 0 }, "all_rows")).toContain("Every row with an NPI.");
-    expect(render(snapshot({}))).toContain("A note never stops a row");
+    expect(render(snapshot({}))).toContain("A note never holds a row back");
   });
 });
 
@@ -144,6 +146,9 @@ describe("ImportNpiNotes", () => {
       html.indexOf("Credentials OT — the registry has PT"),
     );
     expect(html).toContain("--mp-warn-ink");
+    // Icons are 16px inline (AGENTS.md style rules).
+    expect(html.match(/<svg[^>]*class="[^"]*\bh-4 w-4\b[^"]*"/g)).toHaveLength(2);
+    expect(html).not.toContain("h-3.5");
     // Nothing to confirm, nothing to type.
     expect(html).not.toMatch(/<button|<input/);
   });

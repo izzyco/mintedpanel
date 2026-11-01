@@ -107,7 +107,7 @@ export function ImportNpiVerificationPanel({
         {scope === "all_rows"
           ? "Every row with an NPI. Notes are under New providers, Updates and Skipped."
           : "New providers only. Each row's note is under New providers."}{" "}
-        A note never stops a row: every row is committed, and committing never waits for the checks.
+        A note never holds a row back; committing never waits for the checks.
       </p>
       <p role="status" aria-live="polite" className="sr-only">
         {importNpiAnnouncement(snapshot, counts)}
@@ -128,12 +128,12 @@ export function ImportNpiNotes({ notes }: { notes: readonly NpiVerificationView[
           {note.tone === "ok" ? (
             <CircleCheck
               aria-hidden="true"
-              className="mt-px h-3.5 w-3.5 shrink-0 text-[var(--mp-ok-ink)]"
+              className="mt-px h-4 w-4 shrink-0 text-[var(--mp-ok-ink)]"
             />
           ) : note.tone === "warn" ? (
             <TriangleAlert
               aria-hidden="true"
-              className="mt-px h-3.5 w-3.5 shrink-0 text-[var(--mp-warn-ink)]"
+              className="mt-px h-4 w-4 shrink-0 text-[var(--mp-warn-ink)]"
             />
           ) : null}
           <span

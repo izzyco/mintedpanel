@@ -57,6 +57,7 @@ import {
 } from "@/lib/importDedupe";
 import {
   importCommitProviderIds,
+  importCommittedLines,
   importNpiCaptureAdvisories,
   importNpiCommitWarning,
   selectImportNpiChecks,
@@ -269,9 +270,15 @@ export function ImportPreviewContent({
     previewReady && isAdmin && run?.state === "ready_for_review" && npiChecks.length > 0,
   );
   const npiSnapshot = npiVerification.snapshot;
+  // Only rows the commit would write right now count as "go in not
+  // checked": an update with an unresolved conflict is held back by the plan.
+  const committedLines = useMemo(
+    () => importCommittedLines(preview.dispositions, resolutions),
+    [preview.dispositions, resolutions],
+  );
   const npi = useMemo(
-    () => summarizeImportNpiRows(npiChecks, npiSnapshot, policy),
-    [npiChecks, npiSnapshot, policy],
+    () => summarizeImportNpiRows(npiChecks, npiSnapshot, policy, committedLines),
+    [npiChecks, npiSnapshot, policy, committedLines],
   );
   const captureNpiAdvisories = useCaptureImportNpiAdvisories();
 
@@ -348,17 +355,6 @@ export function ImportPreviewContent({
             toast.info("This run was already committed.");
             return;
           }
-          // Every committed row's advisories go to the capture seam, facts
-          // only, in the background; it never reaches this commit.
-          captureNpiAdvisories(
-            importNpiCaptureAdvisories({
-              items: npiChecks,
-              snapshot: npiAtCommit,
-              policy,
-              importRunId: run.id,
-              providerIdByLine: importCommitProviderIds(plan, result),
-            }),
-          );
           // E6.4 F6.4.6 — the unified relationship summary: what the commit
           // resolved across providers, groups, facilities, and enrollments.
           const rel = result.relationships;
@@ -368,6 +364,19 @@ export function ImportPreviewContent({
               : "";
           toast.success(
             `${result.created} provider${result.created === 1 ? "" : "s"} created · ${result.updated} updated. Imported providers are Pending Verification.${relText}`,
+          );
+          // After the toast: every committed row's advisories go to the
+          // capture seam, facts only, in the background. Building and sending
+          // never throw (a failure is logged without values), so nothing here
+          // can reach this commit's feedback.
+          captureNpiAdvisories(() =>
+            importNpiCaptureAdvisories({
+              items: npiChecks,
+              snapshot: npiAtCommit,
+              policy,
+              importRunId: run.id,
+              providerIdByLine: importCommitProviderIds(plan, result),
+            }),
           );
         },
         onError: (e) =>

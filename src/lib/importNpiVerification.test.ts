@@ -17,6 +17,7 @@ import {
   estimateRemainingMs,
   formatTimeRemaining,
   importCommitProviderIds,
+  importCommittedLines,
   importNpiAnnouncement,
   importNpiCaptureAdvisories,
   importNpiChecksKey,
@@ -264,6 +265,35 @@ describe("importNpiRowResult — every answer an advisory, never a block (A30)",
     }
   });
 
+  it('kind is "found" exactly when the row shows "Found", and names the advisory otherwise', () => {
+    const cases: Array<[NpiRegistryRecord | null, string]> = [
+      [record(), "found"],
+      [ORG_RECORD, "organizationNumber"],
+      [NOT_FOUND, "notFound"],
+      [INACTIVE, "inactive"],
+      [NAME_DIFFERS, "nameMismatch"],
+      [record({ credential: "OT" }), "credentialsDiffer"],
+    ];
+    for (const [r, kind] of cases) {
+      const result = importNpiRowResult(checked(r), item(), "done");
+      expect(result.kind).toBe(kind);
+      expect(result.notes.some((note) => note.title === "Found in the NPI Registry")).toBe(
+        kind === "found",
+      );
+    }
+    // Hidden or not: a field difference is never "found".
+    const hidden = resolveNpiRegistryPolicy(null, {
+      display: { credentialsDiffer: "backend_only" },
+    });
+    expect(
+      importNpiRowResult(checked(record({ credential: "OT" })), item(), "done", hidden),
+    ).toMatchObject({ kind: "credentialsDiffer", notes: [] });
+    // A record found with no name to compare is not a full match.
+    expect(
+      importNpiRowResult(checked(record()), item({ firstName: "", lastName: "" }), "done"),
+    ).toMatchObject({ kind: "notChecked", notes: [] });
+  });
+
   it('a "backend_only" answer shows nothing on the row — and never "Found"', () => {
     const hidden = resolveNpiRegistryPolicy(null, {
       display: Object.fromEntries(NPI_REGISTRY_CHECKS.map((check) => [check, "backend_only"])),
@@ -348,6 +378,46 @@ describe("every row commits, whatever the registry says (A30, A39–A41)", () =>
     expect(JSON.stringify(plan)).not.toMatch(/NPI Registry|registry/i);
   });
 
+  it("counts as unchecked only rows the commit would write: creates, and updates with every conflict resolved", () => {
+    const rows: StagedImportRow[] = [
+      row(2, "Avery", "Quill", fakeNpi(410)),
+      // Same NPI as an existing provider, under another name: a name conflict.
+      row(3, "Renamed", "Person", fakeNpi(411)),
+    ];
+    const dispositions = dedupeImportRows(
+      inputs({
+        rows,
+        providers: [
+          {
+            id: "p9",
+            firstName: "Original",
+            lastName: "Person",
+            npi: fakeNpi(411),
+            specialty: null,
+          },
+        ],
+      }),
+    );
+    expect(dispositions.map((d) => d.kind)).toEqual(["create", "update"]);
+    const items = selectImportNpiChecks(dispositions, { scope: "all_rows", rows });
+    const none: ImportNpiSnapshot = {
+      phase: "stopped",
+      total: 2,
+      done: 0,
+      checked: 0,
+      results: new Map(),
+      etaMs: null,
+    };
+    // The name conflict is unresolved: the update is not committed, not counted.
+    const unresolved = importCommittedLines(dispositions, {});
+    expect([...unresolved]).toEqual([2]);
+    expect(summarizeImportNpiRows(items, none, undefined, unresolved).unchecked).toBe(1);
+    // Resolved either way, it is committed and counted.
+    const resolved = importCommittedLines(dispositions, { p9: { name: "existing" } });
+    expect([...resolved].sort()).toEqual([2, 3]);
+    expect(summarizeImportNpiRows(items, none, undefined, resolved).unchecked).toBe(2);
+  });
+
   it("unchecked rows commit too, and the count to warn about is committed rows only", () => {
     const items = [
       item({ npi: fakeNpi(400), line: 2, disposition: "create" }),
@@ -398,7 +468,16 @@ describe("importNpiCaptureAdvisories — facts only, every committed row", () =>
     item({ npi: fakeNpi(504), line: 6, disposition: "create" }),
     item({ npi: fakeNpi(505), line: 7, disposition: "skip" }),
   ];
+  const rateLimited = item({ npi: fakeNpi(506), line: 8, disposition: "create" });
   const results = new Map<string, ImportNpiOutcome>([
+    [
+      rateLimited.npi,
+      {
+        status: "not_checked",
+        reason: "rate_limited",
+        message: "Too many NPI Registry checks right now. Reload the review to check again",
+      },
+    ],
     [items[0].npi, { status: "checked", record: record({ npi: items[0].npi }) }],
     [items[1].npi, { status: "checked", record: record({ npi: items[1].npi }) }],
     [items[2].npi, { status: "checked", record: null }],
@@ -471,6 +550,18 @@ describe("importNpiCaptureAdvisories — facts only, every committed row", () =>
     ]) {
       expect(text).not.toContain(leaked);
     }
+  });
+
+  it("gives a rate-limited row its own reason, not an outage's", () => {
+    const [advisory] = importNpiCaptureAdvisories({
+      items: [rateLimited],
+      snapshot: snap,
+      importRunId: "run-1",
+      providerIdByLine: new Map([[8, "prov-8"]]),
+    });
+    expect(advisory).toMatchObject({ check: "npi_registry.not_checked", record: { id: "prov-8" } });
+    expect(advisory.whyItMatters).toMatch(/lookup limit/);
+    expect(advisory.whyItMatters).not.toMatch(/could not be reached/);
   });
 
   it("captures nothing for a row whose provider is unknown", () => {

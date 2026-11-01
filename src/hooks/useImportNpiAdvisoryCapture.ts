@@ -31,9 +31,26 @@ export async function captureImportNpiAdvisories(
   }
 }
 
-/** captureImportNpiAdvisories, fire and forget. */
-export function useCaptureImportNpiAdvisories(): (advisories: readonly Advisory[]) => void {
-  return useCallback((advisories: readonly Advisory[]) => {
-    void captureImportNpiAdvisories(advisories);
+/** Build the advisories, then send them. A builder that throws is logged
+ * (without values) and nothing is sent; never rejects, so nothing a capture
+ * does can reach the commit's own feedback. */
+export async function captureImportNpiAdvisoriesFrom(
+  build: () => readonly Advisory[],
+  record?: (advisories: readonly Advisory[]) => Promise<AdvisoryCaptureResult>,
+): Promise<AdvisoryCaptureResult | null> {
+  let advisories: readonly Advisory[];
+  try {
+    advisories = build();
+  } catch (error) {
+    logAdvisoryCaptureFailure(error, []);
+    return null;
+  }
+  return captureImportNpiAdvisories(advisories, record);
+}
+
+/** captureImportNpiAdvisoriesFrom, fire and forget. */
+export function useCaptureImportNpiAdvisories(): (build: () => readonly Advisory[]) => void {
+  return useCallback((build: () => readonly Advisory[]) => {
+    void captureImportNpiAdvisoriesFrom(build);
   }, []);
 }

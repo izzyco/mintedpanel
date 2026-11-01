@@ -2,7 +2,10 @@
 // capture seam as facts only, never throw into the commit, and never claim to
 // be recorded (the seam records nothing until the advisory store lands).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { captureImportNpiAdvisories } from "./useImportNpiAdvisoryCapture";
+import {
+  captureImportNpiAdvisories,
+  captureImportNpiAdvisoriesFrom,
+} from "./useImportNpiAdvisoryCapture";
 import type { Advisory } from "@/lib/advisories";
 import type { AdvisoryCaptureResult } from "@/services/advisoryCapture";
 
@@ -67,5 +70,32 @@ describe("captureImportNpiAdvisories", () => {
     const record = vi.fn();
     await expect(captureImportNpiAdvisories([], record)).resolves.toBeNull();
     expect(record).not.toHaveBeenCalled();
+  });
+});
+
+describe("captureImportNpiAdvisoriesFrom", () => {
+  it("a builder that throws is logged without values and sends nothing; it never rejects", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const record = vi.fn();
+    await expect(
+      captureImportNpiAdvisoriesFrom(() => {
+        throw new TypeError("synthetic: AVERY QUILL 1234567893");
+      }, record),
+    ).resolves.toBeNull();
+    expect(record).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).toContain("advisory_capture_failed");
+    expect(logged).not.toContain("AVERY");
+    expect(logged).not.toContain("1234567893");
+  });
+
+  it("builds, then sends what was built", async () => {
+    const record = vi.fn(async (): Promise<AdvisoryCaptureResult> => ({
+      recorded: false,
+      reason: "advisory_store_not_built",
+    }));
+    await captureImportNpiAdvisoriesFrom(() => advisories, record);
+    expect(record).toHaveBeenCalledWith(advisories);
   });
 });
