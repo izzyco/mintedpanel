@@ -173,9 +173,8 @@ export const PROVIDER_SCENARIOS = Object.freeze([
   { key: "ready", stage: "ready_for_credentialing", weight: 0.08 },
   { key: "terminated", stage: "terminated", weight: 0.01 },
   // "No group assigned yet": works at one of a group's clinics, membership not
-  // recorded. With no current group that clinic does not count either, so the
-  // row also says "Location … is under …, not the provider's group": two
-  // reasons, one fix (record the membership).
+  // recorded. The missing group is a staff-side gap (A23); recording the
+  // membership clears it.
   { key: "no_group", stage: "verified_awaiting_assignment", weight: 0.01 },
   // "Needs a location": in a group, clinic not chosen yet.
   { key: "no_location", stage: "verified_awaiting_assignment", weight: 0.02 },

@@ -47,8 +47,8 @@ The mix:
   default stage list and rules. The funnel's stages and rules are
   configuration, so an organization or platform override can place these
   providers differently. Under the default, every stage it shows without
-  intake data has members. Each held provider shows one kind of gap, except
-  the 35 with no group, who show two (below):
+  intake data has members, and each held provider outside the "no group"
+  scenario shows exactly one kind of gap:
   - Profile incomplete, 420: 70 each with no NPI, no CAQH ID, no date of birth,
     no SSN last 4, no license, and no license for the state they work in.
   - Submitted, 348: 87 each with an unverified license, an expired
@@ -56,10 +56,8 @@ The mix:
     record pending verification.
   - Verified, awaiting assignment, 174: verified, held only by assignment gaps.
     - No group, 35: they work at a group's clinic, but no membership is
-      recorded. Each row lists two reasons, "No group assigned yet" and
-      "Location … is under …, not the provider's group", because with no
-      current group that clinic does not count either. Recording the
-      membership clears both.
+      recorded. The funnel lists the missing group as a staff-side gap
+      (A23); recording the membership clears it.
     - Needs a location, 70: in a group, no clinic yet.
     - "Location … is under …, not the provider's group", 52: their clinic
       belongs to one group, their membership is in the next one.
