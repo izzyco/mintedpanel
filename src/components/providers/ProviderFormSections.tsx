@@ -288,12 +288,11 @@ export function EmploymentSection({
   // MINT-96: say what a blank Start date saves before save, from the rule
   // the save reads (AddProviderRules, MINT-116), instead of letting a date
   // appear on the record after. The provider's stays null; by default the
-  // facility assignments start local today. An error replaces the hint.
+  // facility assignments start local today.
   const startDateHint = addProviderStartDateHint(addProviderRules, {
     startDate: form.startDate,
     facilityCount: form.facilityIds.length,
     today: localCalendarDate(new Date()),
-    error: errors.startDate,
   });
 
   return (

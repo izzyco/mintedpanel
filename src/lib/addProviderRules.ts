@@ -10,12 +10,11 @@
 //   field is never filled in at save: a silently guessed date would be a
 //   false fact on payer forms, so that is fixed, not a setting (Sowmya, D31,
 //   and her S2 answer of Oct 31: Platform Settings row 11).
-// - Each facility assignment starts on the provider's start date. A blank one
-//   needs a value, because `provider_facility_assignments.start_date` cannot
-//   be null on a new row (the E1.4 CHECK). What fills it is configuration
-//   (assignmentStartDateDefault): by default the coordinator's local today,
-//   or nothing, in which case Start date is required while a facility is
-//   selected.
+// - Each facility assignment starts on the provider's start date. What a
+//   blank one gets is configuration (assignmentStartDateDefault): by default
+//   the coordinator's local today, or nothing, and the assignments are then
+//   saved without a start date ("Start date needed"). The CSV import follows
+//   the same rule (blankAssignmentStartDate).
 //
 // The rules resolve from the decided default, then a platform override, then
 // an organization override, field by field (resolveAddProviderRules), and
@@ -38,9 +37,9 @@ export interface AddProviderRules {
    * (default): blank. "today": the coordinator's local today, shown and
    * editable; it is saved only if it is still in the field. */
   providerStartDatePrefill: ProviderStartDatePrefill;
-  /** A facility assignment when the provider has no start date. "today"
-   * (default): it starts on the coordinator's local today. "none": nothing
-   * is filled in, so Start date is required while a facility is selected. */
+  /** A facility assignment when no start date is given. "today" (default):
+   * it starts on the coordinator's local today. "none": it is saved without
+   * a start date. */
   assignmentStartDateDefault: AssignmentStartDateDefault;
 }
 
@@ -88,7 +87,7 @@ const RULE_ERRORS: { [K in keyof AddProviderRules]: string } = {
   providerStartDatePrefill:
     'The Start date field must open blank ("none") or filled with today ("today").',
   assignmentStartDateDefault:
-    'A blank facility assignment start date must be today ("today") or be left for the coordinator to enter ("none").',
+    'A blank facility assignment start date must be today ("today") or stay blank ("none").',
 };
 
 /** Plain-language problems with an override; empty when it can go live. */
@@ -126,8 +125,14 @@ export interface AddProviderStartDates {
    * is never filled in. */
   providerStartDate: string | null;
   /** What every facility assignment starts on: the field's date, else the
-   * rule's fill; null only under "none" with the field blank. */
+   * rule's (blankAssignmentStartDate), which is null under "none". */
   assignmentStartDate: string | null;
+}
+
+/** A facility assignment's start date when none is given: `today` by
+ * default, null under "none". Add Provider and the CSV import share it. */
+export function blankAssignmentStartDate(rules: AddProviderRules, today: string): string | null {
+  return rules.assignmentStartDateDefault === "today" ? today : null;
 }
 
 /** The two dates a save writes, from the Start date field as it stands. */
@@ -137,44 +142,32 @@ export function addProviderStartDates(
   today: string,
 ): AddProviderStartDates {
   const providerStartDate = fieldStartDate.trim() || null;
-  const assignmentStartDate =
-    providerStartDate ?? (rules.assignmentStartDateDefault === "today" ? today : null);
-  return { providerStartDate, assignmentStartDate };
+  return {
+    providerStartDate,
+    assignmentStartDate: providerStartDate ?? blankAssignmentStartDate(rules, today),
+  };
 }
 
 export interface AddProviderStartDateField {
   startDate: string;
   facilityCount: number;
-}
-
-/** The Start date field's error: only under "none", when a facility is
- * selected and the field is blank. */
-export function addProviderStartDateError(
-  rules: AddProviderRules,
-  field: AddProviderStartDateField,
-): string | undefined {
-  return field.facilityCount > 0 &&
-    !field.startDate.trim() &&
-    rules.assignmentStartDateDefault === "none"
-    ? "Required while a facility is selected: facility assignments need a start date."
-    : undefined;
+  today: string;
 }
 
 /** The hint under Start date. A prefilled today says so while it is still in
- * the field; a blank field says what the assignments get. None otherwise, or
- * while an error is shown in its place. */
+ * the field; a blank field says what the assignments get. None otherwise. */
 export function addProviderStartDateHint(
   rules: AddProviderRules,
-  field: AddProviderStartDateField & { today: string; error?: string },
+  field: AddProviderStartDateField,
 ): string | undefined {
-  if (field.error) return undefined;
   const value = field.startDate.trim();
   if (value)
     return rules.providerStartDatePrefill === "today" && value === field.today
       ? "Prefilled with today; change or clear it."
       : undefined;
   if (field.facilityCount === 0) return undefined;
-  return rules.assignmentStartDateDefault === "today"
-    ? `If left blank, facility assignments start today (${fmtDate(field.today)}).`
-    : "Facility assignments need a start date.";
+  const start = blankAssignmentStartDate(rules, field.today);
+  return start
+    ? `If left blank, facility assignments start today (${fmtDate(start)}).`
+    : "If left blank, facility assignments are saved without a start date.";
 }

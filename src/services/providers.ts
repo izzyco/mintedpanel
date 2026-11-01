@@ -341,16 +341,10 @@ export interface CreateProviderWithDetailsInput {
   groupAssignments?: GroupAssignmentInput[];
   /** The date every facility assignment starts on, resolved by the caller
    * with the same AddProviderRules read its Review screen shows
-   * (addProviderStartDates). null: no rule fills a blank date, so with any
-   * facility selected the save is refused before anything is written.
-   * Omitted: the provider's start date, else insertAssignmentRows' today
-   * default. */
+   * (addProviderStartDates). null: the assignments are saved without a
+   * start date. Omitted: the provider's start date, else none. */
   assignmentStartDate?: string | null;
 }
-
-/** Thrown before any write when facilities are selected and nothing gives
- * their assignments a start date. */
-export const ASSIGNMENT_START_DATE_REQUIRED = "Enter a start date: facility assignments need one.";
 
 export interface CreateProviderWithDetailsResult {
   provider: Provider;
@@ -361,14 +355,6 @@ export async function createProviderWithDetails(
   input: CreateProviderWithDetailsInput,
 ): Promise<CreateProviderWithDetailsResult> {
   const orgId = requireActiveOrg();
-  // The facility assignments' start date, settled before anything is written:
-  // a provider is never created with assignments it then cannot save.
-  const assignmentStart =
-    input.assignmentStartDate === undefined
-      ? input.provider.startDate?.trim() || null
-      : input.assignmentStartDate?.trim() || null;
-  if (input.facilityIds.length > 0 && input.assignmentStartDate !== undefined && !assignmentStart)
-    throw new Error(ASSIGNMENT_START_DATE_REQUIRED);
   // E1.3: validate the assignment set up front (≥1, exactly one primary) and
   // mirror the primary onto providers.group_id (frozen legacy mirror).
   const assignmentPlan = input.groupAssignments
@@ -432,12 +418,16 @@ export async function createProviderWithDetails(
   }
 
   // E1.4 TE-3: assignment writes route through the shared service, with the
-  // start date settled above (the caller's resolved date, else the provider's
-  // employment start date); insertAssignmentRows defaults a still-missing date
-  // to today so the start_date NOT NULL CHECK never trips.
+  // caller's resolved date, else the provider's employment start date. A
+  // missing date stays missing (the record says "Start date needed").
   // F1.4.3: first selected facility is primary until the coordinator changes
   // it on the record — Add Provider has no primary picker.
   const facilityRows = markFirstFacilityPrimary(input.facilityIds);
+  const assignmentStart =
+    (input.assignmentStartDate === undefined
+      ? input.provider.startDate
+      : input.assignmentStartDate
+    )?.trim() || null;
   let insertedFacilityIds: string[] = [];
   if (facilityRows.length > 0) {
     try {

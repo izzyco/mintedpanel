@@ -4,7 +4,7 @@ import { test, expect, type Route } from "./fixtures/legacy-access-context";
 //   TS-39 Tree Hill assignment gap: two providers, one assigned → unassigned
 //         provider listed first with "Assign locations" → section In progress
 //   TS-40 Shelby two-group provider: picker offers ONLY the provider's
-//         groups' facilities; start date required to save; primary swap
+//         groups' facilities; a start date saves with it; primary swap
 //         leaves exactly one primary (via the atomic RPC)
 
 const AUTH_KEY = "sb-example-auth-token";
@@ -333,7 +333,7 @@ test("TS-39: assignment gap — unassigned provider first, section In progress",
   await expect(rows.nth(1)).toContainText("Primary");
 });
 
-test("TS-40: group-scoped picker, required start date, primary swap stays single", async ({
+test("TS-40: group-scoped picker, start date, primary swap stays single", async ({
   context,
   page,
 }) => {
@@ -370,11 +370,7 @@ test("TS-40: group-scoped picker, required start date, primary swap stays single
   await expect(dialog).not.toContainText("Performance North");
   await expect(dialog).not.toContainText("Performance South");
 
-  // Start date is required to save.
   await dialog.getByLabel("Assign Shelby Main Clinic").click();
-  await dialog.getByRole("button", { name: "Save assignments" }).click();
-  await expect(dialog).toContainText("Every assignment needs a start date");
-
   await dialog.getByRole("button", { name: "Start date at Shelby Main Clinic" }).click();
   // The calendar popover portals outside the dialog; day buttons carry full
   // accessible dates. Pick a day in the visible month rather than pinning July

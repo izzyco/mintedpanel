@@ -172,7 +172,6 @@ export function AssignmentEditor({
                           id={`start-${f.id}`}
                           value={draft.startDate}
                           ariaLabel={`Start date at ${f.name}`}
-                          invalid={Boolean(error) && !draft.startDate}
                           onChange={(startDate) =>
                             setDrafts((prev) =>
                               prev.map((d) => (d.facilityId === f.id ? { ...d, startDate } : d)),

@@ -1,10 +1,11 @@
 // Provider↔facility assignment rules (E1.4) as pure logic.
 // - Group-scoped picker (F1.4.2, locked R3 decision): a provider may only be
 //   assigned to facilities owned by their group(s) — never the whole org.
-// - Editor invariants: every assignment needs a start date; when any
-//   assignments exist, exactly one is primary (F1.4.3 — the DB partial
-//   unique caps at one; the lower bound lives here). Removing the primary
-//   while others remain therefore forces a re-pick before save.
+// - Editor invariants: when any assignments exist, exactly one is primary
+//   (F1.4.3 — the DB partial unique caps at one; the lower bound lives
+//   here). Removing the primary while others remain therefore forces a
+//   re-pick before save. A blank start date saves as missing ("Start date
+//   needed"); Billing Readiness holds on it.
 // - The diff planner mirrors the E1.3 pattern; the actual primary swap runs
 //   through the atomic set_primary_assignment RPC in the service.
 import type { Facility } from "@/types";
@@ -26,7 +27,6 @@ export interface AssignmentDraft {
   isPrimary: boolean;
 }
 
-export const START_DATE_REQUIRED_MESSAGE = "Every assignment needs a start date";
 export const ONE_PRIMARY_ASSIGNMENT_MESSAGE = "Exactly one location must be marked primary";
 
 /** Add Provider has no primary picker (F1.4.3). The first selected facility
@@ -75,7 +75,6 @@ export function firstAssignmentIdsToPromote(rows: readonly AssignmentPrimaryCand
  * set is valid here — the wizard surfaces the gap as section progress (the
  * PM's "no unassigned resting state" is a readiness concern, not a DB block). */
 export function validateAssignmentDrafts(drafts: readonly AssignmentDraft[]): string | null {
-  if (drafts.some((d) => !d.startDate.trim())) return START_DATE_REQUIRED_MESSAGE;
   if (drafts.length > 0) {
     const primaries = drafts.filter((d) => d.isPrimary).length;
     if (primaries !== 1) return ONE_PRIMARY_ASSIGNMENT_MESSAGE;

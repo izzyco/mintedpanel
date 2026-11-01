@@ -24,7 +24,6 @@ import {
   isBlankLicenseRow,
   validateAll,
   validateCredentials,
-  validateEmployment,
   validatePersonal,
   type ProviderFormErrors,
   type ProviderFormState,
@@ -45,14 +44,9 @@ const STEPS = [
   { id: 5, label: "Review" },
 ] as const;
 
-function validateStep(
-  step: number,
-  f: ProviderFormState,
-  rules: AddProviderRules,
-): ProviderFormErrors {
+function validateStep(step: number, f: ProviderFormState): ProviderFormErrors {
   if (step === 1) return validatePersonal(f);
   if (step === 2) return validateCredentials(f);
-  if (step === 4) return validateEmployment(f, rules);
   return {};
 }
 
@@ -88,7 +82,7 @@ export function ProviderForm({
   };
 
   const next = () => {
-    const e = validateStep(step, form, addProviderRules);
+    const e = validateStep(step, form);
     setErrors(e);
     if (Object.keys(e).length === 0) setStep((s) => Math.min(5, s + 1));
   };
@@ -103,7 +97,7 @@ export function ProviderForm({
 
   const submit = async () => {
     setSubmitError(null);
-    const allErrors = validateAll(form, addProviderRules);
+    const allErrors = validateAll(form);
     if (Object.keys(allErrors).length > 0) {
       setErrors(allErrors);
       // Jump back to the first step with an error so the user sees it.
@@ -111,8 +105,6 @@ export function ProviderForm({
         setStep(1);
       } else if (allErrors.npi || allErrors.caqhId) {
         setStep(2);
-      } else if (allErrors.startDate) {
-        setStep(4);
       }
       return;
     }
@@ -226,7 +218,7 @@ function ReviewStep({
   // MINT-96: name the dates a save writes, from the same function the save
   // uses (addProviderStartDates). A blank Start date always stays null on the
   // provider; by default the assignments start local today, read on every
-  // render so it never goes stale.
+  // render so it never goes stale. Under "none" they are saved without one.
   const { providerStartDate, assignmentStartDate } = addProviderStartDates(
     addProviderRules,
     form.startDate,
@@ -239,9 +231,10 @@ function ReviewStep({
     const names = selected
       .map((f) => (f.id === primaryId ? `${f.name} (primary)` : f.name))
       .join(", ");
-    return assignmentStartDate
-      ? `${names} · assignments start ${fmtDate(assignmentStartDate)}`
-      : names;
+    const starts = assignmentStartDate
+      ? `assignments start ${fmtDate(assignmentStartDate)}`
+      : "Start date needed";
+    return `${names} · ${starts}`;
   }, [facilities.data, form.facilityIds, assignmentStartDate]);
   const licenses = form.licenses.filter((l) => !isBlankLicenseRow(l));
 

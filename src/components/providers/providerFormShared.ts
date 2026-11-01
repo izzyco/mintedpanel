@@ -1,11 +1,6 @@
 // Shared constants, types, and validation for the Add Provider stepper.
 // Record edit uses a separate inline Identity path (EditProviderForm retired).
 import { isKnownTaxonomyCode } from "@/lib/providerTaxonomy";
-import {
-  DEFAULT_ADD_PROVIDER_RULES,
-  addProviderStartDateError,
-  type AddProviderRules,
-} from "@/lib/addProviderRules";
 
 // Re-export the single mastered state list (src/lib/usStates.ts) rather than
 // keep a second copy in sync — the provider forms import US_STATES from here.
@@ -116,24 +111,6 @@ export function validateCredentials(f: ProviderFormState): ProviderFormErrors {
   return e;
 }
 
-/** Start date is required only when no rule fills a blank one for the
- * selected facilities (AddProviderRules: "none"). */
-export function validateEmployment(
-  f: ProviderFormState,
-  rules: AddProviderRules = DEFAULT_ADD_PROVIDER_RULES,
-): ProviderFormErrors {
-  const e: ProviderFormErrors = {};
-  const startDate = addProviderStartDateError(rules, {
-    startDate: f.startDate,
-    facilityCount: f.facilityIds.length,
-  });
-  if (startDate) e.startDate = startDate;
-  return e;
-}
-
-export function validateAll(
-  f: ProviderFormState,
-  rules: AddProviderRules = DEFAULT_ADD_PROVIDER_RULES,
-): ProviderFormErrors {
-  return { ...validatePersonal(f), ...validateCredentials(f), ...validateEmployment(f, rules) };
+export function validateAll(f: ProviderFormState): ProviderFormErrors {
+  return { ...validatePersonal(f), ...validateCredentials(f) };
 }

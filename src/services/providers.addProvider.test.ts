@@ -1,6 +1,8 @@
 // MINT-116 — createProviderWithDetails takes the assignments' start date the
-// wizard resolved (the date its Review step shows), and refuses an undated
-// assignment set before the provider is written. Synthetic data only.
+// wizard resolved (the date its Review step shows). Under "no default" an
+// undated assignment set saves as an accurate draft, never refused. The
+// CREATE audit row is unchanged: no date is marked as defaulted. Synthetic
+// data only.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const transport = vi.hoisted(() => ({ fetch: vi.fn(), audit: vi.fn() }));
@@ -19,8 +21,7 @@ vi.mock("@/lib/audit", () => ({
   writeAudit: (...args: unknown[]) => transport.audit(...args),
 }));
 
-import { ASSIGNMENT_START_DATE_REQUIRED, createProviderWithDetails } from "./providers";
-import { localCalendarDate } from "@/lib/systemTokens";
+import { createProviderWithDetails } from "./providers";
 
 type Row = Record<string, unknown>;
 let writes: Array<{ table: string; body: Row | Row[] }> = [];
@@ -72,17 +73,16 @@ describe("createProviderWithDetails — the assignments' start date", () => {
     expect(startDates("provider_facility_assignments")).toEqual(["2026-11-02", "2026-11-02"]);
   });
 
-  it("refuses before anything is written when facilities are selected and nothing dates them", async () => {
-    await expect(
-      createProviderWithDetails({
-        provider: provider(null),
-        licenses: [],
-        facilityIds: ["fac-1"],
-        assignmentStartDate: null,
-      }),
-    ).rejects.toThrow(ASSIGNMENT_START_DATE_REQUIRED);
-    expect(transport.fetch).not.toHaveBeenCalled();
-    expect(transport.audit).not.toHaveBeenCalled();
+  it("saves the provider and its assignments without a start date when nothing dates them", async () => {
+    const result = await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: ["fac-1", "fac-2"],
+      assignmentStartDate: null,
+    });
+    expect(result.warnings).toEqual([]);
+    expect(startDates("providers")).toEqual([null]);
+    expect(startDates("provider_facility_assignments")).toEqual([null, null]);
   });
 
   it("saves a provider with no facility selected even when nothing would date one", async () => {
@@ -96,7 +96,7 @@ describe("createProviderWithDetails — the assignments' start date", () => {
     expect(writes.map((w) => w.table)).toEqual(["providers"]);
   });
 
-  it("without a resolved date, keeps the provider's start date, else today", async () => {
+  it("without a resolved date, keeps the provider's start date, else none", async () => {
     await createProviderWithDetails({
       provider: provider("2026-11-15"),
       licenses: [],
@@ -109,6 +109,25 @@ describe("createProviderWithDetails — the assignments' start date", () => {
       licenses: [],
       facilityIds: ["fac-1"],
     });
-    expect(startDates("provider_facility_assignments")).toEqual([localCalendarDate(new Date())]);
+    expect(startDates("provider_facility_assignments")).toEqual([null]);
+  });
+});
+
+describe("createProviderWithDetails — the audit row", () => {
+  it("records the saved facilities as ids, with no start date or defaulted mark", async () => {
+    await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: ["fac-1"],
+      assignmentStartDate: "2026-11-02",
+    });
+    const after = (transport.audit.mock.calls.at(-1)?.[0] as { after: Row }).after;
+    expect(Object.keys(after).sort()).toEqual([
+      "facilityIds",
+      "groupAssignments",
+      "licenses",
+      "provider",
+    ]);
+    expect(after.facilityIds).toEqual(["fac-1"]);
   });
 });

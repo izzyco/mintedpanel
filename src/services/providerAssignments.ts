@@ -44,30 +44,21 @@ export interface AssignmentRowInput {
   startDate?: string | null;
 }
 
-/** Local calendar today (YYYY-MM-DD). The PFA start_date CHECK rejects null
- *  on new inserts; callers that omit a date (Add Provider) default here —
- *  same posture as the CSV relationship pass in importRuns. */
-function localTodayIso(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-/** Shared bulk insert used by the legacy callers (provider create, launch
- * assign). Duplicate (provider, facility) pairs are ignored, matching the
- * old launch upsert semantics. */
+/** Shared bulk insert used by the legacy callers (provider create, CSV
+ * import, batch assign). Duplicate (provider, facility) pairs are ignored,
+ * matching the old launch upsert semantics. Each row's start date is the
+ * caller's (blankAssignmentStartDate settles a blank one); a missing date is
+ * saved as missing. */
 export async function insertAssignmentRows(rows: AssignmentRowInput[]): Promise<void> {
   if (rows.length === 0) return;
   const orgId = requireActiveOrg();
-  const today = localTodayIso();
   const { error } = await supabase.from("provider_facility_assignments").upsert(
     rows.map((r) => ({
       org_id: orgId,
       provider_id: r.providerId,
       facility_id: r.facilityId,
       is_primary: r.isPrimary ?? false,
-      // E1.4 CHECK (start_date IS NOT NULL) — NOT VALID still enforces inserts.
-      start_date: r.startDate?.trim() || today,
+      start_date: r.startDate?.trim() || null,
     })),
     { onConflict: "provider_id,facility_id", ignoreDuplicates: true },
   );
@@ -117,8 +108,8 @@ async function listProviderAssignmentRows(
 }
 
 // Full-set sync for one provider (the E1.4 editor save): validates the
-// invariants (start date on every row; exactly one primary when non-empty —
-// so removing the primary forces a re-pick), then executes
+// invariants (exactly one primary when non-empty — so removing the primary
+// forces a re-pick; a blank start date saves as missing), then executes
 // updates → deletes → inserts(as non-primary) → atomic RPC swap.
 export async function setAssignments(providerId: string, drafts: AssignmentDraft[]): Promise<void> {
   const orgId = requireActiveOrg();
@@ -128,7 +119,7 @@ export async function setAssignments(providerId: string, drafts: AssignmentDraft
   for (const upd of plan.updates) {
     const { error } = await supabase
       .from("provider_facility_assignments")
-      .update({ start_date: upd.startDate })
+      .update({ start_date: upd.startDate.trim() || null })
       .eq("id", upd.id)
       .eq("org_id", orgId)
       .eq("provider_id", providerId);
@@ -160,7 +151,7 @@ export async function setAssignments(providerId: string, drafts: AssignmentDraft
         provider_id: providerId,
         facility_id: d.facilityId,
         is_primary: false,
-        start_date: d.startDate,
+        start_date: d.startDate.trim() || null,
       })),
     );
     if (error) throw translateDbError(error);
