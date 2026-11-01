@@ -35,8 +35,7 @@ import {
   launchAtRiskRuleText,
   launchEmptyStateText,
   launchRiskLabel,
-  openCasesByFacility,
-  openCasesSinceGoLiveByFacility,
+  openCaseCountsByFacility,
   providerCountsByFacility,
   type LaunchNoDateRow,
   type LaunchReportRow,
@@ -106,27 +105,14 @@ export function LaunchesReport() {
           : null,
     }));
     const caseFacilities = caseFacilitiesQ.data ?? [];
-    const openCaseCounts = openCasesByFacility(cases, caseFacilities, providers);
-    const openCasesSinceGoLive = openCasesSinceGoLiveByFacility(
-      cases,
-      caseFacilities,
-      providers,
-      facilities,
-    );
+    const openCases = openCaseCountsByFacility(cases, caseFacilities, providers, facilities);
     const groupNameById = new Map((groupsQ.data ?? []).map((g) => [g.id, g.name]));
     return {
       groups: groupLaunchRows(
-        buildLaunchReportRows(
-          facilities,
-          providerCounts,
-          openCaseCounts,
-          today,
-          rules,
-          openCasesSinceGoLive,
-        ),
+        buildLaunchReportRows(facilities, providerCounts, openCases, today, rules),
         groupNameById,
       ),
-      noDate: buildNoGoLiveDateRows(facilities, providerCounts, openCaseCounts, groupNameById),
+      noDate: buildNoGoLiveDateRows(facilities, providerCounts, openCases.all, groupNameById),
     };
   }, [
     facilitiesQ.data,

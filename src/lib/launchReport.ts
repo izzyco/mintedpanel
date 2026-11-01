@@ -358,42 +358,50 @@ function openCaseLocations(
   return pairs;
 }
 
-/** Open cases per facility (see openCaseLocations for the attribution). */
-export function openCasesByFacility(
-  cases: readonly LaunchCaseInput[],
-  caseFacilities: readonly LaunchCaseFacilityInput[],
-  providers: readonly LaunchProviderInput[],
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const [, facilityId] of openCaseLocations(cases, caseFacilities, providers)) {
-    counts.set(facilityId, (counts.get(facilityId) ?? 0) + 1);
-  }
-  return counts;
+/** The open cases at each location, counted once from the case inputs: every
+ * open case (`all`, the "Open cases" column) and, of those, the ones opened
+ * ON OR AFTER the location's go-live day (`sinceGoLive`: `openedOn` against
+ * `effectiveDate`, both date-only). buildLaunchReportRows takes both
+ * together, so the overdue rule can never be applied without them. */
+export interface LaunchOpenCases {
+  readonly all: ReadonlyMap<string, number>;
+  /** Never counts a case with no `openedOn` or a location with no go-live
+   * date. */
+  readonly sinceGoLive: ReadonlyMap<string, number>;
 }
 
-/** Of those, the open cases per facility opened ON OR AFTER its go-live day
- * (`openedOn` against `effectiveDate`, both date-only). Under the default
- * rule they do not keep a passed go-live at risk. A case with no `openedOn`,
- * or a location with no go-live date, is never counted here. */
-export function openCasesSinceGoLiveByFacility(
+/** Both open-case counts per facility, in one pass over the same attributed
+ * (case, location) pairs (see openCaseLocations). */
+export function openCaseCountsByFacility(
   cases: readonly LaunchCaseInput[],
   caseFacilities: readonly LaunchCaseFacilityInput[],
   providers: readonly LaunchProviderInput[],
   facilities: readonly Pick<LaunchFacilityInput, "id" | "effectiveDate">[],
-): Map<string, number> {
+): LaunchOpenCases {
   const goLiveDay = new Map<string, number>();
   for (const f of facilities) {
     const day = f.effectiveDate ? toUtcDay(f.effectiveDate) : null;
     if (day !== null) goLiveDay.set(f.id, day);
   }
-  const counts = new Map<string, number>();
+  const all = new Map<string, number>();
+  const sinceGoLive = new Map<string, number>();
   for (const [c, facilityId] of openCaseLocations(cases, caseFacilities, providers)) {
+    all.set(facilityId, (all.get(facilityId) ?? 0) + 1);
     const opened = c.openedOn ? toUtcDay(c.openedOn) : null;
     const goLive = goLiveDay.get(facilityId);
-    if (opened === null || goLive === undefined || opened < goLive) continue;
-    counts.set(facilityId, (counts.get(facilityId) ?? 0) + 1);
+    if (opened !== null && goLive !== undefined && opened >= goLive)
+      sinceGoLive.set(facilityId, (sinceGoLive.get(facilityId) ?? 0) + 1);
   }
-  return counts;
+  return { all, sinceGoLive };
+}
+
+/** Open cases per facility (the `all` count of openCaseCountsByFacility). */
+export function openCasesByFacility(
+  cases: readonly LaunchCaseInput[],
+  caseFacilities: readonly LaunchCaseFacilityInput[],
+  providers: readonly LaunchProviderInput[],
+): Map<string, number> {
+  return new Map(openCaseCountsByFacility(cases, caseFacilities, providers, []).all);
 }
 
 /**
@@ -402,17 +410,16 @@ export function openCasesSinceGoLiveByFacility(
  * overdue window (dateless locations are listed apart by
  * buildNoGoLiveDateRows). Sorted date ascending, name tiebreak. The rules
  * come from `rules` (resolved by the caller; the defaults otherwise). Once
- * go-live has passed, the open cases in `openCasesSinceGoLive`
- * (openCasesSinceGoLiveByFacility) do not count toward the risk under the
- * default rule; the "Open cases" column still counts every open case.
+ * go-live has passed, the cases in `openCases.sinceGoLive` do not count
+ * toward the risk under the default rule; the "Open cases" column counts
+ * `openCases.all`.
  */
 export function buildLaunchReportRows(
   facilities: readonly LaunchFacilityInput[],
   providerCountByFacility: ReadonlyMap<string, number>,
-  openCaseCountByFacility: ReadonlyMap<string, number>,
+  openCases: LaunchOpenCases,
   today: string,
   rules: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
-  openCasesSinceGoLive: ReadonlyMap<string, number> = new Map(),
 ): LaunchReportRow[] {
   const rows: LaunchReportRow[] = [];
   for (const f of facilities) {
@@ -420,14 +427,14 @@ export function buildLaunchReportRows(
     const days = daysUntil(f.effectiveDate, today);
     if (days === null) continue;
     const providerCount = providerCountByFacility.get(f.id) ?? 0;
-    const openCaseCount = openCaseCountByFacility.get(f.id) ?? 0;
+    const openCaseCount = openCases.all.get(f.id) ?? 0;
     // The same test ahead of go-live (upcoming) and after it (overdue); only a
     // date beyond the upcoming window is exempt.
     const checked = days <= rules.upcomingWindowDays;
     // A passed go-live counts only the cases opened before it, by default.
     const notCounted =
       days < 0 && rules.overdueOpenCases === "opened_before_go_live"
-        ? (openCasesSinceGoLive.get(f.id) ?? 0)
+        ? (openCases.sinceGoLive.get(f.id) ?? 0)
         : 0;
     const atRiskReasons: string[] = [];
     if (checked && openCaseCount - notCounted > 0) atRiskReasons.push("open cases still pending");

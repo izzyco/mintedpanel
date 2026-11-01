@@ -13,16 +13,24 @@ import {
   launchAtRiskRuleText,
   launchEmptyStateText,
   launchRiskLabel,
+  openCaseCountsByFacility,
   openCasesByFacility,
-  openCasesSinceGoLiveByFacility,
   providerCountsByFacility,
   resolveLaunchReportRules,
   validateLaunchReportRules,
   type LaunchFacilityInput,
+  type LaunchOpenCases,
   type LaunchReportRules,
 } from "./launchReport";
 
 const TODAY = "2026-07-19";
+
+// Open-case counts with none opened on or after a go-live (every case's
+// opening day is unknown, so it counts as opened before).
+const counted = (all: ReadonlyMap<string, number>): LaunchOpenCases => ({
+  all,
+  sinceGoLive: new Map(),
+});
 
 const facility = (over: Partial<LaunchFacilityInput> & { id: string }): LaunchFacilityInput => ({
   name: over.id,
@@ -174,7 +182,7 @@ describe("buildLaunchReportRows", () => {
         facility({ id: "reference", referenceOnly: true }),
       ],
       new Map([["old", 1]]),
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     expect(rows.map((r) => r.facilityId)).toEqual(["recent", "future"]);
@@ -194,7 +202,7 @@ describe("buildLaunchReportRows", () => {
         facility({ id: "risk-91", effectiveDate: "2026-04-19" }),
       ],
       staffed,
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     const byId = new Map(rows.map((r) => [r.facilityId, r]));
@@ -214,7 +222,7 @@ describe("buildLaunchReportRows", () => {
         facility({ id: "c", name: "Charlie", effectiveDate: "2026-07-25" }),
       ],
       new Map(),
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     expect(rows.map((r) => r.name)).toEqual(["Charlie", "Alpha", "Bravo"]);
@@ -234,10 +242,12 @@ describe("buildLaunchReportRows", () => {
         ["soon-fine", 1],
         ["launched-open-cases", 1],
       ]),
-      new Map([
-        ["soon-open-cases", 3],
-        ["launched-open-cases", 1],
-      ]),
+      counted(
+        new Map([
+          ["soon-open-cases", 3],
+          ["launched-open-cases", 1],
+        ]),
+      ),
       TODAY,
     );
     const byId = new Map(rows.map((r) => [r.facilityId, r]));
@@ -263,7 +273,7 @@ describe("buildLaunchReportRows", () => {
         facility({ id: "overdue-1", effectiveDate: "2026-07-18" }),
       ],
       new Map([["overdue", 2]]),
-      new Map([["overdue", 1]]),
+      counted(new Map([["overdue", 1]])),
       TODAY,
     );
     const byId = new Map(rows.map((r) => [r.facilityId, r]));
@@ -285,7 +295,7 @@ describe("buildLaunchReportRows", () => {
     const rows = buildLaunchReportRows(
       [facility({ id: "opened-clean", effectiveDate: "2026-06-30" })],
       new Map([["opened-clean", 3]]),
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     expect(rows[0]).toMatchObject({ atRisk: false, riskKind: null, atRiskReasons: [] });
@@ -300,7 +310,7 @@ describe("buildLaunchReportRows", () => {
         facility({ id: "day-31", effectiveDate: "2026-08-19" }),
       ],
       new Map(),
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     const byId = new Map(rows.map((r) => [r.facilityId, r]));
@@ -315,7 +325,7 @@ describe("buildLaunchReportRows", () => {
     const rows = buildLaunchReportRows(
       [facility({ id: "today", effectiveDate: TODAY })],
       new Map(),
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     expect(rows[0]).toMatchObject({ daysUntil: 0, atRisk: true });
@@ -325,7 +335,7 @@ describe("buildLaunchReportRows", () => {
     const rows = buildLaunchReportRows(
       [facility({ id: "f1", effectiveDate: "2026-07-25" })],
       new Map(),
-      new Map([["f1", 1]]),
+      counted(new Map([["f1", 1]])),
       TODAY,
     );
     expect(rows[0].atRiskReasons).toEqual(["open cases still pending", "no providers assigned"]);
@@ -342,7 +352,7 @@ describe("groupLaunchRows", () => {
         facility({ id: "a2", groupId: "ga", effectiveDate: "2026-07-30" }),
       ],
       new Map(),
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     const groups = groupLaunchRows(
@@ -360,7 +370,7 @@ describe("groupLaunchRows", () => {
     const rows = buildLaunchReportRows(
       [facility({ id: "f1", groupId: "gone" })],
       new Map(),
-      new Map(),
+      counted(new Map()),
       TODAY,
     );
     const groups = groupLaunchRows(rows, new Map());
@@ -403,7 +413,7 @@ describe("buildNoGoLiveDateRows", () => {
     });
     expect(noDate.at(-1)?.groupName).toBe("No group");
     // The dated report still leaves them out: one list, never both.
-    const dated = buildLaunchReportRows(facilities, new Map(), new Map(), TODAY);
+    const dated = buildLaunchReportRows(facilities, new Map(), counted(new Map()), TODAY);
     expect(dated.map((r) => r.facilityId)).toEqual(["dated"]);
   });
 });
@@ -436,7 +446,7 @@ describe("LaunchReportRules (MINT-116)", () => {
         at("ahead-31", 31),
       ],
       new Map(staffed.map((id) => [id, 1])),
-      new Map(),
+      counted(new Map()),
       TODAY,
       rules,
     );
@@ -589,7 +599,7 @@ describe("LaunchReportRules (MINT-116)", () => {
       const rows = buildLaunchReportRows(
         [at("risk-past-50", -50), at("clean-past-50", -50)],
         new Map([["clean-past-50", 1]]),
-        new Map(),
+        counted(new Map()),
         TODAY,
         rules,
       );
@@ -710,13 +720,9 @@ describe("MINT-100 A2: after go-live, only cases opened before it keep a locatio
     rules?: LaunchReportRules,
   ) => {
     const staffed = new Map(facilities.map((f) => [f.id, 1]));
-    const open = openCasesByFacility(cases, [], providers);
-    const since = openCasesSinceGoLiveByFacility(cases, [], providers, facilities);
+    const open = openCaseCountsByFacility(cases, [], providers, facilities);
     return new Map(
-      buildLaunchReportRows(facilities, staffed, open, TODAY, rules, since).map((r) => [
-        r.facilityId,
-        r,
-      ]),
+      buildLaunchReportRows(facilities, staffed, open, TODAY, rules).map((r) => [r.facilityId, r]),
     );
   };
 
@@ -787,10 +793,9 @@ describe("MINT-100 A2: after go-live, only cases opened before it keep a locatio
       buildLaunchReportRows(
         facilities,
         new Map(),
-        openCasesByFacility(cases, [], providers),
+        openCaseCountsByFacility(cases, [], providers, facilities),
         TODAY,
         DEFAULT_LAUNCH_REPORT_RULES,
-        openCasesSinceGoLiveByFacility(cases, [], providers, facilities),
       ).map((r) => [r.facilityId, r]),
     );
     expect(rows.get("empty")?.atRiskReasons).toEqual(["no providers assigned"]);
@@ -819,7 +824,7 @@ describe("MINT-100 A2: after go-live, only cases opened before it keep a locatio
       openCase("c2", "dateless", "2026-07-05"),
       { ...openCase("c3", "f1", "2026-07-05"), status: "approved" as const },
     ];
-    const since = openCasesSinceGoLiveByFacility(
+    const counts = openCaseCountsByFacility(
       cases,
       [
         { caseId: "c1", facilityId: "f1" },
@@ -828,7 +833,28 @@ describe("MINT-100 A2: after go-live, only cases opened before it keep a locatio
       providers,
       facilities,
     );
-    expect(Array.from(since)).toEqual([["f1", 1]]);
+    expect(Array.from(counts.sinceGoLive)).toEqual([["f1", 1]]);
+    // One pass, one attribution: the same pairs give the Open cases column.
+    expect(Array.from(counts.all)).toEqual([
+      ["f1", 1],
+      ["f2", 1],
+      ["dateless", 1],
+    ]);
+  });
+
+  it("can't build rows without the since-go-live counts: they travel with the open-case counts", () => {
+    // The page's rule ("counting only cases opened before go-live") and the
+    // rows read the same LaunchOpenCases; there is no separate map to forget.
+    const facilities = [facility({ id: "late", effectiveDate: GO_LIVE })];
+    const open = openCaseCountsByFacility(
+      [openCase("c1", "late", "2026-07-05")],
+      [],
+      providers,
+      facilities,
+    );
+    expect(open.sinceGoLive.get("late")).toBe(1);
+    const [row] = buildLaunchReportRows(facilities, new Map([["late", 1]]), open, TODAY);
+    expect(row).toMatchObject({ openCaseCount: 1, atRisk: false });
   });
 
   describe("resolver and validator", () => {
