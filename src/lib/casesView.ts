@@ -36,8 +36,8 @@ export interface CaseViewRow {
   lastTouchLabel: string;
   /** Days since the last touch; null = never touched (sorts last). */
   lastTouchDays: number | null;
-  /** "Days open" (`caseDaysOpenFor`); null when a closed case's stop could
-   * not be read (sorts last). */
+  /** "Days open" (`caseDaysOpenFor`); null for a Not Pursuing case, or when a
+   * closed case's stop could not be read (sorts last). */
   daysOpen: number | null;
   createdAt: string;
 }

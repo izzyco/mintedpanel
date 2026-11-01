@@ -498,6 +498,12 @@ describe("buildCasesMatrix Days open (MINT-73, D22)", () => {
     expect(caseCell(result, "payer-2").daysOpen).toBe(24);
   });
 
+  it("has no Days open for a Not Pursuing case (D11)", () => {
+    const result = buildCasesMatrix(twoCases("not_pursuing"));
+    expect(caseCell(result, "payer-1").daysOpen).toBe(24);
+    expect(caseCell(result, "payer-2").daysOpen).toBeNull();
+  });
+
   it("keeps counting a closed case with no recorded close", () => {
     const result = buildCasesMatrix({ ...twoCases("approved"), caseAgeStops: new Map() });
     expect(caseCell(result, "payer-2").daysOpen).toBe(24);

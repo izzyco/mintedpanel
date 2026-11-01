@@ -64,7 +64,7 @@ export function CaseDetailsPanel({
   onSaveDates?: (input: SetCaseDatesInput) => Promise<void>;
 }) {
   // Same definition as the Cases list and Matrix (caseDaysOpenFor), with the
-  // stop read from this case's own status history.
+  // stop read from this case's own status history; null (Not Pursuing) is "—".
   const caseAgeRules = useCaseAgeRules();
   const daysOpen = caseDaysOpenFor(
     c,
@@ -128,7 +128,7 @@ export function CaseDetailsPanel({
               (onSaveDates ?? (async () => undefined))({ contractExecutedDate: next })
             }
           />
-          <Row label="Days open" value={<Num>{`${daysOpen}d`}</Num>} />
+          <Row label="Days open" value={<Num>{daysOpen === null ? "—" : `${daysOpen}d`}</Num>} />
           <Separator className="my-2" />
           <Row
             label="Case type"

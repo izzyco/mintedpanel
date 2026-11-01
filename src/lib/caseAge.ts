@@ -9,6 +9,8 @@
 // Sowmya's decision: stop counting once the case is approved or denied (Oct
 // 30, D22). Nothing stores an override yet; the Mission Control setting is
 // MINT-129. Counting from submission is an open question and is not built.
+// Days open is not tracked for a Not Pursuing case: it has no value, under
+// either rule (Nov 1, D11).
 //
 // The stop is a fact, never a guess. It is the recorded case_status_history
 // transition that closed the case: its first move into Approved or Denied, or,
@@ -42,7 +44,7 @@ export interface CaseAgeRules {
   /** "approved_or_denied" (default): the count stops at the recorded
    * transition that closed the case as Approved or Denied, and stays there
    * while the case stays closed. "never": it keeps counting whatever the
-   * status. */
+   * status. A Not Pursuing case has no value under either (D11). */
   freezeAt: CaseAgeFreezeAt;
 }
 
@@ -145,13 +147,15 @@ export function caseDaysOpenStop(
 }
 
 /** "Days open" under the rules: calendar days from creation to `now`, or to
- * the stop when the case has one. */
+ * the stop when the case has one. Null for a Not Pursuing case, which Days
+ * open does not track (D11). */
 export function caseDaysOpenFor(
   c: CaseAgeCase,
   now: Date,
   stopTimes: ReadonlyMap<string, string>,
   rules: CaseAgeRules = DEFAULT_CASE_AGE_RULES,
-): number {
+): number | null {
+  if (c.caseStatus === "not_pursuing") return null;
   const stop = caseDaysOpenStop(c, stopTimes, rules);
   if (stop === null) return caseDaysOpen(c.createdAt, now);
   const stoppedAt = parseISO(stop);

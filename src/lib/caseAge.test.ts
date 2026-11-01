@@ -171,9 +171,11 @@ describe("caseDaysOpenFor", () => {
     expect(caseDaysOpenFor(reopened, now, stops)).toBe(48);
   });
 
-  it("keeps counting for Not Pursuing, which D22 does not stop", () => {
+  it("has no value for Not Pursuing, under either rule (D11)", () => {
     const optedOut = { ...approvedCase, caseStatus: "not_pursuing" as const };
-    expect(caseDaysOpenFor(optedOut, now, stops)).toBe(48);
+    expect(caseDaysOpenFor(optedOut, now, stops)).toBeNull();
+    expect(caseDaysOpenFor(optedOut, now, new Map())).toBeNull();
+    expect(caseDaysOpenFor(optedOut, now, stops, NEVER)).toBeNull();
   });
 
   it("keeps counting a closed case with no recorded close, rather than guess a date", () => {
@@ -207,11 +209,15 @@ describe("caseDaysOpenWhenKnown", () => {
     expect(caseDaysOpenWhenKnown({ ...approvedCase, caseStatus: "denied" }, now, null)).toBeNull();
   });
 
-  it("still counts an open or Not Pursuing case, and anything under 'never', without the stops", () => {
+  it("still counts an open case, and anything under 'never', without the stops", () => {
     expect(caseDaysOpenWhenKnown({ ...approvedCase, caseStatus: "in_review" }, now, null)).toBe(48);
-    expect(caseDaysOpenWhenKnown({ ...approvedCase, caseStatus: "not_pursuing" }, now, null)).toBe(
-      48,
-    );
     expect(caseDaysOpenWhenKnown(approvedCase, now, null, NEVER)).toBe(48);
+  });
+
+  it("has no value for Not Pursuing, with or without the stops (D11)", () => {
+    const optedOut = { ...approvedCase, caseStatus: "not_pursuing" as const };
+    expect(caseDaysOpenWhenKnown(optedOut, now, stops)).toBeNull();
+    expect(caseDaysOpenWhenKnown(optedOut, now, null)).toBeNull();
+    expect(caseDaysOpenWhenKnown(optedOut, now, null, NEVER)).toBeNull();
   });
 });

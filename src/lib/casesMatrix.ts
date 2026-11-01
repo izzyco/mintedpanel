@@ -96,7 +96,8 @@ export interface CasesMatrixCaseCell {
   hasOverdueTask: boolean;
   stale: "never" | "quiet" | null;
   /** "Days open" as of `today`, by the one definition (caseDaysOpenFor);
-   * null when the stops could not be read and the case is closed. */
+   * null for a Not Pursuing case, or when the stops could not be read and the
+   * case is closed. */
   daysOpen: number | null;
 }
 
