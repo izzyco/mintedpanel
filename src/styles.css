@@ -120,15 +120,19 @@
   /* Sidebar rail ink and chrome. The defaults are exactly the rail's existing
      white-on-forest values (text-white and its 70/60/50/40/35 alphas, the
      #C8DBD4 active bar, the white-alpha focus ring), so every route renders
-     pixel-identical. The opacity steps are separate tokens on purpose: an
-     alpha of dark ink over a light rail loses contrast much faster than white
-     over forest, so a light surface needs solid steps to stay WCAG AA. */
+     pixel-identical. The alpha steps derive from the ink with the same
+     color-mix Tailwind emits for text-white/NN, so their computed values are
+     identical too (e2e pins them as oklab(… / 0.35) and oklab(… / 0.6)); the
+     var() operand matters, a literal one is constant-folded by Lightning CSS
+     into lab(). The steps are separate tokens on purpose: an alpha of dark
+     ink over a light rail loses contrast much faster than white over forest,
+     so a light surface overrides them with solid steps to stay WCAG AA. */
   --mp-sidebar-ink: #ffffff;
-  --mp-sidebar-ink-70: rgba(255, 255, 255, 0.7);
-  --mp-sidebar-ink-60: rgba(255, 255, 255, 0.6);
-  --mp-sidebar-ink-50: rgba(255, 255, 255, 0.5);
-  --mp-sidebar-ink-40: rgba(255, 255, 255, 0.4);
-  --mp-sidebar-ink-35: rgba(255, 255, 255, 0.35);
+  --mp-sidebar-ink-70: color-mix(in oklab, var(--mp-sidebar-ink) 70%, transparent);
+  --mp-sidebar-ink-60: color-mix(in oklab, var(--mp-sidebar-ink) 60%, transparent);
+  --mp-sidebar-ink-50: color-mix(in oklab, var(--mp-sidebar-ink) 50%, transparent);
+  --mp-sidebar-ink-40: color-mix(in oklab, var(--mp-sidebar-ink) 40%, transparent);
+  --mp-sidebar-ink-35: color-mix(in oklab, var(--mp-sidebar-ink) 35%, transparent);
   --mp-sidebar-accent: #c8dbd4;
   --mp-sidebar-focus: rgba(255, 255, 255, 0.35);
 
