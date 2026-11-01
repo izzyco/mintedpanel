@@ -1,5 +1,6 @@
 -- MINT-107 notification sequences regression packet: RLS, grants, CHECKs,
--- triggers, Minted's platform defaults and save_notification_sequence
+-- triggers, Minted's platform defaults (no default digest schedule, G2),
+-- save_notification_sequence, and the consent archive (D5)
 -- (supabase/migrations/20261031051500_notification_sequences.sql).
 --
 -- Run after all migrations in a disposable PostgreSQL database, never against
@@ -8,7 +9,8 @@
 -- Every row it writes is synthetic and rolled back.
 --
 -- It needs a superuser connection (it writes fixtures, switches role, toggles
--- a trigger and a column grant) and the anon, authenticated and service_role
+-- triggers and column grants, deletes a synthetic org) and the anon,
+-- authenticated and service_role
 -- roles. CI creates those as bare NOLOGIN roles, so the packet emulates the
 -- two hosted Supabase attributes it relies on, inside its own transaction:
 -- USAGE on schema auth (auth.uid()) and BYPASSRLS on service_role. The first
@@ -43,6 +45,7 @@ BEGIN
      OR to_regclass('public.notification_sequence_defaults') IS NULL
      OR to_regclass('public.notification_sequence_default_steps') IS NULL
      OR to_regclass('public.sms_consents') IS NULL
+     OR to_regclass('public.sms_consent_archive') IS NULL
      OR to_regprocedure('public.save_notification_sequence(uuid, text, jsonb)') IS NULL
      OR to_regprocedure('private.notification_cc_recipients_valid(jsonb)') IS NULL
      OR to_regprocedure('private.notification_stop_conditions_valid(text[])') IS NULL
@@ -247,7 +250,8 @@ SELECT pg_temp.m107_mark('anon_has_no_table_access',
   AND NOT has_table_privilege('anon', 'public.notification_sequence_steps', 'SELECT')
   AND NOT has_table_privilege('anon', 'public.notification_sequence_defaults', 'SELECT')
   AND NOT has_table_privilege('anon', 'public.notification_sequence_default_steps', 'SELECT')
-  AND NOT has_table_privilege('anon', 'public.sms_consents', 'SELECT'));
+  AND NOT has_table_privilege('anon', 'public.sms_consents', 'SELECT')
+  AND NOT has_table_privilege('anon', 'public.sms_consent_archive', 'SELECT'));
 -- One privilege per call: a comma list is true when ANY listed privilege is held.
 SELECT pg_temp.m107_mark('authenticated_table_grants',
   has_table_privilege('authenticated', 'public.notification_sequences', 'SELECT')
@@ -305,13 +309,14 @@ SELECT pg_temp.m107_mark('defaults_are_read_only_for_authenticated',
     'public.notification_sequence_default_steps', 'DELETE')
   AND has_table_privilege('service_role', 'public.notification_sequence_defaults', 'UPDATE')
   AND has_table_privilege('service_role', 'public.notification_sequence_default_steps', 'INSERT'));
-SELECT pg_temp.m107_mark('rls_enabled_on_all_five',
-  (SELECT count(*) = 5 AND bool_and(relrowsecurity) FROM pg_class
+SELECT pg_temp.m107_mark('rls_enabled_on_all_six',
+  (SELECT count(*) = 6 AND bool_and(relrowsecurity) FROM pg_class
     WHERE oid IN ('public.notification_sequences'::regclass,
                   'public.notification_sequence_steps'::regclass,
                   'public.notification_sequence_defaults'::regclass,
                   'public.notification_sequence_default_steps'::regclass,
-                  'public.sms_consents'::regclass)));
+                  'public.sms_consents'::regclass,
+                  'public.sms_consent_archive'::regclass)));
 
 -- The deferred step rules run as the owner, so a committing role that cannot
 -- see the sequence row never skips them (review, Oct 31).
@@ -339,7 +344,7 @@ SELECT pg_temp.m107_mark('notification_sequences_columns_are_all_classified',
 
 -- anon writes nothing, anywhere.
 SET LOCAL ROLE anon;
-SELECT pg_temp.m107_mark('anon_cannot_write_any_of_the_five_tables',
+SELECT pg_temp.m107_mark('anon_cannot_write_any_of_the_six_tables',
   pg_temp.m107_expect_state('42501', $$INSERT INTO public.notification_sequences (org_id, purpose)
     VALUES ('10700000-0000-4000-a000-00000000000a', 'intake_reminder')$$)
   AND pg_temp.m107_expect_state('42501', $$UPDATE public.notification_sequences SET enabled = true$$)
@@ -352,7 +357,7 @@ SELECT pg_temp.m107_mark('anon_cannot_write_any_of_the_five_tables',
     $$UPDATE public.notification_sequence_steps SET offset_days = 1$$)
   AND pg_temp.m107_expect_state('42501', $$DELETE FROM public.notification_sequence_steps$$)
   AND pg_temp.m107_expect_state('42501', $$INSERT INTO public.notification_sequence_defaults
-      (purpose, send_hour, send_time_zone) VALUES ('followup_digest', 6, 'America/New_York')$$)
+      (purpose, digest_cc_allowed) VALUES ('followup_digest', true)$$)
   AND pg_temp.m107_expect_state('42501',
     $$UPDATE public.notification_sequence_defaults SET target_days_to_ready = 1$$)
   AND pg_temp.m107_expect_state('42501', $$DELETE FROM public.notification_sequence_defaults$$)
@@ -369,21 +374,29 @@ SELECT pg_temp.m107_mark('anon_cannot_write_any_of_the_five_tables',
             'intake_form', 'sms-consent.v1')$$)
   AND pg_temp.m107_expect_state('42501',
     $$UPDATE public.sms_consents SET revoked_source = 'sms_stop'$$)
-  AND pg_temp.m107_expect_state('42501', $$DELETE FROM public.sms_consents$$));
+  AND pg_temp.m107_expect_state('42501', $$DELETE FROM public.sms_consents$$)
+  AND pg_temp.m107_expect_state('42501', $$INSERT INTO public.sms_consent_archive
+      (id, org_id, phone_e164, consented_at, source, consent_text_version, created_at)
+    VALUES ('10700000-0000-4000-a000-0000000c0099', '10700000-0000-4000-a000-00000000000a',
+            '+15555550100', now(), 'intake_form', 'sms-consent.v1', now())$$)
+  AND pg_temp.m107_expect_state('42501', $$DELETE FROM public.sms_consent_archive$$));
 RESET ROLE;
 
 -- Answer 5: the zone is checked when it is written, by a trigger, not by a
--- CHECK that a later tzdata release could turn against stored rows.
+-- CHECK that a later tzdata release could turn against stored rows. Only an
+-- org row has a zone (G2: the default has no schedule).
 SELECT pg_temp.m107_mark('time_zone_is_checked_on_write_not_by_a_check',
   NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conrelid IN ('public.notification_sequences'::regclass,
                         'public.notification_sequence_defaults'::regclass)
        AND pg_get_constraintdef(oid) LIKE '%notification_time_zone_valid%')
-  AND (SELECT count(*) = 2 FROM pg_trigger
-        WHERE tgname IN ('notification_sequences_send_time_zone_check',
-                         'notification_sequence_defaults_send_time_zone_check')
-          AND NOT tgisinternal));
+  AND (SELECT count(*) = 1 FROM pg_trigger
+        WHERE tgname = 'notification_sequences_send_time_zone_check'
+          AND tgrelid = 'public.notification_sequences'::regclass
+          AND NOT tgisinternal)
+  AND NOT EXISTS (SELECT 1 FROM pg_trigger
+                   WHERE tgname = 'notification_sequence_defaults_send_time_zone_check'));
 
 -- ---------------------------------------------------------------------------
 -- The shape of inheritance (answer 3).
@@ -408,16 +421,27 @@ SELECT pg_temp.m107_mark('org_settings_default_to_inherit',
          FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'notification_sequences'
           AND column_name = 'enabled'));
-SELECT pg_temp.m107_mark('defaults_seeded_with_days_1_2_3_and_a_daily_8am_digest',
+-- G2: there is no default digest. Its schedule (how often, the weekly day,
+-- the hour, the zone, the second hour) exists only on an org row, once Minted
+-- sets the digest up for that org; the default has no such columns.
+SELECT pg_temp.m107_mark('defaults_have_no_digest_schedule',
+  NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name IN ('notification_sequence_defaults', 'notification_sequence_default_steps')
+       AND column_name IN ('digest_frequency', 'digest_weekday', 'send_hour',
+                           'send_time_zone', 'second_send_hour'))
+  AND (SELECT array_agg(column_name::text ORDER BY column_name)
+              = '{bounce_escalation_step,created_at,digest_cc_allowed,purpose,stop_conditions,target_days_to_ready,updated_at}'
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'notification_sequence_defaults'));
+SELECT pg_temp.m107_mark('defaults_seeded_with_days_1_2_3_and_an_unscheduled_digest',
   (SELECT stop_conditions = '{submitted,paused,withdrawn,provider_replied}'
           AND target_days_to_ready = 14
-          AND send_hour IS NULL AND send_time_zone IS NULL AND second_send_hour IS NULL
-          AND digest_frequency IS NULL AND digest_weekday IS NULL
      FROM public.notification_sequence_defaults WHERE purpose = 'intake_reminder')
-  -- A8: daily by default; weekly on Monday; twice a day adds 2 pm.
-  AND (SELECT send_hour = 8 AND send_time_zone = 'America/Chicago' AND second_send_hour = 14
-              AND digest_frequency = 'daily' AND digest_weekday = 1
-              AND stop_conditions IS NULL AND target_days_to_ready IS NULL
+  -- G2: the digest default is its audience (digest_cc_allowed, below) and its
+  -- one step, nothing else.
+  AND (SELECT stop_conditions IS NULL AND target_days_to_ready IS NULL
          FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest')
   -- Days 1, 2 and 3 after the invite (Sowmya, Oct 31; was 2, 4 and 7).
   AND (SELECT array_agg(offset_days ORDER BY position) = '{1,2,3}'
@@ -1014,14 +1038,11 @@ SELECT pg_temp.m107_mark('org_admin_cannot_write_the_defaults',
     $$UPDATE public.notification_sequence_defaults SET target_days_to_ready = 30
        WHERE purpose = 'intake_reminder'$$)
   AND pg_temp.m107_expect_state('42501',
-    $$UPDATE public.notification_sequence_defaults SET digest_frequency = 'weekly'
-       WHERE purpose = 'followup_digest'$$)
+    $$UPDATE public.notification_sequence_defaults SET stop_conditions = '{submitted}'
+       WHERE purpose = 'intake_reminder'$$)
   AND pg_temp.m107_expect_state('42501',
-    $$UPDATE public.notification_sequence_defaults SET send_hour = 6
-       WHERE purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('42501',
-    $$INSERT INTO public.notification_sequence_defaults (purpose, send_hour, send_time_zone)
-      VALUES ('followup_digest', 6, 'America/New_York')$$)
+    $$INSERT INTO public.notification_sequence_defaults (purpose, digest_cc_allowed)
+      VALUES ('followup_digest', true)$$)
   AND pg_temp.m107_expect_state('42501',
     $$DELETE FROM public.notification_sequence_defaults$$)
   AND pg_temp.m107_expect_state('42501',
@@ -1044,7 +1065,7 @@ SELECT pg_temp.m107_mark('org_admin_cannot_change_the_policy_defaults',
 SELECT pg_temp.m107_mark('defaults_unchanged_after_the_admin_tried',
   (SELECT target_days_to_ready = 14
      FROM public.notification_sequence_defaults WHERE purpose = 'intake_reminder')
-  AND (SELECT send_hour = 8 FROM public.notification_sequence_defaults
+  AND (SELECT digest_cc_allowed = false FROM public.notification_sequence_defaults
         WHERE purpose = 'followup_digest')
   AND (SELECT count(*) = 4 FROM public.notification_sequence_default_steps));
 
@@ -1190,13 +1211,18 @@ SELECT pg_temp.m107_mark('check_digest_has_no_intake_settings',
   AND pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET bounce_escalation_step = 1
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
--- A8: the frequency and weekday are bounded, and the digest's own.
+-- A8: the frequency and weekday are bounded, and the digest's own. (Each
+-- probe sets the whole schedule, so only the CHECK named can refuse it.)
 SELECT pg_temp.m107_mark('check_digest_frequency_and_weekday',
-  pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequences SET digest_frequency = 'hourly'
+  pg_temp.m107_expect_message('notification_sequences_digest_frequency_check', $$
+    UPDATE public.notification_sequences
+       SET digest_frequency = 'hourly', digest_weekday = 1, send_hour = 8,
+           send_time_zone = 'America/Chicago', second_send_hour = 14
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequences SET digest_weekday = 8
+  AND pg_temp.m107_expect_message('notification_sequences_digest_weekday_check', $$
+    UPDATE public.notification_sequences
+       SET digest_frequency = 'weekly', digest_weekday = 8, send_hour = 8,
+           send_time_zone = 'America/Chicago', second_send_hour = 14
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
   AND pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET digest_frequency = 'daily'
@@ -1204,30 +1230,42 @@ SELECT pg_temp.m107_mark('check_digest_frequency_and_weekday',
   AND pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET digest_weekday = 1
      WHERE id = (SELECT intake_id FROM m107_ids)$$));
--- A10: the send time is one group per row; the second hour after the first.
-SELECT pg_temp.m107_mark('check_send_time_is_one_group',
-  pg_temp.m107_expect_state('23514', $$
+-- A10 and G2: the digest's schedule (how often, the weekly day, the hour, the
+-- zone, the second hour) is one group on an org row, all set or all NULL;
+-- the second hour after the first.
+SELECT pg_temp.m107_mark('check_digest_schedule_is_one_group',
+  pg_temp.m107_expect_message('notification_sequences_digest_schedule_check', $$
     UPDATE public.notification_sequences SET send_hour = 8
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
+  AND pg_temp.m107_expect_message('notification_sequences_digest_schedule_check', $$
     UPDATE public.notification_sequences SET send_time_zone = 'America/Chicago'
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequences SET send_hour = 8, send_time_zone = 'America/Chicago'
+  AND pg_temp.m107_expect_message('notification_sequences_digest_schedule_check', $$
+    UPDATE public.notification_sequences SET digest_frequency = 'weekly'
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
+  -- The send time alone is no longer a schedule: how often and the day too.
+  AND pg_temp.m107_expect_message('notification_sequences_digest_schedule_check', $$
     UPDATE public.notification_sequences
-       SET send_hour = 15, send_time_zone = 'America/Chicago', second_send_hour = 9
+       SET send_hour = 8, send_time_zone = 'America/Chicago', second_send_hour = 14
+     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_message('notification_sequences_digest_schedule_check', $$
+    UPDATE public.notification_sequences
+       SET digest_frequency = 'daily', digest_weekday = 1, send_hour = 8,
+           send_time_zone = 'America/Chicago'
+     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_message('notification_sequences_second_send_hour_check', $$
+    UPDATE public.notification_sequences
+       SET digest_frequency = 'daily', digest_weekday = 1, send_hour = 15,
+           send_time_zone = 'America/Chicago', second_send_hour = 9
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
   AND pg_temp.m107_probe($$
     UPDATE public.notification_sequences
-       SET send_hour = 8, send_time_zone = 'America/Chicago', second_send_hour = 14
+       SET digest_frequency = 'daily', digest_weekday = 1, send_hour = 8,
+           send_time_zone = 'America/Chicago', second_send_hour = 14
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$,
-    $$SELECT send_hour = 8 AND second_send_hour = 14 FROM public.notification_sequences
-       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequence_defaults SET second_send_hour = 8
-     WHERE purpose = 'followup_digest'$$));
+    $$SELECT send_hour = 8 AND second_send_hour = 14 AND digest_frequency = 'daily'
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
 -- A11: never an empty stop list, on an org row or a default.
 SELECT pg_temp.m107_mark('check_stop_conditions_not_empty',
   pg_temp.m107_expect_state('23514', $$
@@ -1292,18 +1330,16 @@ SELECT pg_temp.m107_mark('check_send_time_zone_is_iana',
   pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequences SET send_time_zone = 'Mars/Olympus_Mons'
      WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
+  AND pg_temp.m107_expect_message('notification_invalid_time_zone', $$
     UPDATE public.notification_sequences SET send_time_zone = 'CST'
-     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequence_defaults SET send_time_zone = 'america/chicago'
-     WHERE purpose = 'followup_digest'$$));
+     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
 -- A zone a later tzdata no longer knows does not block an unrelated update;
 -- writing it again is refused. (Simulated: stored with the trigger off.)
--- (The whole send-time group is set, A10.)
+-- (The whole schedule is set, A10 and G2: Minted sets the digest up.)
 ALTER TABLE public.notification_sequences DISABLE TRIGGER notification_sequences_send_time_zone_check;
 UPDATE public.notification_sequences
-   SET send_hour = 8, send_time_zone = 'Gone/Zone', second_send_hour = 14
+   SET digest_frequency = 'weekly', digest_weekday = 1, send_hour = 8,
+       send_time_zone = 'Gone/Zone', second_send_hour = 14
  WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
 ALTER TABLE public.notification_sequences ENABLE TRIGGER notification_sequences_send_time_zone_check;
 -- (The unrelated update is Minted's: the frequency, which keeps the revision.)
@@ -1356,23 +1392,11 @@ SELECT pg_temp.m107_mark('default_steps_keep_the_step_rules',
     VALUES ('payment_reminder', 1, 1, 'email', 'payment_reminder_first')$$));
 SELECT pg_temp.m107_mark('defaults_stay_complete_for_their_purpose',
   pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequence_defaults SET second_send_hour = NULL
-     WHERE purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequence_defaults SET digest_frequency = NULL
-     WHERE purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequence_defaults SET target_days_to_ready = NULL
      WHERE purpose = 'intake_reminder'$$)
   AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequence_defaults SET send_hour = NULL
+    UPDATE public.notification_sequence_defaults SET target_days_to_ready = 14
      WHERE purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequence_defaults SET send_hour = 24
-     WHERE purpose = 'followup_digest'$$)
-  AND pg_temp.m107_expect_state('23514', $$
-    UPDATE public.notification_sequence_defaults SET send_hour = 8
-     WHERE purpose = 'intake_reminder'$$)
   AND pg_temp.m107_expect_state('23514', $$
     UPDATE public.notification_sequence_defaults SET stop_conditions = '{bounced}'
      WHERE purpose = 'intake_reminder'$$)
@@ -1394,10 +1418,8 @@ SELECT pg_temp.m107_mark('a_default_inserted_without_steps_is_refused',
       ALTER TABLE public.notification_sequence_defaults
         DISABLE TRIGGER notification_sequence_defaults_no_delete;
       DELETE FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest';
-      INSERT INTO public.notification_sequence_defaults
-        (purpose, send_hour, send_time_zone, second_send_hour, digest_frequency,
-         digest_weekday, digest_cc_allowed)
-      VALUES ('followup_digest', 8, 'America/Chicago', 14, 'daily', 1, false);
+      INSERT INTO public.notification_sequence_defaults (purpose, digest_cc_allowed)
+      VALUES ('followup_digest', false);
     END $d$ $$));
 -- A default is never deleted, even by the owner: every org would lose it.
 SELECT pg_temp.m107_mark('owner_cannot_delete_a_default', pg_temp.m107_expect_message(
@@ -1416,8 +1438,9 @@ SELECT pg_temp.m107_mark('no_row_means_off',
                WHERE org_id = '10700000-0000-4000-a000-00000000000b'));
 
 -- ---------------------------------------------------------------------------
--- Minted (service_role) sets the platform-managed settings: an org override
--- and the default itself. An admin's later save leaves the override alone.
+-- Minted (service_role) sets the platform-managed settings: an org's digest
+-- schedule, on/off, and the defaults themselves. An admin's later save
+-- leaves Minted's settings alone.
 -- ---------------------------------------------------------------------------
 SET LOCAL ROLE service_role;
 UPDATE public.notification_sequences
@@ -1426,16 +1449,37 @@ UPDATE public.notification_sequences
 -- A9: Minted switches org A's intake reminders on.
 UPDATE public.notification_sequences SET enabled = true
  WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder';
-UPDATE public.notification_sequence_defaults SET send_hour = 7
- WHERE purpose = 'followup_digest';
 SELECT pg_temp.m107_mark('service_role_writes_platform_settings',
   (SELECT send_hour = 6 AND send_time_zone = 'America/New_York'
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
   AND (SELECT enabled FROM public.notification_sequences
         WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder')
-  AND (SELECT send_hour = 7 FROM public.notification_sequence_defaults
-        WHERE purpose = 'followup_digest'));
+  AND pg_temp.m107_probe(
+    $$UPDATE public.notification_sequence_defaults SET target_days_to_ready = 15
+       WHERE purpose = 'intake_reminder'$$,
+    $$SELECT target_days_to_ready = 15 FROM public.notification_sequence_defaults
+       WHERE purpose = 'intake_reminder'$$));
+-- G2: an org's digest is set up when Minted writes its whole schedule; until
+-- then it has none (org B has no row at all). A partial schedule is refused.
+SELECT pg_temp.m107_mark('minted_sets_up_an_orgs_digest_schedule_whole',
+  pg_temp.m107_probe(
+    $$INSERT INTO public.notification_sequences
+        (org_id, purpose, digest_frequency, digest_weekday, send_hour, send_time_zone,
+         second_send_hour)
+      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', 'twice_daily', 1, 9,
+              'America/Denver', 15)$$,
+    $$SELECT NOT enabled AND digest_frequency = 'twice_daily' AND send_hour = 9
+             AND send_time_zone = 'America/Denver' AND second_send_hour = 15
+             AND digest_weekday = 1 AND revision = 1
+        FROM public.notification_sequences
+       WHERE org_id = '10700000-0000-4000-a000-00000000000b' AND purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_message('notification_sequences_digest_schedule_check',
+    $$INSERT INTO public.notification_sequences
+        (org_id, purpose, send_hour, send_time_zone, second_send_hour)
+      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', 8, 'America/Chicago', 14)$$)
+  AND NOT EXISTS (SELECT 1 FROM public.notification_sequences
+                   WHERE org_id = '10700000-0000-4000-a000-00000000000b'));
 -- A change by Minted to its own settings alone is not an edit of the org's:
 -- the revision and the author of the org's settings stay, so an admin editing
 -- now is not told someone else saved.
@@ -1910,6 +1954,125 @@ SELECT pg_temp.m107_mark('service_role_provider_delete_detaches_through_the_owne
         FROM public.sms_consents WHERE id = '10700000-0000-4000-a000-0000000c0004'$$));
 RESET ROLE;
 GRANT UPDATE ON TABLE public.sms_consents TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- D5: consent evidence survives an org delete. A BEFORE DELETE trigger copies
+-- each deleted consent row to sms_consent_archive (org_id a plain uuid, no
+-- foreign key), whatever deletes it. RLS is forced there with no policies,
+-- and only service_role holds a grant (SELECT).
+-- ---------------------------------------------------------------------------
+SELECT pg_temp.m107_mark('consent_archive_is_forced_rls_and_service_role_read_only',
+  (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class
+    WHERE oid = 'public.sms_consent_archive'::regclass)
+  AND NOT EXISTS (SELECT 1 FROM pg_policies
+                   WHERE schemaname = 'public' AND tablename = 'sms_consent_archive')
+  AND has_table_privilege('service_role', 'public.sms_consent_archive', 'SELECT')
+  AND NOT has_table_privilege('service_role', 'public.sms_consent_archive', 'INSERT')
+  AND NOT has_table_privilege('service_role', 'public.sms_consent_archive', 'UPDATE')
+  AND NOT has_table_privilege('service_role', 'public.sms_consent_archive', 'DELETE')
+  AND NOT has_any_column_privilege('authenticated', 'public.sms_consent_archive', 'SELECT')
+  AND NOT has_table_privilege('authenticated', 'public.sms_consent_archive', 'DELETE')
+  -- org_id is a plain uuid: no foreign key can take the row with the org.
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid = 'public.sms_consent_archive'::regclass AND contype = 'f')
+  -- The consent row's own columns, and when it was archived.
+  AND (SELECT array_agg(column_name::text ORDER BY column_name)
+              = '{archived_at,consent_text_version,consented_at,created_at,id,org_id,phone_e164,provider_id,recorded_by,revoked_at,revoked_source,source}'
+         FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sms_consent_archive')
+  -- A row-level BEFORE DELETE trigger (tgtype 1 row + 2 before + 8 delete),
+  -- SECURITY DEFINER with an empty search_path.
+  AND (SELECT count(*) = 1 FROM pg_trigger
+        WHERE tgrelid = 'public.sms_consents'::regclass
+          AND tgname = 'sms_consents_archive_before_delete'
+          AND tgtype = 11 AND NOT tgisinternal)
+  AND (SELECT p.prosecdef
+              AND EXISTS (SELECT 1 FROM unnest(p.proconfig) AS c
+                           WHERE c IN ('search_path=""', 'search_path='))
+         FROM pg_proc AS p
+        WHERE p.oid = 'private.sms_consents_archive_before_delete()'::regprocedure));
+
+-- Org C: one provider with a live consent and a revoked one. It is deleted
+-- as the owner the way a synthetic org is cleaned up (no app path deletes an
+-- org): its provider first (providers_org_id_fkey does not cascade, and that
+-- delete detaches the consents), its seeded roster templates with their
+-- guard off, then the org, whose FK cascades to the consents. Each consent is
+-- archived before it goes.
+INSERT INTO public.organizations(id, name) VALUES
+  ('10700000-0000-4000-a000-00000000000c', 'MINT-107 Synthetic Org C');
+INSERT INTO public.providers(id, org_id, first_name, last_name, status) VALUES
+  ('10700000-0000-4000-a000-0000000c1001', '10700000-0000-4000-a000-00000000000c',
+   'Synthetic', 'Provider E', 'onboarding');
+SET LOCAL ROLE service_role;
+INSERT INTO public.sms_consents
+  (id, org_id, provider_id, phone_e164, source, consent_text_version)
+VALUES ('10700000-0000-4000-a000-0000000c0005', '10700000-0000-4000-a000-00000000000c',
+        '10700000-0000-4000-a000-0000000c1001', '+15555550111', 'intake_form', 'sms-consent.v1');
+INSERT INTO public.sms_consents
+  (id, org_id, provider_id, phone_e164, source, consent_text_version, recorded_by)
+VALUES ('10700000-0000-4000-a000-0000000c0006', '10700000-0000-4000-a000-00000000000c',
+        '10700000-0000-4000-a000-0000000c1001', '+15555550112', 'staff_recorded', 'sms-consent.v2',
+        '10700000-0000-4000-a000-000000000001');
+UPDATE public.sms_consents SET revoked_at = now(), revoked_source = 'sms_stop'
+ WHERE id = '10700000-0000-4000-a000-0000000c0006';
+SELECT pg_temp.m107_mark('nothing_archived_before_a_delete',
+  NOT EXISTS (SELECT 1 FROM public.sms_consent_archive));
+RESET ROLE;
+DELETE FROM public.providers WHERE id = '10700000-0000-4000-a000-0000000c1001';
+ALTER TABLE public.roster_templates DISABLE TRIGGER USER;
+DELETE FROM public.roster_templates WHERE org_id = '10700000-0000-4000-a000-00000000000c';
+ALTER TABLE public.roster_templates ENABLE TRIGGER USER;
+DELETE FROM public.organizations WHERE id = '10700000-0000-4000-a000-00000000000c';
+SET LOCAL ROLE service_role;
+SELECT pg_temp.m107_mark('an_org_delete_leaves_its_consents_in_the_archive',
+  NOT EXISTS (SELECT 1 FROM public.organizations
+               WHERE id = '10700000-0000-4000-a000-00000000000c')
+  AND NOT EXISTS (SELECT 1 FROM public.sms_consents
+                   WHERE org_id = '10700000-0000-4000-a000-00000000000c')
+  -- The evidence as it was, detached from the provider deleted before it.
+  AND (SELECT count(*) = 2
+              AND bool_and(org_id = '10700000-0000-4000-a000-00000000000c'
+                           AND provider_id IS NULL
+                           AND consented_at = now() AND created_at = now()
+                           AND archived_at = now())
+              AND count(*) FILTER (
+                WHERE id = '10700000-0000-4000-a000-0000000c0005'
+                  AND phone_e164 = '+15555550111' AND source = 'intake_form'
+                  AND consent_text_version = 'sms-consent.v1' AND recorded_by IS NULL
+                  AND revoked_at IS NULL AND revoked_source IS NULL) = 1
+              AND count(*) FILTER (
+                WHERE id = '10700000-0000-4000-a000-0000000c0006'
+                  AND phone_e164 = '+15555550112' AND source = 'staff_recorded'
+                  AND consent_text_version = 'sms-consent.v2'
+                  AND recorded_by = '10700000-0000-4000-a000-000000000001'
+                  AND revoked_at = now() AND revoked_source = 'sms_stop') = 1
+         FROM public.sms_consent_archive)
+  -- Org A's consents are untouched.
+  AND (SELECT count(*) = 6 FROM public.sms_consents
+        WHERE org_id = '10700000-0000-4000-a000-00000000000a'));
+RESET ROLE;
+-- Any other delete is archived too (as the owner; probe, rolled back).
+SELECT pg_temp.m107_mark('any_consent_delete_is_archived',
+  pg_temp.m107_probe(
+    $$DELETE FROM public.sms_consents WHERE id = '10700000-0000-4000-a000-0000000c0001'$$,
+    $$SELECT count(*) = 1 FROM public.sms_consent_archive
+       WHERE id = '10700000-0000-4000-a000-0000000c0001'
+         AND org_id = '10700000-0000-4000-a000-00000000000a'
+         AND provider_id = '10700000-0000-4000-a000-0000000a0001'
+         AND revoked_source = 'sms_stop'$$));
+-- Members read their org's consents, never the archive, admins included.
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000003');
+SELECT pg_temp.m107_mark('members_cannot_read_the_archive',
+  pg_temp.m107_expect_state('42501', $$SELECT count(*) FROM public.sms_consent_archive$$)
+  AND (SELECT count(*) > 0 FROM public.sms_consents));
+SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
+SELECT pg_temp.m107_mark('admins_cannot_read_or_write_the_archive',
+  pg_temp.m107_expect_state('42501', $$SELECT 1 FROM public.sms_consent_archive$$)
+  AND pg_temp.m107_expect_state('42501',
+    $$DELETE FROM public.sms_consent_archive
+       WHERE org_id = '10700000-0000-4000-a000-00000000000c'$$));
+RESET ROLE;
 
 
 -- ---------------------------------------------------------------------------

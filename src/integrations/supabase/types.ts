@@ -1919,12 +1919,7 @@ export type Database = {
           bounce_escalation_step: number | null;
           created_at: string;
           digest_cc_allowed: boolean | null;
-          digest_frequency: string | null;
-          digest_weekday: number | null;
           purpose: string;
-          second_send_hour: number | null;
-          send_hour: number | null;
-          send_time_zone: string | null;
           stop_conditions: string[] | null;
           target_days_to_ready: number | null;
           updated_at: string;
@@ -1933,12 +1928,7 @@ export type Database = {
           bounce_escalation_step?: number | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
-          digest_frequency?: string | null;
-          digest_weekday?: number | null;
           purpose: string;
-          second_send_hour?: number | null;
-          send_hour?: number | null;
-          send_time_zone?: string | null;
           stop_conditions?: string[] | null;
           target_days_to_ready?: number | null;
           updated_at?: string;
@@ -1947,12 +1937,7 @@ export type Database = {
           bounce_escalation_step?: number | null;
           created_at?: string;
           digest_cc_allowed?: boolean | null;
-          digest_frequency?: string | null;
-          digest_weekday?: number | null;
           purpose?: string;
-          second_send_hour?: number | null;
-          send_hour?: number | null;
-          send_time_zone?: string | null;
           stop_conditions?: string[] | null;
           target_days_to_ready?: number | null;
           updated_at?: string;
@@ -3871,6 +3856,51 @@ export type Database = {
             referencedColumns: ["id"];
           },
         ];
+      };
+      sms_consent_archive: {
+        Row: {
+          archived_at: string;
+          consent_text_version: string;
+          consented_at: string;
+          created_at: string;
+          id: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id: string | null;
+          recorded_by: string | null;
+          revoked_at: string | null;
+          revoked_source: string | null;
+          source: string;
+        };
+        Insert: {
+          archived_at?: string;
+          consent_text_version: string;
+          consented_at: string;
+          created_at: string;
+          id: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source: string;
+        };
+        Update: {
+          archived_at?: string;
+          consent_text_version?: string;
+          consented_at?: string;
+          created_at?: string;
+          id?: string;
+          org_id?: string;
+          phone_e164?: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source?: string;
+        };
+        Relationships: [];
       };
       sms_consents: {
         Row: {

@@ -45,7 +45,7 @@ export function NotificationSequenceSummary({
         {effective.steps.map((step) => (
           <li key={step.position} className="rounded-md border border-[var(--mp-border)] px-3 py-2">
             <div className="font-medium">
-              {describeStep(config.purpose, step, effective.digestFrequency ?? undefined)}
+              {describeStep(config.purpose, step, effective.digestFrequency)}
             </div>
             {effective.ccAllowed ? (
               <div className="text-[12px] text-muted-foreground">

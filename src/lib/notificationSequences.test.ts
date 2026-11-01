@@ -4,8 +4,8 @@ import {
   BOUNCE_ESCALATION_OFF,
   COORDINATORS_ONLY_NOTE,
   DEFAULT_NOTIFICATION_POLICY_RULES,
+  DIGEST_NOT_SET_UP_NOTE,
   IANA_TIME_ZONE_PATTERN,
-  LAST_RESORT_TIME_ZONE,
   NOTIFICATION_LIMITS,
   PURPOSE_RULES,
   addCcRecipient,
@@ -21,6 +21,7 @@ import {
   describeOffsets,
   describeSendTime,
   describeStep,
+  digestScheduleOf,
   draftBounceEscalationStep,
   draftFromSequence,
   draftsEqual,
@@ -37,7 +38,6 @@ import {
   removeStep,
   resolveNotificationPolicyRules,
   resolveNotificationSequence,
-  resolveSendTime,
   saveErrorMessage,
   scheduleSequenceSends,
   starterDraft,
@@ -45,9 +45,9 @@ import {
   stepsFromDefault,
   toggleStopCondition,
   updateStep,
+  validateDigestSchedule,
   validateDraft,
   validateNotificationPolicyRules,
-  validateSendTime,
   type NotificationSequenceConfig,
   type NotificationSequenceDefaultConfig,
   type SequenceDraft,
@@ -66,11 +66,6 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   targetDaysToReady: 14,
   bounceEscalationStep: 1,
   digestCcAllowed: null,
-  digestFrequency: null,
-  digestWeekday: null,
-  sendHour: null,
-  sendTimeZone: null,
-  secondSendHour: null,
   createdAt: "",
   updatedAt: "",
   steps: [
@@ -89,18 +84,13 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   })),
 };
 
-/** Minted's seeded digest default. */
+/** Minted's seeded digest default: its audience and one step, no schedule (G2). */
 const DIGEST_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "followup_digest",
   stopConditions: null,
   targetDaysToReady: null,
   bounceEscalationStep: null,
   digestCcAllowed: false,
-  digestFrequency: "daily",
-  digestWeekday: 1,
-  sendHour: 8,
-  sendTimeZone: "America/Chicago",
-  secondSendHour: 14,
   createdAt: "",
   updatedAt: "",
   steps: [
@@ -192,6 +182,15 @@ function orgStep(
     ...over,
   };
 }
+
+/** A digest schedule Minted set up for an org: all five, together (A10, G2). */
+const MINTED_SET_UP = {
+  digestFrequency: "daily" as const,
+  digestWeekday: 1,
+  sendHour: 8,
+  sendTimeZone: "America/Chicago",
+  secondSendHour: 14,
+};
 
 describe("starter and Minted's default steps", () => {
   it("starts with every setting left to Minted's default, and no on/off (A9)", () => {
@@ -740,9 +739,6 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
         targetDaysToReady: true,
         bounceEscalationStep: true,
         digestCcAllowed: false,
-        digestFrequency: false,
-        digestWeekday: false,
-        sendTime: false,
       },
     });
   });
@@ -808,52 +804,52 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
     expect(Object.keys(effective.inherited)).not.toContain("compressTowardStartDate");
   });
 
-  it("gives the digest 8 am Central from Minted, an org's send time whole, and no cc (A10)", () => {
-    const inherited = resolveNotificationSequence("followup_digest", undefined, DIGEST_DEFAULT);
-    expect(inherited).toMatchObject({
-      sendHour: 8,
-      sendTimeZone: "America/Chicago",
-      secondSendHour: 14,
-      digestFrequency: "daily",
-      digestWeekday: 1,
-      stopConditions: [],
-      targetDaysToReady: null,
-      inherited: { sendTime: true, digestFrequency: true, stopConditions: false },
-    });
+  it("gives the digest no schedule until Minted sets the org's, then the org's whole (A10, G2)", () => {
+    const notSetUp = {
+      digestFrequency: null,
+      digestWeekday: null,
+      sendHour: null,
+      sendTimeZone: null,
+      secondSendHour: null,
+    };
+    // No row, and a row with no schedule: not set up, so not due. There is
+    // no default schedule to fall back to.
+    for (const org of [undefined, orgRow({ purpose: "followup_digest" })]) {
+      expect(resolveNotificationSequence("followup_digest", org, DIGEST_DEFAULT)).toMatchObject({
+        ...notSetUp,
+        stopConditions: [],
+        targetDaysToReady: null,
+        steps: [{ position: 1, offsetDays: 0, templateKey: "followup_digest_daily" }],
+      });
+    }
     const own = resolveNotificationSequence(
       "followup_digest",
-      orgRow({
-        purpose: "followup_digest",
-        sendHour: 6,
-        sendTimeZone: "America/New_York",
-        secondSendHour: 15,
-      }),
+      orgRow({ purpose: "followup_digest", ...MINTED_SET_UP, sendHour: 6, secondSendHour: 15 }),
       DIGEST_DEFAULT,
     );
-    expect([own.sendHour, own.sendTimeZone, own.secondSendHour]).toEqual([
-      6,
-      "America/New_York",
-      15,
-    ]);
-    expect(own.inherited.sendTime).toBe(false);
-    // A layer that sets one without the others is not a send time: Minted's
-    // whole group applies (no separate inheritance).
+    expect(own).toMatchObject({
+      digestFrequency: "daily",
+      digestWeekday: 1,
+      sendHour: 6,
+      sendTimeZone: "America/Chicago",
+      secondSendHour: 15,
+    });
+    expect(Object.keys(own.inherited)).not.toContain("sendTime");
+    expect(Object.keys(own.inherited)).not.toContain("digestFrequency");
+    // A partial schedule is not one (the database refuses it too): all null.
     for (const partial of [
       { sendTimeZone: "America/New_York" },
-      { sendHour: 6 },
-      { sendHour: 6, sendTimeZone: "America/New_York" },
+      { sendHour: 6, sendTimeZone: "America/New_York", secondSendHour: 15 },
+      { digestFrequency: "weekly" as const, digestWeekday: 1 },
+      { ...MINTED_SET_UP, digestWeekday: null },
     ]) {
-      const effective = resolveNotificationSequence(
-        "followup_digest",
-        orgRow({ purpose: "followup_digest", ...partial }),
-        DIGEST_DEFAULT,
-      );
-      expect([effective.sendHour, effective.sendTimeZone, effective.secondSendHour]).toEqual([
-        8,
-        "America/Chicago",
-        14,
-      ]);
-      expect(effective.inherited.sendTime).toBe(true);
+      expect(
+        resolveNotificationSequence(
+          "followup_digest",
+          orgRow({ purpose: "followup_digest", ...partial }),
+          DIGEST_DEFAULT,
+        ),
+      ).toMatchObject(notSetUp);
     }
     // A digest step is never passed on with a cc, whatever the row says.
     const leaky = resolveNotificationSequence(
@@ -872,62 +868,33 @@ describe("resolveNotificationSequence (answer 3: org row over Minted's default)"
     expect(leaky.steps[0].ccRecipients).toEqual([]);
   });
 
-  it("falls back to Minted's whole send time when the org's zone cannot be used", () => {
+  it("reads a schedule this runtime cannot use as not set up, with no fallback", () => {
     for (const zone of ["Gone/Zone", "Mars/Olympus_Mons", "america/chicago", "CST", ""]) {
       const effective = resolveNotificationSequence(
         "followup_digest",
-        orgRow({ purpose: "followup_digest", sendHour: 6, sendTimeZone: zone, secondSendHour: 9 }),
+        orgRow({ purpose: "followup_digest", ...MINTED_SET_UP, sendTimeZone: zone }),
         DIGEST_DEFAULT,
       );
-      expect([effective.sendHour, effective.sendTimeZone, effective.secondSendHour]).toEqual([
-        8,
-        "America/Chicago",
-        14,
+      expect([effective.sendHour, effective.sendTimeZone, effective.digestFrequency]).toEqual([
+        null,
+        null,
+        null,
       ]);
-      expect(effective.inherited.sendTime).toBe(true);
-      expect(describeSendTime(effective.sendHour, effective.sendTimeZone)).toBe(
-        "8 am Central time",
-      );
+      expect(describeDigestSchedule(effective)).toBe(DIGEST_NOT_SET_UP_NOTE);
     }
-    // A second hour not after the first makes the org group unusable too.
+    // A second hour not after the first makes the schedule unusable too.
     const backwards = resolveNotificationSequence(
       "followup_digest",
       orgRow({
         purpose: "followup_digest",
+        ...MINTED_SET_UP,
         sendHour: 15,
         sendTimeZone: "Europe/Paris",
         secondSendHour: 9,
       }),
       DIGEST_DEFAULT,
     );
-    expect([backwards.sendHour, backwards.inherited.sendTime]).toEqual([8, true]);
-  });
-
-  it("falls back to the last-resort zone when Minted's default zone cannot be used either", () => {
-    expect(LAST_RESORT_TIME_ZONE).toBe("America/Chicago");
-    const broken = { ...DIGEST_DEFAULT, sendTimeZone: "Gone/Zone" };
-    for (const org of [undefined, orgRow({ purpose: "followup_digest" })]) {
-      const effective = resolveNotificationSequence("followup_digest", org, broken);
-      expect([effective.sendHour, effective.sendTimeZone, effective.secondSendHour]).toEqual([
-        8,
-        LAST_RESORT_TIME_ZONE,
-        14,
-      ]);
-      expect(effective.inherited.sendTime).toBe(true);
-    }
-    // A complete, usable org group still wins over a broken default.
-    expect(
-      resolveNotificationSequence(
-        "followup_digest",
-        orgRow({
-          purpose: "followup_digest",
-          sendHour: 7,
-          sendTimeZone: "America/Denver",
-          secondSendHour: 12,
-        }),
-        broken,
-      ).sendTimeZone,
-    ).toBe("America/Denver");
+    expect(backwards.sendHour).toBeNull();
   });
 
   it("gives intake no send time", () => {
@@ -1023,7 +990,7 @@ describe("send time (answer 5)", () => {
 });
 
 describe("read-only step lines", () => {
-  it("describes intake steps by day and the digest as daily", () => {
+  it("describes intake steps by day, the digest by how often, or by nothing when not set up", () => {
     expect(
       describeStep("intake_reminder", {
         position: 1,
@@ -1039,13 +1006,19 @@ describe("read-only step lines", () => {
         channel: "email",
         templateKey: "followup_digest_daily",
       }),
-    ).toBe("Step 1 · once a day · Email · Follow-up digest");
+    ).toBe("Step 1 · Email · Follow-up digest");
     const digestStep = {
       position: 1,
       offsetDays: 0,
       channel: "email" as const,
       templateKey: "followup_digest_daily",
     };
+    expect(describeStep("followup_digest", digestStep, null)).toBe(
+      "Step 1 · Email · Follow-up digest",
+    );
+    expect(describeStep("followup_digest", digestStep, "daily")).toBe(
+      "Step 1 · once a day · Email · Follow-up digest",
+    );
     expect(describeStep("followup_digest", digestStep, "weekly")).toBe(
       "Step 1 · once a week · Email · Follow-up digest",
     );
@@ -1305,11 +1278,10 @@ function digestWithCc() {
 
 describe("notification policy rules: decided defaults", () => {
   it("are the Oct 30 bounce rule and D59's coordinators-only digest, frozen", () => {
+    // G2: no default frequency or weekday; they are the org's schedule.
     expect(DEFAULT_NOTIFICATION_POLICY_RULES).toEqual({
       bounceEscalationStep: 1,
       digestCcAllowed: false,
-      digestFrequency: "daily",
-      digestWeekday: 1,
     });
     expect(Object.isFrozen(DEFAULT_NOTIFICATION_POLICY_RULES)).toBe(true);
     expect(BOUNCE_ESCALATION_OFF).toBe(0);
@@ -1323,9 +1295,11 @@ describe("notification policy rules: decided defaults", () => {
     expect(migration).toMatch(
       /\(purpose, stop_conditions, target_days_to_ready, bounce_escalation_step\)[\s\S]*?14, 1\)/,
     );
+    // G2: the digest default seeds its audience, and no schedule.
     expect(migration).toMatch(
-      /\(purpose, send_hour, send_time_zone, second_send_hour, digest_frequency, digest_weekday,\s+digest_cc_allowed\)\s+VALUES \('followup_digest', 8, 'America\/Chicago', 14, 'daily', 1, false\)/,
+      /INSERT INTO public\.notification_sequence_defaults \(purpose, digest_cc_allowed\)\s+VALUES \('followup_digest', false\);/,
     );
+    expect(migration).not.toMatch(/'followup_digest', 8, 'America\/Chicago'/);
   });
 
   it("accept a bounce step of 0 (off) to the most steps a sequence has, whole numbers only", () => {
@@ -1762,129 +1736,133 @@ describe("digest frequency (A8): daily, weekly or twice a day, per org, set by M
   const digestOrg = (over: Partial<NotificationSequenceConfig> = {}) =>
     orgRow({ purpose: "followup_digest", ...over });
 
-  it("defaults to daily from Minted, and takes the per-org value Minted set", () => {
+  it("has no frequency until Minted sets the org's schedule, then the one Minted set (G2)", () => {
     expect(
-      resolveNotificationSequence("followup_digest", digestOrg(), DIGEST_DEFAULT),
-    ).toMatchObject({ digestFrequency: "daily", inherited: { digestFrequency: true } });
-    for (const digestFrequency of ["weekly", "twice_daily"] as const) {
+      resolveNotificationSequence("followup_digest", digestOrg(), DIGEST_DEFAULT).digestFrequency,
+    ).toBeNull();
+    for (const digestFrequency of ["daily", "weekly", "twice_daily"] as const) {
       expect(
         resolveNotificationSequence(
           "followup_digest",
-          digestOrg({ digestFrequency }),
+          digestOrg({ ...MINTED_SET_UP, digestFrequency }),
           DIGEST_DEFAULT,
-        ),
-      ).toMatchObject({ digestFrequency, inherited: { digestFrequency: false } });
+        ).digestFrequency,
+      ).toBe(digestFrequency);
     }
-    // A default row read without the column still gives the decided daily.
-    expect(
-      resolveNotificationSequence("followup_digest", digestOrg(), {
-        ...DIGEST_DEFAULT,
-        digestFrequency: null,
-        digestWeekday: null,
-      }),
-    ).toMatchObject({ digestFrequency: "daily", digestWeekday: 1 });
-    expect(isDigestFrequency("hourly")).toBe(false);
-  });
-
-  it("goes weekly on Monday by default, or on Minted's chosen day", () => {
-    expect(
-      resolveNotificationSequence("followup_digest", digestOrg(), DIGEST_DEFAULT).digestWeekday,
-    ).toBe(1);
+    // A frequency alone is not a schedule: no daily or Monday stands in.
     expect(
       resolveNotificationSequence(
         "followup_digest",
-        digestOrg({ digestWeekday: 5 }),
+        digestOrg({ digestFrequency: "weekly" }),
+        DIGEST_DEFAULT,
+      ),
+    ).toMatchObject({ digestFrequency: null, digestWeekday: null, sendHour: null });
+    expect(isDigestFrequency("hourly")).toBe(false);
+  });
+
+  it("goes weekly on the day Minted set", () => {
+    expect(
+      resolveNotificationSequence(
+        "followup_digest",
+        digestOrg({ ...MINTED_SET_UP, digestFrequency: "weekly", digestWeekday: 5 }),
         DIGEST_DEFAULT,
       ).digestWeekday,
     ).toBe(5);
   });
 
   it("keeps the frequency out of the draft and the payload (Addendum 10)", () => {
-    const weekly = digestOrg({ digestFrequency: "weekly" });
+    const weekly = digestOrg({ ...MINTED_SET_UP, digestFrequency: "weekly" });
     const draft = draftFromSequence(weekly);
     expect("digestFrequency" in draft).toBe(false);
     expect("digest_frequency" in buildSavePayload("followup_digest", draft, 1)).toBe(false);
     expect("digest_frequency" in buildSavePayload("followup_digest", digest(), null)).toBe(false);
     // Minted changing the frequency leaves an open draft clean: nothing to save.
-    expect(draftsEqual(draft, draftFromSequence(digestOrg({ digestFrequency: "daily" })))).toBe(
-      true,
-    );
+    expect(draftsEqual(draft, draftFromSequence(digestOrg({ ...MINTED_SET_UP })))).toBe(true);
   });
 
-  it("leaves the frequency and the weekday to Minted", () => {
-    expect(validateNotificationPolicyRules({ digestFrequency: "weekly" }, "org_admin")).toEqual([
-      "Only Minted sets how often the digest goes out.",
+  it("is not a policy setting with a default: it is part of the org's schedule (G2)", () => {
+    expect(validateNotificationPolicyRules({ digestFrequency: "weekly" })).toEqual([
+      '"digestFrequency" is not a notification policy setting.',
     ]);
-    expect(validateNotificationPolicyRules({ digestFrequency: "weekly" })).toEqual([]);
-    expect(validateNotificationPolicyRules({ digestWeekday: 3 }, "org_admin")).toEqual([
-      "Only Minted sets the weekly digest's day.",
+    expect(validateNotificationPolicyRules({ digestWeekday: 3 })).toEqual([
+      '"digestWeekday" is not a notification policy setting.',
     ]);
-    expect(validateNotificationPolicyRules({ digestWeekday: 8 })).toEqual([
+    expect(validateDigestSchedule({ ...MINTED_SET_UP, digestWeekday: 8 })).toEqual([
       "The weekly digest's day must be Monday (1) to Sunday (7).",
     ]);
-    expect(validateNotificationPolicyRules({ digestFrequency: "hourly" })).toEqual([
+    expect(validateDigestSchedule({ ...MINTED_SET_UP, digestFrequency: "hourly" })).toEqual([
       "The digest goes out daily, weekly or twice a day.",
     ]);
   });
 
-  it("describes each schedule from its settings, naming how often", () => {
-    const base = {
-      digestWeekday: 1,
-      sendHour: 8,
-      sendTimeZone: "America/Chicago",
-      secondSendHour: 14,
-    };
-    expect(describeDigestSchedule({ ...base, digestFrequency: "daily" })).toBe(
+  it("describes each schedule from its settings, naming how often, or says it isn't set up", () => {
+    expect(describeDigestSchedule({ ...MINTED_SET_UP, digestFrequency: "daily" })).toBe(
       "Sent once a day, around 8 am Central time. Minted sets this.",
     );
-    expect(describeDigestSchedule({ ...base, digestFrequency: null })).toBe(
-      "Sent once a day, around 8 am Central time. Minted sets this.",
-    );
-    expect(describeDigestSchedule({ ...base, digestFrequency: "weekly" })).toBe(
+    expect(describeDigestSchedule({ ...MINTED_SET_UP, digestFrequency: "weekly" })).toBe(
       "Sent once a week, on Mondays around 8 am Central time. Minted sets this.",
     );
-    expect(describeDigestSchedule({ ...base, digestFrequency: "weekly", digestWeekday: 5 })).toBe(
-      "Sent once a week, on Fridays around 8 am Central time. Minted sets this.",
-    );
-    expect(describeDigestSchedule({ ...base, digestFrequency: "twice_daily" })).toBe(
+    expect(
+      describeDigestSchedule({ ...MINTED_SET_UP, digestFrequency: "weekly", digestWeekday: 5 }),
+    ).toBe("Sent once a week, on Fridays around 8 am Central time. Minted sets this.");
+    expect(describeDigestSchedule({ ...MINTED_SET_UP, digestFrequency: "twice_daily" })).toBe(
       "Sent twice a day, around 8 am and 2 pm Central time. Minted sets this.",
     );
-    expect(
-      describeDigestSchedule({ ...base, sendTimeZone: "Gone/Zone", digestFrequency: null }),
-    ).toBeNull();
+    // G2: no schedule, part of one, or one this runtime cannot use.
+    expect(DIGEST_NOT_SET_UP_NOTE).toBe(
+      "Not set up. Minted sets up the follow-up digest for your organization.",
+    );
+    for (const schedule of [
+      {},
+      { ...MINTED_SET_UP, digestFrequency: null },
+      { ...MINTED_SET_UP, sendTimeZone: "Gone/Zone" },
+    ]) {
+      expect(describeDigestSchedule(schedule)).toBe(DIGEST_NOT_SET_UP_NOTE);
+    }
   });
 });
 
-describe("send time is one group per layer (A10)", () => {
-  it("takes hour, zone and second hour from the same layer", () => {
-    const fallback = { sendHour: 8, sendTimeZone: "America/Chicago", secondSendHour: 14 };
-    expect(
-      resolveSendTime({ sendHour: 6, sendTimeZone: "Europe/Paris", secondSendHour: 12 }, fallback),
-    ).toEqual({ sendHour: 6, sendTimeZone: "Europe/Paris", secondSendHour: 12, inherited: false });
+describe("the digest schedule is one group, on the org row only (A10, G2)", () => {
+  it("takes all five from the org's row, or nothing", () => {
+    expect(digestScheduleOf({ ...MINTED_SET_UP, sendTimeZone: "Europe/Paris" })).toEqual({
+      ...MINTED_SET_UP,
+      sendTimeZone: "Europe/Paris",
+    });
     for (const partial of [
+      undefined,
+      null,
+      {},
       { sendHour: 6 },
-      { sendTimeZone: "Europe/Paris" },
-      { sendHour: 6, sendTimeZone: "Europe/Paris" },
-      { sendHour: 6, sendTimeZone: "Europe/Paris", secondSendHour: 6 },
+      { sendHour: 6, sendTimeZone: "Europe/Paris", secondSendHour: 12 },
+      { ...MINTED_SET_UP, secondSendHour: 8 },
+      { ...MINTED_SET_UP, digestFrequency: null },
+      { ...MINTED_SET_UP, digestWeekday: 0 },
     ]) {
-      expect(resolveSendTime(partial, fallback)).toEqual({ ...fallback, inherited: true });
+      expect(digestScheduleOf(partial)).toBeNull();
     }
-    expect(resolveSendTime(undefined, fallback)).toEqual({ ...fallback, inherited: true });
   });
 
-  it("refuses a layer that sets one without the others, in plain language", () => {
-    expect(validateSendTime({})).toEqual([]);
+  it("refuses a schedule that sets some without the others, in plain language", () => {
+    expect(validateDigestSchedule({})).toEqual([]);
+    expect(validateDigestSchedule(MINTED_SET_UP)).toEqual([]);
+    const together =
+      "Set how often, the weekly day, the send hour, the time zone and the second send hour together, or none of them.";
+    expect(validateDigestSchedule({ sendHour: 8 })).toEqual([together]);
+    // A10's send time alone is no longer a complete schedule (G2).
     expect(
-      validateSendTime({ sendHour: 8, sendTimeZone: "America/Chicago", secondSendHour: 14 }),
-    ).toEqual([]);
-    expect(validateSendTime({ sendHour: 8 })).toEqual([
-      "Set the send hour, the time zone and the second send hour together, or leave all three to Minted's default.",
+      validateDigestSchedule({ sendHour: 8, sendTimeZone: "America/Chicago", secondSendHour: 14 }),
+    ).toEqual([together]);
+    expect(validateDigestSchedule({ ...MINTED_SET_UP, sendHour: 15, secondSendHour: 9 })).toEqual([
+      "The second send hour must be later than the first.",
     ]);
-    expect(validateSendTime({ sendTimeZone: "America/Chicago" })).toHaveLength(1);
     expect(
-      validateSendTime({ sendHour: 15, sendTimeZone: "America/Chicago", secondSendHour: 9 }),
-    ).toEqual(["The second send hour must be later than the first."]);
-    expect(validateSendTime({ sendHour: 24, sendTimeZone: "CST", secondSendHour: 25 })).toEqual([
+      validateDigestSchedule({
+        ...MINTED_SET_UP,
+        sendHour: 24,
+        sendTimeZone: "CST",
+        secondSendHour: 25,
+      }),
+    ).toEqual([
       "The send hour must be a whole hour from 0 to 23.",
       "The time zone must be an IANA zone such as America/Chicago.",
       "The second send hour must be a whole hour from 0 to 23.",

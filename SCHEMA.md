@@ -687,7 +687,9 @@ boolean` — records `succeeded` or `failed` on a `running` row; false when the
 
 Migration `20261031051500_notification_sequences.sql`. Reminder and digest
 cadence, in two layers: Minted's platform default per purpose, and an org's
-own row that overrides it field by field. Nothing sends from it yet. Until it
+own row that overrides it field by field. The digest's schedule is the
+exception: it has no default (G2) and exists only on an org row, once Minted
+sets the digest up for that org. Nothing sends from it yet. Until it
 is applied PostgREST reports the tables missing (PGRST205 / 42P01) and the
 Org Detail card says notification settings are not switched on yet
 (`isMissingNotificationSequenceTablesError`, `src/lib/dbErrors.ts`). The
@@ -699,26 +701,17 @@ effective sequence is `resolveNotificationSequence()` in
   and no `enabled` column, so a default can never switch an org on. Intake:
   `stop_conditions` (at least one, A11), `target_days_to_ready`,
   `bounce_escalation_step` (0 to 10; 0 = no bounce escalates) all set;
-  digest: `digest_frequency` (daily | weekly | twice_daily, A8),
-  `digest_weekday` (ISO 1 = Monday), `send_hour` (0 to 23), `send_time_zone`
-  (IANA), `second_send_hour` (later than `send_hour`) and `digest_cc_allowed`
-  set; each purpose's other columns NULL (CHECK). Compression was removed
-  (A13, supersedes D56). The zone is checked when it is
-  written, by the `notification_send_time_zone_check` trigger
-  (`private.notification_time_zone_valid`: Area/Location shape and listed in
-  `pg_timezone_names`), not by a CHECK: a later tzdata release could drop a
-  stored name, and a CHECK would then fail a restore and every update of the
-  row. A reader that cannot use a stored org zone gets Minted's whole
-  default send time (`resolveSendTime`, A10), or America/Chicago if even that
-  zone is unusable. Seeded: intake = all four stop conditions, 14 days,
-  bounce escalation on step 1 (Oct 30); digest = daily at 8 in
-  America/Chicago (the old 13:00 UTC cron in CDT), weekly on Monday, twice a
-  day adding 14:00, `digest_cc_allowed` false (D59: coordinators only). The policy settings are configuration
-  (`resolveNotificationPolicyRules`; Mission Control edits them, MINT-113):
-  an org row overrides each. `bounce_escalation_step` is org-owned;
-  `digest_cc_allowed` and `digest_frequency` (Addendum 10) are
-  platform-managed like `send_hour` (only Minted writes the default or an
-  org's override). The save RPC and the deferred step check
+  digest: `digest_cc_allowed` set; each purpose's other columns NULL
+  (CHECK). **No digest schedule** (G2, Nov 1): the table has no frequency,
+  weekday, send hour, zone or second hour, so there is no default digest and
+  nothing sends until Minted sets an org's schedule. Compression was removed
+  (A13, supersedes D56). Seeded: intake = all four stop conditions, 14 days,
+  bounce escalation on step 1 (Oct 30); digest = `digest_cc_allowed` false
+  (D59: coordinators only) and its one step. The policy settings are
+  configuration (`resolveNotificationPolicyRules`; Mission Control edits
+  them, MINT-113): an org row overrides each. `bounce_escalation_step` is
+  org-owned; `digest_cc_allowed` is platform-managed (only Minted writes the
+  default or an org's override). The save RPC and the deferred step check
   read the org's effective value; turning it on only lets an org store a
   digest cc list, nothing sends a cc copy yet. Never deleted, by anyone (BEFORE DELETE trigger
   `notification_sequence_defaults_no_delete`): Minted changes it instead.
@@ -740,11 +733,22 @@ effective sequence is `resolveNotificationSequence()` in
   setting is nullable and NULL means "use Minted's default":
   `stop_conditions text[]` (intake; validated subset, at least one, A11),
   `target_days_to_ready` (intake, 1 to 90), `bounce_escalation_step` (intake,
-  org-owned, 0 to 10, 0 = none), and the **platform-managed**
-  `digest_frequency` (A8; Minted picks it per org, Addendum 10), `send_hour`,
-  `send_time_zone`, `second_send_hour` (one group: all three set or all NULL,
-  A10), `digest_weekday` and `digest_cc_allowed` (digest). Each purpose's row
-  carries only its own columns (CHECK). authenticated has column grants
+  org-owned, 0 to 10, 0 = none), and the **platform-managed** digest
+  `digest_cc_allowed` and **digest schedule**: `digest_frequency` (daily |
+  weekly | twice_daily, A8; Minted picks it per org, Addendum 10),
+  `digest_weekday` (ISO 1 = Monday), `send_hour` (0 to 23), `send_time_zone`
+  (IANA) and `second_send_hour` (later than `send_hour`). The schedule has no
+  default (G2) and is one group (A10; CHECK
+  `notification_sequences_digest_schedule_check`): all five set means Minted
+  set the digest up; all NULL means it is not set up and not due. The zone
+  is checked when it is written, by the
+  `notification_sequences_send_time_zone_check` trigger
+  (`private.notification_time_zone_valid`: Area/Location shape and listed in
+  `pg_timezone_names`), not by a CHECK: a later tzdata release could drop a
+  stored name, and a CHECK would then fail a restore and every update of the
+  row. A reader that cannot use a stored zone reads the digest as not set up
+  (`digestScheduleOf`): there is no default to fall back to. Each purpose's
+  row carries only its own columns (CHECK). authenticated has column grants
   only: INSERT `(org_id, purpose, stop_conditions, target_days_to_ready,
 bounce_escalation_step)`, UPDATE `(stop_conditions, target_days_to_ready,
 bounce_escalation_step, updated_at)`; the platform-managed
@@ -780,17 +784,31 @@ bounce_escalation_step, updated_at)`; the platform-managed
   DELETE SET NULL (`provider_id`): deleting a provider (the staging UAT reseed
   hard-deletes its synthetic ones; no app path does) keeps the consent and
   revocation evidence with `provider_id` NULL; `provider_id` is required on
-  insert (`sms_consents_guard_insert`); the org FK still cascades.
+  insert (`sms_consents_guard_insert`); the org FK still cascades, and the
+  `sms_consents_archive_before_delete` trigger copies each row to
+  `sms_consent_archive` first (D5).
   `phone_e164`, `consented_at`, `source` ∈
   intake_form | staff_recorded | sms_keyword (`staff_recorded` requires
   `recorded_by`), `consent_text_version`, `recorded_by`, `revoked_at` +
   `revoked_source` (both or neither). One live consent per (org, provider,
   number). Evidence: the only updates allowed stamp a revocation on a live
   row, and null `provider_id` once its provider row is gone; no DELETE grant.
-- **Access**: RLS on all five. Members read their org's rows and nobody
+- **`sms_consent_archive`** (D5, Nov 1: consent evidence survives an org
+  delete, a compliance floor): every deleted `sms_consents` row, copied by
+  the BEFORE DELETE trigger `sms_consents_archive_before_delete` (SECURITY
+  DEFINER) whatever deletes it; the org FK's cascade is the only path today.
+  The consent's own columns as they were (`id` PK, `org_id` a plain uuid with
+  **no foreign key**, `provider_id` usually NULL by then: an org's providers
+  are deleted before it, which detaches the consent) plus `archived_at`. No
+  CHECKs (the row was checked in `sms_consents`). RLS **forced** with no
+  policies; `service_role` holds SELECT and nothing else; no other role has
+  a grant. So only service_role and the owner read it, and nothing deletes
+  from it.
+- **Access**: RLS on all six. Members read their org's rows and nobody
   reads another org's; members of any org read the defaults. Only
   `user_role(org_id) = 'admin'` writes sequences and steps; `sms_consents` and
-  the defaults have no authenticated write grant.
+  the defaults have no authenticated write grant, and `sms_consent_archive`
+  no authenticated grant at all.
   `save_notification_sequence(p_org_id, p_purpose, p_payload)` is the save
   path: SECURITY INVOKER, admin-checked, replaces the sequence and its own
   steps in one transaction (`steps: null` = use Minted's default steps; a
@@ -809,8 +827,9 @@ bounce_escalation_step, updated_at)`; the platform-managed
 - **Rules kept in code, not columns**: the resolution (org row over default,
   field by field; `resolveNotificationSequence`); applying the bounce
   escalation step (`bounceEscalationRecipients`: a bounce on that step reaches
-  that step's cc list); the send-time group (`resolveSendTime`,
-  `validateSendTime`, A10); the intake send dates (`scheduleSequenceSends`,
+  that step's cc list); the digest schedule, the org's only (`digestScheduleOf`,
+  `validateDigestSchedule`, A10, G2: null means not set up); the intake send
+  dates (`scheduleSequenceSends`,
   no compression); the digest offset fixed at 0 (validation only). Intake
   offsets from day 1 are also a database rule (A12). All in
   `src/lib/notificationSequences.ts`.

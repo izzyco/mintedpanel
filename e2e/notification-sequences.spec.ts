@@ -8,8 +8,9 @@
 // under an open draft keeps the edits and makes the save a 409 conflict. A
 // specialist sees the schedule read-only, the digest with Minted's send time
 // and no cc, an admin sees how often the digest goes out read-only (Minted
-// sets it, Addendum 10), and before the migration is applied the card says
-// the feature is not switched on yet.
+// sets it, Addendum 10), an org whose digest Minted has not set up sees that
+// it isn't, with nothing to start (G2: no default digest), and before the
+// migration is applied the card says the feature is not switched on yet.
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
 
 const AUTH_KEY = "sb-example-auth-token";
@@ -75,14 +76,15 @@ function fixtures(role: "admin" | "specialist"): Rows {
     ],
     notification_sequences: [],
     notification_sequence_steps: [],
-    // Minted's seeded defaults (migration 20261031051500).
+    // Minted's seeded defaults (migration 20261031051500). The digest's has
+    // no schedule (G2): how often and when exist only on an org row.
     notification_sequence_defaults: [
       {
         purpose: "intake_reminder",
         stop_conditions: ["submitted", "paused", "withdrawn", "provider_replied"],
         target_days_to_ready: 14,
-        send_hour: null,
-        send_time_zone: null,
+        bounce_escalation_step: 1,
+        digest_cc_allowed: null,
         created_at: "2026-10-31T00:00:00Z",
         updated_at: "2026-10-31T00:00:00Z",
       },
@@ -90,11 +92,8 @@ function fixtures(role: "admin" | "specialist"): Rows {
         purpose: "followup_digest",
         stop_conditions: null,
         target_days_to_ready: null,
-        digest_frequency: "daily",
-        digest_weekday: 1,
-        second_send_hour: 14,
-        send_hour: 8,
-        send_time_zone: "America/Chicago",
+        bounce_escalation_step: null,
+        digest_cc_allowed: false,
         created_at: "2026-10-31T00:00:00Z",
         updated_at: "2026-10-31T00:00:00Z",
       },
@@ -142,6 +141,15 @@ function fixtures(role: "admin" | "specialist"): Rows {
     contracts: [],
   };
 }
+
+/** The digest schedule Minted set up for the org: all five together (A10, G2). */
+const MINTED_SET_UP = {
+  digest_frequency: "daily",
+  digest_weekday: 1,
+  send_hour: 8,
+  send_time_zone: "America/Chicago",
+  second_send_hour: 14,
+};
 
 function savedIntake(rows: Rows, over: Record<string, unknown> = {}) {
   rows.notification_sequences = [
@@ -234,21 +242,21 @@ function makeHandler(rows: Rows, options: { missingTables?: boolean } = {}) {
         );
       }
       // Write through, as the RPC does: replace the row and its steps; a null
-      // setting stays null (Minted's default) and Minted's overrides are kept.
+      // setting stays null (Minted's default) and Minted's settings are kept.
       const id = (existing?.id as string | undefined) ?? `seq-${call.p_purpose}`;
+      // Minted's (A9, Addendum 10, G2): a save never changes on/off or the
+      // digest's schedule, and a new row is off with no schedule.
+      const platform = Object.fromEntries(
+        PLATFORM_KEYS.map((key) => [key, existing?.[key] ?? (key === "enabled" ? false : null)]),
+      );
       const sequence = {
         id,
         org_id: call.p_org_id,
         purpose: call.p_purpose,
-        // On/off is Minted's (A9): a save never changes it, and a new row is off.
-        enabled: existing?.enabled ?? false,
+        ...platform,
         stop_conditions: call.p_payload.stop_conditions,
         target_days_to_ready: call.p_payload.target_days_to_ready,
         bounce_escalation_step: call.p_payload.bounce_escalation_step ?? null,
-        // Minted's (Addendum 10): a save never changes it.
-        digest_frequency: existing?.digest_frequency ?? null,
-        send_hour: existing?.send_hour ?? null,
-        send_time_zone: existing?.send_time_zone ?? null,
         revision: existing ? (existing.revision as number) + 1 : 1,
         created_at: "2026-10-31T00:00:00Z",
         updated_at: "2026-10-31T00:00:00Z",
@@ -443,15 +451,20 @@ test("MINT-107: an admin sets up intake reminders from Minted's default, customi
   await expect(intake.getByText("Off", { exact: true })).toBeVisible();
   await expect(intake.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await expect(intake.getByRole("button", { name: "Discard changes" })).toBeDisabled();
-  // The digest was never touched.
+  // The digest was never touched, and has nothing for an admin to start:
+  // Minted sets it up per org (G2: no default digest).
   const digest = page.getByRole("region", { name: "Follow-up digest" });
-  await expect(digest.getByText("Not set up")).toBeVisible();
+  await expect(digest.getByText("Not set up", { exact: true })).toBeVisible();
+  await expect(
+    digest.getByText("Not set up. Minted sets up the follow-up digest for your organization."),
+  ).toBeVisible();
+  await expect(digest.getByRole("button")).toHaveCount(0);
 });
 
 test("MINT-107: a specialist sees the saved schedule read-only", async ({ context, page }) => {
   const rows = fixtures("specialist");
   savedIntake(rows);
-  // The digest is on, with every setting Minted's, and no steps of its own.
+  // Minted set the digest up and switched it on; no steps of its own.
   rows.notification_sequences.push({
     id: "seq-digest",
     org_id: ORG_ID,
@@ -459,8 +472,7 @@ test("MINT-107: a specialist sees the saved schedule read-only", async ({ contex
     enabled: true,
     stop_conditions: null,
     target_days_to_ready: null,
-    send_hour: null,
-    send_time_zone: null,
+    ...MINTED_SET_UP,
     revision: 1,
     created_at: "2026-10-30T00:00:00Z",
     updated_at: "2026-10-30T00:00:00Z",
@@ -501,6 +513,33 @@ test("MINT-107: another admin's save keeps an open draft, and saving it is a con
 }) => {
   const rows = fixtures("admin");
   savedIntake(rows);
+  // Minted set the digest up; its one step was written outside the card, so
+  // the admin can still put it back to Minted's step.
+  rows.notification_sequences.push({
+    id: "seq-digest",
+    org_id: ORG_ID,
+    purpose: "followup_digest",
+    enabled: false,
+    stop_conditions: null,
+    target_days_to_ready: null,
+    ...MINTED_SET_UP,
+    revision: 1,
+    created_at: "2026-10-30T00:00:00Z",
+    updated_at: "2026-10-30T00:00:00Z",
+    updated_by: USER_ID,
+  });
+  rows.notification_sequence_steps.push({
+    id: "seq-digest-step-1",
+    sequence_id: "seq-digest",
+    org_id: ORG_ID,
+    position: 1,
+    offset_days: 0,
+    channel: "email",
+    template_key: "followup_digest_daily",
+    cc_recipients: [],
+    created_at: "2026-10-30T00:00:00Z",
+    updated_at: "2026-10-30T00:00:00Z",
+  });
   const { handler, saves } = makeHandler(rows);
   await context.route(/\/(rest|auth)\/v1\//, handler);
   await seedAuth(context);
@@ -520,11 +559,11 @@ test("MINT-107: another admin's save keeps an open draft, and saving it is a con
   // setting: no cc picker, and how often and when are Minted's, read-only
   // (Addendum 10).
   const digest = page.getByRole("region", { name: "Follow-up digest" });
-  await digest.getByRole("button", { name: "Set up follow-up digest" }).click();
   await expect(digest.getByRole("combobox")).toHaveCount(0);
   await expect(
     digest.getByText("Sent once a day, around 8 am Central time. Minted sets this."),
   ).toBeVisible();
+  await digest.getByRole("button", { name: "Use Minted's default steps" }).click();
   await digest.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Follow-up digest saved")).toBeVisible();
   expect(saves.at(-1)).toEqual({
@@ -533,10 +572,14 @@ test("MINT-107: another admin's save keeps an open draft, and saving it is a con
     p_payload: {
       stop_conditions: null,
       target_days_to_ready: null,
-      expected_revision: null,
+      expected_revision: 1,
       steps: null,
     },
   });
+  // The save kept Minted's schedule.
+  await expect(
+    digest.getByText("Sent once a day, around 8 am Central time. Minted sets this."),
+  ).toBeVisible();
 
   // The intake draft is kept, and the card says why it is now stale.
   await expect(
@@ -564,7 +607,7 @@ test("MINT-107: an admin overrides Minted's defaults and goes back to them", asy
 }) => {
   const rows = fixtures("admin");
   savedIntake(rows, { target_days_to_ready: 21 });
-  // Minted set this org's digest to weekly (Addendum 10).
+  // Minted set this org's digest up, weekly (Addendum 10).
   rows.notification_sequences.push({
     id: "seq-digest",
     org_id: ORG_ID,
@@ -572,9 +615,8 @@ test("MINT-107: an admin overrides Minted's defaults and goes back to them", asy
     enabled: true,
     stop_conditions: null,
     target_days_to_ready: null,
+    ...MINTED_SET_UP,
     digest_frequency: "weekly",
-    send_hour: null,
-    send_time_zone: null,
     revision: 1,
     created_at: "2026-10-30T00:00:00Z",
     updated_at: "2026-10-30T00:00:00Z",

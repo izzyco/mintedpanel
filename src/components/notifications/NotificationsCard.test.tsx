@@ -25,11 +25,6 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   targetDaysToReady: 14,
   bounceEscalationStep: 1,
   digestCcAllowed: null,
-  digestFrequency: null,
-  digestWeekday: null,
-  sendHour: null,
-  sendTimeZone: null,
-  secondSendHour: null,
   createdAt: "",
   updatedAt: "",
   steps: [1, 2, 3].map((offsetDays, i) => ({
@@ -43,17 +38,13 @@ const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
     updatedAt: "",
   })),
 };
+// G2: the digest default is its audience and its one step, no schedule.
 const DIGEST_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "followup_digest",
   stopConditions: null,
   targetDaysToReady: null,
   bounceEscalationStep: null,
   digestCcAllowed: false,
-  digestFrequency: "daily",
-  digestWeekday: 1,
-  sendHour: 8,
-  sendTimeZone: "America/Chicago",
-  secondSendHour: 14,
   createdAt: "",
   updatedAt: "",
   steps: [
@@ -112,6 +103,16 @@ import { NotificationsCard } from "./NotificationsCard";
 
 const ORG = "66666666-6666-4666-8666-666666666666";
 const JANE = "11111111-1111-4111-8111-111111111111";
+const NOT_SET_UP = "Not set up. Minted sets up the follow-up digest for your organization.";
+
+/** A digest schedule Minted set up for the org: all five together (A10, G2). */
+const MINTED_SET_UP = {
+  digestFrequency: "daily" as const,
+  digestWeekday: 1,
+  sendHour: 8,
+  sendTimeZone: "America/Chicago",
+  secondSendHour: 14,
+};
 
 /** An org's saved intake row with steps of its own on days 2, 4 and 7: the
  *  org's schedule, not Minted's default (days 1, 2 and 3). */
@@ -239,19 +240,22 @@ beforeEach(() => {
 });
 
 describe("NotificationsCard: admin", () => {
-  it("offers Set up from Minted's default when a purpose has no row, and writes nothing", () => {
+  it("offers intake Set up from Minted's default, says the digest is Minted's to set up, and writes nothing", () => {
     const html = renderToStaticMarkup(<NotificationsCard />);
     expect(html).toContain("Notifications");
     expect(html).toContain("Provider intake reminders");
     expect(html).toContain("Follow-up digest");
-    expect(html.match(/>Set up</g)).toHaveLength(2);
+    // G2: only intake has a Set up; the digest exists once Minted sets it up.
+    expect(html.match(/>Set up</g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Set up provider intake reminders"');
+    expect(html).not.toContain("Set up follow-up digest");
     expect(html).toContain(
       "Set up starts you with Minted&#x27;s default: 3 emails, on day 1, day 2 and day 3 after the invite, cc&#x27;ing no one. Minted switches it on at kickoff. You can change any of it before you save.",
     );
-    expect(html).toContain(
-      "Set up starts you with Minted&#x27;s default: one email a day to each coordinator. Minted switches it on at kickoff.",
-    );
-    expect(html.match(/Not set up/g)).toHaveLength(2);
+    expect(html).toContain(NOT_SET_UP);
+    expect(html).not.toContain("one email a day");
+    // Two pills and the digest's line.
+    expect(html.match(/Not set up/g)).toHaveLength(3);
     expect(html).not.toContain("<input");
     expect(state.mutate).not.toHaveBeenCalled();
   });
@@ -274,8 +278,9 @@ describe("NotificationsCard: admin", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Save<\/button>/);
     expect(html).toContain("Discard changes");
     expect(html).toContain(">On<");
-    // The digest has no row yet: still Set up.
-    expect(html.match(/>Set up</g)).toHaveLength(1);
+    // The digest has no row yet: not set up, and nothing for the admin to start.
+    expect(html).not.toContain(">Set up<");
+    expect(html).toContain(NOT_SET_UP);
   });
 
   it("shows a clear empty cc state, with the bounce warning on intake step 1 only", () => {
@@ -344,7 +349,9 @@ describe("NotificationsCard: other members", () => {
 
   it("says a purpose is not set up rather than offering to set it up", () => {
     const html = renderToStaticMarkup(<NotificationsCard />);
-    expect(html.match(/Not set up\. An admin can set this up\./g)).toHaveLength(2);
+    // Intake is an admin's to set up; the digest is Minted's (G2).
+    expect(html.match(/Not set up\. An admin can set this up\./g)).toHaveLength(1);
+    expect(html).toContain(NOT_SET_UP);
     expect(html).not.toContain("<button");
   });
 
@@ -353,6 +360,7 @@ describe("NotificationsCard: other members", () => {
       intake_reminder: intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
       followup_digest: {
         ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+        ...MINTED_SET_UP,
         id: "seq-digest",
         purpose: "followup_digest",
       },
@@ -371,38 +379,62 @@ describe("NotificationsCard: other members", () => {
     expect(html.match(/Cc: /g)).toHaveLength(3);
   });
 
-  it("never shows a stored zone it cannot use: Minted's zone stands in", () => {
+  it("says a digest with no schedule is not set up, its pill included (G2)", () => {
+    state.sequences = {
+      followup_digest: {
+        ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+        id: "seq-digest",
+        purpose: "followup_digest",
+      },
+    };
+    const summary = renderToStaticMarkup(<NotificationsCard />);
+    expect(summary).toContain(NOT_SET_UP);
+    expect(summary).toContain("Step 1 · Email · Follow-up digest");
+    expect(summary).not.toContain("Sent ");
+    expect(summary).not.toContain("once a day");
+    expect(summary).not.toContain(">On<");
+    state.isAdmin = true;
+    const editor = renderToStaticMarkup(<NotificationsCard />);
+    expect(editor).toContain(NOT_SET_UP);
+    expect(editor).not.toContain("Sent ");
+    expect(editor).not.toContain(">On<");
+  });
+
+  it("never shows a stored zone it cannot use: the digest reads as not set up", () => {
     const digestRow = {
       ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+      ...MINTED_SET_UP,
       purpose: "followup_digest",
       sendHour: 6,
       sendTimeZone: "Gone/Zone",
       secondSendHour: 15,
     };
     state.sequences = { followup_digest: digestRow };
-    // A10: the whole send time comes from one layer, so Minted's stands in.
+    // G2: there is no default schedule to stand in for it.
     const summary = renderToStaticMarkup(<NotificationsCard />);
-    expect(summary).toContain("Sent once a day, around 8 am Central time. Minted sets this.");
+    expect(summary).toContain(NOT_SET_UP);
     expect(summary).not.toContain("Gone/Zone");
     state.isAdmin = true;
     const editor = renderToStaticMarkup(<NotificationsCard />);
-    expect(editor).toContain("Sent once a day, around 8 am Central time. Minted sets this.");
+    expect(editor).toContain(NOT_SET_UP);
     expect(editor).not.toContain("Gone/Zone");
   });
 
-  it("shows an override Minted set for this org", () => {
+  it("shows the schedule Minted set for this org", () => {
     state.sequences = {
       followup_digest: {
         ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+        ...MINTED_SET_UP,
         purpose: "followup_digest",
         sendHour: 6,
         sendTimeZone: "America/New_York",
         secondSendHour: 15,
       },
     };
-    expect(renderToStaticMarkup(<NotificationsCard />)).toContain(
-      "Sent once a day, around 6 am Eastern time. Minted sets this.",
-    );
+    const html = renderToStaticMarkup(<NotificationsCard />);
+    expect(html).toContain("Sent once a day, around 6 am Eastern time. Minted sets this.");
+    expect(html).not.toContain(NOT_SET_UP);
+    expect(html).toContain(">On<");
   });
 });
 
@@ -455,6 +487,11 @@ describe("NotificationSequenceEditor: an admin edits and saves", () => {
           draft,
           issues: validateDraft("followup_digest", draft),
           platformDefault: DIGEST_DEFAULT,
+          saved: {
+            ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+            ...MINTED_SET_UP,
+            purpose: "followup_digest",
+          },
         })}
       />,
     );
@@ -871,6 +908,7 @@ describe("Addendum 8 in the card (Answered Oct 31)", () => {
   it("shows how often the digest goes out read-only, as Minted set it (Addendum 10)", () => {
     const digestRow = (digestFrequency: NotificationSequenceConfig["digestFrequency"]) => ({
       ...intakeConfig({ steps: [], stopConditions: null, targetDaysToReady: null }),
+      ...MINTED_SET_UP,
       id: "seq-digest",
       purpose: "followup_digest" as const,
       digestFrequency,
