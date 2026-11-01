@@ -232,7 +232,8 @@ export function useVerifyProviders() {
 /** The Add Provider start-date rule for the active organization. Nothing
  * stores a platform or organization override yet (the Mission Control
  * setting is MINT-116), so this resolves to the decided default; when the
- * setting lands, its read replaces the two nulls. */
+ * setting lands, its read replaces the two nulls here and in the CSV
+ * import's commit (commitImportRun), which resolves the same rule. */
 export function useAddProviderRules(): AddProviderRules {
   return useMemo(() => resolveAddProviderRules(null, null), []);
 }

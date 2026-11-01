@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   createEnrollmentFact: vi.fn(),
   createFacility: vi.fn(),
   createProviderGroup: vi.fn(),
+  resolveAddProviderRules: vi.fn(),
 }));
 
 vi.mock("@/integrations/supabase/externalClient", () => ({
@@ -32,8 +33,15 @@ vi.mock("@/services/orgSettings", () => ({
   createFacility: mocks.createFacility,
   createProviderGroup: mocks.createProviderGroup,
 }));
+vi.mock("@/lib/addProviderRules", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/addProviderRules")>();
+  mocks.resolveAddProviderRules.mockImplementation(actual.resolveAddProviderRules);
+  return { ...actual, resolveAddProviderRules: mocks.resolveAddProviderRules };
+});
 
 import { commitImportRun, commitSectionImportRun } from "./importRuns";
+import { DEFAULT_ADD_PROVIDER_RULES } from "@/lib/addProviderRules";
+import { localCalendarDate } from "@/lib/systemTokens";
 
 const NPI = "1234567890";
 const OTHER_NPI = "9998887776";
@@ -161,7 +169,7 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
 
     expect(mocks.rpc).toHaveBeenCalledWith("commit_import_run", {
       p_run_id: "run-1",
-      p_plan: plan,
+      p_plan: { ...plan, assignment_start_date: localCalendarDate(new Date()) },
     });
     expect(result.updatedProviderIds).toEqual(["provider-1", "provider-2"]);
     expect(mocks.insertAssignmentRows).toHaveBeenCalledOnce();
@@ -241,7 +249,7 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
 
     expect(mocks.rpc).toHaveBeenCalledWith("commit_import_run", {
       p_run_id: "run-1",
-      p_plan: plan,
+      p_plan: { ...plan, assignment_start_date: localCalendarDate(new Date()) },
     });
     expect(result.updatedProviderIds).toEqual(["provider-1"]);
     expect(result.relationships).toEqual({
@@ -279,6 +287,33 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
       groupAssignments: 2,
       enrollmentFacts: 2,
     });
+  });
+
+  it("dates blank assignments by the Add Provider rule: the local today by default", async () => {
+    installTransport([relationshipRow(2, 0, "CO")]);
+    const today = localCalendarDate(new Date());
+
+    await commitImportRun("run-1", updatePlan());
+
+    expect(mocks.rpc.mock.calls[0][1].p_plan.assignment_start_date).toBe(today);
+    expect(mocks.insertAssignmentRows).toHaveBeenCalledWith([
+      { providerId: "provider-1", facilityId: "facility-2", startDate: today },
+    ]);
+  });
+
+  it('saves blank assignments without a start date under "none"', async () => {
+    installTransport([relationshipRow(2, 0, "CO")]);
+    mocks.resolveAddProviderRules.mockReturnValueOnce({
+      ...DEFAULT_ADD_PROVIDER_RULES,
+      assignmentStartDateDefault: "none",
+    });
+
+    await commitImportRun("run-1", updatePlan());
+
+    expect(mocks.rpc.mock.calls[0][1].p_plan.assignment_start_date).toBeNull();
+    expect(mocks.insertAssignmentRows).toHaveBeenCalledWith([
+      { providerId: "provider-1", facilityId: "facility-2", startDate: null },
+    ]);
   });
 
   it("retains the existing replay behavior without another relationship pass", async () => {

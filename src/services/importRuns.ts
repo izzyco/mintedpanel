@@ -22,6 +22,8 @@ import { matchGroupLocator } from "@/lib/groupLocator";
 import { decodeDelimited } from "@/lib/importSections";
 import { DAY_KEYS, emptyHoursDraft, encodeHours } from "@/lib/facilityHours";
 import { normalizeWebsiteUrl } from "@/lib/providerGroup";
+import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { attachGroupPayer, listPayerNetworkTargets } from "@/services/payerNetworkTargets";
 import type { ScannedRow } from "@/lib/rosterImport";
 import type {
@@ -263,6 +265,7 @@ export interface ProviderRelationshipSummary {
 async function applyProviderRelationships(
   stagedRows: { mapped: Record<string, string | null> | null }[],
   providerIds: string[],
+  assignmentStartDate: string | null,
 ): Promise<ProviderRelationshipSummary> {
   const summary: ProviderRelationshipSummary = {
     facilityAssignments: 0,
@@ -374,14 +377,13 @@ async function applyProviderRelationships(
   }
 
   if (facilityInserts.length > 0) {
-    // The pfa start_date CHECK rejects dateless inserts — relationship rows
-    // from the CSV default to today (the batch-assign precedent).
-    const today = new Date().toISOString().slice(0, 10);
+    // Relationship rows from the CSV carry no start date: the Add Provider
+    // rule's (blankAssignmentStartDate), the same date the commit RPC used.
     await insertAssignmentRows(
       facilityInserts.map((f) => ({
         providerId: f.providerId,
         facilityId: f.facilityId,
-        startDate: today,
+        startDate: assignmentStartDate,
       })),
     );
     summary.facilityAssignments = facilityInserts.length;
@@ -423,9 +425,16 @@ export async function commitImportRun(
     fn: string,
     args: Record<string, unknown>,
   ) => Promise<{ data: unknown; error: { message: string } | null }>;
+  // A facility assignment the CSV gives no start date (the provider has none)
+  // gets the Add Provider rule's: the local today by default, or none
+  // (MINT-116; the resolution useAddProviderRules makes).
+  const assignmentStartDate = blankAssignmentStartDate(
+    resolveAddProviderRules(),
+    localCalendarDate(new Date()),
+  );
   const { data, error } = await rpc("commit_import_run", {
     p_run_id: runId,
-    p_plan: plan as unknown as Record<string, unknown>,
+    p_plan: { ...plan, assignment_start_date: assignmentStartDate },
   });
   if (error) throw new Error(error.message);
   const raw = (data ?? {}) as {
@@ -457,6 +466,7 @@ export async function commitImportRun(
     relationships = await applyProviderRelationships(
       stagedSnapshot.filter((row) => !blockedLines.has(row.line)),
       [...result.createdProviderIds, ...result.updatedProviderIds],
+      assignmentStartDate,
     );
     await ensureFirstFacilityPrimary([...result.createdProviderIds, ...result.updatedProviderIds]);
   }
@@ -473,13 +483,12 @@ export interface BatchAssignmentResult {
  * The plan comes from the pure planBatchAssignment (explicit row data wins —
  * only assignment GAPS are filled); both insert paths are idempotent under
  * the DB uniques (TE-7), so running it twice adds nothing. New facility
- * assignments carry the caller's start date (the pfa start_date CHECK
- * rejects dateless inserts). */
+ * assignments carry the caller's start date, or none. */
 export async function applyBatchAssignment(input: {
   runId: string;
   groupId: string | null;
   facilityIds: string[];
-  startDate: string;
+  startDate: string | null;
   plan: BatchAssignmentPlan;
 }): Promise<BatchAssignmentResult> {
   const orgId = requireActiveOrg();
