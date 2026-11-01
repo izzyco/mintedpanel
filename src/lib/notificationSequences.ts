@@ -16,9 +16,9 @@
 // switch an org on, and only Minted sets it (A9: off until Minted turns
 // notifications on at kickoff). `resolveNotificationSequence` turns the two
 // into the effective sequence; every consumer calls it rather than
-// re-deriving it. The digest's send time (hour, zone and second hour, one
-// group per layer, A10) and weekday are platform-managed: only Minted sets
-// them, on the default or as an org override, never an org admin.
+// re-deriving it. The digest's frequency, send time (hour, zone and second
+// hour, one group per layer, A10) and weekday are platform-managed: only
+// Minted sets them, on the default or as an org override, never an org admin.
 //
 // Four policy decisions are settings too, not code (NotificationPolicyRules,
 // resolved by resolveNotificationPolicyRules; Mission Control edits them,
@@ -30,7 +30,7 @@
 //     coordinators only (D59, S7). Minted's default, which an org row may
 //     override; platform-managed, so only Minted writes either.
 //   * How often the digest goes out (digest_frequency): daily (A8), or weekly
-//     or twice a day. Org-owned: an org row overrides Minted's default.
+//     or twice a day. Platform-managed: Minted picks it per org (Addendum 10).
 //   * The weekly digest's day (digest_weekday): Monday (A8). Platform-managed.
 //
 // Nothing here sends anything. The consumers (the follow-up digest, and
@@ -167,7 +167,7 @@ export interface PurposeRules {
   fixedOffsetDays: number | null;
   /** Stop conditions, target days and the bounce escalation step. */
   hasIntakeSettings: boolean;
-  /** How often it goes out (A8): daily, weekly or twice a day. */
+  /** How often it goes out (A8): daily, weekly or twice a day. Minted sets it. */
   hasFrequency: boolean;
   /**
    * The card edits an ordered cc list on each step, and the purpose's
@@ -214,9 +214,9 @@ export const PURPOSE_RULES: Record<NotificationPurpose, PurposeRules> = {
     // The rule itself is Minted's setting digest_cc_allowed (see
     // NotificationPolicyRules).
     hasCcList: purposeHasCcList("followup_digest"),
-    // One email, one message, no cc: an org changes only how often (A8).
+    // One email, one message, no cc.
     stepsEditable: false,
-    // Minted sets when it goes out (answer 5).
+    // Minted sets how often and when it goes out (answer 5, Addendum 10).
     hasSendTime: true,
   },
 };
@@ -230,9 +230,10 @@ export const PLATFORM_DEFAULT_LABEL = "Minted's default";
  * Two decided policies kept as settings, not code. Minted's default rows
  * carry them (migration 20261031051500 seeds these same values) and an org's
  * own row may override either; Mission Control edits them (MINT-113). The
- * bounce step is org-owned (an org admin may set it); digest_cc_allowed is
- * platform-managed (only Minted writes it, on the default or as an org
- * override, like the send hour). The values below are the decided defaults,
+ * bounce step is org-owned (an org admin may set it); digest_cc_allowed, the
+ * digest frequency and the weekday are platform-managed (only Minted writes
+ * them, on the default or as an org override, like the send hour). The
+ * values below are the decided defaults,
  * and what a reader falls back to when a stored value is missing or of the
  * wrong shape.
  */
@@ -255,8 +256,9 @@ export interface NotificationPolicyRules {
    */
   digestCcAllowed: boolean;
   /**
-   * Digest: how often it goes out (A8). Default "daily". Org-owned: an org
-   * admin may choose weekly or twice a day for the org.
+   * Digest: how often it goes out (A8). Default "daily". Platform-managed,
+   * like the send hour: Minted picks it per org (Addendum 10); an org admin
+   * sees it read-only.
    */
   digestFrequency: DigestFrequency;
   /**
@@ -278,12 +280,6 @@ export const DEFAULT_NOTIFICATION_POLICY_RULES: Readonly<NotificationPolicyRules
 });
 
 export const DIGEST_FREQUENCIES: readonly DigestFrequency[] = ["daily", "weekly", "twice_daily"];
-
-export const DIGEST_FREQUENCY_LABELS: Record<DigestFrequency, string> = {
-  daily: "Daily",
-  weekly: "Weekly",
-  twice_daily: "Twice a day",
-};
 
 export function isDigestFrequency(value: unknown): value is DigestFrequency {
   return typeof value === "string" && (DIGEST_FREQUENCIES as readonly string[]).includes(value);
@@ -346,7 +342,7 @@ export function resolveNotificationPolicyRules(
  * Plain-language problems with one layer's policy settings; empty when it can
  * go live. null leaves a rule to the layer below. `writer` is who is saving:
  * an org admin may set the bounce step only; Minted (a platform admin) may
- * set both, on the default or as an org override.
+ * set every one, on the default or as an org override.
  */
 export function validateNotificationPolicyRules(
   rules: unknown,
@@ -381,6 +377,7 @@ export function validateNotificationPolicyRules(
   if (writer === "org_admin") {
     // Platform-managed: Minted sets them, on the default or as an org override.
     if (cc != null) errors.push("Only Minted decides whether the digest may cc anyone.");
+    if (frequency != null) errors.push("Only Minted sets how often the digest goes out.");
     if (weekday != null) errors.push("Only Minted sets the weekly digest's day.");
   }
   return errors;
@@ -449,8 +446,8 @@ export interface StepDraft {
 /**
  * What an org admin edits: the org-owned settings only. A null field uses
  * Minted's default; `steps: null` uses Minted's default steps. The
- * platform-managed settings (on/off, the digest's send time and weekday,
- * digest cc) are not here at all: the card cannot set them.
+ * platform-managed settings (on/off, the digest's frequency, send time and
+ * weekday, digest cc) are not here at all: the card cannot set them.
  */
 export interface SequenceDraft {
   /** Intake only. null: Minted's default. Otherwise at least one (A11). */
@@ -463,8 +460,6 @@ export interface SequenceDraft {
    * it carries a saved value through a save unchanged.
    */
   bounceEscalationStep: number | null;
-  /** Digest only (A8): daily, weekly or twice a day. null: Minted's default. */
-  digestFrequency: DigestFrequency | null;
   /** null: Minted's default steps. Otherwise the org's own, never empty. */
   steps: StepDraft[] | null;
 }
@@ -489,7 +484,6 @@ export function starterDraft(): SequenceDraft {
     stopConditions: null,
     targetDaysToReady: null,
     bounceEscalationStep: null,
-    digestFrequency: null,
     steps: null,
   };
 }
@@ -518,7 +512,6 @@ export function draftFromSequence(
     stopConditions: config.stopConditions ? [...config.stopConditions] : null,
     targetDaysToReady: config.targetDaysToReady,
     bounceEscalationStep: config.bounceEscalationStep ?? null,
-    digestFrequency: config.digestFrequency ?? null,
     steps:
       config.steps.length === 0
         ? null
@@ -551,7 +544,6 @@ function canonicalDraft(draft: SequenceDraft): string {
     stopConditions: draft.stopConditions,
     targetDaysToReady: draft.targetDaysToReady,
     bounceEscalationStep: draft.bounceEscalationStep ?? null,
-    digestFrequency: draft.digestFrequency ?? null,
     steps:
       draft.steps?.map((step) => ({
         offsetDays: step.offsetDays,
@@ -704,8 +696,7 @@ export type SequenceIssueField =
   | "ccRecipients"
   | "stopConditions"
   | "targetDaysToReady"
-  | "bounceEscalationStep"
-  | "digestFrequency";
+  | "bounceEscalationStep";
 
 export interface SequenceIssue {
   field: SequenceIssueField;
@@ -876,13 +867,6 @@ export function validateDraft(
       add("bounceEscalationStep", null, "The follow-up digest has no bounce rule.");
     }
   }
-  if (rules.hasFrequency) {
-    if (draft.digestFrequency != null && !isDigestFrequency(draft.digestFrequency)) {
-      add("digestFrequency", null, "Choose daily, weekly or twice a day, or Minted's default.");
-    }
-  } else if (draft.digestFrequency != null) {
-    add("digestFrequency", null, "Intake reminders follow their steps, not a frequency.");
-  }
 
   return issues;
 }
@@ -901,9 +885,9 @@ export interface SequenceStepPayload {
 
 /**
  * The `p_payload` of save_notification_sequence(p_org_id, p_purpose, p_payload).
- * A null setting uses Minted's default. There is no key for on/off, the send
- * time, the weekday or digest cc: the RPC refuses them
- * (notification_platform_setting).
+ * A null setting uses Minted's default. There is no key for on/off, the
+ * digest's frequency, send time or weekday, or digest cc: the RPC refuses
+ * them (notification_platform_setting).
  */
 export interface SaveSequencePayload {
   /** Intake only; null for Minted's default and always null for the digest. */
@@ -916,8 +900,6 @@ export interface SaveSequencePayload {
    * like every other optional setting.
    */
   bounce_escalation_step?: number;
-  /** Digest only (A8): the org's own frequency. Absent for Minted's default. */
-  digest_frequency?: DigestFrequency;
   /** The revision the editor loaded; null when no row existed yet. */
   expected_revision: number | null;
   /** null: Minted's default steps. */
@@ -949,13 +931,11 @@ export function buildSavePayload(
   const ccAllowed = draftAllowsCc(purpose, options);
   const stops = draft.stopConditions;
   const bounce = rules.hasIntakeSettings ? draft.bounceEscalationStep : null;
-  const frequency = rules.hasFrequency ? draft.digestFrequency : null;
   return {
     stop_conditions:
       rules.hasIntakeSettings && stops ? STOP_CONDITIONS.filter((c) => stops.includes(c)) : null,
     target_days_to_ready: rules.hasIntakeSettings ? draft.targetDaysToReady : null,
     ...(bounce != null ? { bounce_escalation_step: bounce } : {}),
-    ...(frequency != null ? { digest_frequency: frequency } : {}),
     expected_revision: expectedRevision,
     steps:
       draft.steps?.map((step) => ({
@@ -1450,11 +1430,13 @@ const WEEKDAY_PLURALS = [
 ];
 
 /**
- * The digest's read-only schedule line, built from its settings (A8):
- * "Sent around 8 am Central time. Minted sets this." (daily), "Sent on
- * Mondays around 8 am Central time. Minted sets the day and time." (weekly),
- * "Sent around 8 am and 2 pm Central time. Minted sets these times." (twice a
- * day). Null when the send time cannot be shown.
+ * The digest's read-only schedule line, built from its settings (A8). Minted
+ * sets all of them (Addendum 10), so the line names how often as well as
+ * when: "Sent once a day, around 8 am Central time. Minted sets this."
+ * (daily), "Sent once a week, on Mondays around 8 am Central time. Minted
+ * sets this." (weekly), "Sent twice a day, around 8 am and 2 pm Central
+ * time. Minted sets this." (twice a day). Null when the send time cannot be
+ * shown.
  */
 export function describeDigestSchedule(schedule: {
   digestFrequency: DigestFrequency | null;
@@ -1465,17 +1447,20 @@ export function describeDigestSchedule(schedule: {
 }): string | null {
   const first = describeSendTime(schedule.sendHour, schedule.sendTimeZone);
   if (!first || schedule.sendTimeZone == null) return null;
-  const frequency = schedule.digestFrequency ?? DEFAULT_NOTIFICATION_POLICY_RULES.digestFrequency;
+  const frequency = isDigestFrequency(schedule.digestFrequency)
+    ? schedule.digestFrequency
+    : DEFAULT_NOTIFICATION_POLICY_RULES.digestFrequency;
+  const how = `Sent ${FREQUENCY_WHEN[frequency]}`;
   if (frequency === "weekly") {
     const day = isIsoWeekday(schedule.digestWeekday)
       ? WEEKDAY_PLURALS[schedule.digestWeekday - 1]
       : WEEKDAY_PLURALS[DEFAULT_NOTIFICATION_POLICY_RULES.digestWeekday - 1];
-    return `Sent on ${day} around ${first}. Minted sets the day and time.`;
+    return `${how}, on ${day} around ${first}. Minted sets this.`;
   }
   if (frequency === "twice_daily" && isHour(schedule.secondSendHour)) {
-    return `Sent around ${hourLabel(schedule.sendHour as number)} and ${hourLabel(schedule.secondSendHour)} ${timeZoneName(schedule.sendTimeZone)}. Minted sets these times.`;
+    return `${how}, around ${hourLabel(schedule.sendHour as number)} and ${hourLabel(schedule.secondSendHour)} ${timeZoneName(schedule.sendTimeZone)}. Minted sets this.`;
   }
-  return `Sent around ${first}. Minted sets this.`;
+  return `${how}, around ${first}. Minted sets this.`;
 }
 
 /* ------------------------------ Bounce rule -------------------------------- */

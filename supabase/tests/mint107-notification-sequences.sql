@@ -251,12 +251,12 @@ SELECT pg_temp.m107_mark('anon_has_no_table_access',
 -- One privilege per call: a comma list is true when ANY listed privilege is held.
 SELECT pg_temp.m107_mark('authenticated_table_grants',
   has_table_privilege('authenticated', 'public.notification_sequences', 'SELECT')
-  -- A9: on/off is Minted's; A8: the digest frequency is the org's.
+  -- A9: on/off is Minted's; Addendum 10: so is the digest frequency.
   AND NOT has_column_privilege('authenticated', 'public.notification_sequences', 'enabled', 'INSERT')
   AND NOT has_column_privilege('authenticated', 'public.notification_sequences', 'enabled', 'UPDATE')
-  AND has_column_privilege('authenticated', 'public.notification_sequences',
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
     'digest_frequency', 'INSERT')
-  AND has_column_privilege('authenticated', 'public.notification_sequences',
+  AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
     'digest_frequency', 'UPDATE')
   AND has_column_privilege('authenticated', 'public.notification_sequences',
     'stop_conditions', 'UPDATE')
@@ -271,15 +271,16 @@ SELECT pg_temp.m107_mark('authenticated_table_grants',
   AND NOT has_table_privilege('authenticated', 'public.sms_consents', 'INSERT')
   AND NOT has_table_privilege('authenticated', 'public.sms_consents', 'UPDATE')
   AND NOT has_table_privilege('service_role', 'public.sms_consents', 'DELETE'));
--- Answer 5, S7 and A9: on/off, the send time (hour, zone, second hour), the
--- weekly weekday and the digest cc setting are Minted's.
+-- Answer 5, S7, A9 and Addendum 10: on/off, the digest frequency, the send
+-- time (hour, zone, second hour), the weekly weekday and the digest cc
+-- setting are Minted's.
 SELECT pg_temp.m107_mark('platform_columns_have_no_authenticated_write_grant',
   (SELECT bool_and(
             NOT has_column_privilege('authenticated', 'public.notification_sequences', c, 'INSERT')
             AND NOT has_column_privilege('authenticated', 'public.notification_sequences', c, 'UPDATE')
             AND has_column_privilege('service_role', 'public.notification_sequences', c, 'UPDATE'))
-     FROM unnest(ARRAY['enabled', 'send_hour', 'send_time_zone', 'second_send_hour',
-                       'digest_weekday', 'digest_cc_allowed']) AS c)
+     FROM unnest(ARRAY['enabled', 'digest_frequency', 'send_hour', 'send_time_zone',
+                       'second_send_hour', 'digest_weekday', 'digest_cc_allowed']) AS c)
   -- Nor the columns the stamp trigger owns.
   AND NOT has_column_privilege('authenticated', 'public.notification_sequences',
     'updated_by', 'UPDATE')
@@ -332,8 +333,8 @@ SELECT pg_temp.m107_mark('notification_sequences_columns_are_all_classified',
   AND (SELECT bool_and(position(format('NEW.%1$s IS DISTINCT FROM OLD.%1$s', c) IN p.prosrc) > 0
                        AND position(quote_literal(c) IN p.prosrc) > 0)
          FROM pg_proc AS p,
-              unnest(ARRAY['enabled', 'send_hour', 'send_time_zone', 'second_send_hour',
-                           'digest_weekday', 'digest_cc_allowed']) AS c
+              unnest(ARRAY['enabled', 'digest_frequency', 'send_hour', 'send_time_zone',
+                           'second_send_hour', 'digest_weekday', 'digest_cc_allowed']) AS c
         WHERE p.oid = 'private.notification_sequences_stamp()'::regprocedure));
 
 -- anon writes nothing, anywhere.
@@ -657,28 +658,19 @@ SELECT pg_temp.m107_mark('compression_is_gone',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
         'intake_reminder',
         pg_temp.m107_intake('{3,9}', 2) || '{"compress_toward_start_date":false}'::jsonb)$$));
--- A8: the digest's frequency is the org's; only the three values; not on intake.
-SELECT pg_temp.m107_mark('rpc_saves_the_orgs_digest_frequency',
-  pg_temp.m107_probe(
+-- Addendum 10 (#561 Q2): Minted picks the digest frequency per org, so the
+-- save path refuses the key whatever its value, on either purpose.
+SELECT pg_temp.m107_mark('rpc_refuses_the_digest_frequency',
+  pg_temp.m107_expect_message('notification_platform_setting: digest_frequency',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(1) || '{"digest_frequency":"twice_daily"}'::jsonb)$$,
-    $$SELECT digest_frequency = 'twice_daily' AND revision = 2
-        FROM public.notification_sequences
-       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
-  AND pg_temp.m107_probe(
+        'followup_digest', pg_temp.m107_digest(1) || '{"digest_frequency":"weekly"}'::jsonb)$$)
+  AND pg_temp.m107_expect_state('42501',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(1) || '{"digest_frequency":"weekly"}'::jsonb)$$,
-    $$SELECT digest_frequency = 'weekly'
-        FROM public.notification_sequences
-       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
-SELECT pg_temp.m107_mark('rpc_refuses_a_bad_digest_frequency_or_one_on_intake',
-  pg_temp.m107_expect_message('notification_sequence_invalid: digest_frequency',
+        'followup_digest', pg_temp.m107_digest(1) || '{"digest_frequency":"twice_daily"}'::jsonb)$$)
+  AND pg_temp.m107_expect_state('42501',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(1) || '{"digest_frequency":"hourly"}'::jsonb)$$)
-  AND pg_temp.m107_expect_state('22023',
-    $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(1) || '{"digest_frequency":1}'::jsonb)$$)
-  AND pg_temp.m107_expect_message('notification_sequence_invalid: intake_has_no_digest_settings',
+        'followup_digest', pg_temp.m107_digest(1) || '{"digest_frequency":null}'::jsonb)$$)
+  AND pg_temp.m107_expect_message('notification_platform_setting: digest_frequency',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
         'intake_reminder',
         pg_temp.m107_intake('{3,9}', 2) || '{"digest_frequency":"daily"}'::jsonb)$$));
@@ -867,15 +859,14 @@ SELECT pg_temp.m107_mark('direct_platform_column_writes_are_refused',
   AND pg_temp.m107_expect_state('42501',
     $$INSERT INTO public.notification_sequences (org_id, purpose, enabled)
       VALUES ('10700000-0000-4000-a000-00000000000b', 'intake_reminder', true)$$));
--- A8: an admin may set the digest frequency directly; it is an org edit.
-SELECT pg_temp.m107_mark('direct_digest_frequency_write_is_an_org_edit',
-  pg_temp.m107_probe(
+-- Addendum 10: nor can an admin set the digest frequency directly.
+SELECT pg_temp.m107_mark('org_admin_cannot_set_the_digest_frequency',
+  pg_temp.m107_expect_state('42501',
     $$UPDATE public.notification_sequences SET digest_frequency = 'weekly'
-       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$,
-    $$SELECT digest_frequency = 'weekly' AND revision = 2
-             AND updated_by = '10700000-0000-4000-a000-000000000001'
-        FROM public.notification_sequences
-       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_state('42501',
+    $$INSERT INTO public.notification_sequences (org_id, purpose, digest_frequency)
+      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', 'weekly')$$));
 SELECT pg_temp.m107_mark('org_admin_cannot_set_the_digest_cc_override',
   pg_temp.m107_expect_state('42501',
     $$UPDATE public.notification_sequences SET digest_cc_allowed = true
@@ -889,8 +880,8 @@ SELECT pg_temp.m107_mark('org_admin_cannot_set_the_digest_cc_override',
 -- refused, on INSERT and UPDATE. It is an allow-list, so anon is refused by
 -- the trigger itself, before RLS gets to it.
 RESET ROLE;
-GRANT INSERT (enabled, send_hour, digest_cc_allowed),
-      UPDATE (enabled, send_hour, digest_cc_allowed)
+GRANT INSERT (enabled, send_hour, digest_cc_allowed, digest_frequency),
+      UPDATE (enabled, send_hour, digest_cc_allowed, digest_frequency)
   ON TABLE public.notification_sequences TO authenticated;
 GRANT INSERT (org_id, purpose, enabled)
   ON TABLE public.notification_sequences TO anon;
@@ -902,6 +893,9 @@ SELECT pg_temp.m107_mark('stamp_trigger_backs_up_the_column_grant',
        WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder'$$)
   AND pg_temp.m107_expect_message('notification_platform_setting',
     $$UPDATE public.notification_sequences SET send_hour = 6
+       WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$)
+  AND pg_temp.m107_expect_message('notification_platform_setting',
+    $$UPDATE public.notification_sequences SET digest_frequency = 'weekly'
        WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'$$));
 SELECT pg_temp.m107_mark('stamp_trigger_backs_up_the_digest_cc_grant',
   pg_temp.m107_expect_message('notification_platform_setting',
@@ -918,15 +912,18 @@ SELECT pg_temp.m107_mark('stamp_trigger_backs_up_the_column_grant_on_insert',
       VALUES ('10700000-0000-4000-a000-00000000000b', 'intake_reminder', true)$$)
   AND pg_temp.m107_expect_message('notification_platform_setting',
     $$INSERT INTO public.notification_sequences (org_id, purpose, send_hour)
-      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', 6)$$));
+      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', 6)$$)
+  AND pg_temp.m107_expect_message('notification_platform_setting',
+    $$INSERT INTO public.notification_sequences (org_id, purpose, digest_frequency)
+      VALUES ('10700000-0000-4000-a000-00000000000b', 'followup_digest', 'weekly')$$));
 SET LOCAL ROLE anon;
 SELECT pg_temp.m107_mark('stamp_trigger_allows_only_minted_roles',
   pg_temp.m107_expect_message('notification_platform_setting',
     $$INSERT INTO public.notification_sequences (org_id, purpose, enabled)
       VALUES ('10700000-0000-4000-a000-00000000000b', 'intake_reminder', true)$$));
 RESET ROLE;
-REVOKE INSERT (enabled, send_hour, digest_cc_allowed),
-       UPDATE (enabled, send_hour, digest_cc_allowed)
+REVOKE INSERT (enabled, send_hour, digest_cc_allowed, digest_frequency),
+       UPDATE (enabled, send_hour, digest_cc_allowed, digest_frequency)
   ON TABLE public.notification_sequences FROM authenticated;
 REVOKE INSERT (org_id, purpose, enabled)
   ON TABLE public.notification_sequences FROM anon;
@@ -1309,10 +1306,11 @@ UPDATE public.notification_sequences
    SET send_hour = 8, send_time_zone = 'Gone/Zone', second_send_hour = 14
  WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
 ALTER TABLE public.notification_sequences ENABLE TRIGGER notification_sequences_send_time_zone_check;
+-- (The unrelated update is Minted's: the frequency, which keeps the revision.)
 UPDATE public.notification_sequences SET digest_frequency = 'daily'
  WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
 SELECT pg_temp.m107_mark('a_stored_zone_is_not_rechecked_by_an_unrelated_update',
-  (SELECT digest_frequency = 'daily' AND send_time_zone = 'Gone/Zone' AND revision = 2
+  (SELECT digest_frequency = 'daily' AND send_time_zone = 'Gone/Zone' AND revision = 1
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
   AND pg_temp.m107_expect_state('23514', $$
@@ -1445,7 +1443,7 @@ SELECT pg_temp.m107_mark('platform_only_change_keeps_the_org_revision_and_author
   (SELECT revision = 7 AND updated_by = '10700000-0000-4000-a000-000000000001'
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder')
-  AND (SELECT revision = 2 FROM public.notification_sequences
+  AND (SELECT revision = 1 FROM public.notification_sequences
         WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'));
 -- The bounce step is the org's, so a Minted write that changes it with a
 -- platform setting is an edit of the org's settings: it bumps the revision.
@@ -1464,11 +1462,13 @@ SELECT pg_temp.m107_mark('service_role_cannot_delete_a_default', pg_temp.m107_ex
 SELECT pg_temp.m107_mark('both_defaults_remain',
   (SELECT count(*) = 2 FROM public.notification_sequence_defaults)
   AND (SELECT count(*) = 4 FROM public.notification_sequence_default_steps));
--- A change by Minted to an org-owned setting does bump it, and names no one.
+-- Addendum 10: Minted sets the org's digest frequency, as it sets the send
+-- time. A platform-only change: the revision and the author stay.
 UPDATE public.notification_sequences SET digest_frequency = 'weekly'
  WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
-SELECT pg_temp.m107_mark('minted_change_to_an_org_setting_bumps_and_names_no_one',
-  (SELECT revision = 3 AND updated_by IS NULL AND digest_frequency = 'weekly'
+SELECT pg_temp.m107_mark('minted_sets_the_orgs_digest_frequency',
+  (SELECT digest_frequency = 'weekly' AND revision = 1
+          AND updated_by = '10700000-0000-4000-a000-000000000001'
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'));
 
@@ -1490,7 +1490,9 @@ SELECT pg_temp.m107_mark('admin_save_keeps_the_platform_overrides',
   (SELECT enabled AND revision = 8
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'intake_reminder')
-  AND (SELECT send_hour = 6 AND send_time_zone = 'America/New_York' AND revision = 4
+  -- Addendum 10: nor the frequency Minted set.
+  AND (SELECT send_hour = 6 AND send_time_zone = 'America/New_York' AND revision = 2
+              AND digest_frequency = 'weekly'
               AND updated_by = '10700000-0000-4000-a000-000000000001'
          FROM public.notification_sequences
         WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest'));
@@ -1509,7 +1511,7 @@ SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
 SELECT pg_temp.m107_mark('digest_cc_saved_once_minted_allows_it',
   pg_temp.m107_probe(
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$,
+        'followup_digest', pg_temp.m107_digest(2, '[{"kind":"role","role":"specialist"}]'))$$,
     $$SELECT cc_recipients = '[{"kind":"role","role":"specialist"}]'::jsonb
         FROM public.notification_sequence_steps
        WHERE org_id = '10700000-0000-4000-a000-00000000000a'
@@ -1531,7 +1533,7 @@ SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
 SELECT pg_temp.m107_mark('digest_cc_refused_again_once_minted_turns_it_off',
   pg_temp.m107_expect_message('notification_digest_has_no_cc',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$)
+        'followup_digest', pg_temp.m107_digest(2, '[{"kind":"role","role":"specialist"}]'))$$)
   AND pg_temp.m107_expect_message('notification_digest_has_no_cc',
     $$UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"admin"}]'
        WHERE org_id = '10700000-0000-4000-a000-00000000000a'
@@ -1539,7 +1541,7 @@ SELECT pg_temp.m107_mark('digest_cc_refused_again_once_minted_turns_it_off',
 SELECT pg_temp.m107_mark('digest_audience_back_to_coordinators_only',
   (SELECT digest_cc_allowed = false FROM public.notification_sequence_defaults
     WHERE purpose = 'followup_digest')
-  AND (SELECT revision = 4 AND bool_and(st.cc_recipients = '[]'::jsonb)
+  AND (SELECT revision = 2 AND bool_and(st.cc_recipients = '[]'::jsonb)
          FROM public.notification_sequences AS s
          JOIN public.notification_sequence_steps AS st ON st.sequence_id = s.id
         WHERE s.org_id = '10700000-0000-4000-a000-00000000000a' AND s.purpose = 'followup_digest'
@@ -1551,7 +1553,7 @@ SET LOCAL ROLE service_role;
 UPDATE public.notification_sequences SET digest_cc_allowed = true
  WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest';
 SELECT pg_temp.m107_mark('org_digest_cc_override_keeps_the_revision_and_author',
-  (SELECT digest_cc_allowed AND revision = 4
+  (SELECT digest_cc_allowed AND revision = 2
           AND updated_by = '10700000-0000-4000-a000-000000000001'
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
@@ -1562,7 +1564,7 @@ SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
 SELECT pg_temp.m107_mark('digest_cc_saved_under_the_orgs_override',
   pg_temp.m107_probe(
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$,
+        'followup_digest', pg_temp.m107_digest(2, '[{"kind":"role","role":"specialist"}]'))$$,
     $$SELECT st.cc_recipients = '[{"kind":"role","role":"specialist"}]'::jsonb
              AND s.digest_cc_allowed
         FROM public.notification_sequence_steps AS st
@@ -1594,7 +1596,7 @@ SELECT pg_temp.m107_as('10700000-0000-4000-a000-000000000001');
 SELECT pg_temp.m107_mark('org_override_off_beats_a_default_that_allows_cc',
   pg_temp.m107_expect_message('notification_digest_has_no_cc',
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'))$$)
+        'followup_digest', pg_temp.m107_digest(2, '[{"kind":"role","role":"specialist"}]'))$$)
   AND pg_temp.m107_expect_message('notification_digest_has_no_cc',
     $$UPDATE public.notification_sequence_steps SET cc_recipients = '[{"kind":"role","role":"admin"}]'
        WHERE org_id = '10700000-0000-4000-a000-00000000000a'
@@ -1606,7 +1608,7 @@ UPDATE public.notification_sequences SET digest_cc_allowed = NULL
 UPDATE public.notification_sequence_defaults SET digest_cc_allowed = false
  WHERE purpose = 'followup_digest';
 SELECT pg_temp.m107_mark('org_digest_cc_back_to_inherit',
-  (SELECT digest_cc_allowed IS NULL AND revision = 4
+  (SELECT digest_cc_allowed IS NULL AND revision = 2
      FROM public.notification_sequences
     WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND purpose = 'followup_digest')
   AND (SELECT digest_cc_allowed = false FROM public.notification_sequence_defaults
@@ -1639,7 +1641,7 @@ SELECT pg_temp.m107_mark('stored_digest_cc_is_inert_after_the_setting_goes_off',
 SELECT pg_temp.m107_mark('a_save_clears_a_stale_digest_cc',
   pg_temp.m107_probe(
     $$SELECT public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(4))$$,
+        'followup_digest', pg_temp.m107_digest(2))$$,
     $$SELECT cc_recipients = '[]'::jsonb
         FROM public.notification_sequence_steps
        WHERE org_id = '10700000-0000-4000-a000-00000000000a'
@@ -1648,7 +1650,7 @@ SET LOCAL ROLE service_role;
 UPDATE public.notification_sequence_steps SET cc_recipients = '[]'
  WHERE org_id = '10700000-0000-4000-a000-00000000000a' AND template_key = 'followup_digest_daily';
 SELECT pg_temp.m107_mark('stale_digest_cc_cleaned_up_without_a_revision',
-  (SELECT st.cc_recipients = '[]'::jsonb AND s.revision = 4 AND s.digest_cc_allowed IS NULL
+  (SELECT st.cc_recipients = '[]'::jsonb AND s.revision = 2 AND s.digest_cc_allowed IS NULL
      FROM public.notification_sequence_steps AS st
      JOIN public.notification_sequences AS s ON s.id = st.sequence_id
     WHERE s.org_id = '10700000-0000-4000-a000-00000000000a' AND s.purpose = 'followup_digest'));
@@ -1664,7 +1666,7 @@ SELECT pg_temp.m107_mark('a_missing_digest_default_refuses_digest_cc',
         DISABLE TRIGGER notification_sequence_defaults_no_delete;
       DELETE FROM public.notification_sequence_defaults WHERE purpose = 'followup_digest';
       PERFORM public.save_notification_sequence('10700000-0000-4000-a000-00000000000a',
-        'followup_digest', pg_temp.m107_digest(4, '[{"kind":"role","role":"specialist"}]'));
+        'followup_digest', pg_temp.m107_digest(2, '[{"kind":"role","role":"specialist"}]'));
     END $d$ $$)
   AND pg_temp.m107_expect_message('notification_digest_has_no_cc', $$DO $d$ BEGIN
       ALTER TABLE public.notification_sequence_defaults

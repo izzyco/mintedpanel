@@ -713,11 +713,12 @@ effective sequence is `resolveNotificationSequence()` in
   zone is unusable. Seeded: intake = all four stop conditions, 14 days,
   bounce escalation on step 1 (Oct 30); digest = daily at 8 in
   America/Chicago (the old 13:00 UTC cron in CDT), weekly on Monday, twice a
-  day adding 14:00, `digest_cc_allowed` false (D59: coordinators only). The two policy settings are configuration
+  day adding 14:00, `digest_cc_allowed` false (D59: coordinators only). The policy settings are configuration
   (`resolveNotificationPolicyRules`; Mission Control edits them, MINT-113):
-  an org row overrides either. `bounce_escalation_step` is org-owned;
-  `digest_cc_allowed` is platform-managed like `send_hour` (only Minted writes
-  the default or an org's override). The save RPC and the deferred step check
+  an org row overrides each. `bounce_escalation_step` is org-owned;
+  `digest_cc_allowed` and `digest_frequency` (Addendum 10) are
+  platform-managed like `send_hour` (only Minted writes the default or an
+  org's override). The save RPC and the deferred step check
   read the org's effective value; turning it on only lets an org store a
   digest cc list, nothing sends a cc copy yet. Never deleted, by anyone (BEFORE DELETE trigger
   `notification_sequence_defaults_no_delete`): Minted changes it instead.
@@ -739,15 +740,14 @@ effective sequence is `resolveNotificationSequence()` in
   setting is nullable and NULL means "use Minted's default":
   `stop_conditions text[]` (intake; validated subset, at least one, A11),
   `target_days_to_ready` (intake, 1 to 90), `bounce_escalation_step` (intake,
-  org-owned, 0 to 10, 0 = none), `digest_frequency` (digest, org-owned, A8),
-  and the **platform-managed** `send_hour`, `send_time_zone`,
-  `second_send_hour` (one group: all three set or all NULL, A10),
-  `digest_weekday` and `digest_cc_allowed` (digest). Each purpose's row
+  org-owned, 0 to 10, 0 = none), and the **platform-managed**
+  `digest_frequency` (A8; Minted picks it per org, Addendum 10), `send_hour`,
+  `send_time_zone`, `second_send_hour` (one group: all three set or all NULL,
+  A10), `digest_weekday` and `digest_cc_allowed` (digest). Each purpose's row
   carries only its own columns (CHECK). authenticated has column grants
   only: INSERT `(org_id, purpose, stop_conditions, target_days_to_ready,
-bounce_escalation_step, digest_frequency)`, UPDATE `(stop_conditions,
-target_days_to_ready, bounce_escalation_step, digest_frequency,
-updated_at)`; the platform-managed
+bounce_escalation_step)`, UPDATE `(stop_conditions, target_days_to_ready,
+bounce_escalation_step, updated_at)`; the platform-managed
   columns are service_role's (Mission Control later), and the stamp trigger
   is a second wall, an allow-list: only `service_role`, `postgres` and
   `supabase_admin` may change them (42501 `notification_platform_setting`
@@ -794,9 +794,9 @@ updated_at)`; the platform-managed
   `save_notification_sequence(p_org_id, p_purpose, p_payload)` is the save
   path: SECURITY INVOKER, admin-checked, replaces the sequence and its own
   steps in one transaction (`steps: null` = use Minted's default steps; a
-  null or absent setting = use Minted's default; the digest's
-  `digest_frequency`), refuses `enabled`, `send_hour`, `send_time_zone`,
-  `second_send_hour`, `digest_weekday` and `digest_cc_allowed` (42501
+  null or absent setting = use Minted's default), refuses `enabled`,
+  `digest_frequency`, `send_hour`, `send_time_zone`, `second_send_hour`,
+  `digest_weekday` and `digest_cc_allowed` (42501
   `notification_platform_setting`), any unknown key (22023), an empty stop
   list (`notification_stop_condition_required`), an intake step before day 1
   (`notification_intake_starts_day_1`), and a digest cc list while the org's

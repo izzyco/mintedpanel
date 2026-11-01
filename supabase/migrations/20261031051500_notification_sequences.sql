@@ -46,6 +46,8 @@
 --     (0-23, later than send_hour; the twice-a-day second send) (digest). The
 --     default is 8 and 14 in America/Chicago (8 am Central was the old fixed
 --     cron's 13:00 UTC in CDT).
+--   * digest_frequency (digest): daily, weekly or twice_daily (A8). The
+--     default is daily. Minted picks it per org in v1 (Addendum 10, Q2).
 --   * digest_weekday (digest; ISO 1 = Monday to 7 = Sunday): the weekly
 --     digest's day. The default is 1, Monday.
 --   * digest_cc_allowed (digest). The default is false: coordinators only.
@@ -61,8 +63,8 @@
 -- Mission Control edits them, MINT-113; resolveNotificationPolicyRules in
 -- src/lib/notificationSequences.ts):
 --   * digest_frequency (digest): daily, weekly or twice_daily (A8). Minted's
---     default is daily. Org-owned: an org row overrides it (NULL inherits)
---     through the save RPC or a direct admin write.
+--     default is daily; an org row may override it (NULL inherits), but like
+--     send_hour only Minted writes either (Addendum 10, Q2).
 --   * bounce_escalation_step (intake): the one step whose bounce escalates to
 --     that step's cc list. Minted's default is 1 (Oct 30: "a bounce escalates
 --     on email 1"); 0 means no bounce escalates. Org-owned, like the cc lists:
@@ -137,7 +139,8 @@
 -- digest_cc_allowed with its org override, the sms_consents SET NULL FK, the
 -- days 1/2/3 intake default, and Addendum 8: digest frequency A8, enabled
 -- Minted-managed A9, the send-time group A10, a required stop condition A11,
--- intake offsets from day 1 A12, compression removed A13). It has never been
+-- intake offsets from day 1 A12, compression removed A13; Nov 1, Addendum
+-- 10: digest_frequency Minted-managed). It has never been
 -- applied to a hosted database; it has only run in CI's ephemeral Migration
 -- dry-run. Once it is
 -- applied anywhere, further changes go in a new migration.
@@ -409,9 +412,8 @@ CREATE TABLE IF NOT EXISTS public.notification_sequences (
   target_days_to_ready integer,
   -- 0: no bounce escalates.
   bounce_escalation_step smallint,
-  -- Digest, set by org admins (A8). NULL: Minted's default.
+  -- Digest, platform-managed (service_role only). NULL: Minted's default.
   digest_frequency text,
-  -- Platform-managed (service_role only). NULL: Minted's default.
   send_hour smallint,
   send_time_zone text,
   second_send_hour smallint,
@@ -563,14 +565,15 @@ DECLARE
   v_platform_changed boolean;
   -- The platform-managed columns and the ones this trigger stamps.
   v_not_org_owned constant text[] := ARRAY[
-    'enabled', 'send_hour', 'send_time_zone', 'second_send_hour', 'digest_weekday',
-    'digest_cc_allowed', 'revision', 'created_at', 'updated_at', 'updated_by'
+    'enabled', 'digest_frequency', 'send_hour', 'send_time_zone', 'second_send_hour',
+    'digest_weekday', 'digest_cc_allowed', 'revision', 'created_at', 'updated_at', 'updated_by'
   ];
 BEGIN
   -- enabled starts false (A9: off until Minted turns it on), so a row
   -- inserted on is a platform change; the other platform columns start NULL.
   IF TG_OP = 'INSERT' THEN
     v_platform_changed := NEW.enabled IS TRUE
+                          OR NEW.digest_frequency IS NOT NULL
                           OR NEW.send_hour IS NOT NULL
                           OR NEW.send_time_zone IS NOT NULL
                           OR NEW.second_send_hour IS NOT NULL
@@ -579,6 +582,7 @@ BEGIN
   ELSE
     v_platform_changed :=
       NEW.enabled IS DISTINCT FROM OLD.enabled
+      OR NEW.digest_frequency IS DISTINCT FROM OLD.digest_frequency
       OR NEW.send_hour IS DISTINCT FROM OLD.send_hour
       OR NEW.send_time_zone IS DISTINCT FROM OLD.send_time_zone
       OR NEW.second_send_hour IS DISTINCT FROM OLD.second_send_hour
@@ -599,8 +603,8 @@ BEGIN
     END IF;
     NEW.created_at := OLD.created_at;
     -- revision, updated_at and updated_by describe the org's own settings
-    -- (stop conditions, target, bounce escalation step, digest frequency,
-    -- steps: every column not in v_not_org_owned). A change by Minted to its settings
+    -- (stop conditions, target, bounce escalation step, steps: every
+    -- column not in v_not_org_owned). A change by Minted to its settings
     -- alone leaves them as they are, so an admin editing at that moment saves
     -- cleanly instead of getting the conflict; the save RPC never names these
     -- columns, so that save cannot undo Minted's change.
@@ -1154,19 +1158,17 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.notification_sequence_defau
 
 -- An org admin writes only the org-owned columns (bounce_escalation_step is
 -- one: the org owns its cc lists and which bounce reaches them). The
--- platform-managed ones (enabled, send_hour, send_time_zone, second_send_hour,
--- digest_weekday, digest_cc_allowed), and the columns
--- the stamp trigger owns (id, revision, created_at, updated_by), have no
--- authenticated grant. updated_at is granted because a step write touches
+-- platform-managed ones (enabled, digest_frequency, send_hour,
+-- send_time_zone, second_send_hour, digest_weekday, digest_cc_allowed), and
+-- the columns the stamp trigger owns (id, revision, created_at, updated_by),
+-- have no authenticated grant. updated_at is granted because a step write touches
 -- its sequence (notification_sequence_steps_touch_parent runs as the caller);
 -- the stamp trigger overwrites it anyway. A sequence row is never deleted by
 -- the app (turning it off is enabled = false), so there is no DELETE grant.
 GRANT SELECT ON TABLE public.notification_sequences TO authenticated;
-GRANT INSERT (org_id, purpose, stop_conditions, target_days_to_ready,
-              bounce_escalation_step, digest_frequency)
+GRANT INSERT (org_id, purpose, stop_conditions, target_days_to_ready, bounce_escalation_step)
   ON TABLE public.notification_sequences TO authenticated;
-GRANT UPDATE (stop_conditions, target_days_to_ready, bounce_escalation_step, digest_frequency,
-              updated_at)
+GRANT UPDATE (stop_conditions, target_days_to_ready, bounce_escalation_step, updated_at)
   ON TABLE public.notification_sequences TO authenticated;
 -- Steps are replaced on save.
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.notification_sequence_steps TO authenticated;
@@ -1233,14 +1235,11 @@ $seed$;
 --      bounce_escalation_step: int | null,            -- intake, 0 to 10 (0 =
 --                                                     -- none); null or absent
 --                                                     -- = default
---      digest_frequency: text | null,                 -- digest: daily, weekly,
---                                                     -- twice_daily; null or
---                                                     -- absent = default
 --      expected_revision: int | null                  -- null when creating
 --    }
---    Any other key is refused. Naming enabled, send_hour, send_time_zone,
---    second_send_hour, digest_weekday or digest_cc_allowed is refused with
---    42501 notification_platform_setting: Minted sets those (a new row is
+--    Any other key is refused. Naming enabled, digest_frequency, send_hour,
+--    send_time_zone, second_send_hour, digest_weekday or digest_cc_allowed is
+--    refused with 42501 notification_platform_setting: Minted sets those (a new row is
 --    off until Minted turns it on, A9). An empty stop list is refused
 --    (notification_stop_condition_required, A11), and so is an intake step
 --    before day 1 (notification_intake_starts_day_1, A12). A digest step's cc list
@@ -1267,7 +1266,6 @@ DECLARE
   v_key text;
   v_steps jsonb;
   v_step jsonb;
-  v_frequency text;
   v_stop text[];
   v_target integer;
   v_bounce smallint;
@@ -1292,13 +1290,13 @@ BEGIN
 
   -- Only the org's own settings. The platform-managed ones are Minted's.
   FOR v_key IN SELECT k.setting FROM pg_catalog.jsonb_object_keys(p_payload) AS k(setting) LOOP
-    IF v_key IN ('enabled', 'send_hour', 'send_time_zone', 'second_send_hour',
-                 'digest_weekday', 'digest_cc_allowed') THEN
+    IF v_key IN ('enabled', 'digest_frequency', 'send_hour', 'send_time_zone',
+                 'second_send_hour', 'digest_weekday', 'digest_cc_allowed') THEN
       RAISE EXCEPTION USING ERRCODE = '42501',
         MESSAGE = 'notification_platform_setting: ' || v_key;
     END IF;
     IF v_key NOT IN ('steps', 'stop_conditions', 'target_days_to_ready',
-                     'bounce_escalation_step', 'digest_frequency', 'expected_revision') THEN
+                     'bounce_escalation_step', 'expected_revision') THEN
       RAISE EXCEPTION USING ERRCODE = '22023',
         MESSAGE = 'notification_sequence_invalid: unknown setting ' || v_key;
     END IF;
@@ -1400,12 +1398,6 @@ BEGIN
       RAISE EXCEPTION USING ERRCODE = '22023',
         MESSAGE = 'notification_sequence_invalid: bounce_escalation_step';
     END IF;
-    -- Intake has no digest frequency; refuse rather than drop it.
-    IF COALESCE(pg_catalog.jsonb_typeof(p_payload -> 'digest_frequency'), 'null') <> 'null' THEN
-      RAISE EXCEPTION USING ERRCODE = '22023',
-        MESSAGE = 'notification_sequence_invalid: intake_has_no_digest_settings';
-    END IF;
-    v_frequency := NULL;
   ELSE
     -- The digest has none of the intake settings; refuse rather than drop them.
     IF COALESCE(pg_catalog.jsonb_typeof(p_payload -> 'stop_conditions'), 'null') <> 'null'
@@ -1417,16 +1409,6 @@ BEGIN
     v_stop := NULL;
     v_target := NULL;
     v_bounce := NULL;
-    -- A8: null (or absent) is Minted's default frequency.
-    IF COALESCE(pg_catalog.jsonb_typeof(p_payload -> 'digest_frequency'), 'null') = 'null' THEN
-      v_frequency := NULL;
-    ELSIF p_payload ->> 'digest_frequency' IN ('daily', 'weekly', 'twice_daily')
-          AND pg_catalog.jsonb_typeof(p_payload -> 'digest_frequency') = 'string' THEN
-      v_frequency := p_payload ->> 'digest_frequency';
-    ELSE
-      RAISE EXCEPTION USING ERRCODE = '22023',
-        MESSAGE = 'notification_sequence_invalid: digest_frequency';
-    END IF;
   END IF;
 
   IF COALESCE(pg_catalog.jsonb_typeof(p_payload -> 'expected_revision'), 'null') = 'null' THEN
@@ -1464,12 +1446,11 @@ BEGIN
      WHERE s.id = v_existing.id;
 
     -- The platform-managed columns are not named, so what Minted set (on/off,
-    -- the send time, the weekday, digest cc) stays as it is.
+    -- the frequency, the send time, the weekday, digest cc) stays as it is.
     UPDATE public.notification_sequences AS s
        SET stop_conditions = v_stop,
            target_days_to_ready = v_target,
-           bounce_escalation_step = v_bounce,
-           digest_frequency = v_frequency
+           bounce_escalation_step = v_bounce
      WHERE s.id = v_existing.id
      RETURNING * INTO v_saved;
   ELSE
@@ -1479,9 +1460,8 @@ BEGIN
     BEGIN
       -- A new row is off (A9): Minted turns it on at kickoff.
       INSERT INTO public.notification_sequences
-        (org_id, purpose, stop_conditions, target_days_to_ready, bounce_escalation_step,
-         digest_frequency)
-        VALUES (p_org_id, p_purpose, v_stop, v_target, v_bounce, v_frequency)
+        (org_id, purpose, stop_conditions, target_days_to_ready, bounce_escalation_step)
+        VALUES (p_org_id, p_purpose, v_stop, v_target, v_bounce)
         RETURNING * INTO v_saved;
     EXCEPTION WHEN unique_violation THEN
       -- Another admin created it first.
@@ -1555,7 +1535,7 @@ COMMENT ON COLUMN public.notification_sequence_defaults.bounce_escalation_step I
 COMMENT ON COLUMN public.notification_sequence_defaults.digest_cc_allowed IS
   'Digest: whether a digest step may carry a cc list. Platform-managed; false by default (D59 / S7: coordinators only); an org row may override it (notification_sequences.digest_cc_allowed). save_notification_sequence and notification_sequence_steps_set_check read the org''s effective value. Turning it on only lets an org store a digest cc list: nothing renders or sends a cc copy of the digest yet. Mission Control edits it (MINT-113).';
 COMMENT ON COLUMN public.notification_sequence_defaults.digest_frequency IS
-  'Digest: daily, weekly or twice_daily (A8). daily by default; an org row overrides it (org-owned).';
+  'Digest: daily, weekly or twice_daily (A8). Platform-managed; daily by default; an org row may carry Minted''s override (Addendum 10).';
 COMMENT ON COLUMN public.notification_sequence_defaults.digest_weekday IS
   'Digest: the weekly digest''s ISO weekday (1 = Monday to 7 = Sunday). Platform-managed; Monday by default.';
 COMMENT ON COLUMN public.notification_sequence_defaults.second_send_hour IS
@@ -1568,7 +1548,7 @@ COMMENT ON TABLE public.notification_sequence_default_steps IS
   'MINT-107: the ordered steps of a platform default. An org with no steps of its own uses these. No cc list: a default names no one. Same bounds as notification_sequence_steps; every default has at least one step, the digest exactly one, offsets strictly increasing (deferred constraint triggers on both default tables).';
 
 COMMENT ON TABLE public.notification_sequences IS
-  'MINT-107: one org''s notification settings for one purpose (followup_digest | intake_reminder). No row = off. A NULL setting uses Minted''s default (notification_sequence_defaults); enabled is never inherited and only Minted sets it (A9). Members read; admins write the org-owned columns (stop conditions, target, bounce step, digest frequency), normally through save_notification_sequence. Config only; nothing sends from this table yet.';
+  'MINT-107: one org''s notification settings for one purpose (followup_digest | intake_reminder). No row = off. A NULL setting uses Minted''s default (notification_sequence_defaults); enabled is never inherited and only Minted sets it (A9). Members read; admins write the org-owned columns (stop conditions, target, bounce step), normally through save_notification_sequence. Config only; nothing sends from this table yet.';
 COMMENT ON COLUMN public.notification_sequences.enabled IS
   'Whether the purpose sends at all for this org. Defaults to false (A9: off until Minted turns notifications on at kickoff); never inherited from Minted''s default. Platform-managed: no authenticated grant, stamp-trigger allow-list, the save RPC refuses it; a change to it alone keeps revision and updated_by.';
 COMMENT ON COLUMN public.notification_sequences.stop_conditions IS
@@ -1582,7 +1562,7 @@ COMMENT ON COLUMN public.notification_sequences.send_hour IS
 COMMENT ON COLUMN public.notification_sequences.send_time_zone IS
   'Digest only, platform-managed: an org override of the IANA zone of send_hour. NULL uses Minted''s default (America/Chicago).';
 COMMENT ON COLUMN public.notification_sequences.digest_frequency IS
-  'Digest only, org-owned: daily, weekly or twice_daily (A8). NULL uses Minted''s default (daily).';
+  'Digest only, platform-managed: an org override of how often the digest goes out, daily, weekly or twice_daily (A8). NULL uses Minted''s default (daily). Only Minted writes it (Addendum 10: no authenticated grant; stamp-trigger allow-list; the save RPC refuses it); a change to it alone keeps revision and updated_by.';
 COMMENT ON COLUMN public.notification_sequences.digest_weekday IS
   'Digest only, platform-managed: an org override of the weekly digest''s ISO weekday (1 = Monday). NULL uses Minted''s default (Monday).';
 COMMENT ON COLUMN public.notification_sequences.second_send_hour IS
@@ -1616,6 +1596,6 @@ COMMENT ON COLUMN public.sms_consents.source IS
   'How consent was given: intake_form, staff_recorded (paper or verbal, with recorded_by), or sms_keyword (a START reply).';
 
 COMMENT ON FUNCTION public.save_notification_sequence(uuid, text, jsonb) IS
-  'MINT-107: admin-only, SECURITY INVOKER. Creates or replaces one purpose''s org sequence and its own steps in one transaction (steps null = use Minted''s default steps; a null or absent setting = use Minted''s default; intake bounce_escalation_step 0 to 10, 0 = none), checks expected_revision (PT409, HTTP 409, notification_sequence_conflict when stale), and writes one audit_log row. Accepts the digest''s digest_frequency. Refuses the platform-managed settings (42501 notification_platform_setting: enabled, send_hour, send_time_zone, second_send_hour, digest_weekday, digest_cc_allowed), any unknown key, an empty stop list (A11), an intake step before day 1 (A12), and a digest cc list unless the org''s effective digest_cc_allowed is on (notification_digest_has_no_cc). Returns {sequence, steps}. Never call it with the service key.';
+  'MINT-107: admin-only, SECURITY INVOKER. Creates or replaces one purpose''s org sequence and its own steps in one transaction (steps null = use Minted''s default steps; a null or absent setting = use Minted''s default; intake bounce_escalation_step 0 to 10, 0 = none), checks expected_revision (PT409, HTTP 409, notification_sequence_conflict when stale), and writes one audit_log row. Refuses the platform-managed settings (42501 notification_platform_setting: enabled, digest_frequency, send_hour, send_time_zone, second_send_hour, digest_weekday, digest_cc_allowed), any unknown key, an empty stop list (A11), an intake step before day 1 (A12), and a digest cc list unless the org''s effective digest_cc_allowed is on (notification_digest_has_no_cc). Returns {sequence, steps}. Never call it with the service key.';
 
 NOTIFY pgrst, 'reload schema';

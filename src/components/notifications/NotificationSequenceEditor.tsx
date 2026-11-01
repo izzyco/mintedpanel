@@ -7,9 +7,9 @@
 // Minted's default sits under every setting. A setting the org has not set
 // shows the default and says so; the admin can override it (type a target,
 // tick a stop condition, "Customize steps") or go back to it (clear the
-// target, "Use Minted's default"). On/off (A9) and the digest's send time and
-// weekday are Minted's alone: shown read-only, never editable here. The
-// digest's frequency (A8) is the org's: daily, weekly or twice a day.
+// target, "Use Minted's default"). On/off (A9) and the digest's frequency,
+// send time and weekday are Minted's alone (Addendum 10): shown read-only,
+// never editable here.
 //
 // Step slots are keyed by position, because the offset belongs to the slot.
 // Moving a step's message therefore leaves focus in the old slot, so after a
@@ -31,8 +31,6 @@ import {
 import {
   CHANNEL_LABELS,
   COORDINATORS_ONLY_NOTE,
-  DIGEST_FREQUENCIES,
-  DIGEST_FREQUENCY_LABELS,
   NOTIFICATION_CHANNELS,
   NOTIFICATION_LIMITS,
   PLATFORM_DEFAULT_LABEL,
@@ -66,7 +64,7 @@ import {
   selectableTemplates,
   templateSupportsChannel,
 } from "@/lib/notificationTemplates";
-import type { DigestFrequency, NotificationChannel, NotificationPurpose } from "@/types";
+import type { NotificationChannel, NotificationPurpose } from "@/types";
 import { NotificationCcRecipients } from "./NotificationCcRecipients";
 
 function parseWholeNumber(value: string): number | null {
@@ -90,26 +88,6 @@ function IssueText({ issues }: { issues: SequenceIssue[] }) {
       ))}
     </ul>
   );
-}
-
-/** The digest's send time, read-only: Minted sets it (Mission Control later). */
-function DigestSchedule({
-  purpose,
-  saved,
-  platformDefault,
-  digestFrequency,
-}: {
-  purpose: NotificationPurpose;
-  saved: NotificationSequenceConfig | undefined;
-  platformDefault: NotificationSequenceDefaultConfig;
-  /** The frequency the draft would save (the org's, else Minted's default). */
-  digestFrequency: DigestFrequency;
-}) {
-  if (!PURPOSE_RULES[purpose].hasSendTime) return null;
-  // The saved row for the send time and weekday: the draft never holds them.
-  const effective = resolveNotificationSequence(purpose, saved, platformDefault);
-  const line = describeDigestSchedule({ ...effective, digestFrequency });
-  return line ? <p className="text-[13px] text-foreground">{line}</p> : null;
 }
 
 export interface NotificationSequenceEditorProps {
@@ -176,10 +154,10 @@ export function NotificationSequenceEditor({
   const stops = draft.stopConditions ?? platformDefault.stopConditions ?? [];
   // The step whose bounce escalates to its cc list (the org's, else Minted's).
   const bounceStep = draftBounceEscalationStep(draft, platformDefault);
-  // Minted's default frequency (A8), for the default option and the step line.
-  const defaultFrequency = resolveNotificationPolicyRules({
-    digestFrequency: platformDefault.digestFrequency,
-  }).digestFrequency;
+  // The saved row over Minted's default, for what only Minted sets: the
+  // digest's frequency, send time and weekday. The draft never holds them.
+  const effective = resolveNotificationSequence(purpose, saved, platformDefault);
+  const schedule = rules.hasSendTime ? describeDigestSchedule(effective) : null;
   // Whether this purpose's steps may cc anyone (the digest: digest_cc_allowed,
   // the org's override Minted set, else Minted's default).
   const ccAllowed = purposeAllowsCc(
@@ -214,42 +192,6 @@ export function NotificationSequenceEditor({
       </p>
       {/* A9: only Minted switches notifications on or off. */}
       <p className="text-[13px] text-foreground">{enabledStatusNote(saved?.enabled ?? false)}</p>
-
-      {rules.hasFrequency ? (
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-frequency`} className="text-[12px] text-muted-foreground">
-            How often
-          </Label>
-          <Select
-            value={draft.digestFrequency ?? "default"}
-            onValueChange={(value) =>
-              onChange({
-                ...draft,
-                digestFrequency: value === "default" ? null : (value as DigestFrequency),
-              })
-            }
-          >
-            <SelectTrigger
-              id={`${idPrefix}-frequency`}
-              aria-label="How often"
-              className="w-full sm:w-[240px]"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="default">
-                {`${PLATFORM_DEFAULT_LABEL} (${DIGEST_FREQUENCY_LABELS[defaultFrequency].toLowerCase()})`}
-              </SelectItem>
-              {DIGEST_FREQUENCIES.map((frequency) => (
-                <SelectItem key={frequency} value={frequency}>
-                  {DIGEST_FREQUENCY_LABELS[frequency]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <IssueText issues={sequenceIssues("digestFrequency")} />
-        </div>
-      ) : null}
 
       {ownSteps && rules.stepsEditable ? (
         <>
@@ -466,7 +408,7 @@ export function NotificationSequenceEditor({
                     channel: step.channel,
                     templateKey: step.templateKey,
                   },
-                  draft.digestFrequency ?? defaultFrequency,
+                  effective.digestFrequency ?? undefined,
                 )}
               </li>
             ))}
@@ -546,12 +488,8 @@ export function NotificationSequenceEditor({
         </div>
       ) : null}
 
-      <DigestSchedule
-        purpose={purpose}
-        saved={saved}
-        platformDefault={platformDefault}
-        digestFrequency={draft.digestFrequency ?? defaultFrequency}
-      />
+      {/* Addendum 10: how often and when are Minted's, read-only like on/off. */}
+      {schedule ? <p className="text-[13px] text-foreground">{schedule}</p> : null}
 
       {usesSms ? (
         <p className="text-[12px] text-muted-foreground">
