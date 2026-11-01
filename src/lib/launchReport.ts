@@ -7,13 +7,16 @@
 // at-risk when its go-live date approaches (within 30 days by default) with
 // open cases still pending or zero providers assigned, and Overdue when the
 // date passed within the overdue window (90 days by default) with either
-// still true (an opened location with nothing outstanding shows for the
-// recent window, 30 days by default, unflagged); dateless locations list
-// apart, never flagged. All date math is date-only against a passed-in `today` (never a
-// clock read in the lib — the enrollmentReadiness idiom). Pure, no I/O.
+// still true, by default counting only cases opened before go-live (an
+// opened location with nothing outstanding shows for the recent window, 30
+// days by default, unflagged); dateless locations list apart, never flagged.
+// All date math is date-only against a passed-in `today` and case opening
+// days the caller converts (never a clock read in the lib — the
+// enrollmentReadiness idiom). Pure, no I/O.
 //
-// The three windows are business policy, so they are configuration
-// (LaunchReportRules), never constants: they resolve from the decided
+// The windows and which open cases count after go-live are business policy,
+// so they are configuration (LaunchReportRules), never constants: they
+// resolve from the decided
 // default, then a platform override, then an organization override, field by
 // field (resolveLaunchReportRules), and validateLaunchReportRules is the
 // check an override must pass before it goes live. Nothing stores an
@@ -27,7 +30,11 @@ import { isTestProvider, testProviderIds, type HasTestProviderFlag } from "./tes
 // ---------------------------------------------------------------------------
 // Rules
 
-/** The report's windows, in whole days. Each field names its default. */
+/** Which open cases keep a passed go-live at risk. */
+export type OverdueOpenCases = "opened_before_go_live" | "any";
+
+/** The report's rules: three windows in whole days, and which open cases
+ * count once go-live has passed. Each field names its default. */
 export interface LaunchReportRules {
   /** An at-risk location whose go-live passed within this many days still
    * shows, flagged Overdue; past it the location drops off (a mature
@@ -41,6 +48,12 @@ export interface LaunchReportRules {
   /** A go-live date within this many days ahead counts as "approaching" for
    * the at-risk flag. Default 30. */
   upcomingWindowDays: number;
+  /** Once go-live has passed, which open cases make the location Overdue.
+   * "opened_before_go_live" (default; Sowmya, Oct 31, A2): only a case
+   * opened before the go-live day; a case opened on or after it is routine
+   * new-payer work, not an unfinished launch. "any": every open case.
+   * Upcoming launches always count every open case. */
+  overdueOpenCases: OverdueOpenCases;
 }
 
 /** The platform default: the decided windows. */
@@ -48,6 +61,7 @@ export const DEFAULT_LAUNCH_REPORT_RULES: Readonly<LaunchReportRules> = Object.f
   overdueWindowDays: 90,
   recentWindowDays: 30,
   upcomingWindowDays: 30,
+  overdueOpenCases: "opened_before_go_live",
 });
 
 /** The longest any window can be set to: a year. */
@@ -64,25 +78,42 @@ const isWindowDays = (value: unknown): value is number =>
   value > 0 &&
   value <= LAUNCH_REPORT_MAX_WINDOW_DAYS;
 
-const RULE_LABELS: { [K in keyof LaunchReportRules]: string } = {
+type WindowKey = "overdueWindowDays" | "recentWindowDays" | "upcomingWindowDays";
+
+const WINDOW_LABELS: { [K in WindowKey]: string } = {
   overdueWindowDays: "The overdue window",
   recentWindowDays: "The recently launched window",
   upcomingWindowDays: "The approaching window",
 };
 
-const RULE_KEYS = Object.keys(RULE_LABELS) as Array<keyof LaunchReportRules>;
+const WINDOW_KEYS = Object.keys(WINDOW_LABELS) as WindowKey[];
+
+const OVERDUE_OPEN_CASES: readonly OverdueOpenCases[] = ["opened_before_go_live", "any"];
+
+const isOverdueOpenCases = (value: unknown): value is OverdueOpenCases =>
+  OVERDUE_OPEN_CASES.includes(value as OverdueOpenCases);
+
+const RULE_CHECKS: { [K in keyof LaunchReportRules]: (value: unknown) => boolean } = {
+  overdueWindowDays: isWindowDays,
+  recentWindowDays: isWindowDays,
+  upcomingWindowDays: isWindowDays,
+  overdueOpenCases: isOverdueOpenCases,
+};
+
+const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof LaunchReportRules>;
 
 // Field by field: the organization's value, else the platform's, else the
-// default. A stored value of the wrong shape (not a whole number of days from
-// 1 to LAUNCH_REPORT_MAX_WINDOW_DAYS) is skipped like a missing one.
+// default. A stored value of the wrong shape (a window that is not a whole
+// number of days from 1 to LAUNCH_REPORT_MAX_WINDOW_DAYS, an unknown
+// open-case rule) is skipped like a missing one.
 function mergeLaunchReportRules(
   platform?: LaunchReportRulesOverride | null,
   organization?: LaunchReportRulesOverride | null,
 ): LaunchReportRules {
-  const pick = (key: keyof LaunchReportRules): number => {
+  const pick = <K extends keyof LaunchReportRules>(key: K): LaunchReportRules[K] => {
     for (const override of [organization, platform]) {
       const value: unknown = override?.[key];
-      if (value != null && isWindowDays(value)) return value;
+      if (value != null && RULE_CHECKS[key](value)) return value as LaunchReportRules[K];
     }
     return DEFAULT_LAUNCH_REPORT_RULES[key];
   };
@@ -90,6 +121,7 @@ function mergeLaunchReportRules(
     overdueWindowDays: pick("overdueWindowDays"),
     recentWindowDays: pick("recentWindowDays"),
     upcomingWindowDays: pick("upcomingWindowDays"),
+    overdueOpenCases: pick("overdueOpenCases"),
   };
 }
 
@@ -122,20 +154,25 @@ export function validateLaunchReportRules(
 ): string[] {
   if (override == null) return [];
   if (typeof override !== "object" || Array.isArray(override))
-    return ["The Launches report rules must be a set of named windows."];
+    return ["The Launches report rules must be a set of named rules."];
   const errors: string[] = [];
   const given = override as Record<string, unknown>;
   for (const key of Object.keys(given)) {
     if (!(RULE_KEYS as string[]).includes(key))
       errors.push(`"${key}" is not a Launches report rule.`);
   }
-  for (const key of RULE_KEYS) {
+  for (const key of WINDOW_KEYS) {
     const value = given[key];
     if (value != null && !isWindowDays(value))
       errors.push(
-        `${RULE_LABELS[key]} must be a whole number of days from 1 to ${LAUNCH_REPORT_MAX_WINDOW_DAYS}.`,
+        `${WINDOW_LABELS[key]} must be a whole number of days from 1 to ${LAUNCH_REPORT_MAX_WINDOW_DAYS}.`,
       );
   }
+  const openCases = given.overdueOpenCases;
+  if (openCases != null && !isOverdueOpenCases(openCases))
+    errors.push(
+      'After go-live, open cases must count only when opened before go-live ("opened_before_go_live") or always ("any").',
+    );
   if (errors.length > 0) return errors;
   const rules = mergeLaunchReportRules(base, given as LaunchReportRulesOverride);
   if (rules.overdueWindowDays < rules.recentWindowDays)
@@ -153,7 +190,11 @@ const dayCount = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
 export function launchAtRiskRuleText(
   rules: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
 ): string {
-  return `At risk = go-live within ${dayCount(rules.upcomingWindowDays)} with open cases still pending or no providers assigned. Overdue = go-live passed within the last ${dayCount(rules.overdueWindowDays)} and either is still true. Opened locations with neither show for ${dayCount(rules.recentWindowDays)}.`;
+  const counted =
+    rules.overdueOpenCases === "opened_before_go_live"
+      ? ", counting only cases opened before go-live"
+      : "";
+  return `At risk = go-live within ${dayCount(rules.upcomingWindowDays)} with open cases still pending or no providers assigned. Overdue = go-live passed within the last ${dayCount(rules.overdueWindowDays)} and either is still true${counted}. Opened locations with neither show for ${dayCount(rules.recentWindowDays)}.`;
 }
 
 /** The report's empty state, naming the same windows. */
@@ -187,6 +228,11 @@ export interface LaunchCaseInput {
   /** The `credential_cases.facility_id` primary mirror. */
   facilityId: string | null;
   status: CaseStatus;
+  /** The day the case was opened: `credential_cases.created_at` as the
+   * coordinator's local calendar day (YYYY-MM-DD), converted by the caller.
+   * Missing: nothing shows it was opened after a go-live, so it counts as
+   * opened before. */
+  openedOn?: string | null;
 }
 
 /** One `case_facilities` row: a location the case holds. */
@@ -284,19 +330,17 @@ export function providerCountsByFacility(
   return new Map(Array.from(byFacility, ([facilityId, set]) => [facilityId, set.size]));
 }
 
-/**
- * Open cases per facility, attributed through `case_facilities`: a case
- * counts once at each location it holds. A case with no `case_facilities`
- * rows falls back to its `facility_id` primary mirror (creation stamps the
- * mirror without writing the child row). Never through the provider's
- * assignments: a provider at two clinics does not make a case pending at
- * both. The test provider's cases never count.
- */
-export function openCasesByFacility(
+/** Every (open case, location) pair, attributed through `case_facilities`:
+ * a case reaches each location it holds once. A case with no
+ * `case_facilities` rows falls back to its `facility_id` primary mirror
+ * (creation stamps the mirror without writing the child row). Never through
+ * the provider's assignments: a provider at two clinics does not make a case
+ * pending at both. The test provider's cases never count. */
+function openCaseLocations(
   cases: readonly LaunchCaseInput[],
   caseFacilities: readonly LaunchCaseFacilityInput[],
   providers: readonly LaunchProviderInput[],
-): Map<string, number> {
+): Array<[LaunchCaseInput, string]> {
   const testIds = testProviderIds(providers);
   const facilitiesByCase = new Map<string, Set<string>>();
   for (const link of caseFacilities) {
@@ -304,14 +348,50 @@ export function openCasesByFacility(
     set.add(link.facilityId);
     facilitiesByCase.set(link.caseId, set);
   }
-  const counts = new Map<string, number>();
+  const pairs: Array<[LaunchCaseInput, string]> = [];
   for (const c of cases) {
     if (!isOpenCaseStatus(c.status) || testIds.has(c.providerId)) continue;
     const linked = facilitiesByCase.get(c.id);
     const reached = linked ?? (c.facilityId ? [c.facilityId] : []);
-    for (const facilityId of reached) {
-      counts.set(facilityId, (counts.get(facilityId) ?? 0) + 1);
-    }
+    for (const facilityId of reached) pairs.push([c, facilityId]);
+  }
+  return pairs;
+}
+
+/** Open cases per facility (see openCaseLocations for the attribution). */
+export function openCasesByFacility(
+  cases: readonly LaunchCaseInput[],
+  caseFacilities: readonly LaunchCaseFacilityInput[],
+  providers: readonly LaunchProviderInput[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const [, facilityId] of openCaseLocations(cases, caseFacilities, providers)) {
+    counts.set(facilityId, (counts.get(facilityId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Of those, the open cases per facility opened ON OR AFTER its go-live day
+ * (`openedOn` against `effectiveDate`, both date-only). Under the default
+ * rule they do not keep a passed go-live at risk. A case with no `openedOn`,
+ * or a location with no go-live date, is never counted here. */
+export function openCasesSinceGoLiveByFacility(
+  cases: readonly LaunchCaseInput[],
+  caseFacilities: readonly LaunchCaseFacilityInput[],
+  providers: readonly LaunchProviderInput[],
+  facilities: readonly Pick<LaunchFacilityInput, "id" | "effectiveDate">[],
+): Map<string, number> {
+  const goLiveDay = new Map<string, number>();
+  for (const f of facilities) {
+    const day = f.effectiveDate ? toUtcDay(f.effectiveDate) : null;
+    if (day !== null) goLiveDay.set(f.id, day);
+  }
+  const counts = new Map<string, number>();
+  for (const [c, facilityId] of openCaseLocations(cases, caseFacilities, providers)) {
+    const opened = c.openedOn ? toUtcDay(c.openedOn) : null;
+    const goLive = goLiveDay.get(facilityId);
+    if (opened === null || goLive === undefined || opened < goLive) continue;
+    counts.set(facilityId, (counts.get(facilityId) ?? 0) + 1);
   }
   return counts;
 }
@@ -320,8 +400,11 @@ export function openCasesByFacility(
  * The report rows: ACTIVE, non-reference facilities whose go-live date is in
  * the future, within the recent window, or — when still at risk — within the
  * overdue window (dateless locations are listed apart by
- * buildNoGoLiveDateRows). Sorted date ascending, name tiebreak. The windows
- * come from `rules` (resolved by the caller; the defaults otherwise).
+ * buildNoGoLiveDateRows). Sorted date ascending, name tiebreak. The rules
+ * come from `rules` (resolved by the caller; the defaults otherwise). Once
+ * go-live has passed, the open cases in `openCasesSinceGoLive`
+ * (openCasesSinceGoLiveByFacility) do not count toward the risk under the
+ * default rule; the "Open cases" column still counts every open case.
  */
 export function buildLaunchReportRows(
   facilities: readonly LaunchFacilityInput[],
@@ -329,6 +412,7 @@ export function buildLaunchReportRows(
   openCaseCountByFacility: ReadonlyMap<string, number>,
   today: string,
   rules: LaunchReportRules = DEFAULT_LAUNCH_REPORT_RULES,
+  openCasesSinceGoLive: ReadonlyMap<string, number> = new Map(),
 ): LaunchReportRow[] {
   const rows: LaunchReportRow[] = [];
   for (const f of facilities) {
@@ -340,8 +424,13 @@ export function buildLaunchReportRows(
     // The same test ahead of go-live (upcoming) and after it (overdue); only a
     // date beyond the upcoming window is exempt.
     const checked = days <= rules.upcomingWindowDays;
+    // A passed go-live counts only the cases opened before it, by default.
+    const notCounted =
+      days < 0 && rules.overdueOpenCases === "opened_before_go_live"
+        ? (openCasesSinceGoLive.get(f.id) ?? 0)
+        : 0;
     const atRiskReasons: string[] = [];
-    if (checked && openCaseCount > 0) atRiskReasons.push("open cases still pending");
+    if (checked && openCaseCount - notCounted > 0) atRiskReasons.push("open cases still pending");
     if (checked && providerCount === 0) atRiskReasons.push("no providers assigned");
     const atRisk = atRiskReasons.length > 0;
     // A passed go-live shows within the overdue window while still at risk,

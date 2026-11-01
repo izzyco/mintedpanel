@@ -23,6 +23,7 @@ import { statusToneClasses } from "@/components/StatusPill";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { fmtDate } from "@/lib/format";
 import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { useCases, useOrgCaseFacilityLinks } from "@/hooks/useCases";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { useProviderAssignments, useProviders } from "@/hooks/useProviders";
@@ -35,6 +36,7 @@ import {
   launchEmptyStateText,
   launchRiskLabel,
   openCasesByFacility,
+  openCasesSinceGoLiveByFacility,
   providerCountsByFacility,
   type LaunchNoDateRow,
   type LaunchReportRow,
@@ -91,20 +93,37 @@ export function LaunchesReport() {
       state: f.state,
     }));
     const providerCounts = providerCountsByFacility(assignments, providers, today);
-    const openCaseCounts = openCasesByFacility(
-      (casesQ.data ?? []).map((c) => ({
-        id: c.id,
-        providerId: c.providerId,
-        facilityId: c.facilityId,
-        status: c.caseStatus,
-      })),
-      caseFacilitiesQ.data ?? [],
+    // A case's opening day is its created_at as the browser's local calendar
+    // day, compared date-only with the go-live date (MINT-100 A2).
+    const cases = (casesQ.data ?? []).map((c) => ({
+      id: c.id,
+      providerId: c.providerId,
+      facilityId: c.facilityId,
+      status: c.caseStatus,
+      openedOn:
+        c.createdAt && !Number.isNaN(Date.parse(c.createdAt))
+          ? localCalendarDate(new Date(c.createdAt))
+          : null,
+    }));
+    const caseFacilities = caseFacilitiesQ.data ?? [];
+    const openCaseCounts = openCasesByFacility(cases, caseFacilities, providers);
+    const openCasesSinceGoLive = openCasesSinceGoLiveByFacility(
+      cases,
+      caseFacilities,
       providers,
+      facilities,
     );
     const groupNameById = new Map((groupsQ.data ?? []).map((g) => [g.id, g.name]));
     return {
       groups: groupLaunchRows(
-        buildLaunchReportRows(facilities, providerCounts, openCaseCounts, today, rules),
+        buildLaunchReportRows(
+          facilities,
+          providerCounts,
+          openCaseCounts,
+          today,
+          rules,
+          openCasesSinceGoLive,
+        ),
         groupNameById,
       ),
       noDate: buildNoGoLiveDateRows(facilities, providerCounts, openCaseCounts, groupNameById),

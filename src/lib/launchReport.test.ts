@@ -14,6 +14,7 @@ import {
   launchEmptyStateText,
   launchRiskLabel,
   openCasesByFacility,
+  openCasesSinceGoLiveByFacility,
   providerCountsByFacility,
   resolveLaunchReportRules,
   validateLaunchReportRules,
@@ -442,11 +443,12 @@ describe("LaunchReportRules (MINT-116)", () => {
   const CLEAN = ["clean-past-7", "clean-past-8", "clean-past-30", "clean-past-31"];
   const STAFFED_AHEAD = ["ahead-14", "ahead-15", "ahead-30", "ahead-31"];
 
-  it("defaults to the decided windows: 90 overdue, 30 recent, 30 upcoming", () => {
+  it("defaults to the decided rules: 90 overdue, 30 recent, 30 upcoming, cases opened before go-live", () => {
     expect(DEFAULT).toEqual({
       overdueWindowDays: 90,
       recentWindowDays: 30,
       upcomingWindowDays: 30,
+      overdueOpenCases: "opened_before_go_live",
     });
     expect(Object.isFrozen(DEFAULT)).toBe(true);
     // Passing the defaults is the same as passing nothing.
@@ -507,13 +509,21 @@ describe("LaunchReportRules (MINT-116)", () => {
     );
   });
 
-  it("states the rule it applies, today's text with the defaults", () => {
+  it("states the rule it applies, with the defaults and each alternative", () => {
     expect(launchAtRiskRuleText(DEFAULT)).toBe(
-      "At risk = go-live within 30 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 90 days and either is still true. Opened locations with neither show for 30 days.",
+      "At risk = go-live within 30 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 90 days and either is still true, counting only cases opened before go-live. Opened locations with neither show for 30 days.",
     );
     expect(launchAtRiskRuleText()).toBe(launchAtRiskRuleText(DEFAULT));
+    expect(launchAtRiskRuleText(rulesWith({ overdueOpenCases: "any" }))).toBe(
+      "At risk = go-live within 30 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 90 days and either is still true. Opened locations with neither show for 30 days.",
+    );
     expect(
-      launchAtRiskRuleText({ overdueWindowDays: 60, recentWindowDays: 1, upcomingWindowDays: 14 }),
+      launchAtRiskRuleText({
+        overdueWindowDays: 60,
+        recentWindowDays: 1,
+        upcomingWindowDays: 14,
+        overdueOpenCases: "any",
+      }),
     ).toBe(
       "At risk = go-live within 14 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 60 days and either is still true. Opened locations with neither show for 1 day.",
     );
@@ -538,10 +548,19 @@ describe("LaunchReportRules (MINT-116)", () => {
       const platform = { overdueWindowDays: 120, recentWindowDays: 14 };
       expect(resolveLaunchReportRules(platform)).toEqual({ ...DEFAULT, ...platform });
       expect(resolveLaunchReportRules(platform, { overdueWindowDays: 60 })).toEqual({
+        ...DEFAULT,
         overdueWindowDays: 60,
         recentWindowDays: 14,
-        upcomingWindowDays: 30,
       });
+      expect(
+        resolveLaunchReportRules({ overdueOpenCases: "any" }, { overdueWindowDays: 60 }),
+      ).toEqual({ ...DEFAULT, overdueWindowDays: 60, overdueOpenCases: "any" });
+      expect(
+        resolveLaunchReportRules(
+          { overdueOpenCases: "any" },
+          { overdueOpenCases: "opened_before_go_live" },
+        ).overdueOpenCases,
+      ).toBe("opened_before_go_live");
       expect(resolveLaunchReportRules(null, { upcomingWindowDays: 45 })).toEqual({
         ...DEFAULT,
         upcomingWindowDays: 45,
@@ -563,11 +582,7 @@ describe("LaunchReportRules (MINT-116)", () => {
       expect(validateLaunchReportRules({ overdueWindowDays: 45 })).toEqual([]);
       expect(validateLaunchReportRules({ recentWindowDays: 60 })).toEqual([]);
       const rules = resolveLaunchReportRules({ recentWindowDays: 60 }, { overdueWindowDays: 45 });
-      expect(rules).toEqual({
-        overdueWindowDays: 60,
-        recentWindowDays: 60,
-        upcomingWindowDays: 30,
-      });
+      expect(rules).toEqual({ ...DEFAULT, overdueWindowDays: 60, recentWindowDays: 60 });
       expect(validateLaunchReportRules(rules)).toEqual([]);
       // So a location still at risk 50 days past stays on the report, as one
       // with nothing outstanding does.
@@ -586,9 +601,8 @@ describe("LaunchReportRules (MINT-116)", () => {
       // The org-only and platform-only cases are untouched.
       expect(resolveLaunchReportRules(null, { overdueWindowDays: 45 }).overdueWindowDays).toBe(45);
       expect(resolveLaunchReportRules({ recentWindowDays: 60 })).toEqual({
-        overdueWindowDays: 90,
+        ...DEFAULT,
         recentWindowDays: 60,
-        upcomingWindowDays: 30,
       });
     });
 
@@ -653,10 +667,10 @@ describe("LaunchReportRules (MINT-116)", () => {
         '"overdueDays" is not a Launches report rule.',
       ]);
       expect(validateLaunchReportRules(90)).toEqual([
-        "The Launches report rules must be a set of named windows.",
+        "The Launches report rules must be a set of named rules.",
       ]);
       expect(validateLaunchReportRules([90])).toEqual([
-        "The Launches report rules must be a set of named windows.",
+        "The Launches report rules must be a set of named rules.",
       ]);
     });
 
@@ -675,6 +689,169 @@ describe("LaunchReportRules (MINT-116)", () => {
           resolveLaunchReportRules({ recentWindowDays: 14 }),
         ),
       ).toEqual([]);
+    });
+  });
+});
+
+describe("MINT-100 A2: after go-live, only cases opened before it keep a location at risk", () => {
+  // TODAY is 2026-07-19. Go-live 20 days ago: 2026-06-29.
+  const GO_LIVE = "2026-06-29";
+  const providers = [{ id: "pr1", status: "active" }];
+  const openCase = (id: string, facilityId: string, openedOn: string | null) => ({
+    id,
+    providerId: "pr1",
+    facilityId,
+    status: "in_progress" as const,
+    openedOn,
+  });
+  const rowsFor = (
+    facilities: LaunchFacilityInput[],
+    cases: ReturnType<typeof openCase>[],
+    rules?: LaunchReportRules,
+  ) => {
+    const staffed = new Map(facilities.map((f) => [f.id, 1]));
+    const open = openCasesByFacility(cases, [], providers);
+    const since = openCasesSinceGoLiveByFacility(cases, [], providers, facilities);
+    return new Map(
+      buildLaunchReportRows(facilities, staffed, open, TODAY, rules, since).map((r) => [
+        r.facilityId,
+        r,
+      ]),
+    );
+  };
+
+  it("an overdue location whose only open case was opened after go-live is not flagged", () => {
+    const rows = rowsFor(
+      [facility({ id: "late", effectiveDate: GO_LIVE })],
+      [openCase("c1", "late", "2026-07-05")],
+    );
+    // Still inside the recent window, so it shows, unflagged, with its case.
+    expect(rows.get("late")).toMatchObject({
+      daysUntil: -20,
+      openCaseCount: 1,
+      atRisk: false,
+      riskKind: null,
+      atRiskReasons: [],
+    });
+  });
+
+  it("one with a case opened before go-live is flagged, with the same reason", () => {
+    const rows = rowsFor(
+      [facility({ id: "early", effectiveDate: GO_LIVE })],
+      [openCase("c1", "early", "2026-06-28"), openCase("c2", "early", "2026-07-10")],
+    );
+    const early = rows.get("early");
+    expect(early).toMatchObject({ openCaseCount: 2, riskKind: "overdue" });
+    expect(early && launchRiskLabel(early)).toBe("Overdue by 20 days — open cases still pending");
+  });
+
+  it("a case opened on go-live day does not flag it", () => {
+    const rows = rowsFor(
+      [facility({ id: "same-day", effectiveDate: GO_LIVE })],
+      [openCase("c1", "same-day", GO_LIVE)],
+    );
+    expect(rows.get("same-day")?.atRisk).toBe(false);
+  });
+
+  it("past the recent window, a location with only later cases leaves the report", () => {
+    const rows = rowsFor(
+      [facility({ id: "mature", effectiveDate: "2026-05-20" })],
+      [openCase("c1", "mature", "2026-07-01")],
+    );
+    expect(rows.has("mature")).toBe(false);
+  });
+
+  it("a case with no opening day counts as opened before go-live", () => {
+    const rows = rowsFor(
+      [facility({ id: "unknown", effectiveDate: GO_LIVE })],
+      [openCase("c1", "unknown", null)],
+    );
+    expect(rows.get("unknown")?.riskKind).toBe("overdue");
+  });
+
+  it('"any" counts every open case after go-live, as before', () => {
+    const rows = rowsFor(
+      [facility({ id: "late", effectiveDate: GO_LIVE })],
+      [openCase("c1", "late", "2026-07-05")],
+      { ...DEFAULT_LAUNCH_REPORT_RULES, overdueOpenCases: "any" },
+    );
+    const late = rows.get("late");
+    expect(late?.riskKind).toBe("overdue");
+    expect(late && launchRiskLabel(late)).toBe("Overdue by 20 days — open cases still pending");
+  });
+
+  it("no providers assigned still flags, whenever the case was opened", () => {
+    const facilities = [facility({ id: "empty", effectiveDate: GO_LIVE })];
+    const cases = [openCase("c1", "empty", "2026-07-05")];
+    const rows = new Map(
+      buildLaunchReportRows(
+        facilities,
+        new Map(),
+        openCasesByFacility(cases, [], providers),
+        TODAY,
+        DEFAULT_LAUNCH_REPORT_RULES,
+        openCasesSinceGoLiveByFacility(cases, [], providers, facilities),
+      ).map((r) => [r.facilityId, r]),
+    );
+    expect(rows.get("empty")?.atRiskReasons).toEqual(["no providers assigned"]);
+  });
+
+  it("upcoming launches count every open case, whenever it was opened", () => {
+    const rows = rowsFor(
+      [facility({ id: "soon", effectiveDate: "2026-07-25" })],
+      [openCase("c1", "soon", "2026-07-26")],
+    );
+    expect(rows.get("soon")).toMatchObject({
+      riskKind: "upcoming",
+      atRiskReasons: ["open cases still pending"],
+    });
+  });
+
+  it("attributes since-go-live cases through case_facilities, like the open-case count", () => {
+    const facilities = [
+      facility({ id: "f1", effectiveDate: GO_LIVE }),
+      facility({ id: "f2", effectiveDate: "2026-07-10" }),
+      facility({ id: "dateless", effectiveDate: null }),
+    ];
+    const cases = [
+      // Opened 2026-07-05: after f1's go-live, before f2's.
+      openCase("c1", "f9", "2026-07-05"),
+      openCase("c2", "dateless", "2026-07-05"),
+      { ...openCase("c3", "f1", "2026-07-05"), status: "approved" as const },
+    ];
+    const since = openCasesSinceGoLiveByFacility(
+      cases,
+      [
+        { caseId: "c1", facilityId: "f1" },
+        { caseId: "c1", facilityId: "f2" },
+      ],
+      providers,
+      facilities,
+    );
+    expect(Array.from(since)).toEqual([["f1", 1]]);
+  });
+
+  describe("resolver and validator", () => {
+    it("inherits and skips a malformed value", () => {
+      expect(
+        resolveLaunchReportRules({ overdueOpenCases: "any" }, { overdueOpenCases: null })
+          .overdueOpenCases,
+      ).toBe("any");
+      for (const bad of ["before", "ANY", "", true, 1]) {
+        const override = { overdueOpenCases: bad } as unknown as LaunchReportRules;
+        expect(resolveLaunchReportRules(override).overdueOpenCases).toBe("opened_before_go_live");
+        expect(
+          resolveLaunchReportRules({ overdueOpenCases: "any" }, override).overdueOpenCases,
+        ).toBe("any");
+      }
+    });
+
+    it("passes both values and rejects any other, in plain language", () => {
+      expect(validateLaunchReportRules({ overdueOpenCases: "any" })).toEqual([]);
+      expect(validateLaunchReportRules({ overdueOpenCases: "opened_before_go_live" })).toEqual([]);
+      expect(validateLaunchReportRules({ overdueOpenCases: "before" })).toEqual([
+        'After go-live, open cases must count only when opened before go-live ("opened_before_go_live") or always ("any").',
+      ]);
     });
   });
 });
