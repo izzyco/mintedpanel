@@ -1,20 +1,16 @@
 // MINT-110 PR 2 — POST /api/npi-registry/verify-batch: writer-only; validated
-// before any upstream call or budget; its own per-user budget (429 +
-// Retry-After) that never touches the interactive one; per-NPI results through
-// the shared cache; at most two registry calls at a time; an outage is per NPI
-// and a 502 only when nothing could be checked; no NPI in the server log.
-// No network: fetch is injected.
+// before any upstream call or budget; its own per-user window counted per NPI
+// (429 + Retry-After) that never touches the interactive one; per-NPI results
+// through the shared cache; one registry call at a time; the first failure
+// makes the rest "unavailable", and a 502 only when nothing could be checked;
+// no NPI in the server log. No network: fetch is injected.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiEnvelope } from "./envelope";
 import type { AuthContext } from "./guard";
 import {
-  NPI_REGISTRY_BATCH_CONCURRENCY,
-  handleNpiRegistryVerifyBatch,
-  resetNpiRegistryBatchBudget,
-} from "./npiRegistryBatchRoutes";
-import {
   NPI_REGISTRY_RATE_LIMIT,
   handleNpiRegistryLookup,
+  handleNpiRegistryVerifyBatch,
   resetNpiRegistryLimits,
 } from "./npiRegistryRoutes";
 import type { NpiRegistryBatchResult } from "@/lib/npiRegistryBatch";
@@ -74,7 +70,6 @@ let warn: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   now = 1_000_000;
   resetNpiRegistryLimits(() => now);
-  resetNpiRegistryBatchBudget(() => now);
   warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -142,7 +137,7 @@ describe("POST /api/npi-registry/verify-batch", () => {
       expect((await envelope(res)).data).toBeNull();
     }
     expect(fetchFn).not.toHaveBeenCalled();
-    // The admin's burst is intact.
+    // The admin's budget is intact.
     for (const role of ["admin", "admin"] as const) {
       const res = await handleNpiRegistryVerifyBatch({ npis: npis(10) }, ctx(role, "u-admin"), {
         fetch: fetchFn,
@@ -168,37 +163,59 @@ describe("POST /api/npi-registry/verify-batch", () => {
     expect(ok2.status).toBe(200);
   });
 
-  it("429s with Retry-After past its own budget, per user, and refills over time", async () => {
+  it("429s with Retry-After past 60 NPIs a minute, per user, until the window ends", async () => {
     const fetchFn = registry();
-    expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10) }, ctx(), { fetch: fetchFn })).status,
-    ).toBe(200);
-    expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 11) }, ctx(), { fetch: fetchFn }))
-        .status,
-    ).toBe(200);
-    const limited = await handleNpiRegistryVerifyBatch({ npis: npis(10, 21) }, ctx(), {
+    for (let batch = 0; batch < 6; batch += 1) {
+      const res = await handleNpiRegistryVerifyBatch({ npis: npis(10, 1 + batch * 10) }, ctx(), {
+        fetch: fetchFn,
+      });
+      expect(res.status).toBe(200);
+    }
+    now += 20_000;
+    const limited = await handleNpiRegistryVerifyBatch({ npis: npis(1, 61) }, ctx(), {
       fetch: fetchFn,
     });
     expect(limited.status).toBe(429);
-    expect(limited.headers.get("retry-after")).toBe("10");
+    expect(limited.headers.get("retry-after")).toBe("40");
     expect(limited.headers.get("cache-control")).toContain("no-store");
     expect((await envelope(limited)).error).toBe(
       "Too many NPI Registry checks — wait a few seconds and try again",
     );
-    expect(fetchFn).toHaveBeenCalledTimes(20);
+    expect(fetchFn).toHaveBeenCalledTimes(60);
     // Another user has a budget of their own.
     expect(
       (
-        await handleNpiRegistryVerifyBatch({ npis: npis(10, 21) }, ctx("admin", "u2"), {
+        await handleNpiRegistryVerifyBatch({ npis: npis(10, 61) }, ctx("admin", "u2"), {
           fetch: fetchFn,
         })
       ).status,
     ).toBe(200);
-    now += 10_000;
+    now += 40_000;
     expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 21) }, ctx(), { fetch: fetchFn }))
+      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 71) }, ctx(), { fetch: fetchFn }))
         .status,
+    ).toBe(200);
+  });
+
+  it("refuses a request that would pass the budget whole, and counts none of it", async () => {
+    const fetchFn = registry();
+    for (let batch = 0; batch < 5; batch += 1) {
+      await handleNpiRegistryVerifyBatch({ npis: npis(10, 1 + batch * 10) }, ctx(), {
+        fetch: fetchFn,
+      });
+    }
+    expect(
+      (await handleNpiRegistryVerifyBatch({ npis: npis(5, 51) }, ctx(), { fetch: fetchFn })).status,
+    ).toBe(200);
+    // 55 counted: ten more would pass 60, so none of them is checked…
+    expect(
+      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 56) }, ctx(), { fetch: fetchFn }))
+        .status,
+    ).toBe(429);
+    expect(fetchFn).toHaveBeenCalledTimes(55);
+    // …and the refusal spent nothing: the last five still fit.
+    expect(
+      (await handleNpiRegistryVerifyBatch({ npis: npis(5, 56) }, ctx(), { fetch: fetchFn })).status,
     ).toBe(200);
   });
 
@@ -214,16 +231,14 @@ describe("POST /api/npi-registry/verify-batch", () => {
       (await handleNpiRegistryLookup({ npi: fakeNpi(200) }, ctx(), { fetch: fetchFn })).status,
     ).toBe(429);
     // The interactive budget is gone; the import's is untouched.
+    for (let batch = 0; batch < 6; batch += 1) {
+      const res = await handleNpiRegistryVerifyBatch({ npis: npis(10, 1 + batch * 10) }, ctx(), {
+        fetch: fetchFn,
+      });
+      expect(res.status).toBe(200);
+    }
     expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10) }, ctx(), { fetch: fetchFn })).status,
-    ).toBe(200);
-    expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 11) }, ctx(), { fetch: fetchFn }))
-        .status,
-    ).toBe(200);
-    expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 21) }, ctx(), { fetch: fetchFn }))
-        .status,
+      (await handleNpiRegistryVerifyBatch({ npis: npis(1, 61) }, ctx(), { fetch: fetchFn })).status,
     ).toBe(429);
     // And an exhausted import budget leaves typed lookups alone.
     now += 60_000;
@@ -245,23 +260,23 @@ describe("POST /api/npi-registry/verify-batch", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
-  it("runs at most two registry calls at a time", async () => {
+  it("runs one registry call at a time", async () => {
     let inFlight = 0;
     let peak = 0;
     const fetchFn = registry(async (npi) => {
       inFlight += 1;
       peak = Math.max(peak, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await new Promise((resolve) => setTimeout(resolve, 2));
       inFlight -= 1;
       return json({ result_count: 1, results: [nppesRecord(npi)] });
     });
     const res = await handleNpiRegistryVerifyBatch({ npis: npis(10) }, ctx(), { fetch: fetchFn });
     expect(res.status).toBe(200);
     expect(fetchFn).toHaveBeenCalledTimes(10);
-    expect(peak).toBe(NPI_REGISTRY_BATCH_CONCURRENCY);
+    expect(peak).toBe(1);
   });
 
-  it("502s when the registry is down, after at most two calls, and logs no NPI", async () => {
+  it("502s when the registry is down, after one call, and logs no NPI", async () => {
     const fetchFn = registry(() => {
       throw new TypeError("fetch failed");
     });
@@ -270,13 +285,13 @@ describe("POST /api/npi-registry/verify-batch", () => {
     expect(res.status).toBe(502);
     expect(res.headers.get("cache-control")).toContain("no-store");
     expect((await envelope(res)).error).toBe("NPI Registry is unavailable");
-    expect(fetchFn.mock.calls.length).toBeLessThanOrEqual(NPI_REGISTRY_BATCH_CONCURRENCY);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
     const logged = warn.mock.calls.flat().join(" ");
     expect(logged).toContain("network");
     for (const npi of sent) expect(logged).not.toContain(npi);
   });
 
-  it("reports a mid-batch outage per NPI: checked stays checked, never-sent NPIs are deferred and refunded", async () => {
+  it("reports a mid-batch outage per NPI: checked stays checked, the rest are unavailable", async () => {
     const sent = npis(10);
     const fetchFn = registry((npi) =>
       npi === sent[0]
@@ -286,64 +301,52 @@ describe("POST /api/npi-registry/verify-batch", () => {
     const res = await handleNpiRegistryVerifyBatch({ npis: sent }, ctx(), { fetch: fetchFn });
     expect(res.status).toBe(200);
     const body = await envelope<NpiRegistryBatchResult>(res);
-    const statuses = body.data?.results.map((result) => result.status) ?? [];
-    const calls = fetchFn.mock.calls.length;
-    expect(calls).toBeLessThanOrEqual(3);
-    expect(statuses[0]).toBe("checked");
-    // Each NPI sent and failed is "unavailable"; every NPI never sent is
-    // "deferred", so the browser can ask for it again.
-    expect(statuses.filter((status) => status === "unavailable")).toHaveLength(calls - 1);
-    expect(statuses.filter((status) => status === "deferred")).toHaveLength(10 - calls);
-    expect(warn.mock.calls.flat().join(" ")).toContain("http 503");
-    // Only the NPIs sent were spent: 10 + (10 - calls) more fit in the burst.
-    const healthy = registry();
-    expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 30) }, ctx(), { fetch: healthy }))
-        .status,
-    ).toBe(200);
-    expect(
-      (
-        await handleNpiRegistryVerifyBatch({ npis: npis(10 - calls, 50) }, ctx(), {
-          fetch: healthy,
-        })
-      ).status,
-    ).toBe(200);
+    // The failure stops the request: no call after it.
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(body.data?.results.map((result) => result.status)).toEqual([
+      "checked",
+      ...Array(9).fill("unavailable"),
+    ]);
+    expect(body.data?.results.map((result) => result.npi)).toEqual(sent);
+    const logged = warn.mock.calls.flat().join(" ");
+    expect(logged).toContain("9 of 10 not checked (http 503)");
+    for (const npi of sent) expect(logged).not.toContain(npi);
   });
 
-  it("stops new calls and cancels those in flight when the caller goes away", async () => {
+  it("starts no more calls once the caller has gone", async () => {
     const controller = new AbortController();
-    const seen: AbortSignal[] = [];
-    const fetchFn = vi.fn<typeof fetch>(
-      (_input, init) =>
-        new Promise<Response>((resolve, reject) => {
-          const signal = init?.signal as AbortSignal;
-          seen.push(signal);
-          signal.addEventListener("abort", () =>
-            reject(new DOMException("The operation was aborted.", "AbortError")),
-          );
-          if (seen.length === 1) {
-            resolve(json({ result_count: 1, results: [nppesRecord(npis(1)[0])] }));
-          }
-        }),
-    );
-    const pending = handleNpiRegistryVerifyBatch(
+    const fetchFn = registry((npi, call) => {
+      // The caller leaves while the second call is in flight.
+      if (call === 2) controller.abort();
+      return json({ result_count: 1, results: [nppesRecord(npi)] });
+    });
+    const res = await handleNpiRegistryVerifyBatch(
       { npis: npis(10) },
       ctx(),
       { fetch: fetchFn },
       controller.signal,
     );
-    await vi.waitFor(() => expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(2));
-    const before = fetchFn.mock.calls.length;
-    controller.abort();
-    const res = await pending;
-    // The calls in flight saw the abort; no new call started after it.
-    expect(seen.slice(1).every((signal) => signal.aborted)).toBe(true);
-    expect(fetchFn.mock.calls.length).toBe(before);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
     const body = await envelope<NpiRegistryBatchResult>(res);
-    expect(body.data?.results.filter((result) => result.status === "deferred").length).toBe(
-      10 - before,
-    );
+    expect(body.data?.results.map((result) => result.status)).toEqual([
+      "checked",
+      "checked",
+      ...Array(8).fill("unavailable"),
+    ]);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("rethrows an unexpected error for the dispatcher's 500, and calls the registry no more", async () => {
+    const fetchFn = registry();
+    await expect(
+      handleNpiRegistryVerifyBatch({ npis: npis(10) }, ctx(), {
+        fetch: fetchFn,
+        now: () => {
+          throw new RangeError("synthetic bug");
+        },
+      }),
+    ).rejects.toThrow("synthetic bug");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("sends only what the import review needs: no addresses, phones, other taxonomies or identifiers", async () => {
@@ -428,31 +431,6 @@ describe("POST /api/npi-registry/verify-batch", () => {
     ]) {
       expect(raw).not.toContain(leaked);
     }
-  });
-
-  it("defers what it could not start in time, and refunds that budget", async () => {
-    // Each registry call takes 3 s of the 4 s start deadline.
-    const fetchFn = registry((npi) => {
-      now += 3_000;
-      return json({ result_count: 1, results: [nppesRecord(npi)] });
-    });
-    const sent = npis(10);
-    const res = await handleNpiRegistryVerifyBatch({ npis: sent }, ctx(), { fetch: fetchFn });
-    expect(res.status).toBe(200);
-    const body = await envelope<NpiRegistryBatchResult>(res);
-    const statuses = body.data?.results.map((result) => result.status) ?? [];
-    expect(statuses.slice(0, 2)).toEqual(["checked", "checked"]);
-    expect(statuses.slice(2)).toEqual(Array(8).fill("deferred"));
-    expect(fetchFn).toHaveBeenCalledTimes(2);
-    // Only 2 of the 20 were spent (plus 6 s of refill): 10 more go at once,
-    // and the 10 after that, which a spent budget would have refused.
-    const quick = registry();
-    expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(10, 30) }, ctx(), { fetch: quick })).status,
-    ).toBe(200);
-    expect(
-      (await handleNpiRegistryVerifyBatch({ npis: npis(8, 40) }, ctx(), { fetch: quick })).status,
-    ).toBe(200);
   });
 
   it("checks a repeated NPI once", async () => {

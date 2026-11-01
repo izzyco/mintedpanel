@@ -1,9 +1,9 @@
 // MINT-110 PR 2 / MINT-119 — which import rows are checked against the NPI
-// Registry (both scopes), each row's result (kind, advisories, the quiet notes
-// it shows under each display setting), that every row commits whatever the
-// registry says (A30, A39–A41), what is captured after commit (facts only),
-// and the progress words (the time-left estimate and its fallback to
-// "N of M"). Pure; no network.
+// Registry (both scopes), the quiet notes each row shows under each display
+// setting, that every row commits whatever the registry says (A30, A39–A41),
+// what is captured after commit (the registry's answers, facts only), and the
+// progress words (the time-left estimate and its fallback to "N of M").
+// Pure; no network.
 import { describe, expect, it } from "vitest";
 import {
   buildCommitPlan,
@@ -213,19 +213,15 @@ describe("importNpiRowResult — every answer an advisory, never a block (A30)",
 
   it("lists each review-step advisory on its row as a quiet one-line note", () => {
     expect(importNpiRowResult(checked(ORG_RECORD), item(), "done")).toMatchObject({
-      kind: "organizationNumber",
       notes: [{ tone: "warn", title: "This NPI belongs to an organization", detail: null }],
     });
     expect(importNpiRowResult(checked(NOT_FOUND), item(), "done")).toMatchObject({
-      kind: "notFound",
       notes: [{ tone: "warn", title: "Not found in the NPI Registry", detail: null }],
     });
     expect(importNpiRowResult(checked(INACTIVE), item(), "done")).toMatchObject({
-      kind: "inactive",
       notes: [{ title: "The NPI Registry lists this NPI as inactive", detail: null }],
     });
     expect(importNpiRowResult(checked(NAME_DIFFERS), item(), "done")).toMatchObject({
-      kind: "nameMismatch",
       notes: [{ title: "Found in the NPI Registry, but the name differs", detail: null }],
     });
     // A value the file gives that differs from the record found.
@@ -241,8 +237,6 @@ describe("importNpiRowResult — every answer an advisory, never a block (A30)",
 
   it('shows "Found" only for a full match with no advisory at all', () => {
     expect(importNpiRowResult(checked(record()), item(), "done")).toEqual({
-      kind: "found",
-      advisories: [],
       notes: [{ tone: "ok", title: "Found in the NPI Registry", detail: null }],
     });
     // Found, but a value differs: the advisory, never "Found".
@@ -267,33 +261,16 @@ describe("importNpiRowResult — every answer an advisory, never a block (A30)",
     }
   });
 
-  it('kind is "found" exactly when the row shows "Found", and names the advisory otherwise', () => {
-    const cases: Array<[NpiRegistryRecord | null, string]> = [
-      [record(), "found"],
-      [ORG_RECORD, "organizationNumber"],
-      [NOT_FOUND, "notFound"],
-      [INACTIVE, "inactive"],
-      [NAME_DIFFERS, "nameMismatch"],
-      [record({ credential: "OT" }), "credentialsDiffer"],
-    ];
-    for (const [r, kind] of cases) {
-      const result = importNpiRowResult(checked(r), item(), "done");
-      expect(result.kind).toBe(kind);
-      expect(result.notes.some((note) => note.title === "Found in the NPI Registry")).toBe(
-        kind === "found",
-      );
-    }
-    // Hidden or not: a field difference is never "found".
+  it('never says "Found" for a hidden difference, or for a record with no name to compare', () => {
     const hidden = resolveNpiRegistryPolicy(null, {
       display: { credentialsDiffer: "backend_only" },
     });
     expect(
-      importNpiRowResult(checked(record({ credential: "OT" })), item(), "done", hidden),
-    ).toMatchObject({ kind: "credentialsDiffer", notes: [] });
-    // A record found with no name to compare is not a full match.
+      importNpiRowResult(checked(record({ credential: "OT" })), item(), "done", hidden).notes,
+    ).toEqual([]);
     expect(
-      importNpiRowResult(checked(record()), item({ firstName: "", lastName: "" }), "done"),
-    ).toMatchObject({ kind: "notChecked", notes: [] });
+      importNpiRowResult(checked(record()), item({ firstName: "", lastName: "" }), "done").notes,
+    ).toEqual([]);
   });
 
   it('a "backend_only" answer shows nothing on the row — and never "Found"', () => {
@@ -301,11 +278,23 @@ describe("importNpiRowResult — every answer an advisory, never a block (A30)",
       display: Object.fromEntries(NPI_REGISTRY_CHECKS.map((check) => [check, "backend_only"])),
     });
     for (const r of [ORG_RECORD, NOT_FOUND, INACTIVE, NAME_DIFFERS, record({ credential: "OT" })]) {
-      const result = importNpiRowResult(checked(r), item(), "done", hidden);
-      expect(result.notes).toEqual([]);
-      // Kept for Mission Control all the same.
-      expect(result.advisories.length).toBeGreaterThan(0);
-      expect(result.advisories.every((a) => a.display === "backend_only")).toBe(true);
+      expect(importNpiRowResult(checked(r), item(), "done", hidden).notes).toEqual([]);
+      // Captured for Mission Control all the same.
+      const captured = importNpiCaptureAdvisories({
+        items: [item()],
+        snapshot: {
+          phase: "done",
+          total: 1,
+          done: 1,
+          checked: 1,
+          results: new Map([[item().npi, checked(r)]]),
+          etaMs: null,
+        },
+        policy: hidden,
+        providerIdByLine: new Map([[item().line, "prov-1"]]),
+      });
+      expect(captured.length).toBeGreaterThan(0);
+      expect(captured.every((a) => a.display === "backend_only")).toBe(true);
     }
     // Only the hidden one: the row is quiet, not "Found".
     const nameOnly = resolveNpiRegistryPolicy(null, { display: { nameMismatch: "backend_only" } });
@@ -318,7 +307,6 @@ describe("importNpiRowResult — every answer an advisory, never a block (A30)",
       { tone: "neutral", title: "Not checked yet", detail: null },
     ]);
     expect(importNpiRowResult(undefined, item(), "stopped")).toMatchObject({
-      kind: "notChecked",
       notes: [{ title: "Not checked" }],
     });
     expect(
@@ -366,7 +354,12 @@ describe("every row commits, whatever the registry says (A30, A39–A41)", () =>
       results,
       etaMs: null,
     };
-    const summary = summarizeImportNpiRows(items, snap);
+    const summary = summarizeImportNpiRows(
+      items,
+      snap,
+      DEFAULT_NPI_REGISTRY_POLICY,
+      importCommittedLines(dispositions, {}),
+    );
     // Five rows list an advisory; the full match says "Found".
     expect(summary.counts).toEqual({ notes: 5 });
     expect(summary.byLine.get(2)?.notes).toEqual([
@@ -413,11 +406,15 @@ describe("every row commits, whatever the registry says (A30, A39–A41)", () =>
     // The name conflict is unresolved: the update is not committed, not counted.
     const unresolved = importCommittedLines(dispositions, {});
     expect([...unresolved]).toEqual([2]);
-    expect(summarizeImportNpiRows(items, none, undefined, unresolved).unchecked).toBe(1);
+    expect(
+      summarizeImportNpiRows(items, none, DEFAULT_NPI_REGISTRY_POLICY, unresolved).unchecked,
+    ).toBe(1);
     // Resolved either way, it is committed and counted.
     const resolved = importCommittedLines(dispositions, { p9: { name: "existing" } });
     expect([...resolved].sort()).toEqual([2, 3]);
-    expect(summarizeImportNpiRows(items, none, undefined, resolved).unchecked).toBe(2);
+    expect(
+      summarizeImportNpiRows(items, none, DEFAULT_NPI_REGISTRY_POLICY, resolved).unchecked,
+    ).toBe(2);
   });
 
   it("unchecked rows commit too, and the count to warn about is committed rows only", () => {
@@ -426,6 +423,8 @@ describe("every row commits, whatever the registry says (A30, A39–A41)", () =>
       item({ npi: fakeNpi(401), line: 3, disposition: "update" }),
       item({ npi: fakeNpi(402), line: 4, disposition: "skip" }),
     ];
+    // A skip writes nothing, so it is never among the committed lines.
+    const committed = new Set([2, 3]);
     const stopped: ImportNpiSnapshot = {
       phase: "stopped",
       total: 3,
@@ -434,7 +433,9 @@ describe("every row commits, whatever the registry says (A30, A39–A41)", () =>
       results: new Map(),
       etaMs: null,
     };
-    expect(summarizeImportNpiRows(items, stopped).unchecked).toBe(2);
+    expect(
+      summarizeImportNpiRows(items, stopped, DEFAULT_NPI_REGISTRY_POLICY, committed).unchecked,
+    ).toBe(2);
   });
 });
 
@@ -461,7 +462,7 @@ describe("importCommitProviderIds", () => {
   });
 });
 
-describe("importNpiCaptureAdvisories — facts only, every committed row", () => {
+describe("importNpiCaptureAdvisories — the registry's answers, facts only", () => {
   const items = [
     item({ npi: fakeNpi(500), line: 2, disposition: "create" }),
     item({ npi: fakeNpi(501), line: 3, disposition: "create", firstName: "Blair" }),
@@ -470,16 +471,7 @@ describe("importNpiCaptureAdvisories — facts only, every committed row", () =>
     item({ npi: fakeNpi(504), line: 6, disposition: "create" }),
     item({ npi: fakeNpi(505), line: 7, disposition: "skip" }),
   ];
-  const rateLimited = item({ npi: fakeNpi(506), line: 8, disposition: "create" });
   const results = new Map<string, ImportNpiOutcome>([
-    [
-      rateLimited.npi,
-      {
-        status: "not_checked",
-        reason: "rate_limited",
-        message: "Too many NPI Registry checks right now. Reload the review to check again",
-      },
-    ],
     [items[0].npi, { status: "checked", record: record({ npi: items[0].npi }) }],
     [items[1].npi, { status: "checked", record: record({ npi: items[1].npi }) }],
     [items[2].npi, { status: "checked", record: null }],
@@ -508,22 +500,18 @@ describe("importNpiCaptureAdvisories — facts only, every committed row", () =>
   const captured = importNpiCaptureAdvisories({
     items,
     snapshot: snap,
-    importRunId: "run-1",
+    policy: DEFAULT_NPI_REGISTRY_POLICY,
     providerIdByLine,
   });
 
-  it("captures each committed row's advisories and marks unchecked rows not checked; skips and full matches add nothing", () => {
-    expect(captured.map((a) => [a.record.id, a.check, a.context.line])).toEqual([
-      ["prov-3", "npi_registry.name_mismatch", 3],
-      ["prov-4", "npi_registry.not_found", 4],
-      ["prov-5", "npi_registry.not_checked", 5],
-      ["prov-6", "npi_registry.not_checked", 6],
+  it("captures what the registry said about each committed row; rows not checked, skips and full matches add nothing", () => {
+    expect(captured.map((a) => [a.record.id, a.check])).toEqual([
+      ["prov-3", "npi_registry.name_mismatch"],
+      ["prov-4", "npi_registry.not_found"],
     ]);
-    expect(captured[2].whyItMatters).toMatch(/could not be reached/);
-    expect(captured[3].whyItMatters).toMatch(/committed before/);
   });
 
-  it("carries facts only: the check key, the provider, the import run and the line — no value, name or registry data", () => {
+  it("carries facts only: the check key and the provider — no value, name or registry data", () => {
     for (const advisory of captured) {
       expect(Object.keys(advisory).sort()).toEqual(
         ["check", "context", "display", "record", "whyItMatters"].sort(),
@@ -533,11 +521,7 @@ describe("importNpiCaptureAdvisories — facts only, every committed row", () =>
         id: expect.stringMatching(/^prov-/),
         field: expect.any(String),
       });
-      expect(advisory.context).toEqual({
-        confirmed: false,
-        importRunId: "run-1",
-        line: expect.any(Number),
-      });
+      expect(advisory.context).toEqual({ confirmed: false });
     }
     const text = JSON.stringify(captured);
     for (const leaked of [
@@ -554,24 +538,12 @@ describe("importNpiCaptureAdvisories — facts only, every committed row", () =>
     }
   });
 
-  it("gives a rate-limited row its own reason, not an outage's", () => {
-    const [advisory] = importNpiCaptureAdvisories({
-      items: [rateLimited],
-      snapshot: snap,
-      importRunId: "run-1",
-      providerIdByLine: new Map([[8, "prov-8"]]),
-    });
-    expect(advisory).toMatchObject({ check: "npi_registry.not_checked", record: { id: "prov-8" } });
-    expect(advisory.whyItMatters).toMatch(/lookup limit/);
-    expect(advisory.whyItMatters).not.toMatch(/could not be reached/);
-  });
-
   it("captures nothing for a row whose provider is unknown", () => {
     expect(
       importNpiCaptureAdvisories({
         items,
         snapshot: snap,
-        importRunId: "run-1",
+        policy: DEFAULT_NPI_REGISTRY_POLICY,
         providerIdByLine: new Map(),
       }),
     ).toEqual([]);
@@ -579,40 +551,35 @@ describe("importNpiCaptureAdvisories — facts only, every committed row", () =>
 });
 
 describe("estimateRemainingMs", () => {
-  const budget = 60;
-
   it("shows nothing until enough rows are done to trust the rate", () => {
     expect(
-      estimateRemainingMs({
-        done: ETA_MIN_DONE - 1,
-        total: 100,
-        elapsedMs: 5_000,
-        budgetPerMinute: budget,
-      }),
+      estimateRemainingMs({ done: ETA_MIN_DONE - 1, total: 100, elapsedMs: 5_000 }),
     ).toBeNull();
-    expect(
-      estimateRemainingMs({ done: 30, total: 100, elapsedMs: 0, budgetPerMinute: budget }),
-    ).toBeNull();
-    expect(
-      estimateRemainingMs({ done: 100, total: 100, elapsedMs: 90_000, budgetPerMinute: budget }),
-    ).toBeNull();
+    expect(estimateRemainingMs({ done: 30, total: 100, elapsedMs: 0 })).toBeNull();
+    expect(estimateRemainingMs({ done: 100, total: 100, elapsedMs: 90_000 })).toBeNull();
   });
 
-  it("caps a fast start at the budget rate", () => {
-    // 20 rows in 2 s (or 0.3 s) rode the burst; the other 80 go at one a second.
-    expect(
-      estimateRemainingMs({ done: 20, total: 100, elapsedMs: 2_000, budgetPerMinute: budget }),
-    ).toBe(80_000);
-    expect(
-      estimateRemainingMs({ done: 20, total: 100, elapsedMs: 300, budgetPerMinute: budget }),
-    ).toBe(80_000);
+  it("past 60 rows, waits for the minute the last row can go in, however fast the registry is", () => {
+    // 100 rows: the last 40 go in the second minute.
+    expect(estimateRemainingMs({ done: 20, total: 100, elapsedMs: 1_000 })).toBe(59_000);
+    // The first 60 done in 3 s: still the rest of the minute to wait.
+    expect(estimateRemainingMs({ done: 60, total: 100, elapsedMs: 3_000 })).toBe(57_000);
+    // 200 rows: the last ones go in the fourth minute.
+    expect(estimateRemainingMs({ done: 20, total: 200, elapsedMs: 1_000 })).toBe(179_000);
   });
 
-  it("uses the observed rate when the registry is slower than the budget", () => {
-    // 20 rows in 40 s is one every 2 s.
-    expect(
-      estimateRemainingMs({ done: 20, total: 60, elapsedMs: 40_000, budgetPerMinute: budget }),
-    ).toBe(80_000);
+  it("leaves the time spent waiting out the budget out of the pace", () => {
+    // 70 done at 61 s, 53 s of it waiting: the last 30 take about 3 s, not 26.
+    expect(estimateRemainingMs({ done: 70, total: 100, elapsedMs: 61_000, waitedMs: 53_000 })).toBe(
+      3_429,
+    );
+  });
+
+  it("uses the pace so far when the registry is slower than the budget", () => {
+    // 20 rows in 20 s is one a second: 80 more take 80 s, past the minute.
+    expect(estimateRemainingMs({ done: 20, total: 100, elapsedMs: 20_000 })).toBe(80_000);
+    // Within one minute's budget, pace alone decides.
+    expect(estimateRemainingMs({ done: 20, total: 60, elapsedMs: 2_000 })).toBe(4_000);
   });
 });
 

@@ -1,7 +1,7 @@
 // MINT-110 PR 2 — the import review with NPI Registry checks, hooks mocked:
-// which rows are handed to the checker (both scopes), that the default policy
-// leaves the review's counts unchanged, and that a "block" severity moves the
-// row to Blocked rows so it is not committed. Rendered statically; no network.
+// which rows are handed to the checker (both scopes), that no registry answer
+// changes the review's counts or holds a row back, and that a create with no
+// NPI (B3) shows "—". Rendered statically; no network.
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dedupeImportRows, type StagedImportRow } from "@/lib/importDedupe";
@@ -11,7 +11,6 @@ import {
   DEFAULT_NPI_REGISTRY_POLICY,
   NPI_REGISTRY_CHECKS,
   resolveNpiRegistryPolicy,
-  type NpiRegistryPolicy,
 } from "@/lib/npiRegistryPolicy";
 import { npiCheckDigit } from "@/lib/providerIdentity";
 
@@ -36,12 +35,18 @@ vi.mock("@/hooks/useLookups", () => ({
   useProviderGroups: () => ({ data: [] }),
 }));
 vi.mock("@/lib/permissions", () => ({ useIsAdmin: () => state.admin }));
+// The drill-down sections render open, so their rows are in the markup.
+vi.mock("@/components/ui/collapsible", () => ({
+  Collapsible: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  CollapsibleTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  CollapsibleContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
 // The active organization's NPI Registry policy (MINT-110 PR 1's hook).
 vi.mock("@/hooks/useNpiRegistry", () => ({
   useNpiRegistryPolicy: () => state.policy,
 }));
-vi.mock("@/hooks/useImportNpiAdvisoryCapture", () => ({
-  useCaptureImportNpiAdvisories: () => vi.fn(),
+vi.mock("@/services/importNpiAdvisoryCapture", () => ({
+  captureImportNpiAdvisories: vi.fn(),
 }));
 vi.mock("@/hooks/useImportNpiVerification", () => ({
   useImportNpiVerification: vi.fn(() => ({
@@ -249,12 +254,38 @@ describe("ImportPreviewContent with NPI Registry checks", () => {
     expect(html).toContain("Counts reconcile with the 3 staged rows.");
   });
 
-  it("an injected policy wins over the hook's", () => {
-    const hidden: NpiRegistryPolicy = resolveNpiRegistryPolicy({
-      display: { organizationNumber: "backend_only" },
-    });
-    const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" npiPolicy={hidden} />);
-    expect(html).toContain("Finished — 2 of 2 checked, 0 with notes.");
-    expect(metric(html, "New providers to create")).toBe("2");
+  it("shows a dash for a new provider with no NPI (B3), and checks only the rows that have one", () => {
+    const withBlank: StagedImportRow[] = [
+      ...rows,
+      {
+        line: 5,
+        mapped: {
+          provider_first_name: "Dana",
+          provider_last_name: "Reyes",
+          group_tin: "111111111",
+        },
+      },
+    ];
+    state.preview = {
+      ...state.preview,
+      run: { ...(state.preview.run as object), totalRows: 4, stagedRows: 4 },
+      rows: withBlank,
+      dispositions: dedupeImportRows({
+        rows: withBlank,
+        providers: [
+          { id: "p1", firstName: "Casey", lastName: "Orr", npi: EXISTING, specialty: null },
+        ],
+        groups: [{ id: "g1", name: "North Group", tin: "111111111" }],
+        facilities: [],
+        groupAssignments: [{ providerId: "p1", groupId: "g1" }],
+        facilityAssignments: [],
+        licenses: [],
+      }),
+    };
+    const html = renderToStaticMarkup(<ImportPreviewContent runId="run-1" />);
+    expect(metric(html, "New providers to create")).toBe("3");
+    expect(html).toMatch(/>Dana Reyes<\/td><td[^>]*>—<\/td>/);
+    const [items] = vi.mocked(useImportNpiVerification).mock.calls[0];
+    expect(items.map((item) => item.npi)).toEqual([NEW_A, NEW_B]);
   });
 });

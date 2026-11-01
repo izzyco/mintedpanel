@@ -1,13 +1,14 @@
 // MINT-110 PR 2 / MINT-119 — NPI Registry checks while an import is reviewed,
 // over the mock harness. /api/npi-registry/verify-batch is mocked at the
 // browser: nothing reaches our server's route or NPPES. Synthetic names and
-// check-digit-valid made-up NPIs only. The page clock is installed so the
-// budget's pacing waits (one batch of ten every ~10 s after a burst of 20) can
-// be skipped with fastForward instead of waited out.
+// check-digit-valid made-up NPIs only. The mock keeps the server's budget (60
+// NPIs a minute, a fixed window): past it, a 429 with Retry-After. The page
+// clock is installed so that wait can be skipped with fastForward.
 //   1. A 100-row provider CSV goes through the wizard's bulk import (upload →
 //      scan → Ready for review → Review & commit). The review checks the 100
-//      new providers' NPIs ten at a time: the progress bar advances, the time
-//      left shows once it can be estimated, and the panel ends in a
+//      new providers' NPIs ten at a time: the first minute's 60 go at once,
+//      the seventh request meets the budget and the page waits out
+//      Retry-After, the time left counts that wait, and the panel ends in a
 //      completion state. Each row carries its note (an organization number,
 //      not found, a different name); nothing else on the review changes and
 //      every row stays committable. Only NPIs are sent.
@@ -449,10 +450,14 @@ function seedAuth(context: BrowserContext) {
 interface BatchCall {
   body: Record<string, unknown>;
   authorization: string | undefined;
+  /** 200, 429, or null while held. */
+  status: number | null;
 }
 
-/** Answers each NPI from RECORDS. `holdFrom` (1-based) leaves that call and
- * later ones unanswered, so a test can cancel while a request is in flight. */
+/** Answers each NPI from RECORDS, within the server's budget of 60 NPIs a
+ * minute: a request past it gets a 429 with Retry-After: 60, and the next one
+ * opens a new window. `holdFrom` (1-based) leaves that call and later ones
+ * unanswered, so a test can cancel while a request is in flight. */
 // Requests a test leaves unanswered on purpose wait on this gate inside their
 // route handler (the pattern npi-registry.spec.ts uses), and each test's end
 // opens it: every handler then finishes, so nothing is left pending in the
@@ -470,10 +475,12 @@ test.afterEach(() => {
 
 async function mockBatchRoute(context: BrowserContext, opts: { holdFrom?: number } = {}) {
   const calls: BatchCall[] = [];
+  let inWindow = 0;
   await context.route(/\/api\/npi-registry\/verify-batch/, async (route) => {
     const req = route.request();
     const body = req.postDataJSON() as Record<string, unknown>;
-    calls.push({ body, authorization: req.headers()["authorization"] });
+    const call: BatchCall = { body, authorization: req.headers()["authorization"], status: null };
+    calls.push(call);
     if (opts.holdFrom !== undefined && calls.length >= opts.holdFrom) {
       await gate;
       // The page gave up on it long ago; answer, and ignore that it is gone.
@@ -481,6 +488,23 @@ async function mockBatchRoute(context: BrowserContext, opts: { holdFrom?: number
       return;
     }
     const npis = (body.npis as string[]) ?? [];
+    if (inWindow + npis.length > 60) {
+      inWindow = 0;
+      call.status = 429;
+      await route.fulfill({
+        status: 429,
+        contentType: "application/json",
+        headers: { "retry-after": "60", "cache-control": "private, no-store, max-age=0" },
+        body: JSON.stringify({
+          data: null,
+          error: "Too many NPI Registry checks — wait a few seconds and try again",
+          meta: null,
+        }),
+      });
+      return;
+    }
+    inWindow += npis.length;
+    call.status = 200;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -560,22 +584,20 @@ test("MINT-119: a 100-row upload checks new providers' NPIs with progress, time 
   await expect(bar).toHaveAttribute("aria-valuemax", "100");
   await expect(page.getByRole("button", { name: "Stop checks" })).toBeVisible();
 
-  // The burst of 20 goes at once, then the time left can be estimated.
-  await expectChecked(page, 20);
-  await expect(page.getByText("20 of 100 done", { exact: true })).toBeVisible();
-  await expect(bar).toHaveAttribute("aria-valuetext", "20 of 100 done");
+  // The first minute's 60 go at once; the seventh request meets the budget,
+  // and the time left counts the wait for the next minute.
+  await expectChecked(page, 60);
+  await expect.poll(() => calls.map((call) => call.status)).toEqual([...Array(6).fill(200), 429]);
+  await expect(page.getByText("60 of 100 done", { exact: true })).toBeVisible();
+  await expect(bar).toHaveAttribute("aria-valuetext", "60 of 100 done");
   await expect(page.getByText("About 1 minute left")).toBeVisible();
   await expect(
-    page.getByRole("status").filter({ hasText: "Checking 100 NPIs in the NPI Registry." }),
+    page.getByRole("status").filter({ hasText: "NPI Registry checks 50% done." }),
   ).toHaveCount(1);
 
-  // Each further batch waits for budget; skip the waits and watch it advance.
-  let previous = 20;
-  while (previous < 100) {
-    await page.clock.fastForward(11_000);
-    await expectChecked(page, previous + 10);
-    previous += 10;
-  }
+  // Retry-After passes; the same batch goes again and the rest follow.
+  await page.clock.fastForward(60_000);
+  await expectChecked(page, 100);
 
   // The completion state.
   await expect(
@@ -588,9 +610,13 @@ test("MINT-119: a 100-row upload checks new providers' NPIs with progress, time 
       .filter({ hasText: "NPI Registry checks finished: 100 of 100 checked" }),
   ).toHaveCount(1);
 
-  // Ten requests of ten, every NPI once, only NPIs sent, with the session.
-  expect(calls).toHaveLength(10);
-  const sent = calls.flatMap((call) => call.body.npis as string[]);
+  // Ten answered requests of ten, every NPI once, only NPIs sent, with the
+  // session; the refused one was sent again as it was.
+  expect(calls).toHaveLength(11);
+  expect(calls[7].body).toEqual(calls[6].body);
+  const answered = calls.filter((call) => call.status === 200);
+  expect(answered).toHaveLength(10);
+  const sent = answered.flatMap((call) => call.body.npis as string[]);
   expect(new Set(sent).size).toBe(100);
   expect(sent.sort()).toEqual(PROVIDERS.map((p) => p.npi).sort());
   for (const call of calls) {
@@ -634,7 +660,7 @@ test("MINT-119: a 100-row upload checks new providers' NPIs with progress, time 
   });
   expect(wire.commitCalls).toBe(1);
   expect(wire.lastPlan).toEqual({ creates: 100, blocked: 0, blockedText: "[]" });
-  expect(calls).toHaveLength(10);
+  expect(calls).toHaveLength(11);
 });
 
 test("MINT-119: cancelling the import stops the lookups and aborts the one in flight", async ({
@@ -655,7 +681,6 @@ test("MINT-119: cancelling the import stops the lookups and aborts the one in fl
 
   await openStagedReview(page);
   await expectChecked(page, 20);
-  await page.clock.fastForward(11_000);
   await expect.poll(() => calls.length).toBe(3);
 
   await page.getByRole("button", { name: "Cancel Import", exact: true }).click();
@@ -679,12 +704,14 @@ test("MINT-119: Stop ends the checks, rows left say so, and the import can still
   const fixtures = stagedFixtures();
   const wire: WireLog = { commitCalls: 0 };
   await context.route(/\/(rest|auth)\/v1\//, makeHandler(fixtures, wire));
-  const calls = await mockBatchRoute(context);
+  // The third request is in flight when staff stop.
+  const calls = await mockBatchRoute(context, { holdFrom: 3 });
   await seedAuth(context);
   await page.clock.install();
 
   await openStagedReview(page);
   await expectChecked(page, 20);
+  await expect.poll(() => calls.length).toBe(3);
   const stop = page.getByRole("button", { name: "Stop checks" });
   await stop.focus();
   await stop.press("Enter");
@@ -699,7 +726,7 @@ test("MINT-119: Stop ends the checks, rows left say so, and the import can still
   // Focus did not fall to the page body when Stop went away.
   await expect.poll(() => page.evaluate(() => document.activeElement?.tagName ?? "")).toBe("P");
   for (let i = 0; i < 3; i += 1) await page.clock.fastForward(11_000);
-  expect(calls).toHaveLength(2);
+  expect(calls).toHaveLength(3);
 
   await page.getByRole("button", { name: "New providers (100)", exact: true }).click();
   const lastRow = page.getByRole("row").filter({
@@ -737,7 +764,6 @@ test("MINT-119: leaving the review mid-check aborts the lookup in flight and sen
 
   await openStagedReview(page);
   await expectChecked(page, 20);
-  await page.clock.fastForward(11_000);
   await expect.poll(() => calls.length).toBe(3);
 
   // In-app navigation away from the review unmounts it.
@@ -769,7 +795,6 @@ test("A39: Commit never waits for the checks — it stops them and every row goe
 
   await openStagedReview(page);
   await expectChecked(page, 20);
-  await page.clock.fastForward(11_000);
   await expect.poll(() => calls.length).toBe(3);
 
   await page.getByRole("button", { name: "Commit Changes", exact: true }).click();

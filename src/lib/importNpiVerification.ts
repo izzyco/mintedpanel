@@ -1,8 +1,8 @@
 // NPI Registry checks on the import review — MINT-110 PR 2 / MINT-119. The
-// pure half: which rows are checked, each row's result (a stable kind, its
-// advisories and the one-line notes the row shows), the advisories captured
-// after commit, the estimated time left, and the progress words. No I/O;
-// ImportNpiVerifier (src/lib/importNpiVerifier.ts) does the scheduling.
+// pure half: which rows are checked, the one-line notes each row shows, the
+// advisories captured after commit, the estimated time left, and the progress
+// words. No I/O; ImportNpiVerifier (src/lib/importNpiVerifier.ts) does the
+// requests.
 //
 // A registry answer never blocks or delays anything (Sowmya's standing rule,
 // Oct 31; A30, A39–A41): every row the dedupe would commit is committed, and
@@ -12,8 +12,9 @@
 // (`importVerifyScope`, default new providers only) and where each check's
 // advisory shows (`display`): "review_step" lists it on its row here as a
 // quiet one-line note — no confirm, nothing typed — and "backend_only" shows
-// nothing. After commit, every committed row's advisories go to the capture
-// seam as facts only. "Found" never shows unless the registry fully matched.
+// nothing. After commit, the registry's answers for the committed rows go to
+// the capture seam as facts only. "Found" never shows unless the registry
+// fully matched.
 // Hard rules stay hard: the 10-digit rule and the check digit (the dedupe's,
 // not this module's). Results live in memory only; nothing is stored per row
 // and nothing from the registry reaches the run's error report.
@@ -26,32 +27,14 @@ import {
 } from "@/lib/importDedupe";
 import { isValidNpi, stripNpiSeparators } from "@/lib/providerIdentity";
 import { advisoriesForRecord, type Advisory } from "@/lib/advisories";
-import {
-  npiLookupOutcome,
-  type NpiLookupState,
-  type NpiRegistryRecord,
-  type NpiVerificationView,
-} from "@/lib/npiRegistry";
+import type { NpiLookupState, NpiRegistryRecord, NpiVerificationView } from "@/lib/npiRegistry";
+import { NPI_REGISTRY_BATCH_PER_MINUTE } from "@/lib/npiRegistryBatch";
 import {
   DEFAULT_NPI_REGISTRY_POLICY,
   type NpiImportVerifyScope,
-  type NpiRegistryCheck,
   type NpiRegistryPolicy,
 } from "@/lib/npiRegistryPolicy";
-import {
-  buildNpiRegistryReview,
-  shownAdvisories,
-  type NpiReviewAdvisory,
-} from "@/lib/npiRegistryReview";
-
-/** A row's stable result kind, one per row: "found" exactly when the row
- * shows "Found in the NPI Registry" (a full match with no advisory); else the
- * registry's answer about the NPI (organizationNumber, notFound, nameMismatch,
- * inactive); else the first value the file gives that differs from the record
- * found (credentialsDiffer, taxonomyDiffers, licenseDiffers); else
- * "notChecked" (an outage, the rate limit, Stop, a commit first, or a record
- * found with no name to compare) or "pending" (not checked yet). */
-export type ImportNpiResultKind = "found" | NpiRegistryCheck | "notChecked" | "pending";
+import { buildNpiRegistryReview, shownAdvisories } from "@/lib/npiRegistryReview";
 
 export interface ImportNpiCheckItem {
   /** Separators stripped; passes the CMS check digit. */
@@ -67,7 +50,7 @@ export interface ImportNpiCheckItem {
   disposition: "create" | "update" | "skip";
 }
 
-export type ImportNpiNotCheckedReason = "unavailable" | "rate_limited" | "stopped";
+export type ImportNpiNotCheckedReason = "unavailable" | "stopped";
 
 /** A row's check. "not_checked" carries the words staff see: for an outage,
  * npiRegistryErrorMessage of the failure, the same as the forms. */
@@ -75,8 +58,6 @@ export type ImportNpiOutcome =
   | { status: "checked"; record: NpiRegistryRecord | null }
   | { status: "not_checked"; reason: ImportNpiNotCheckedReason; message: string };
 
-export const IMPORT_NPI_RATE_LIMITED_MESSAGE =
-  "Too many NPI Registry checks right now. Reload the review to check again";
 export const IMPORT_NPI_STOPPED_MESSAGE = "The checks were stopped";
 
 /** idle: not started. running: checking. done: every row has an outcome
@@ -87,8 +68,8 @@ export type ImportNpiPhase = "idle" | "running" | "done" | "stopped";
 export interface ImportNpiSnapshot {
   phase: ImportNpiPhase;
   total: number;
-  /** Rows processed: checked, or not checked because of an outage or the
-   * rate limit. Rows Stop left are not counted, so the bar stays put. */
+  /** Rows processed: checked, or not checked because of an outage. Rows Stop
+   * left are not counted, so the bar stays put. */
   done: number;
   /** Rows the registry answered for. */
   checked: number;
@@ -159,10 +140,6 @@ export function importNpiChecksKey(items: readonly ImportNpiCheckItem[]): string
 }
 
 export interface ImportNpiRowResult {
-  kind: ImportNpiResultKind;
-  /** Every advisory the check produced, shown on the row or kept for Mission
-   * Control (form-view shape; the capture reduces it to facts). */
-  advisories: NpiReviewAdvisory[];
   /** The quiet one-line notes the row shows: each "review_step" advisory's
    * title; "Found in the NPI Registry" only for a full match with no advisory
    * at all; "Not checked" when it was not; nothing for a "backend_only"
@@ -176,24 +153,21 @@ function reviewFor(
   policy: NpiRegistryPolicy,
 ) {
   const state: NpiLookupState = { status: "done", record };
-  return {
+  return buildNpiRegistryReview({
+    npi: item.npi,
+    verify: true,
     state,
-    review: buildNpiRegistryReview({
-      npi: item.npi,
-      verify: true,
-      state,
-      typed: { firstName: item.firstName, lastName: item.lastName },
-      entered: {
-        credentials: item.credentials,
-        taxonomyCode: item.taxonomyCode,
-        // The batch answer is trimmed to what the import shows and carries no
-        // registry licenses, so the license-number check does not run here.
-        licenses: [],
-      },
-      policy,
-      confirmed: new Set(),
-    }),
-  };
+    typed: { firstName: item.firstName, lastName: item.lastName },
+    entered: {
+      credentials: item.credentials,
+      taxonomyCode: item.taxonomyCode,
+      // The batch answer is trimmed to what the import shows and carries no
+      // registry licenses, so the license-number check does not run here.
+      licenses: [],
+    },
+    policy,
+    confirmed: new Set(),
+  });
 }
 
 /** One row's result, from the same review builder as the provider forms. */
@@ -206,8 +180,6 @@ export function importNpiRowResult(
   if (!outcome) {
     const finished = phase === "done" || phase === "stopped";
     return {
-      kind: finished ? "notChecked" : "pending",
-      advisories: [],
       notes: [
         { tone: "neutral", title: finished ? "Not checked" : "Not checked yet", detail: null },
       ],
@@ -215,8 +187,6 @@ export function importNpiRowResult(
   }
   if (outcome.status === "not_checked") {
     return {
-      kind: "notChecked",
-      advisories: [],
       notes: [
         {
           tone: outcome.reason === "stopped" ? "neutral" : "warn",
@@ -226,21 +196,12 @@ export function importNpiRowResult(
       ],
     };
   }
-  const { state, review } = reviewFor(item, outcome.record, policy);
-  const registryOutcome = npiLookupOutcome(state, {
-    firstName: item.firstName,
-    lastName: item.lastName,
-  });
+  const review = reviewFor(item, outcome.record, policy);
   const shown = shownAdvisories(review);
-  const fullMatch =
-    registryOutcome === null && review.advisories.length === 0 && review.line?.tone === "ok";
+  // Every registry answer about the NPI is an advisory, so no advisory and an
+  // "ok" line is a full match.
+  const fullMatch = review.advisories.length === 0 && review.line?.tone === "ok";
   return {
-    kind: fullMatch
-      ? "found"
-      : (registryOutcome ??
-        review.advisories.find((advisory) => advisory.policyCheck)?.policyCheck ??
-        "notChecked"),
-    advisories: review.advisories,
     notes:
       shown.length > 0
         ? shown.map((advisory) => ({ tone: "warn" as const, title: advisory.title, detail: null }))
@@ -278,13 +239,12 @@ export function importCommittedLines(
 
 /** Every row's result, keyed by its anchor line, plus the summary count and
  * how many rows the commit would write without a registry answer: those in
- * `committedLines` (importCommittedLines), or when it is not given every
- * create and update (never a skip, which writes nothing). */
+ * `committedLines` (importCommittedLines). */
 export function summarizeImportNpiRows(
   items: readonly ImportNpiCheckItem[],
   snapshot: ImportNpiSnapshot,
-  policy: NpiRegistryPolicy = DEFAULT_NPI_REGISTRY_POLICY,
-  committedLines?: ReadonlySet<number>,
+  policy: NpiRegistryPolicy,
+  committedLines: ReadonlySet<number>,
 ): {
   byLine: Map<number, ImportNpiRowResult>;
   counts: ImportNpiCounts;
@@ -296,8 +256,7 @@ export function summarizeImportNpiRows(
   let unchecked = 0;
   for (const item of items) {
     const outcome = snapshot.results.get(item.npi);
-    const committed = committedLines ? committedLines.has(item.line) : item.disposition !== "skip";
-    if (committed && outcome?.status !== "checked") unchecked += 1;
+    if (committedLines.has(item.line) && outcome?.status !== "checked") unchecked += 1;
     const result = importNpiRowResult(outcome, item, snapshot.phase, policy);
     byLine.set(item.line, result);
     if (outcome?.status === "checked" && result.notes.some((note) => note.tone === "warn")) {
@@ -325,81 +284,54 @@ export function importCommitProviderIds(
   return byLine;
 }
 
-const NOT_CHECKED_WHY = {
-  outage: "The NPI Registry could not be reached, so this NPI was saved without a registry check.",
-  rateLimited:
-    "The NPI Registry check reached its lookup limit, so this NPI was saved without a registry check.",
-  committedFirst:
-    "The import was committed before this NPI's registry check ran, so it was saved without one.",
-} as const;
-
 /** The advisories captured after commit: for each committed row (a create or
- * an update; a skip writes nothing) whose provider is known, every advisory
- * its check produced — shown on the row or kept for Mission Control — or one
- * "not checked" advisory when it had no registry answer. Facts only (A35,
- * A41): the check key, the provider, the import run and the source line; no
- * value, no name, no registry data. */
+ * an update; a skip writes nothing) whose provider is known and whose NPI the
+ * registry answered, every advisory that answer produced — shown on the row
+ * or kept for Mission Control. A row nobody checked adds nothing. Facts only
+ * (A35, A41): the check key and the provider; no value, no name, no registry
+ * data. */
 export function importNpiCaptureAdvisories(input: {
   items: readonly ImportNpiCheckItem[];
   snapshot: ImportNpiSnapshot;
-  policy?: NpiRegistryPolicy;
-  importRunId: string;
+  policy: NpiRegistryPolicy;
   providerIdByLine: ReadonlyMap<number, string>;
 }): Advisory[] {
-  const policy = input.policy ?? DEFAULT_NPI_REGISTRY_POLICY;
   const captured: Advisory[] = [];
   for (const item of input.items) {
-    if (item.disposition === "skip") continue;
     const providerId = input.providerIdByLine.get(item.line);
-    if (!providerId) continue;
-    const facts = { confirmed: false, importRunId: input.importRunId, line: item.line };
     const outcome = input.snapshot.results.get(item.npi);
-    if (outcome?.status === "checked") {
-      const { review } = reviewFor(item, outcome.record, policy);
-      for (const advisory of advisoriesForRecord(review.advisories, providerId)) {
-        captured.push({ ...advisory, context: facts });
-      }
-      continue;
-    }
-    const reason = outcome?.status === "not_checked" ? outcome.reason : "stopped";
-    captured.push({
-      check: "npi_registry.not_checked",
-      record: { table: "providers", id: providerId, field: "npi" },
-      display: "review_step",
-      whyItMatters:
-        reason === "unavailable"
-          ? NOT_CHECKED_WHY.outage
-          : reason === "rate_limited"
-            ? NOT_CHECKED_WHY.rateLimited
-            : NOT_CHECKED_WHY.committedFirst,
-      context: facts,
-    });
+    if (item.disposition === "skip" || !providerId || outcome?.status !== "checked") continue;
+    const review = reviewFor(item, outcome.record, input.policy);
+    captured.push(...advisoriesForRecord(review.advisories, providerId));
   }
   return captured;
 }
 
-/** No estimate until this many rows are done (two batches): the first ones
- * ride the burst, and a rate from a handful of rows swings too much to show. */
+/** No estimate until this many rows are done (two requests): a rate from a
+ * handful of rows swings too much to show. */
 export const ETA_MIN_DONE = 20;
 
-/** Time left from the rows done so far: the observed rate, capped by the
- * budget (the rate can never be faster than the budget once the burst is
- * spent, so a fast start never promises too much). Null while the estimate
- * would not be reliable — fewer than ETA_MIN_DONE rows done, or nothing left. */
+/** Time left: the rows left at the registry's pace so far (time spent
+ * waiting out the budget left out), or, when it is later, the minute the last
+ * row can go in. The budget lets NPI_REGISTRY_BATCH_PER_MINUTE NPIs through a
+ * minute (a fixed window from the first request), so past 60 rows the checks
+ * wait for the next minute however fast the registry answers. Null while the
+ * estimate would not be reliable — fewer than ETA_MIN_DONE rows done, or
+ * nothing left. */
 export function estimateRemainingMs(input: {
   done: number;
   total: number;
   elapsedMs: number;
-  budgetPerMinute: number;
+  /** Of elapsedMs, the time spent waiting out a 429. */
+  waitedMs?: number;
 }): number | null {
-  const remaining = input.total - input.done;
-  if (remaining <= 0 || input.done < ETA_MIN_DONE || input.elapsedMs <= 0) {
-    return null;
-  }
-  const observedPerMs = input.done / input.elapsedMs;
-  const budgetPerMs = input.budgetPerMinute / 60_000;
-  const perMs = Math.min(observedPerMs, budgetPerMs);
-  return perMs > 0 ? Math.ceil(remaining / perMs) : null;
+  const { done, total, elapsedMs, waitedMs = 0 } = input;
+  const remaining = total - done;
+  if (remaining <= 0 || done < ETA_MIN_DONE || elapsedMs <= 0) return null;
+  const atPace = (remaining * Math.max(0, elapsedMs - waitedMs)) / done;
+  const lastMinuteOpensIn =
+    Math.floor((total - 1) / NPI_REGISTRY_BATCH_PER_MINUTE) * 60_000 - elapsedMs;
+  return Math.ceil(Math.max(atPace, lastMinuteOpensIn));
 }
 
 /** "A few seconds left", "About 40 seconds left", "About 2 minutes left". */
@@ -411,11 +343,7 @@ export function formatTimeRemaining(ms: number): string {
 }
 
 function countNotChecked(snapshot: ImportNpiSnapshot): Record<ImportNpiNotCheckedReason, number> {
-  const counts: Record<ImportNpiNotCheckedReason, number> = {
-    unavailable: 0,
-    rate_limited: 0,
-    stopped: 0,
-  };
+  const counts: Record<ImportNpiNotCheckedReason, number> = { unavailable: 0, stopped: 0 };
   for (const outcome of snapshot.results.values()) {
     if (outcome.status === "not_checked") counts[outcome.reason] += 1;
   }
@@ -428,7 +356,7 @@ function finishedSummary(snapshot: ImportNpiSnapshot, counts: ImportNpiCounts): 
   const head = `${snapshot.checked} of ${snapshot.total} checked, ${notes}.`;
   if (snapshot.phase === "stopped") return head;
   const missing = countNotChecked(snapshot);
-  const unchecked = missing.unavailable + missing.rate_limited + missing.stopped;
+  const unchecked = missing.unavailable + missing.stopped;
   if (unchecked === 0) return head;
   return missing.unavailable > 0
     ? `${head} ${unchecked} not checked — the NPI Registry is unavailable.`
@@ -440,8 +368,7 @@ function finishedSummary(snapshot: ImportNpiSnapshot, counts: ImportNpiCounts): 
  * bar's value text and the running status line; "done" never claims a row was
  * checked when it was not. */
 export function importNpiProgressText(snapshot: ImportNpiSnapshot): string {
-  const missing = countNotChecked(snapshot);
-  const unchecked = missing.unavailable + missing.rate_limited;
+  const unchecked = countNotChecked(snapshot).unavailable;
   const head = `${snapshot.done} of ${snapshot.total} done`;
   return unchecked > 0 ? `${head}, ${unchecked} not checked` : head;
 }

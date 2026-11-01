@@ -16,17 +16,7 @@ import {
   type ImportNpiCheckItem,
   type ImportNpiSnapshot,
 } from "@/lib/importNpiVerification";
-import {
-  NPI_REGISTRY_BATCH_BURST,
-  NPI_REGISTRY_BATCH_PER_MINUTE,
-  TokenBucket,
-} from "@/lib/npiRegistryBatch";
 import { verifyNpiRegistryBatch } from "@/services/npiRegistry";
-
-// One pacing bucket per tab, mirroring the server's per-user bucket: a new set
-// of rows, or opening the review again, does not start with a full burst the
-// server has already spent (which would meet a 429).
-const tabBucket = new TokenBucket(NPI_REGISTRY_BATCH_BURST, NPI_REGISTRY_BATCH_PER_MINUTE / 60_000);
 
 const noSubscription = () => () => undefined;
 
@@ -50,13 +40,7 @@ export function useImportNpiVerification(
   const key = importNpiChecksKey(items);
   const itemsRef = useRef(items);
   itemsRef.current = items;
-  const [session] = useState(
-    () =>
-      new ImportNpiVerificationSession(
-        { verifyBatch: (npis, signal) => verifyNpiRegistryBatch(npis, signal) },
-        { bucket: tabBucket },
-      ),
-  );
+  const [session] = useState(() => new ImportNpiVerificationSession(verifyNpiRegistryBatch));
   const [verifier, setVerifier] = useState<ImportNpiVerifier | null>(null);
 
   useEffect(() => {

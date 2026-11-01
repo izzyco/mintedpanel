@@ -412,7 +412,9 @@ export class FixedWindowRateLimiter {
     private readonly now: () => number = Date.now,
   ) {}
 
-  take(key: string): RateLimitDecision {
+  /** Count `cost` (default 1) against the key's window, or say when to retry.
+   * Nothing is counted on a no. */
+  take(key: string, cost = 1): RateLimitDecision {
     const now = this.now();
     if (this.windows.size > 1_000) {
       for (const [k, window] of this.windows) {
@@ -421,16 +423,16 @@ export class FixedWindowRateLimiter {
     }
     const current = this.windows.get(key);
     if (!current || now - current.start >= this.windowMs) {
-      this.windows.set(key, { start: now, count: 1 });
+      this.windows.set(key, { start: now, count: cost });
       return { allowed: true };
     }
-    if (current.count >= this.limit) {
+    if (current.count + cost > this.limit) {
       return {
         allowed: false,
         retryAfterSeconds: Math.max(1, Math.ceil((current.start + this.windowMs - now) / 1000)),
       };
     }
-    current.count += 1;
+    current.count += cost;
     return { allowed: true };
   }
 

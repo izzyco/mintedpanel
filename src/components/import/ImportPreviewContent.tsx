@@ -12,11 +12,11 @@
 // until then (TE-2).
 // MINT-110 PR 2 / MINT-119: while the run is reviewed, the NPIs of the rows in
 // scope (by default only NEW providers) are checked against the NPI Registry
-// (ImportNpiVerificationPanel). With the default severities every outcome is a
-// note on its row; an outcome set to "block" moves that row to Blocked rows
-// with a plain reason, so it is not committed. Commit and Cancel stop the
-// checks. Scope and severities come from the NPI Registry policy
-// (useNpiRegistryPolicy; `npiPolicy` overrides it in tests).
+// (ImportNpiVerificationPanel). Every answer is a note on its row, or nothing
+// for a check set to "backend_only"; a note never holds a row back, and the
+// review commits exactly the dedupe's dispositions. Commit and Cancel stop the
+// checks. Scope and where each note shows come from the NPI Registry policy
+// (useNpiRegistryPolicy).
 import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -41,8 +41,8 @@ import {
 import { ImportRunStatePill } from "@/components/import/ImportRunPanel";
 import { useCancelImportRun, useCommitImportRun, useImportPreview } from "@/hooks/useImportRuns";
 import { useImportNpiVerification } from "@/hooks/useImportNpiVerification";
-import { useCaptureImportNpiAdvisories } from "@/hooks/useImportNpiAdvisoryCapture";
 import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
+import { captureImportNpiAdvisories } from "@/services/importNpiAdvisoryCapture";
 import { useIsAdmin } from "@/lib/permissions";
 import { downloadCsv } from "@/lib/csv";
 import { errorReportCsvRows } from "@/lib/rosterImport";
@@ -64,7 +64,6 @@ import {
   summarizeImportNpiRows,
   type ImportNpiRowResult,
 } from "@/lib/importNpiVerification";
-import type { NpiRegistryPolicy } from "@/lib/npiRegistryPolicy";
 import type { ImportRun } from "@/types";
 
 function MetricCard({
@@ -233,17 +232,8 @@ function downloadErrorReport(run: ImportRun) {
   downloadCsv("roster-import-errors.csv", errorReportCsvRows(run.errorReport ?? []));
 }
 
-export function ImportPreviewContent({
-  runId,
-  npiPolicy,
-}: {
-  runId: string;
-  /** The NPI Registry policy to apply; defaults to the active organization's
-   * (useNpiRegistryPolicy). */
-  npiPolicy?: NpiRegistryPolicy;
-}) {
-  const resolvedPolicy = useNpiRegistryPolicy();
-  const policy = npiPolicy ?? resolvedPolicy;
+export function ImportPreviewContent({ runId }: { runId: string }) {
+  const policy = useNpiRegistryPolicy();
   const npiScope = policy.importVerifyScope;
   const preview = useImportPreview(runId);
   const isAdmin = useIsAdmin();
@@ -280,7 +270,6 @@ export function ImportPreviewContent({
     () => summarizeImportNpiRows(npiChecks, npiSnapshot, policy, committedLines),
     [npiChecks, npiSnapshot, policy, committedLines],
   );
-  const captureNpiAdvisories = useCaptureImportNpiAdvisories();
 
   // A registry answer never holds a row back (A30, A39): the review shows and
   // commits exactly the dedupe's dispositions.
@@ -342,7 +331,7 @@ export function ImportPreviewContent({
   const runCommit = () => {
     if (!dispositions) return;
     // Commit never waits for the registry checks (A39): it stops them, and
-    // rows not checked go in marked "not checked".
+    // rows not checked go in without a check.
     npiVerification.stop();
     const npiAtCommit = npiVerification.read();
     const plan = buildCommitPlan(dispositions, resolutions);
@@ -365,16 +354,14 @@ export function ImportPreviewContent({
           toast.success(
             `${result.created} provider${result.created === 1 ? "" : "s"} created · ${result.updated} updated. Imported providers are Pending Verification.${relText}`,
           );
-          // After the toast: every committed row's advisories go to the
-          // capture seam, facts only, in the background. Building and sending
-          // never throw (a failure is logged without values), so nothing here
-          // can reach this commit's feedback.
-          captureNpiAdvisories(() =>
+          // After the toast, in the background: the registry's answers for
+          // the committed rows go to the capture seam, facts only. A failure
+          // is logged without values and never reaches this commit's feedback.
+          void captureImportNpiAdvisories(() =>
             importNpiCaptureAdvisories({
               items: npiChecks,
               snapshot: npiAtCommit,
               policy,
-              importRunId: run.id,
               providerIdByLine: importCommitProviderIds(plan, result),
             }),
           );
@@ -444,7 +431,7 @@ export function ImportPreviewContent({
                 return (
                   <TableRow key={`c-${d.line}`}>
                     <TableCell className="text-[13px] font-medium">{d.displayName}</TableCell>
-                    <TableCell className="text-[13px] tabular-nums">{d.npi}</TableCell>
+                    <TableCell className="text-[13px] tabular-nums">{d.npi || "—"}</TableCell>
                     <TableCell className="text-[13px]">{d.groupIds.length}</TableCell>
                     <TableCell className="text-[13px]">{d.facilityIds.length}</TableCell>
                     <TableCell className="text-[13px]">{d.licenses.length}</TableCell>

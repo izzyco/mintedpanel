@@ -37,7 +37,6 @@ const loadPayerFormRoutes = () => import("./payerFormRoutes");
 const loadRosterRoutes = () => import("./rosterRoutes");
 const loadProviderIntakeRoutes = () => import("./providerIntakeRoutes");
 const loadNpiRegistryRoutes = () => import("./npiRegistryRoutes");
-const loadNpiRegistryBatchRoutes = () => import("./npiRegistryBatchRoutes");
 
 // `/api/providers/:id/profile` — must be matched before the generic :id route.
 const PROVIDER_PROFILE_ROUTE = /^\/api\/providers\/([^/]+)\/profile\/?$/;
@@ -848,9 +847,9 @@ async function routeApiRequest(request: Request): Promise<Response> {
     }
     if (isNpiRegistryBatch) {
       if (method !== "POST") return fail(405, "Method not allowed");
-      const routes = await loadNpiRegistryBatchRoutes();
+      const routes = await loadNpiRegistryRoutes();
       const body = await readBoundedJsonBody(request, 2048);
-      // The caller going away stops new registry calls and cancels those in flight.
+      // Once the caller has gone, no more registry calls start.
       return await routes.handleNpiRegistryVerifyBatch(body, ctx, {}, request.signal);
     }
     if (isDocumentFinalize) {

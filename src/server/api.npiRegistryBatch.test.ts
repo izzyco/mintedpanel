@@ -7,13 +7,13 @@ vi.mock("./guard", async () => {
   const actual = await vi.importActual<typeof import("./guard")>("./guard");
   return { ...actual, authenticate: vi.fn(), authenticateUser: vi.fn() };
 });
-vi.mock("./npiRegistryBatchRoutes", () => ({
+vi.mock("./npiRegistryRoutes", () => ({
   handleNpiRegistryVerifyBatch: vi.fn(),
 }));
 
 import { authenticate, authenticateUser, GuardError, type AuthContext } from "./guard";
 import { handleApiRequest } from "./api";
-import { handleNpiRegistryVerifyBatch } from "./npiRegistryBatchRoutes";
+import { handleNpiRegistryVerifyBatch } from "./npiRegistryRoutes";
 
 const CTX = { userId: "u1", orgId: "org-1", role: "admin" } as AuthContext;
 const PATH = "/api/npi-registry/verify-batch";
@@ -46,8 +46,8 @@ describe("api dispatch for /api/npi-registry/verify-batch", () => {
     vi.mocked(handleNpiRegistryVerifyBatch).mockResolvedValue(new Response("{}", { status: 200 }));
     const body = { npis: ["1234567893", "123-456-7893"] };
     await handleApiRequest(post(PATH, JSON.stringify(body)));
-    // The request's own abort signal goes along, so a caller who leaves stops
-    // the registry calls.
+    // The request's own abort signal goes along, so a caller who leaves starts
+    // no more registry calls.
     expect(handleNpiRegistryVerifyBatch).toHaveBeenCalledWith(
       body,
       CTX,
