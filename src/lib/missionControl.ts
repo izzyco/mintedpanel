@@ -3,14 +3,15 @@
 // breadcrumb and section navigation, and the path test the root shell uses to
 // let a platform admin with no organization through to these pages.
 //
-// This list is the single source the header reads. Home is the only section
-// today; a later milestone adds its entry (and its path to the union below)
-// in the same change that adds its route, so the list never names a page that
-// does not exist. The header shows the section strip only from two entries.
+// This list is the single source the header reads: Home (M2) and
+// Organizations (M3); a later milestone adds its entry (and its path to the
+// union below) in the same change that adds its route, so the list never names
+// a page that does not exist. The header shows the section strip only from two
+// entries.
 
 export const MISSION_CONTROL_PATH = "/mission-control";
 
-export type MissionControlSectionPath = "/mission-control";
+export type MissionControlSectionPath = "/mission-control" | "/mission-control/organizations";
 
 export interface MissionControlSection {
   to: MissionControlSectionPath;
@@ -27,6 +28,12 @@ export const MISSION_CONTROL_SECTIONS: readonly MissionControlSection[] = [
     label: "Home",
     title: "Mission Control",
     description: "Counts across every organization on Minted Panel.",
+  },
+  {
+    to: "/mission-control/organizations",
+    label: "Organizations",
+    title: "Organizations",
+    description: "Every organization on Minted Panel: create one, move it through its lifecycle.",
   },
 ];
 
