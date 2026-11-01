@@ -4,8 +4,9 @@
 // Its callers, by branch. MINT-75 part 1 (#547): task completions
 // (updateTaskStatus: the task row's Complete circle, the drawer's Mark
 // complete, a Payer PDF marked sent), notes (logNote), the Add touch form's
-// default date, and the touchlog's "today" (follow-up status, the CSV's name).
-// MINT-75 part 2 (#557): ticking a task's last SOP step (completeTaskStep).
+// default date, the touchlog's "today" (follow-up status, the CSV's name), and
+// the Reports Summary tab's overdue count and 30-day touch window (Addendum 11,
+// I1). MINT-75 part 2 (#557): ticking a task's last SOP step (completeTaskStep).
 // Until both land, a branch carries only its own callers.
 //
 // Business policy is configuration. The zone whose day counts is Sowmya's
