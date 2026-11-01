@@ -14,8 +14,8 @@
 //
 // When it goes out, and what "today" is (digestSlot). The job is called
 // every hour. How often an org's digest goes out is its effective frequency
-// (A8, Oct 31; resolveNotificationSequence: the org's choice, else Minted's
-// default, daily):
+// (A8, Oct 31; resolveNotificationSequence: Minted's per-org setting, else
+// Minted's default, daily; Addendum 10):
 //   * daily: once, from the send hour;
 //   * weekly: once, from the send hour, on the weekly weekday (Monday by
 //     default) in the org's zone;
