@@ -187,6 +187,19 @@ function postBody(writes: Write[], table: string) {
   return writes.find((w) => w.method === "POST" && w.table === table)?.body;
 }
 
+/** The provider's CREATE audit row's per-assignment entries (MINT-96 A7). */
+function auditedAssignments(writes: Write[]) {
+  const row = writes.find(
+    (w) =>
+      w.method === "POST" &&
+      w.table === "audit_log" &&
+      (w.body as { entity_type?: string; action_type?: string } | null)?.entity_type ===
+        "provider" &&
+      (w.body as { action_type?: string }).action_type === "CREATE",
+  )?.body as { after?: { facilityAssignments?: unknown } } | undefined;
+  return row?.after?.facilityAssignments;
+}
+
 test("MINT-96: skipped Licenses read 'No licenses added'; a blank start date stays null and the assignments' today is shown before save", async ({
   page,
 }) => {
@@ -216,6 +229,11 @@ test("MINT-96: skipped Licenses read 'No licenses added'; a blank start date sta
     expect.objectContaining({ facility_id: "f-1", is_primary: true, start_date: today.iso }),
   ]);
   expect(writes.filter((w) => w.table === "state_licenses")).toEqual([]);
+  // A7: the audit row says the assignment's date was filled in.
+  await expect.poll(() => auditedAssignments(writes)).toBeTruthy();
+  expect(auditedAssignments(writes)).toEqual([
+    { facilityId: "f-1", isPrimary: true, startDate: today.iso, startDateDefaulted: true },
+  ]);
 });
 
 test("MINT-96: an entered start date clears the hint and saves on the provider and the assignments", async ({
@@ -239,5 +257,10 @@ test("MINT-96: an entered start date clears the hint and saves on the provider a
   expect(postBody(writes, "providers")).toHaveProperty("start_date", "2026-11-02");
   expect(postBody(writes, "provider_facility_assignments")).toEqual([
     expect.objectContaining({ facility_id: "f-1", start_date: "2026-11-02" }),
+  ]);
+  // A7: an entered date is never marked as defaulted.
+  await expect.poll(() => auditedAssignments(writes)).toBeTruthy();
+  expect(auditedAssignments(writes)).toEqual([
+    { facilityId: "f-1", isPrimary: true, startDate: "2026-11-02" },
   ]);
 });

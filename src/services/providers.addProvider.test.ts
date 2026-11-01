@@ -1,6 +1,8 @@
 // MINT-116 — createProviderWithDetails takes the assignments' start date the
 // wizard resolved (the date its Review step shows), and refuses an undated
-// assignment set before the provider is written. Synthetic data only.
+// assignment set before the provider is written. MINT-96 A7 — the CREATE
+// audit row marks each assignment whose start date was filled in, never one
+// that was entered. Synthetic data only.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const transport = vi.hoisted(() => ({ fetch: vi.fn(), audit: vi.fn() }));
@@ -110,5 +112,73 @@ describe("createProviderWithDetails — the assignments' start date", () => {
       facilityIds: ["fac-1"],
     });
     expect(startDates("provider_facility_assignments")).toEqual([localCalendarDate(new Date())]);
+  });
+});
+
+describe("createProviderWithDetails — the audit row records a defaulted start date (A7)", () => {
+  const auditAfter = () =>
+    (transport.audit.mock.calls.at(-1)?.[0] as { after: { facilityAssignments: Row[] } }).after;
+
+  it("marks every assignment whose date was filled in for a blank Start date", async () => {
+    await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: ["fac-1", "fac-2"],
+      assignmentStartDate: "2026-11-02",
+    });
+    expect(auditAfter().facilityAssignments).toEqual([
+      { facilityId: "fac-1", isPrimary: true, startDate: "2026-11-02", startDateDefaulted: true },
+      { facilityId: "fac-2", isPrimary: false, startDate: "2026-11-02", startDateDefaulted: true },
+    ]);
+  });
+
+  it("never marks an entered date", async () => {
+    await createProviderWithDetails({
+      provider: provider("2026-11-15"),
+      licenses: [],
+      facilityIds: ["fac-1"],
+      assignmentStartDate: "2026-11-15",
+    });
+    expect(auditAfter().facilityAssignments).toEqual([
+      { facilityId: "fac-1", isPrimary: true, startDate: "2026-11-15" },
+    ]);
+    expect(auditAfter().facilityAssignments[0]).not.toHaveProperty("startDateDefaulted");
+  });
+
+  it("records the exact date written, also when the service fills in today", async () => {
+    await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: ["fac-1"],
+    });
+    const today = localCalendarDate(new Date());
+    expect(startDates("provider_facility_assignments")).toEqual([today]);
+    expect(auditAfter().facilityAssignments).toEqual([
+      { facilityId: "fac-1", isPrimary: true, startDate: today, startDateDefaulted: true },
+    ]);
+  });
+
+  it("lists no assignment that failed to save", async () => {
+    transport.fetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const table = new URL(String(input)).pathname.split("/").at(-1)!;
+      const body = JSON.parse(String(init?.body ?? "null")) as Row;
+      if (table === "provider_facility_assignments")
+        return new Response(JSON.stringify({ code: "23514", message: "check violation" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      return new Response(JSON.stringify({ id: "prov-new", ...body }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const result = await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: ["fac-1"],
+      assignmentStartDate: "2026-11-02",
+    });
+    expect(result.warnings[0]).toMatch(/^Facility assignments not saved/);
+    expect(auditAfter().facilityAssignments).toEqual([]);
   });
 });

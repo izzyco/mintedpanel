@@ -19,6 +19,7 @@ import {
 } from "@/lib/groupAssignments";
 import { resolvePsvColumns, type PsvStatus, type PsvStored } from "@/lib/licensePsv";
 import { insertAssignmentRows } from "@/services/providerAssignments";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { normalizeStateCode, normalizeOptionalStateCode } from "@/lib/stateCode";
 import { translateDbError, toError } from "@/lib/dbErrors";
 import { licenseSnapshotFields, type LicenseCommand } from "@/lib/licenseCommands";
@@ -343,8 +344,9 @@ export interface CreateProviderWithDetailsInput {
    * with the same AddProviderRules read its Review screen shows
    * (addProviderStartDates). null: no rule fills a blank date, so with any
    * facility selected the save is refused before anything is written.
-   * Omitted: the provider's start date, else insertAssignmentRows' today
-   * default. */
+   * Omitted: the provider's start date, else the local today. Either way,
+   * an assignment whose date was filled in rather than entered is marked
+   * `startDateDefaulted` in the provider's CREATE audit row. */
   assignmentStartDate?: string | null;
 }
 
@@ -363,11 +365,12 @@ export async function createProviderWithDetails(
   const orgId = requireActiveOrg();
   // The facility assignments' start date, settled before anything is written:
   // a provider is never created with assignments it then cannot save.
-  const assignmentStart =
+  const enteredStart = input.provider.startDate?.trim() || null;
+  const resolvedStart =
     input.assignmentStartDate === undefined
-      ? input.provider.startDate?.trim() || null
+      ? enteredStart
       : input.assignmentStartDate?.trim() || null;
-  if (input.facilityIds.length > 0 && input.assignmentStartDate !== undefined && !assignmentStart)
+  if (input.facilityIds.length > 0 && input.assignmentStartDate !== undefined && !resolvedStart)
     throw new Error(ASSIGNMENT_START_DATE_REQUIRED);
   // E1.3: validate the assignment set up front (≥1, exactly one primary) and
   // mirror the primary onto providers.group_id (frozen legacy mirror).
@@ -433,10 +436,15 @@ export async function createProviderWithDetails(
 
   // E1.4 TE-3: assignment writes route through the shared service, with the
   // start date settled above (the caller's resolved date, else the provider's
-  // employment start date); insertAssignmentRows defaults a still-missing date
-  // to today so the start_date NOT NULL CHECK never trips.
+  // employment start date). A still-missing date is the local today, the
+  // same day insertAssignmentRows would default to, settled here so the
+  // audit row records the exact date written.
   // F1.4.3: first selected facility is primary until the coordinator changes
   // it on the record — Add Provider has no primary picker.
+  const assignmentStart = resolvedStart ?? localCalendarDate(new Date());
+  // MINT-96 A7: "start date defaulted" is a fact. With no start date entered
+  // on the provider, the assignments' date was filled in, not entered.
+  const startDateDefaulted = enteredStart === null;
   const facilityRows = markFirstFacilityPrimary(input.facilityIds);
   let insertedFacilityIds: string[] = [];
   if (facilityRows.length > 0) {
@@ -488,6 +496,17 @@ export async function createProviderWithDetails(
       provider: created,
       licenses: insertedLicenses,
       facilityIds: insertedFacilityIds,
+      // One entry per saved facility assignment with the date written;
+      // `startDateDefaulted: true` marks a date that was filled in, and an
+      // entered date never carries it.
+      facilityAssignments: facilityRows
+        .filter((r) => insertedFacilityIds.includes(r.facilityId))
+        .map(({ facilityId, isPrimary }) => ({
+          facilityId,
+          isPrimary,
+          startDate: assignmentStart,
+          ...(startDateDefaulted ? { startDateDefaulted: true } : {}),
+        })),
       groupAssignments: insertedAssignments,
     },
     description: `Created provider ${created.firstName} ${created.lastName}`,
