@@ -2,8 +2,13 @@
 // party/contact surfaces (E0.2/E0.3). The server (create_organization RPC and
 // RLS/services) is the enforcement authority; these give the user immediate,
 // friendly feedback before submit.
-import type { ContactInput } from "@/types";
-import { usPhoneError, type PhoneValidationRules } from "@/lib/phone";
+import type { ContactInput, InboundLeadInput } from "@/types";
+import {
+  US_PHONE_MESSAGE,
+  isValidUsPhone,
+  usPhoneError,
+  type PhoneValidationRules,
+} from "@/lib/phone";
 
 // Format check mirrors the RPC's server-side regex closely enough for a
 // pre-submit gate: one @, no spaces, a dot in the domain. Deliberately lenient
@@ -48,11 +53,15 @@ export function commonEmailDomainTypo(value: string): string | null {
 }
 
 // Required-field validation for a CRM contact (E0.2 FR-2), mirroring the RPC's
-// assert_contact_valid: name, valid email, phone, and the meaningful split
-// address parts (line2/country optional). Returns per-field messages. An
-// entered office phone must also be a US number (MINT-91); on an edit pass the
+// assert_contact_valid: name, valid email, and the meaningful split address
+// parts (line2/country optional). Returns per-field messages.
+//
+// The office phone is NOT required (Sowmya, Nov 1, 2026, MINT-91 Addendum 9
+// U8): a blank phone saves, and the gap becomes a backend advisory once the
+// bypassed-checks store lands (MINT-134), with nothing shown here. An entered
+// phone must still be a US number (A3, no override); on an edit pass the
 // stored phone, so by default an untouched legacy value never blocks the save
-// (recheckStoredOnEdit).
+// (A4, recheckStoredOnEdit).
 export interface ContactFieldErrors {
   firstName?: string;
   lastName?: string;
@@ -76,11 +85,9 @@ export function contactErrors(
   if (!c.lastName.trim()) e.lastName = "Last name is required";
   if (!c.email.trim()) e.email = "Email is required";
   else if (!isValidEmail(c.email)) e.email = "Enter a valid email address";
-  if (!c.phoneOffice.trim()) e.phoneOffice = "Phone is required";
-  else {
-    const phoneError = usPhoneError(c.phoneOffice, storedPhone, phoneRules);
-    if (phoneError) e.phoneOffice = phoneError;
-  }
+  // Blank passes (U8); usPhoneError returns null for a blank value.
+  const phoneError = usPhoneError(c.phoneOffice, storedPhone, phoneRules);
+  if (phoneError) e.phoneOffice = phoneError;
   if (!c.addressLine1.trim()) e.addressLine1 = "Street address is required";
   if (!c.city.trim()) e.city = "City is required";
   if (!c.state.trim()) e.state = "State is required";
@@ -90,4 +97,28 @@ export function contactErrors(
 
 export function hasContactErrors(e: ContactFieldErrors): boolean {
   return Object.keys(e).length > 0;
+}
+
+// The public /contact lead form (E0.5 F0.5.5), mirroring submit_inbound_lead:
+// organization name, your name and a valid email are required. The phone is
+// optional (MINT-91 U8, Nov 1, 2026), and an entered one must be a US number
+// (A3). A lead has no organization yet, so a blank phone here records no
+// advisory: there is no org to record it against.
+export interface LeadErrors {
+  orgName?: string;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+}
+
+export function leadErrors(v: InboundLeadInput): LeadErrors {
+  const e: LeadErrors = {};
+  if (!v.orgName.trim()) e.orgName = "Organization name is required";
+  if (!v.contactName.trim()) e.contactName = "Your name is required";
+  if (!v.contactEmail.trim()) e.contactEmail = "Email is required";
+  else if (!isValidEmail(v.contactEmail)) e.contactEmail = "Enter a valid email address";
+  if (v.contactPhone.trim() && !isValidUsPhone(v.contactPhone)) {
+    e.contactPhone = US_PHONE_MESSAGE;
+  }
+  return e;
 }

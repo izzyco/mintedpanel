@@ -82,6 +82,7 @@ export async function listPartyRoleTypes(): Promise<PartyRoleType[]> {
 
 // Editable contact fields (E0.2 FR-4). Required-ness is enforced by the caller
 // (contactErrors) and RLS/writer policy; this patches only what's provided.
+// phoneOffice may be blank (MINT-91 U8).
 export interface UpdatePartyInput {
   firstName?: string;
   lastName?: string;
@@ -102,6 +103,10 @@ export interface UpdatePartyInput {
 export async function updateParty(partyId: string, input: UpdatePartyInput): Promise<Party> {
   requireActiveOrg();
   const patch = snakeizeRow<PartyUpdate>(input);
+  // The office phone is optional (MINT-91 U8). A cleared one is stored as NULL,
+  // the way createParty, create_organization and submit_capture store "no
+  // phone", never as an empty string.
+  if (input.phoneOffice !== undefined && !input.phoneOffice.trim()) patch.phone_office = null;
   // `name` is the retained display column and is never edited directly — it is
   // recomposed whenever either half of the split name is patched, so the two can
   // never disagree (D6).
@@ -142,8 +147,10 @@ export async function createParty(input: ContactInput): Promise<Party> {
   const orgId = requireActiveOrg();
   const uid = currentUserId();
   if (!uid) throw new Error("Not authenticated");
+  // A blank office phone (MINT-91 U8), whitespace included, is stored as NULL.
+  const phoneOffice = input.phoneOffice.trim() ? input.phoneOffice : "";
   const row = nullifyEmpty(
-    snakeizeRow<Record<string, unknown>>({ ...input, name: composeFullName(input) }),
+    snakeizeRow<Record<string, unknown>>({ ...input, phoneOffice, name: composeFullName(input) }),
   ) as PartyInsert;
   const { data, error } = await supabase
     .from("parties")

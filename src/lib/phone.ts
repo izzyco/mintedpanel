@@ -1,6 +1,10 @@
 // US phone rule (MINT-91): the ONE entry-time check behind every phone input
 // and the import create paths. Pure and I/O-free. Blank-value policy stays with
-// each caller — most phone fields are optional; the contact forms require one.
+// each caller. No form requires a phone on its own: the contact forms' office
+// phone stopped being required on Nov 1, 2026 (MINT-91 Addendum 9 U8: a blank
+// phone saves; the gap is a backend advisory once MINT-134 lands). Payer
+// contacts and facilities still ask for some way to reach them, of which a
+// phone is one.
 // Roster export keeps its own digit-count check: it runs over stored rows,
 // which this rule never re-validates.
 //
