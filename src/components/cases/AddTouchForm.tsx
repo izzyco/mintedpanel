@@ -11,7 +11,6 @@
 // touch that implies nothing renders no suggestion — the dialog never
 // pressures a bump; declining logs the touch alone.
 import { useState } from "react";
-import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -24,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { activityDateRules, todayForActivity } from "@/lib/activityDate";
 import { fmtDate } from "@/lib/format";
 import { CANONICAL_TOUCH_TYPES, TOUCH_TYPE_LABELS } from "@/lib/touchTypes";
 import {
@@ -67,7 +67,9 @@ export function AddTouchForm({
   onCancel: () => void;
   onSave: (input: TouchInput, acceptedBumps: AcceptedTouchBump[]) => void;
 }) {
-  const today = format(new Date(), "yyyy-MM-dd");
+  // The day a touch is filed under by default: the same day logNote and a task
+  // completion use (ActivityDateRules, MINT-129).
+  const today = todayForActivity(new Date(), activityDateRules());
   const [touchDate, setTouchDate] = useState(correctionOf?.touchDate ?? today);
   const [touchType, setTouchType] = useState<TouchType>(
     (correctionOf?.touchType as TouchType | undefined) ?? "call",

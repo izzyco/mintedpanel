@@ -6,7 +6,6 @@
 // last payer communication, and exports the log to CSV. Corrections are appends
 // (onCorrectTouch); the mutation hooks stay with the parent route.
 import { useMemo, useState } from "react";
-import { format } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { EmptyState } from "@/components/EmptyState";
+import { activityDateRules, todayForActivity } from "@/lib/activityDate";
 import { fmtDate } from "@/lib/format";
 import { outcomeLabel } from "@/lib/touchOutcomes";
 import { CANONICAL_TOUCH_TYPES, touchTypeDirection, TOUCH_TYPE_LABELS } from "@/lib/touchTypes";
@@ -88,7 +88,9 @@ export function CaseTouchesPanel({
   currentStatus,
   onStatusBump,
   history,
-  today = format(new Date(), "yyyy-MM-dd"),
+  // The activity day (ActivityDateRules, MINT-129): follow-up status and the
+  // CSV's name agree with the day a touch or note is filed under.
+  today = todayForActivity(new Date(), activityDateRules()),
 }: {
   touches: Touch[];
   coordinators: Profile[];

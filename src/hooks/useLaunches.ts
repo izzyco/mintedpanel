@@ -4,9 +4,11 @@
 // cases caches); the launch-specific write hooks and their orphaned modals
 // are gone. Launch rows ARE facilities rows, so the list shares the
 // facilities cache key.
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
 import { useActiveOrgId } from "@/lib/auth-store";
+import { resolveLaunchReportRules, type LaunchReportRules } from "@/lib/launchReport";
 import { listFacilities } from "@/services/orgSettings";
 import { getLaunchLocation } from "@/services/launches";
 
@@ -28,4 +30,12 @@ export function useLaunchLocation(id: string | undefined) {
     queryFn: () => getLaunchLocation(id as string),
     enabled: orgId !== "no-org" && !!id,
   });
+}
+
+/** The Launches report windows for the active organization. Nothing stores a
+ * platform or organization override yet (the Mission Control setting is
+ * MINT-116), so this resolves to the decided defaults; when the setting
+ * lands, its read replaces the two nulls. */
+export function useLaunchReportRules(): LaunchReportRules {
+  return useMemo(() => resolveLaunchReportRules(null, null), []);
 }
