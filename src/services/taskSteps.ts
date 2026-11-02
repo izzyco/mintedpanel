@@ -23,7 +23,7 @@ export type CompleteTaskStepResult =
 const COMPLETED_DATE_ARG = "p_completed_date";
 
 /** Deploy-order safety: PGRST202 naming `p_completed_date` means PostgREST has
- * no complete_sop_task_step taking it (migration 20261030200000 is not applied
+ * no complete_sop_task_step taking it (migration 20261101110000 is not applied
  * to this database yet) and nothing ran, so the caller retries once without
  * the date and the old function stores the UTC day. Anything else — a network
  * fault, a permission error, a 5xx — must propagate, never be retried. */
