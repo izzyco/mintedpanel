@@ -558,7 +558,7 @@ export const CHECKS = {
     domain: "assignment",
     protects: "completeness",
     critical: false,
-    help: "These facility assignments were saved without a start date. Billing Readiness holds them until a date is entered.",
+    help: "These facility assignments were saved without a start date. Rosters and payer forms that need one will be missing it until a date is entered.",
     recordTables: ["providers"],
     contextKeys: ["facility_ids"],
   },
