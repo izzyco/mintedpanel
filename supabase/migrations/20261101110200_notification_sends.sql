@@ -28,7 +28,7 @@
 -- two SECURITY DEFINER RPCs below.
 --
 -- Additive and re-runnable. REPO-ONLY until an operator applies it, staging
--- first, after 20261101100000. Until then the digest job cannot claim a send,
+-- first, after 20261101110100. Until then the digest job cannot claim a send,
 -- so it sends nothing.
 -- Verify the OBJECTS, not a ledger filename (supabase-migrations skill):
 --   SELECT to_regclass('public.notification_sends');                 -- non-null
