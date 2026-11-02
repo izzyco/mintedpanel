@@ -503,4 +503,18 @@ describe("FixedWindowRateLimiter", () => {
     now = 60_000;
     expect(limiter.take("u1")).toEqual({ allowed: true });
   });
+
+  it("counts a cost of more than one, and counts nothing it refuses", () => {
+    let now = 0;
+    const limiter = new FixedWindowRateLimiter(25, 60_000, () => now);
+    expect(limiter.take("u1", 10)).toEqual({ allowed: true });
+    expect(limiter.take("u1", 10)).toEqual({ allowed: true });
+    now = 30_000;
+    expect(limiter.take("u1", 10)).toEqual({ allowed: false, retryAfterSeconds: 30 });
+    // The refused 10 were not counted: 5 still fit in this window.
+    expect(limiter.take("u1", 5)).toEqual({ allowed: true });
+    expect(limiter.take("u1", 1)).toMatchObject({ allowed: false });
+    now = 60_000;
+    expect(limiter.take("u1", 10)).toEqual({ allowed: true });
+  });
 });
