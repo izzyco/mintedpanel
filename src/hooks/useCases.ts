@@ -4,6 +4,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { queryKeys } from "@/hooks/queryKeys";
 import {
+  caseAgeStopStatuses,
+  caseAgeStopTimes,
+  DEFAULT_CASE_AGE_RULES,
+  type CaseAgeRules,
+} from "@/lib/caseAge";
+import {
   addCaseFacility,
   appendCaseTasks,
   createCase,
@@ -13,6 +19,7 @@ import {
   getCases,
   getContractFor,
   listCaseDenialEntries,
+  listCaseTransitionsInto,
   listDenialReasonCodes,
   listOrgCaseFacilityLinks,
   removeCaseFacility,
@@ -93,6 +100,8 @@ export function useCreateCase() {
       qc.invalidateQueries({ queryKey: ["cases", orgId] });
       qc.invalidateQueries({ queryKey: ["tasks", orgId] });
       qc.invalidateQueries({ queryKey: ["audit-log", orgId] });
+      // A first case moves the provider into the funnel's Credentialing stage.
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingFunnel(orgId) });
     },
   });
 }
@@ -308,6 +317,29 @@ export function useCaseDenialEntries() {
   return useQuery({
     queryKey: queryKeys.caseDenialEntries(orgId),
     queryFn: () => listCaseDenialEntries(),
+    enabled: orgId !== "no-org",
+    staleTime: THIRTY_SECONDS,
+  });
+}
+
+/** The "Days open" rules in force. Nothing stores a platform or organization
+ * override yet (the Mission Control setting is MINT-129), so this is the
+ * decided default; when overrides exist they are read here and passed to
+ * resolveCaseAgeRules. */
+export function useCaseAgeRules(): CaseAgeRules {
+  return DEFAULT_CASE_AGE_RULES;
+}
+
+/** Per case, when its "Days open" stopped (caseAgeStopTimes): one org-wide
+ * read of the status-history rows into the stopping statuses. Rides the
+ * "cases" prefix, so every status change re-derives it. */
+export function useCaseAgeStopTimes() {
+  const orgId = useActiveOrgId() ?? "no-org";
+  const rules = useCaseAgeRules();
+  const statuses = caseAgeStopStatuses(rules);
+  return useQuery({
+    queryKey: queryKeys.caseAgeStops(orgId, statuses),
+    queryFn: async () => caseAgeStopTimes(await listCaseTransitionsInto(statuses), rules),
     enabled: orgId !== "no-org",
     staleTime: THIRTY_SECONDS,
   });

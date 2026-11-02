@@ -656,7 +656,7 @@ creates no persistent artifact or asynchronous work.
 
 ## MINT-107 notification sequences (repository-only, operator apply pending)
 
-Migration `20261101100000_notification_sequences.sql`. Reminder and digest
+Migration `20261101110100_notification_sequences.sql`. Reminder and digest
 cadence, in two layers: Minted's platform default per purpose, and an org's
 own row that overrides it field by field. The digest's schedule is the
 exception: it has no default (G2) and exists only on an org row, once Minted
@@ -812,50 +812,6 @@ bounce_escalation_step, updated_at)`; the platform-managed
 - Regression packet: `supabase/tests/mint107-notification-sequences.sql`, run
   by CI's Migration dry-run job.
 
-## MINT-108 notification sends (repository-only, operator apply pending)
-
-Migration `20261101100100_notification_sends.sql`, applied after
-`20261101100000`. The per-recipient send record behind scheduled
-notification jobs. There is no run ledger (MINT-106): every call to a job
-runs it, so a job that emails people claims each send here before sending
-it, and sends only what it claimed. The first user is the follow-up digest
-(`GET /api/jobs/followup-digest`, `src/server/jobs/followupDigestRun.ts`),
-called hourly (a GitHub Actions schedule, plus a daily Vercel cron as a
-backup; they may overlap). Its slot is each scheduled send's: the org's
-**local date**, or `YYYY-MM-DD:2` for a twice-a-day digest's second send
-(A8). Until the migration is applied the digest cannot claim a send, so it
-sends nothing.
-
-### notification_sends
-
-`org_id` (FK to `organizations`, ON DELETE CASCADE), `job` (the registered
-job name, `^[a-z][a-z0-9-]{0,47}$`), `slot` (what the send is once-only for;
-CHECK `^[0-9A-Za-z:_-]{1,64}$`), `recipient_user_id` (the member it went to;
-an actor id, not a foreign key), `outcome` (`claimed | sent | failed`),
-`claimed_at`. The primary key `(org_id, job, slot, recipient_user_id)` is the
-once-per-slot guarantee: one row per send, so no rerun, later hourly run,
-overlapping run, changed send hour, time zone or frequency repeats a
-scheduled send. It leads with `org_id`, so it also serves the org FK. A send
-that may have been delivered (a network error or timeout, a SendGrid 5xx or
-408, an unexplained error, a function that died mid-send) stays `claimed` and
-is never resent: SendGrid has no idempotency key. Only a definite rejection
-(a 4xx other than 408, invalid input, misconfiguration) is `failed`, and a
-later call claims that same row again. No other index. No PHI: no address,
-name, subject or body. RLS on with no policies; service_role has SELECT and
-nothing else.
-
-### RPCs (service_role only, SECURITY DEFINER, `search_path = ''`)
-
-- `claim_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id)
-→ boolean` — true when the caller now holds the send (a new key, or a
-  `failed` row taken again, `claimed_at` reset); false when it is already
-  `claimed` or `sent`, so the caller skips it.
-- `finish_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id,
-p_outcome) → boolean` — records `sent` or `failed` on a `claimed` row;
-  false when the row is not claimed. Refuses any other outcome (22023).
-- Regression packet: `supabase/tests/mint108-notification-sends.sql`, run by
-  CI's Migration dry-run job after the MINT-107 packet.
-
 ## MINT-134 workflow advisories (repository-only)
 
 `20261101090000_mint134_workflow_advisories.sql` adds the ledger behind the
@@ -958,3 +914,47 @@ the handoff block refuses otherwise.
 
 The read RPC (`list_workflow_advisories`) and the platform-admin SELECT policy
 follow #540's `is_platform_admin()`.
+
+## MINT-108 notification sends (repository-only, operator apply pending)
+
+Migration `20261101110200_notification_sends.sql`, applied after
+`20261101110100`. The per-recipient send record behind scheduled
+notification jobs. There is no run ledger (MINT-106): every call to a job
+runs it, so a job that emails people claims each send here before sending
+it, and sends only what it claimed. The first user is the follow-up digest
+(`GET /api/jobs/followup-digest`, `src/server/jobs/followupDigestRun.ts`),
+called hourly (a GitHub Actions schedule, plus a daily Vercel cron as a
+backup; they may overlap). Its slot is each scheduled send's: the org's
+**local date**, or `YYYY-MM-DD:2` for a twice-a-day digest's second send
+(A8). Until the migration is applied the digest cannot claim a send, so it
+sends nothing.
+
+### notification_sends
+
+`org_id` (FK to `organizations`, ON DELETE CASCADE), `job` (the registered
+job name, `^[a-z][a-z0-9-]{0,47}$`), `slot` (what the send is once-only for;
+CHECK `^[0-9A-Za-z:_-]{1,64}$`), `recipient_user_id` (the member it went to;
+an actor id, not a foreign key), `outcome` (`claimed | sent | failed`),
+`claimed_at`. The primary key `(org_id, job, slot, recipient_user_id)` is the
+once-per-slot guarantee: one row per send, so no rerun, later hourly run,
+overlapping run, changed send hour, time zone or frequency repeats a
+scheduled send. It leads with `org_id`, so it also serves the org FK. A send
+that may have been delivered (a network error or timeout, a SendGrid 5xx or
+408, an unexplained error, a function that died mid-send) stays `claimed` and
+is never resent: SendGrid has no idempotency key. Only a definite rejection
+(a 4xx other than 408, invalid input, misconfiguration) is `failed`, and a
+later call claims that same row again. No other index. No PHI: no address,
+name, subject or body. RLS on with no policies; service_role has SELECT and
+nothing else.
+
+### RPCs (service_role only, SECURITY DEFINER, `search_path = ''`)
+
+- `claim_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id)
+→ boolean` — true when the caller now holds the send (a new key, or a
+  `failed` row taken again, `claimed_at` reset); false when it is already
+  `claimed` or `sent`, so the caller skips it.
+- `finish_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id,
+p_outcome) → boolean` — records `sent` or `failed` on a `claimed` row;
+  false when the row is not claimed. Refuses any other outcome (22023).
+- Regression packet: `supabase/tests/mint108-notification-sends.sql`, run by
+  CI's Migration dry-run job after the MINT-107 packet.

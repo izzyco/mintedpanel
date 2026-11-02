@@ -460,6 +460,54 @@ describe("provider scan (TE-2/TE-6)", () => {
     expect(row.errorColumn).toBe(column);
   });
 
+  it("stages a 10-digit NPI with a wrong check digit — the check binds at dedupe, new identities only (MINT-7)", () => {
+    const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "1234567890" });
+    expect(row.rowState).toBe("staged");
+    expect(row.mapped?.npi).toBe("1234567890");
+  });
+
+  it.each(["123-456-7893", "123 456 7893", " 123\u2013456\u20137893 "])(
+    "stages a typed NPI %j with its dashes and spaces stripped (MINT-110)",
+    (npi) => {
+      const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi });
+      expect(row.rowState).toBe("staged");
+      expect(row.mapped?.npi).toBe("1234567893");
+      // The persisted source cell stays as uploaded.
+      expect(row.raw.npi).toBe(npi.trim());
+    },
+  );
+
+  it("still rejects other NPI junk after stripping (MINT-110)", () => {
+    for (const npi of ["123.456.7893", "NPI 1234567893", "12345678x3"]) {
+      const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi });
+      expect(row.rowState).toBe("error");
+      expect(row.errorColumn).toBe("npi");
+    }
+    // B3 (Nov 1): an NPI is optional at import, so a cell of separators only
+    // strips to blank and the row stages without an NPI.
+    const dashesOnly = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "---" });
+    expect(dashesOnly.rowState).toBe("staged");
+    expect(dashesOnly.mapped?.npi ?? "").toBe("");
+  });
+
+  it("quotes a bad group NPI as uploaded, not as stripped (MINT-110)", () => {
+    const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, group_npi: "190-283-374" });
+    expect(row.rowState).toBe("error");
+    expect(row.errorReason).toBe('group_npi must be exactly 10 digits, got "190-283-374"');
+  });
+
+  it("strips a dashed group Type 2 NPI the same way (MINT-110)", () => {
+    const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, group_npi: "190-283-3742" });
+    expect(row.rowState).toBe("staged");
+    expect(row.mapped?.group_npi).toBe("1902833742");
+  });
+
+  it("rejects an impossible calendar date, naming the column", () => {
+    const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, date_of_birth: "1990-02-30" });
+    expect(row.rowState).toBe("error");
+    expect(row.errorColumn).toBe("date_of_birth");
+  });
+
   it("keeps status off the provider template and names the breaking re-download", () => {
     expect(PROVIDER_DESCRIPTOR.headers).not.toContain("status");
     expect(PROVIDER_DESCRIPTOR.helperText).toMatch(/re-download/i);
@@ -483,8 +531,11 @@ describe("provider scan (TE-2/TE-6)", () => {
     ).toBe("error");
   });
 
-  it("requires first/last/npi and a parent-group key", () => {
-    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "" }).rowState).toBe("error");
+  it("requires first/last and a parent-group key; NPI is optional (B3)", () => {
+    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "" }).rowState).toBe("staged");
+    expect(scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, provider_last_name: "" }).rowState).toBe(
+      "error",
+    );
     expect(
       scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, group_tin: "", group_name: "" }).rowState,
     ).toBe("error");

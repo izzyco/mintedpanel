@@ -10,7 +10,7 @@ const root = process.cwd();
 // MINT-108: the fake in src/__fixtures__/followUpDigestFakeDb.ts stands in for
 // notification_sends, so the rules it mirrors must be the migration's.
 const SENDS_MIGRATION = readFileSync(
-  join(root, "supabase/migrations/20261101100100_notification_sends.sql"),
+  join(root, "supabase/migrations/20261101110200_notification_sends.sql"),
   "utf8",
 );
 const sendsSource = readFileSync(join(root, "src/server/jobs/notificationSends.ts"), "utf8");
@@ -21,10 +21,10 @@ describe("notification_sends migration and code agree", () => {
     const order = readdirSync(join(root, "supabase/migrations"))
       .filter((file) => file.endsWith(".sql"))
       .sort();
-    expect(order.indexOf("20261101100100_notification_sends.sql")).toBeGreaterThan(
-      order.indexOf("20261101100000_notification_sequences.sql"),
+    expect(order.indexOf("20261101110200_notification_sends.sql")).toBeGreaterThan(
+      order.indexOf("20261101110100_notification_sequences.sql"),
     );
-    expect(order.indexOf("20261101100000_notification_sequences.sql")).toBeGreaterThan(-1);
+    expect(order.indexOf("20261101110100_notification_sequences.sql")).toBeGreaterThan(-1);
   });
 
   it("keeps one row per (org, job, slot, recipient): a failed row is claimed again, nothing else", () => {

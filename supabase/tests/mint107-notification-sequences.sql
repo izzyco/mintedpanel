@@ -1,7 +1,7 @@
 -- MINT-107 notification sequences regression packet: RLS, grants, CHECKs,
 -- triggers, Minted's platform defaults (no default digest schedule, G2),
 -- save_notification_sequence, and the consent archive (D5)
--- (supabase/migrations/20261101100000_notification_sequences.sql).
+-- (supabase/migrations/20261101110100_notification_sequences.sql).
 --
 -- Run after all migrations in a disposable PostgreSQL database, never against
 -- hosted. CI's Migration dry-run job runs it right after the MINT-106 packet:
@@ -51,7 +51,7 @@ BEGIN
      OR to_regprocedure('private.notification_stop_conditions_valid(text[])') IS NULL
      OR to_regprocedure('private.notification_time_zone_valid(text)') IS NULL
      OR to_regprocedure('auth.uid()') IS NULL THEN
-    RAISE EXCEPTION 'apply every migration through 20261101100000_notification_sequences.sql first';
+    RAISE EXCEPTION 'apply every migration through 20261101110100_notification_sequences.sql first';
   END IF;
 END;
 $$;
