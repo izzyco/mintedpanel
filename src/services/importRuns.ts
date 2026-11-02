@@ -11,8 +11,18 @@ import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
 import { translateDbError } from "@/lib/dbErrors";
 import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
+import {
+  ADVISORY_RECORD_FAILED,
+  ADVISORY_RPC_TIMEOUT_MS,
+  reportAdvisoryFailure,
+} from "@/lib/advisoryChecks";
+import { readCompletePages } from "@/lib/completePages";
 import { localCalendarDate } from "@/lib/systemTokens";
-import { ensureFirstFacilityPrimary, insertAssignmentRows } from "@/services/providerAssignments";
+import {
+  ensureFirstFacilityPrimary,
+  insertAssignmentRows,
+  recordUndatedAssignments,
+} from "@/services/providerAssignments";
 import { createEnrollmentFact, listEnrollmentFacts } from "@/services/enrollmentFacts";
 import {
   createFacility,
@@ -399,12 +409,18 @@ async function applyProviderRelationships(
   if (facilityInserts.length > 0) {
     // As in the commit RPC: the assignment starts on the provider's start
     // date, else the Add Provider rule's (blankAssignmentStartDate).
-    await insertAssignmentRows(
+    const inserted = await insertAssignmentRows(
       facilityInserts.map((f) => ({
         providerId: f.providerId,
         facilityId: f.facilityId,
         startDate: providerStartDate.get(f.providerId) ?? assignmentStartDate,
       })),
+    );
+    // MINT-134: a row this pass inserted undated ("no default") is recorded
+    // now, before the steps below that can still fail.
+    void recordUndatedAssignments(
+      inserted.filter((r) => !r.startDate),
+      "import",
     );
     summary.facilityAssignments = facilityInserts.length;
   }
@@ -481,6 +497,11 @@ export async function commitImportRun(
     enrollmentFacts: 0,
   };
   if (!result.alreadyCommitted) {
+    // MINT-134: what the commit RPC left undated is recorded now, before the
+    // relationship pass and the primary step, which can still fail. Only "no
+    // default" can leave one undated (the default dates it today).
+    if (assignmentStartDate === null)
+      await recordImportUndatedAssignments(plan, result.createdProviderIds);
     // A blocked source row must not attach relationships through another
     // committed row with the same NPI. Preserve the reviewed row boundary.
     const blockedLines = new Set(plan.blocked_entries.map((entry) => entry.line));
@@ -529,6 +550,47 @@ async function recordRunReportWarnings(
   return next;
 }
 
+/** The facility assignments the commit RPC left without a start date,
+ * recorded as assignment.start_date_missing (source import): every undated
+ * one of a provider it created, and the undated ones among the facilities it
+ * added to a provider it updated (add_facility_ids; an assignment the provider
+ * already had is not the import's). Read before the relationship pass, which
+ * records its own inserts, so the two never overlap. The read is held at most
+ * ADVISORY_RPC_TIMEOUT_MS and the sends aren't awaited. Never rejects: a
+ * failed read is one advisory_record_failed line. */
+async function recordImportUndatedAssignments(
+  plan: CommitPlan,
+  createdProviderIds: readonly string[],
+): Promise<void> {
+  try {
+    const created = new Set(createdProviderIds);
+    const added = new Map(plan.updates.map((u) => [u.provider_id, new Set(u.add_facility_ids)]));
+    const providerIds = [...created, ...added.keys()];
+    if (providerIds.length === 0) return;
+    const query = supabase
+      .from("provider_facility_assignments")
+      .select("provider_id, facility_id", { count: "exact" })
+      .eq("org_id", requireActiveOrg())
+      .in("provider_id", providerIds)
+      .is("start_date", null)
+      .order("id", { ascending: true })
+      .abortSignal(AbortSignal.timeout(ADVISORY_RPC_TIMEOUT_MS));
+    const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+      label: "Undated facility assignment list",
+    });
+    void recordUndatedAssignments(
+      rows
+        .map((r) => ({ providerId: String(r.provider_id), facilityId: String(r.facility_id) }))
+        .filter(
+          (r) => created.has(r.providerId) || added.get(r.providerId)?.has(r.facilityId) === true,
+        ),
+      "import",
+    );
+  } catch (error) {
+    reportAdvisoryFailure(ADVISORY_RECORD_FAILED, "assignment.start_date_missing", error);
+  }
+}
+
 export interface BatchAssignmentResult {
   groupsAdded: number;
   facilitiesAdded: number;
@@ -561,13 +623,20 @@ export async function applyBatchAssignment(input: {
     if (error) throw translateDbError(error);
   }
   if (input.plan.facilityInserts.length > 0) {
-    await insertAssignmentRows(
+    const inserted = await insertAssignmentRows(
       input.plan.facilityInserts.map((f, i, all) => ({
         providerId: f.providerId,
         facilityId: f.facilityId,
         startDate: input.startDate,
         isPrimary: all.findIndex((x) => x.providerId === f.providerId) === i,
       })),
+    );
+    // MINT-134: a batch without a start date records the rows it actually
+    // inserted (a repeat click or a stale plan inserts nothing new), now,
+    // before the primary step and the audit row, which can still fail.
+    void recordUndatedAssignments(
+      inserted.filter((r) => !r.startDate),
+      "import",
     );
   }
   const touchedProviderIds = [
