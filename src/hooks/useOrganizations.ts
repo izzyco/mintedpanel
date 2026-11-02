@@ -6,6 +6,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useAuthStore } from "@/lib/auth-store";
+import { recordNewOrgContactsPhoneMissing } from "@/services/contactPhoneAdvisory";
 import { createOrganization, type CreateOrganizationInput } from "@/services/organizations";
 
 export function useCreateOrganization() {
@@ -14,11 +15,15 @@ export function useCreateOrganization() {
   const setActiveOrg = useAuthStore((s) => s.setActiveOrg);
   return useMutation({
     mutationFn: (input: CreateOrganizationInput) => createOrganization(input),
-    onSuccess: async (orgId) => {
+    onSuccess: async (orgId, input) => {
       // Pull the new membership into the store first; setActiveOrg only accepts
       // an org the caller is a member of, so this must precede the switch.
       await loadMemberships();
       setActiveOrg(orgId);
+      // MINT-134: a contact saved with no office phone is recorded against the
+      // new org, so only after the switch. Fire and forget; the user sees
+      // nothing of it.
+      void recordNewOrgContactsPhoneMissing(orgId, input);
       // E6.1 F6.1.5 (supersedes E0.1 F0.1.5's Get-started landing): post-create
       // lands IN the one-time wizard flow, NOT back at the cross-org Portfolio.
       navigate({ to: "/onboarding/wizard" });

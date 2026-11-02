@@ -9,6 +9,11 @@
 //   CP-04  Capture link: a blank phone submits; an untouched invalid stored
 //          phone submits; a non-US one is refused.
 //   CP-05  Public /contact: a blank phone submits; a non-US one is refused.
+// MINT-134: a saved contact with no office phone is recorded once, quietly, as
+// contact.phone_missing (record_workflow_advisory): Add person (CP-01), the
+// Edit person save that clears a stored phone (CP-02; an unrelated edit records
+// nothing) and Create organization (CP-03). The capture link and /contact
+// record nothing (CP-04, CP-05).
 import {
   test,
   expect,
@@ -23,6 +28,8 @@ const ORG_ID = "22222222-2222-4222-8222-222222222222";
 const NEW_ORG = "44444444-4444-4444-8444-444444444444";
 const PARTY_JANE = "66666666-6666-4666-8666-666666666666";
 const PARTY_LEGACY = "77777777-7777-4777-8777-777777777777";
+// The new org's organization contact, as create_organization would save it.
+const NEW_CUSTOMER = "55555555-5555-4555-8555-555555555555";
 const PHONE_ERROR = "Enter a 10-digit US phone number";
 const NON_US = "+44 20 7946 0958";
 
@@ -197,6 +204,8 @@ function workspaceHandler(fixtures: Record<string, Row[]>, writes: Write[]) {
       if (req.method() === "POST") return json([{ id: "a-new" }], 201);
       const select = url.searchParams.get("select") ?? "";
       if (select.trim() === "id") return json([]);
+      // MINT-134: the new org's default contact, read back after create.
+      if (select.trim() === "party_id") return json(orgCreated ? [{ party_id: NEW_CUSTOMER }] : []);
       const byId = Object.fromEntries(parties.map((p) => [p.id, p]));
       return json(
         fixtures.party_role_assignments.map((a) => ({
@@ -207,9 +216,12 @@ function workspaceHandler(fixtures: Record<string, Row[]>, writes: Write[]) {
       );
     }
     if (table === "parties" && req.method() === "POST") {
-      const row = party({ ...(req.postDataJSON() as Row), id: `new-${parties.length + 1}` });
+      const n = String(parties.length + 1).padStart(12, "0");
+      const row = party({ ...(req.postDataJSON() as Row), id: `88888888-8888-4888-8888-${n}` });
       parties.push(row);
-      return json([row], 201);
+      // .single() asks for one object, as PostgREST would return it.
+      const wantsObject = (req.headers()["accept"] ?? "").includes("vnd.pgrst.object");
+      return json(wantsObject ? row : [row], 201);
     }
     if (table === "parties" && req.method() === "PATCH") {
       const id = (url.searchParams.get("id") ?? "").replace("eq.", "");
@@ -253,13 +265,25 @@ const partyPosts = (writes: Write[]) =>
   writes.filter((w) => w.table === "parties" && w.method === "POST");
 const partyPatches = (writes: Write[]) =>
   writes.filter((w) => w.table === "parties" && w.method === "PATCH");
+const advisories = (writes: Write[]) =>
+  writes.filter((w) => w.table === "rpc/record_workflow_advisory");
+const auditWrites = (writes: Write[]) => writes.filter((w) => w.table === "audit_log");
+const phoneMissing = (orgId: string, partyId: string) => ({
+  p_org_id: orgId,
+  p_check_key: "contact.phone_missing",
+  p_severity: "advisory",
+  p_record_table: "parties",
+  p_record_id: partyId,
+  p_source: "panel",
+  p_context: {},
+});
 
 test("CP-01: Add person saves a blank phone as NULL and refuses a non-US one", async ({
   context,
   page,
 }) => {
   const writes: Write[] = [];
-  await bootWorkspace(context, writes);
+  const fixtures = await bootWorkspace(context, writes);
   await page.goto("/org-detail");
   await expect(page.getByRole("heading", { name: "People" })).toBeVisible({ timeout: 30000 });
 
@@ -284,6 +308,7 @@ test("CP-01: Add person saves a blank phone as NULL and refuses a non-US one", a
   await dialog.getByRole("button", { name: /^Add person$/ }).click();
   await expect(dialog.getByText(PHONE_ERROR)).toBeVisible();
   expect(partyPosts(writes)).toHaveLength(0);
+  expect(advisories(writes)).toHaveLength(0);
 
   // Blank: saves, quietly, with the phone stored as NULL.
   await dialog.locator("#new-party-phone").fill("");
@@ -296,6 +321,10 @@ test("CP-01: Add person saves a blank phone as NULL and refuses a non-US one", a
     last_name: "Reyes",
     phone_office: null,
   });
+  // MINT-134: recorded once, against the new person.
+  const dana = fixtures.parties.at(-1)?.id as string;
+  await expect.poll(() => advisories(writes).length).toBe(1);
+  expect(advisories(writes)[0].body).toEqual(phoneMissing(ORG_ID, dana));
 });
 
 test("CP-02: Edit person clears the phone to NULL, keeps an untouched legacy phone, refuses a non-US one", async ({
@@ -320,6 +349,7 @@ test("CP-02: Edit person clears the phone to NULL, keeps an untouched legacy pho
     title: "Office Manager",
     phone_office: "abc-def-ghij",
   });
+  expect(advisories(writes)).toHaveLength(0);
 
   // Changing it to a non-US number is refused, and nothing is written.
   await lee.getByRole("button", { name: "Edit" }).click();
@@ -336,6 +366,24 @@ test("CP-02: Edit person clears the phone to NULL, keeps an untouched legacy pho
   expect(partyPatches(writes)).toHaveLength(2);
   expect(partyPatches(writes)[1].body).toMatchObject({ phone_office: null });
   await expect(page.getByText("Phone is required")).toHaveCount(0);
+  // MINT-134: the save that cleared the stored phone is recorded, once.
+  await expect.poll(() => advisories(writes).length).toBe(1);
+  expect(advisories(writes)[0].body).toEqual(phoneMissing(ORG_ID, PARTY_LEGACY));
+
+  // An unrelated edit of a contact that already has no phone records nothing.
+  const audited = auditWrites(writes).length;
+  await lee.getByRole("button", { name: "Edit" }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.locator(`#edit-${PARTY_LEGACY}-title`).fill("Practice Manager");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(partyPatches(writes)).toHaveLength(3);
+  expect(partyPatches(writes)[2].body).toMatchObject({
+    title: "Practice Manager",
+    phone_office: null,
+  });
+  await expect.poll(() => auditWrites(writes).length).toBeGreaterThan(audited);
+  expect(advisories(writes)).toHaveLength(1);
 });
 
 test("CP-03: Create organization sends a blank customer phone to the RPC and lands in the wizard", async ({
@@ -371,6 +419,7 @@ test("CP-03: Create organization sends a blank customer phone to the RPC and lan
   await form.getByRole("button", { name: "Create organization" }).click();
   await expect(form.getByText(PHONE_ERROR)).toBeVisible();
   expect(rpcCalls()).toHaveLength(0);
+  expect(advisories(writes)).toHaveLength(0);
 
   // Blank: the RPC is called with the phone blank, and the org is created.
   await form.locator("#customer-phone").fill("");
@@ -380,6 +429,9 @@ test("CP-03: Create organization sends a blank customer phone to the RPC and lan
   const customer = rpcCalls()[0].body?.p_customer as Row;
   expect(customer).toMatchObject({ first_name: "Kitty", last_name: "Forman" });
   expect(String(customer.phone_office ?? "").trim()).toBe("");
+  // MINT-134: recorded once, against the new org's organization contact.
+  await expect.poll(() => advisories(writes).length).toBe(1);
+  expect(advisories(writes)[0].body).toEqual(phoneMissing(NEW_ORG, NEW_CUSTOMER));
 });
 
 // ---------------------------------------------------------------------------
@@ -407,6 +459,15 @@ function captureView(phone: string | null) {
       country: "US",
     },
   };
+}
+
+/** Every record_workflow_advisory request the page makes (MINT-134). */
+function watchAdvisories(page: Page): string[] {
+  const seen: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/rpc/record_workflow_advisory")) seen.push(request.url());
+  });
+  return seen;
 }
 
 async function openCapture(page: Page, token: string) {
@@ -439,6 +500,7 @@ test("CP-04: the capture link submits a blank phone and refuses a non-US one", a
   page,
 }) => {
   const submits: Row[] = [];
+  const advisoryRequests = watchAdvisories(page);
   await routeCapture(context, captureView(null), submits);
   await openCapture(page, "cp04-token");
 
@@ -452,6 +514,8 @@ test("CP-04: the capture link submits a blank phone and refuses a non-US one", a
   await expect(page.getByText("Thank you — you're all set")).toBeVisible();
   expect(submits).toHaveLength(1);
   expect((submits[0].p_payload as Row).phone_office).toBe("");
+  // MINT-134: the anonymous recipient records nothing.
+  expect(advisoryRequests).toHaveLength(0);
 });
 
 test("CP-04: the capture link never re-checks an untouched stored phone (A4)", async ({
@@ -473,6 +537,7 @@ test("CP-05: the public contact form submits a blank phone and refuses a non-US 
   page,
 }) => {
   const leads: Row[] = [];
+  const advisoryRequests = watchAdvisories(page);
   await context.route(/\/(rest|auth)\/v1\//, async (route: Route) => {
     const url = new URL(route.request().url());
     const json = (b: unknown) =>
@@ -505,4 +570,6 @@ test("CP-05: the public contact form submits a blank phone and refuses a non-US 
   await expect(page.getByText("Thanks for reaching out")).toBeVisible();
   expect(leads).toHaveLength(1);
   expect((leads[0].p_payload as Row).contact_phone).toBe("");
+  // MINT-134: a lead has no org, so nothing is recorded.
+  expect(advisoryRequests).toHaveLength(0);
 });
