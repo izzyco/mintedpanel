@@ -4,6 +4,7 @@
 // case remains, evaluated against their UNFILTERED case set.
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { STALLED_AFTER_DAYS } from "./actionState";
+import { caseDaysOpenWhenKnown, DEFAULT_CASE_AGE_RULES, type CaseAgeRules } from "./caseAge";
 import { CASE_STATUS_BUCKETS } from "./caseStatus";
 import {
   EMPTY_FILTERS,
@@ -79,6 +80,13 @@ export interface CasesMatrixInput {
   followUps?: ReadonlyMap<string, CasesMatrixFollowUp>;
   exclusions: readonly CasesMatrixExclusion[];
   filters?: CasesFilters;
+  /** "Days open" policy (caseAge.ts); the default rules when omitted. */
+  caseAgeRules?: CaseAgeRules;
+  /** Per case, when its "Days open" stopped (caseAgeStopTimes); required so
+   * a caller cannot forget the read. A closed case missing from the map has
+   * no recorded close and keeps counting. null: the read failed, so an
+   * approved or denied case's Days open is unknown (null on its cell). */
+  caseAgeStops: ReadonlyMap<string, string> | null;
 }
 
 export interface CasesMatrixCaseCell {
@@ -87,6 +95,10 @@ export interface CasesMatrixCaseCell {
   dimmed: boolean;
   hasOverdueTask: boolean;
   stale: "never" | "quiet" | null;
+  /** "Days open" as of `today`, by the one definition (caseDaysOpenFor);
+   * null for a Not Pursuing case, or when the stops could not be read and the
+   * case is closed. */
+  daysOpen: number | null;
 }
 
 export interface CasesMatrixGapCell {
@@ -236,6 +248,8 @@ function sectionKey(groupId: string, state: string): string {
 
 export function buildCasesMatrix(input: CasesMatrixInput): CasesMatrix {
   const filters = matrixFilters(input.filters);
+  const todayDate = parseISO(input.today);
+  const caseAgeRules = input.caseAgeRules ?? DEFAULT_CASE_AGE_RULES;
   const providersById = new Map(input.providers.map((provider) => [provider.id, provider]));
   const payersById = new Map(input.payers.map((payer) => [payer.id, payer]));
   const groupsById = new Map(input.groups.map((group) => [group.id, group]));
@@ -382,6 +396,12 @@ export function buildCasesMatrix(input: CasesMatrixInput): CasesMatrix {
             case: matrixCase,
             dimmed,
             ...urgency,
+            daysOpen: caseDaysOpenWhenKnown(
+              matrixCase,
+              todayDate,
+              input.caseAgeStops,
+              caseAgeRules,
+            ),
           };
           continue;
         }

@@ -1918,6 +1918,83 @@ function looksLikeVercelGate(r) {
     console.log("SKIP  35d. intake session scope — local mock only (needs an emailed code)");
   }
 
+  // 36-36c — MINT-110 NPI Registry lookup. These routes read no org data (the
+  // registry is public), so there is no cross-org row to leak; the wall to
+  // prove is that the server never proxies the registry for an anonymous
+  // caller or a read-only member. 36 is the positive control: an empty body
+  // 422s, which proves the route is live, so 36b/36c can't pass against a dead
+  // route. On a correct server none of the three reaches the registry.
+  const npiProbe = await apiPost("/api/npi-registry/search", {}, { token: kansasTok });
+  if (npiProbe.status === 404) {
+    console.log("SKIP  36/36b/36c. NPI Registry lookup — route not deployed");
+  } else {
+    check(
+      "36. Kansas POST /api/npi-registry/search with an empty body -> 422 (route is live)",
+      npiProbe.status === 422,
+      `status=${npiProbe.status} (expect 422)`,
+    );
+    const anonymous = await apiPost("/api/npi-registry/search", {
+      firstName: "Gate",
+      lastName: "Probe",
+    });
+    check(
+      "36b. Anonymous NPI Registry search -> 401 (never an open proxy)",
+      anonymous.status === 401 && anonymous.body?.data == null,
+      `status=${anonymous.status} (expect 401) dataPresent=${anonymous.body?.data != null}`,
+    );
+    const readOnly = await apiPost(
+      "/api/npi-registry/lookup",
+      { npi: "1234567893" },
+      { token: spTok },
+    );
+    check(
+      "36c. Billing (read-only) NPI Registry lookup -> 403",
+      readOnly.status === 403 && readOnly.body?.data == null,
+      `status=${readOnly.status} (expect 403) dataPresent=${readOnly.body?.data != null}`,
+    );
+  }
+
+  // 37-37d — MINT-110 PR 2: the import review's batch NPI check. The same wall
+  // as 36: no org data to leak, so prove the route is live (37: an empty body
+  // 422s before any registry call), that it never runs for an anonymous
+  // caller (37b) or a read-only member (37c), and that its answers are
+  // no-store (37d). None of these reaches the registry on a correct server:
+  // validation and role both answer first.
+  const batchProbe = await apiPost("/api/npi-registry/verify-batch", {}, { token: kansasTok });
+  if (batchProbe.status === 404) {
+    console.log("SKIP  37/37b/37c/37d. NPI Registry batch check — route not deployed");
+  } else {
+    check(
+      "37. Kansas POST /api/npi-registry/verify-batch with an empty body -> 422 (route is live)",
+      batchProbe.status === 422,
+      `status=${batchProbe.status} (expect 422)`,
+    );
+    // Every verify-batch answer is private: never stored by a browser or proxy.
+    check(
+      "37d. verify-batch answers are never cached (Cache-Control: no-store)",
+      /no-store/i.test(batchProbe.cacheControl ?? ""),
+      `cache-control=${batchProbe.cacheControl ?? "(none)"}`,
+    );
+    const anonymousBatch = await apiPost("/api/npi-registry/verify-batch", {
+      npis: ["1234567893"],
+    });
+    check(
+      "37b. Anonymous NPI Registry batch check -> 401 (never an open proxy)",
+      anonymousBatch.status === 401 && anonymousBatch.body?.data == null,
+      `status=${anonymousBatch.status} (expect 401) dataPresent=${anonymousBatch.body?.data != null}`,
+    );
+    const readOnlyBatch = await apiPost(
+      "/api/npi-registry/verify-batch",
+      { npis: ["1234567893"] },
+      { token: spTok },
+    );
+    check(
+      "37c. Billing (read-only) NPI Registry batch check -> 403",
+      readOnlyBatch.status === 403 && readOnlyBatch.body?.data == null,
+      `status=${readOnlyBatch.status} (expect 403) dataPresent=${readOnlyBatch.body?.data != null}`,
+    );
+  }
+
   // ---- Pass/fail table ----
   const w = Math.max(...rows.map((r) => r.name.length));
   const line = "+" + "-".repeat(w + 2) + "+--------+";

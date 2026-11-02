@@ -17,6 +17,7 @@ import {
   mapLegacyCaseStatus,
 } from "@/lib/caseStatus";
 import { readCompletePages } from "@/lib/completePages";
+import type { CaseAgeTransition } from "@/lib/caseAge";
 import type { CaseStatus } from "@/lib/caseStatus";
 import type { CaseType } from "@/lib/caseTypes";
 import type { SopResolutionTier } from "@/lib/pickTemplate";
@@ -972,6 +973,35 @@ export async function listCaseDenialEntries(): Promise<CaseDenialEntry[]> {
       note: row.note,
       changedAt: row.changed_at,
     }));
+}
+
+// MINT-73 / D22 — the rows that can stop a case's "Days open": every org-scoped
+// move INTO one of `statuses` (the stopping statuses the resolved CaseAgeRules
+// name). One complete read for the whole org, never one per case; the pure
+// caseAgeStopTimes picks each case's stop and skips seeds. No statuses (the
+// "never" rule) reads nothing.
+export async function listCaseTransitionsInto(
+  statuses: readonly CaseStatus[],
+): Promise<CaseAgeTransition[]> {
+  if (statuses.length === 0) return [];
+  const orgId = requireActiveOrg();
+  const query = supabase
+    .from("case_status_history")
+    .select("id, case_id, from_status, to_status, actor_kind, changed_at", { count: "exact" })
+    .eq("org_id", orgId)
+    .in("to_status", [...statuses])
+    .order("changed_at", { ascending: true })
+    .order("id", { ascending: true });
+  const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+    label: "Case status history",
+  });
+  return rows.map((row) => ({
+    caseId: row.case_id,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    actorKind: row.actor_kind,
+    changedAt: row.changed_at,
+  }));
 }
 
 export interface AppendStatusHistoryInput {

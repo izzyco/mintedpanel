@@ -135,12 +135,14 @@ function Page() {
         for (const w of result.warnings) toast.error(w);
         toast.warning("Provider created, but some details did not save. Fix them on the record.");
         navigate({ to: "/providers/$id", params: { id: result.provider.id } });
-        return;
+        return result.provider.id;
       }
       // ZERO cases created here (F6.3.5). New candidates surface in the group
       // board's awaiting-generation buffer.
       toast.success("Provider created — new payer candidates appear on the group's board.");
       navigate({ to: "/providers/$id", params: { id: result.provider.id } });
+      // The saved id lets the form hand its NPI's advisories to the capture.
+      return result.provider.id;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to create provider");
     }

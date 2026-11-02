@@ -10,12 +10,17 @@
 //           provider is flagged (not generatable) until assigned.
 //   TS-130  PHI sweep: the roster's list read carries no DOB/SSN/home-address
 //           columns; the record masks DOB at rest and SSN to last-4.
+//   MINT-110 The record's inline NPI edit is the third NPI write path: the
+//           same ten-digit rule and message, and the NPI Registry note. It
+//           saves at once (A30); the check finishes in the background and a
+//           mismatch is a quiet note under the saved NPI.
 // TS-128 (the CSV relationship fold + reference sheet) is covered at the scan
 // grain by importSections.test.ts and the staged pipeline by
 // roster-import.spec.ts — the commit relationship pass is pinned here at the
 // wire in TS-113's harness (write-through fact POST).
 import { RECHECK_STORED_RULES, serveIdentityValidationRules } from "./fixtures/identityRules";
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
+import { announcements, recordAnnouncements } from "./fixtures/npiRegistry";
 
 const AUTH_KEY = "sb-example-auth-token";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -279,7 +284,9 @@ function baseFixtures() {
         is_correction: false,
         note: null,
         changed_by: USER_ID,
-        changed_at: "2026-07-05T00:00:00Z",
+        // Midday UTC: the date reads Jul 5 in every US time zone (midnight
+        // UTC is still Jul 4 in Denver, which failed TS-112 there).
+        changed_at: "2026-07-05T12:00:00Z",
       },
     ],
     denial_reason_codes: [
@@ -1002,6 +1009,119 @@ test("F05: license editor blocks reversed dates inline and accepts equal dates",
   );
 });
 
+// MINT-14 (CRUD-03): the roster's reads page past the hosted PostgREST
+// max-rows cap. This stand-in honors offset/limit, caps EVERY response (an
+// unranged read included) at 1,000 rows, answers the exact count in
+// content-range, and fails the reads `failAt` picks with a non-retryable 500.
+const SERVER_MAX_ROWS = 1000;
+
+async function servePagedTable(
+  context: { route: (url: RegExp, handler: (route: Route) => Promise<void>) => Promise<void> },
+  table: string,
+  rows: () => Record<string, unknown>[],
+  failAt: (offset: number) => boolean,
+) {
+  const offsets: number[] = [];
+  await context.route(new RegExp(`/rest/v1/${table}(?:\\?|$)`), async (route) => {
+    const req = route.request();
+    const accept = req.headers()["accept"] ?? "";
+    if (req.method() !== "GET" || accept.includes("vnd.pgrst.object")) return route.fallback();
+    const url = new URL(req.url());
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    offsets.push(offset);
+    if (failAt(offset)) {
+      return route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "statement timeout" }),
+      });
+    }
+    const source = rows().filter((row) =>
+      [...url.searchParams].every(
+        ([key, value]) =>
+          !(key in row) || !value.startsWith("eq.") || String(row[key]) === value.slice(3),
+      ),
+    );
+    const limit = Math.min(
+      Number(url.searchParams.get("limit") ?? SERVER_MAX_ROWS),
+      SERVER_MAX_ROWS,
+    );
+    const page = source.slice(offset, offset + limit);
+    const contentRange =
+      page.length === 0
+        ? `*/${source.length}`
+        : `${offset}-${offset + page.length - 1}/${source.length}`;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "content-range": contentRange },
+      body: JSON.stringify(page),
+    });
+  });
+  return offsets;
+}
+
+test("MINT-14: the roster lists every provider past the 1,000-row cap; a failed page shows the error state, never a partial roster", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = baseFixtures();
+  for (let i = 0; i < 1050; i += 1) {
+    const n = String(i).padStart(4, "0");
+    fixtures.providers.push(providerRow(`pr-bulk-${n}`, "Bulk", `Zz${n}`));
+  }
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  let failMiddlePage = true;
+  const offsets = await servePagedTable(
+    context,
+    "providers",
+    () => fixtures.providers,
+    (offset) => failMiddlePage && offset === 500,
+  );
+  await seedAuth(context);
+
+  // The second page fails: the roster says so instead of listing page one.
+  await page.goto("/providers");
+  await expect(page.getByText("Couldn't load the roster.")).toBeVisible({ timeout: 30000 });
+  await expect(page.locator("tbody tr")).toHaveCount(0);
+  await expect(page.getByText("No providers match", { exact: false })).toHaveCount(0);
+
+  // Retry with the page healthy: every provider, past the cap, in A→Z order.
+  failMiddlePage = false;
+  offsets.length = 0;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator("tbody tr")).toHaveCount(1052, { timeout: 30000 });
+  await expect(page.locator("tbody tr").first()).toContainText("Chen, Alex");
+  await expect(page.locator("tbody tr").last()).toContainText("Zz1049, Bulk");
+  expect(offsets).toEqual([0, 500, 1000]);
+});
+
+for (const table of ["provider_group_assignments", "state_licenses"]) {
+  test(`MINT-14: a failed ${table} read shows the roster error state, not empty columns`, async ({
+    context,
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    const fixtures = baseFixtures();
+    const { handler } = makeHandler(fixtures);
+    await context.route(/\/(rest|auth)\/v1\//, handler);
+    await servePagedTable(
+      context,
+      table,
+      () => fixtures[table],
+      () => true,
+    );
+    await seedAuth(context);
+
+    await page.goto("/providers");
+    await expect(page.getByText("Couldn't load the roster.")).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(page.locator("tbody tr")).toHaveCount(0);
+  });
+}
+
 test("MINT-7: Add Provider blocks a wrong NPI check digit inline; the corrected NPI saves", async ({
   context,
   page,
@@ -1149,4 +1269,111 @@ test("MINT-7: record inline edit checks only a changed NPI's check digit", async
     { phone: "252-555-0142" },
     { npi: "1234567893" },
   ]);
+});
+
+test("MINT-110: record inline NPI edit saves at once; the check finishes after and a mismatch is a quiet note", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const fixtures = baseFixtures();
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  // The registry, mocked at the browser: it lists only Brooke Ostrander. A
+  // lookup of a held NPI waits until the spec releases it.
+  const lookups: unknown[] = [];
+  const held = new Map<string, Promise<void>>();
+  await context.route(/\/api\/npi-registry\//, async (route) => {
+    const body = route.request().postDataJSON() as { npi?: string };
+    lookups.push(body);
+    const gate = held.get(String(body.npi));
+    if (gate) await gate;
+    const record =
+      body.npi === "1234567893"
+        ? {
+            npi: "1234567893",
+            enumerationType: "NPI-1",
+            firstName: "BROOKE",
+            middleName: null,
+            lastName: "OSTRANDER",
+            organizationName: null,
+            credential: "PT",
+            primaryTaxonomy: { code: "225100000X", description: "Physical Therapist" },
+            practiceCity: "GREENVILLE",
+            practiceState: "NC",
+            status: "active",
+            enumerationDate: "2015-03-02",
+            otherNames: [],
+          }
+        : null;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { record }, error: null, meta: null }),
+    });
+  });
+  let release: () => void = () => undefined;
+  held.set(
+    "1234567810",
+    new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  );
+  await recordAnnouncements(context);
+  await seedAuth(context);
+  const providerPatches = () =>
+    requests.filter((request) => request.method === "PATCH" && request.path === "providers");
+
+  await page.goto("/providers/pr-brooke");
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+  await page.getByRole("button", { name: "Edit details" }).click();
+  const npi = page.locator("#identity-npi");
+
+  // The same wording as Add Provider and the roster form: the number's own
+  // rules stay hard.
+  await npi.fill("12345");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toHaveText("NPI must be 10 digits");
+  await expect(npi).toHaveAttribute("aria-invalid", "true");
+  expect(providerPatches()).toHaveLength(0);
+
+  // Not in the registry, and the check has not answered: the save goes
+  // through at once anyway.
+  await npi.fill("123-456-7810");
+  await expect(npi).toHaveAccessibleDescription("Checking the NPI Registry…");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(providerPatches().map((request) => request.body)).toEqual([{ npi: "1234567810" }]);
+  // Quiet while the check runs.
+  await expect(page.getByText("Checking the NPI Registry…", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Not found in the NPI Registry", { exact: true })).toHaveCount(0);
+
+  // The check ends: the mismatch is a short note under the saved NPI, said
+  // politely, never an error, and never "Found".
+  release();
+  const note = page.getByText("Not found in the NPI Registry", { exact: true });
+  await expect(note).toBeVisible();
+  await expect(note).not.toHaveClass(/text-destructive/);
+  await expect.poll(() => announcements(page, "Not found in the NPI Registry")).toBeGreaterThan(0);
+  await expect(page.getByText("Found in the NPI Registry", { exact: true })).toHaveCount(0);
+
+  // A listed NPI with a matching name saves, as digits, and the view says
+  // nothing more about it.
+  await page.getByRole("button", { name: "Edit details" }).click();
+  await npi.fill("123 456 7893");
+  await expect(page.getByText("Found in the NPI Registry", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(providerPatches().map((request) => request.body)).toEqual([
+    { npi: "1234567810" },
+    { npi: "1234567893" },
+  ]);
+  await expect(page.getByText(/in the NPI Registry/)).toHaveCount(0);
+  expect(lookups).toEqual([{ npi: "1234567810" }, { npi: "1234567893" }]);
 });

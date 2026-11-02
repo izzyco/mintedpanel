@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  assessFeedEvent,
   billingFeedWindowStart,
   buildBillingFeed,
+  buildChangeFeedCsv,
   buildNewlyBillableDigestCsv,
   DEFAULT_BILLING_READINESS_RULES,
   evaluateBillingReadiness,
   filterBillingFeed,
+  providerPayerStatuses,
+  searchBillingProviders,
   resolveBillingReadinessRules,
   type BillingReadinessRules,
   type BillingReadinessRulesOverride,
@@ -88,8 +92,16 @@ function readySnapshot(): BillingReadinessSnapshot {
 }
 
 const selection = { providerId: "p1", facilityId: "f1", payerId: "pay1" };
+// The app never edits a snapshot in place, so its index is built once per
+// snapshot object. These tests do edit one between assessments, so each
+// assessment gets a fresh object, as a changed snapshot would be.
 const assess = (snapshot: BillingReadinessSnapshot, next: Partial<typeof selection> = {}) =>
-  evaluateBillingReadiness(snapshot, { ...selection, ...next }, TODAY);
+  evaluateBillingReadiness(
+    { ...snapshot },
+    { ...selection, ...next },
+    TODAY,
+    DEFAULT_BILLING_READINESS_RULES,
+  );
 
 describe("billing readiness evaluator", () => {
   it("requires the full exact key and returns ready for complete current evidence", () => {
@@ -106,7 +118,9 @@ describe("billing readiness evaluator", () => {
 
   it("rejects malformed assessment dates and unknown or missing current case status", () => {
     const snapshot = readySnapshot();
-    expect(evaluateBillingReadiness(snapshot, selection, "2026-02-30")).toBeNull();
+    expect(
+      evaluateBillingReadiness(snapshot, selection, "2026-02-30", DEFAULT_BILLING_READINESS_RULES),
+    ).toBeNull();
     snapshot.cases[0].caseStatus = null;
     expect(assess(snapshot)?.status).toBe("hold");
     snapshot.cases[0].caseStatus = "unknown-status";
@@ -367,12 +381,21 @@ describe("billing change feed and digest", () => {
       { title: "Enrollment approved (legacy record)", eventDate: "2026-09-24T12:00:00.000Z" },
     ]);
     expect(feed.some((event) => event.kind === "facility_added")).toBe(false);
-    expect(buildNewlyBillableDigestCsv(snapshot, feed, TODAY).split("\r\n")).toHaveLength(2);
+    expect(
+      buildNewlyBillableDigestCsv(snapshot, feed, TODAY, DEFAULT_BILLING_READINESS_RULES).split(
+        "\r\n",
+      ),
+    ).toHaveLength(2);
     snapshot.legacyStatusTransitions = [];
     const backfillOnlyFeed = buildBillingFeed(snapshot, TODAY);
     expect(backfillOnlyFeed).toHaveLength(0);
     expect(
-      buildNewlyBillableDigestCsv(snapshot, backfillOnlyFeed, TODAY).split("\r\n"),
+      buildNewlyBillableDigestCsv(
+        snapshot,
+        backfillOnlyFeed,
+        TODAY,
+        DEFAULT_BILLING_READINESS_RULES,
+      ).split("\r\n"),
     ).toHaveLength(1);
   });
 
@@ -418,7 +441,12 @@ describe("billing change feed and digest", () => {
         { range: 7 },
         TODAY,
       );
-      const csv = buildNewlyBillableDigestCsv(digestSnapshot, digestEvents, TODAY);
+      const csv = buildNewlyBillableDigestCsv(
+        digestSnapshot,
+        digestEvents,
+        TODAY,
+        DEFAULT_BILLING_READINESS_RULES,
+      );
       expect(csv.split("\r\n")[1]).toContain(',"2026-09-25","2026-09-25"');
     } finally {
       vi.unstubAllEnvs();
@@ -538,11 +566,268 @@ describe("billing change feed and digest", () => {
     });
     events.push({ ...events[0], id: "wrong-case", caseId: "other-case" });
     events.push({ ...events[0], id: "wrong-group", groupId: "other-group" });
-    const csv = buildNewlyBillableDigestCsv(snapshot, events, TODAY);
+    const csv = buildNewlyBillableDigestCsv(
+      snapshot,
+      events,
+      TODAY,
+      DEFAULT_BILLING_READINESS_RULES,
+    );
     expect(csv.split("\r\n")).toHaveLength(2);
     expect(csv).toContain('"\'=HYPERLINK(""bad"")"');
     snapshot.cases[0].caseStatus = "denied";
-    expect(buildNewlyBillableDigestCsv(snapshot, events, TODAY).split("\r\n")).toHaveLength(1);
+    expect(
+      buildNewlyBillableDigestCsv(snapshot, events, TODAY, DEFAULT_BILLING_READINESS_RULES).split(
+        "\r\n",
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe("change feed filters and export", () => {
+  function recentSnapshot(): BillingReadinessSnapshot {
+    const snapshot = readySnapshot();
+    snapshot.statusTransitions[0].changedAt = "2026-09-20T12:00:00.000Z";
+    snapshot.caseFacilities[0].createdAt = "2026-09-21T12:00:00.000Z";
+    return snapshot;
+  }
+
+  it("filters by change type alongside range, facility, and payer", () => {
+    const snapshot = recentSnapshot();
+    const feed = buildBillingFeed(snapshot, TODAY);
+    expect(feed.map((event) => event.kind).sort()).toEqual(["approval", "facility_added"]);
+    expect(
+      filterBillingFeed(feed, { range: 30, kind: "approval" }, TODAY).map((event) => event.kind),
+    ).toEqual(["approval"]);
+    expect(filterBillingFeed(feed, { range: 30, kind: "termination" }, TODAY)).toEqual([]);
+    expect(filterBillingFeed(feed, { range: 7, kind: "approval" }, TODAY)).toHaveLength(1);
+  });
+
+  it("assesses each event against its own case and exports reasons, formula-safe", () => {
+    const snapshot = recentSnapshot();
+    snapshot.providers[0].status = "onboarding";
+    snapshot.providers[0].npi = "=1+1";
+    const feed = filterBillingFeed(
+      buildBillingFeed(snapshot, TODAY),
+      { range: 30, kind: "approval" },
+      TODAY,
+    );
+    expect(assessFeedEvent(snapshot, feed[0], TODAY, DEFAULT_BILLING_READINESS_RULES)?.status).toBe(
+      "hold",
+    );
+    expect(
+      assessFeedEvent(
+        snapshot,
+        { ...feed[0], caseId: "other" },
+        TODAY,
+        DEFAULT_BILLING_READINESS_RULES,
+      ),
+    ).toBeNull();
+    const lines = buildChangeFeedCsv(snapshot, feed, TODAY, DEFAULT_BILLING_READINESS_RULES).split(
+      "\r\n",
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('"Current readiness","Reasons"');
+    expect(lines[1]).toContain('"2026-09-20"');
+    expect(lines[1]).toContain('"Hold"');
+    expect(lines[1]).toContain("still marked Onboarding");
+    expect(lines[1]).toContain(`"'=1+1"`);
+  });
+});
+
+describe("clearance lookup search and payer statuses", () => {
+  function lookupSnapshot(): BillingReadinessSnapshot {
+    const snapshot = readySnapshot();
+    snapshot.providers.push({
+      ...snapshot.providers[0],
+      id: "p2",
+      npi: "1987654321",
+    });
+    snapshot.groups.push({ ...snapshot.groups[0], id: "g2", name: "South Clinic" });
+    snapshot.facilities.push({
+      id: "f2",
+      name: "Raleigh Home Visits",
+      groupId: "g2",
+      state: "NC",
+      isActive: true,
+    });
+    snapshot.payers.push({ ...snapshot.payers[0], id: "pay2", name: "Blue Plan" });
+    snapshot.groupMemberships.push({
+      providerId: "p2",
+      groupId: "g2",
+      startDate: null,
+      endDate: null,
+    });
+    snapshot.facilityAssignments.push({
+      providerId: "p2",
+      facilityId: "f2",
+      startDate: "2025-01-01",
+    });
+    snapshot.cases.push({ ...snapshot.cases[0], id: "c2", payerId: "pay2" });
+    return snapshot;
+  }
+
+  it("matches name, NPI, state, and location, with group and state to tell duplicates apart", () => {
+    const snapshot = lookupSnapshot();
+    const byName = searchBillingProviders(
+      snapshot,
+      "ana ther",
+      TODAY,
+      DEFAULT_BILLING_READINESS_RULES,
+    );
+    expect(byName.total).toBe(2);
+    expect(byName.matches.map((match) => [match.groupNames, match.states])).toEqual([
+      [["North Clinic"], ["CO"]],
+      [["South Clinic"], ["NC"]],
+    ]);
+    expect(
+      searchBillingProviders(snapshot, "1987654321", TODAY, DEFAULT_BILLING_READINESS_RULES)
+        .matches,
+    ).toMatchObject([{ provider: { id: "p2" } }]);
+    expect(
+      searchBillingProviders(snapshot, "nc", TODAY, DEFAULT_BILLING_READINESS_RULES).matches,
+    ).toMatchObject([{ provider: { id: "p2" } }]);
+    expect(
+      searchBillingProviders(snapshot, "raleigh", TODAY, DEFAULT_BILLING_READINESS_RULES).matches,
+    ).toMatchObject([{ provider: { id: "p2" } }]);
+    expect(searchBillingProviders(snapshot, "  ", TODAY, DEFAULT_BILLING_READINESS_RULES)).toEqual({
+      matches: [],
+      total: 0,
+    });
+    expect(
+      searchBillingProviders(snapshot, "zzz", TODAY, DEFAULT_BILLING_READINESS_RULES).total,
+    ).toBe(0);
+  });
+
+  it("lists every payer case by location, holding a case with no linked location", () => {
+    const snapshot = lookupSnapshot();
+    const rows = providerPayerStatuses(snapshot, "p1", TODAY, DEFAULT_BILLING_READINESS_RULES);
+    expect(rows.map((row) => [row.payer.name, row.facility?.name ?? null, row.status])).toEqual([
+      ["Acme Health", "Boulder Clinic", "ready"],
+      ["Blue Plan", null, "hold"],
+    ]);
+    expect(rows[1].reasons[0].label).toContain("No location is linked");
+    snapshot.caseFacilities.push({
+      caseId: "c2",
+      facilityId: "f1",
+      createdAt: "2025-02-01T12:00:00.000Z",
+      createdBy: null,
+    });
+    // A changed snapshot is a new object.
+    expect(
+      providerPayerStatuses({ ...snapshot }, "p1", TODAY, DEFAULT_BILLING_READINESS_RULES).map(
+        (row) => row.status,
+      ),
+    ).toEqual(["ready", "ready"]);
+    expect(
+      providerPayerStatuses(snapshot, "missing", TODAY, DEFAULT_BILLING_READINESS_RULES),
+    ).toEqual([]);
+  });
+
+  it("holds an approved case whose location moved group or sits in another state, never Do Not Bill", () => {
+    const MISMATCH = "This location's group or state no longer matches the enrollment case.";
+    const acme = (snapshot: BillingReadinessSnapshot) =>
+      providerPayerStatuses(snapshot, "p1", TODAY, DEFAULT_BILLING_READINESS_RULES).filter(
+        (row) => row.caseId === "c1",
+      );
+
+    const moved = lookupSnapshot();
+    moved.facilities[0].groupId = "g2";
+    expect(acme(moved)).toMatchObject([
+      {
+        facility: { id: "f1" },
+        status: "hold",
+        label: "Hold",
+        reasons: [{ severity: "hold", label: MISMATCH }],
+      },
+    ]);
+
+    const otherState = lookupSnapshot();
+    otherState.caseFacilities.push({
+      caseId: "c1",
+      facilityId: "f2",
+      createdAt: "2025-02-01T12:00:00.000Z",
+      createdBy: null,
+    });
+    expect(acme(otherState).map((row) => [row.facility?.name, row.status, row.reasons])).toEqual([
+      ["Boulder Clinic", "ready", []],
+      ["Raleigh Home Visits", "hold", [{ severity: "hold", label: MISMATCH }]],
+    ]);
+
+    const gone = lookupSnapshot();
+    gone.caseFacilities[0].facilityId = "f-missing";
+    expect(acme(gone)).toMatchObject([
+      {
+        facility: null,
+        locationLabel: "Location not on record",
+        status: "hold",
+        reasons: [
+          {
+            severity: "hold",
+            label: "The location linked to this enrollment case is not on record.",
+          },
+        ],
+      },
+    ]);
+
+    const noState = lookupSnapshot();
+    noState.facilities[0].state = null;
+    expect(acme(noState)).toMatchObject([
+      {
+        locationLabel: "Boulder Clinic",
+        status: "hold",
+        reasons: [{ severity: "hold", label: "This location has no valid state on record." }],
+      },
+    ]);
+  });
+
+  it("keeps the stops that do not depend on the location on a row it cannot assess", () => {
+    const MISMATCH = "This location's group or state no longer matches the enrollment case.";
+    const acme = (snapshot: BillingReadinessSnapshot) =>
+      providerPayerStatuses(snapshot, "p1", TODAY, DEFAULT_BILLING_READINESS_RULES).filter(
+        (row) => row.caseId === "c1",
+      );
+
+    const terminated = lookupSnapshot();
+    terminated.facilities[0].groupId = "g2";
+    terminated.cases[0].terminationDate = "2026-09-01";
+    expect(acme(terminated)).toMatchObject([
+      {
+        status: "stop",
+        label: "Do Not Bill",
+        reasons: [
+          { severity: "stop", label: "Enrollment termination is effective." },
+          { severity: "hold", label: MISMATCH },
+        ],
+      },
+    ]);
+
+    const denied = lookupSnapshot();
+    denied.facilities[0].groupId = "g2";
+    denied.cases[0].caseStatus = "denied";
+    denied.providers[0].status = "terminated";
+    denied.payers[0].isActive = false;
+    expect(acme(denied)[0]).toMatchObject({ status: "stop", label: "Do Not Bill" });
+    expect(acme(denied)[0].reasons.map((reason) => reason.label)).toEqual([
+      "The clinician is terminated.",
+      "Enrollment status is denied.",
+      "The payer is inactive.",
+      MISMATCH,
+    ]);
+
+    // A case with no linked location keeps its stops too.
+    const unlinked = lookupSnapshot();
+    unlinked.caseFacilities = [];
+    unlinked.cases[0].terminationDate = "2026-09-01";
+    expect(acme(unlinked)).toMatchObject([
+      {
+        locationLabel: "No linked location",
+        status: "stop",
+        reasons: [
+          { severity: "stop", label: "Enrollment termination is effective." },
+          { severity: "hold", label: "No location is linked to this enrollment case." },
+        ],
+      },
+    ]);
   });
 });
 
@@ -565,7 +850,7 @@ const withRules = (next: {
 });
 
 const assessWith = (snapshot: BillingReadinessSnapshot, rules: BillingReadinessRules) =>
-  evaluateBillingReadiness(snapshot, selection, TODAY, rules);
+  evaluateBillingReadiness({ ...snapshot }, selection, TODAY, rules);
 
 describe("BillingReadinessRules", () => {
   it("defaults to the PM's Oct 20 decisions, frozen", () => {
@@ -698,7 +983,11 @@ describe("BillingReadinessRules", () => {
       const snapshot = readySnapshot();
       snapshot.groupMemberships[0].startDate = null;
       const feed = buildBillingFeed(snapshot, TODAY);
-      expect(buildNewlyBillableDigestCsv(snapshot, feed, TODAY).split("\r\n")).toHaveLength(2);
+      expect(
+        buildNewlyBillableDigestCsv(snapshot, feed, TODAY, DEFAULT_BILLING_READINESS_RULES).split(
+          "\r\n",
+        ),
+      ).toHaveLength(2);
       expect(
         buildNewlyBillableDigestCsv(
           snapshot,
@@ -735,5 +1024,85 @@ describe("BillingReadinessRules", () => {
           ?.supervisorCandidates,
       ).toEqual([]);
     });
+  });
+});
+
+// #560's Lookup and Change Feed paths must use the rules they are given, not
+// the defaults (the #558 restack review, P2).
+describe("the Lookup and the Change Feed follow the rules they are given", () => {
+  const DEFAULT = DEFAULT_BILLING_READINESS_RULES;
+  const onboardingStops = resolveBillingReadinessRules(null, {
+    providerStatusSeverity: { onboarding: "stop" },
+  });
+
+  /** An Onboarding clinician with a recent approval on Acme (linked to a
+   * location) and a Blue Plan case with no linked location. */
+  function onboardingSnapshot(): BillingReadinessSnapshot {
+    const snapshot = readySnapshot();
+    snapshot.providers[0].status = "onboarding";
+    snapshot.payers.push({ ...snapshot.payers[0], id: "pay2", name: "Blue Plan" });
+    snapshot.cases.push({ ...snapshot.cases[0], id: "c2", payerId: "pay2" });
+    snapshot.statusTransitions[0].changedAt = "2026-09-20T12:00:00.000Z";
+    snapshot.caseFacilities[0].createdAt = "2026-09-21T12:00:00.000Z";
+    return snapshot;
+  }
+
+  it("changes the Lookup's payer-by-payer statuses, for assessed and unassessed rows", () => {
+    const snapshot = onboardingSnapshot();
+    const statuses = (rules: BillingReadinessRules) =>
+      providerPayerStatuses(snapshot, "p1", TODAY, rules).map((row) => [
+        row.payer.name,
+        row.status,
+      ]);
+    expect(statuses(DEFAULT)).toEqual([
+      ["Acme Health", "hold"],
+      ["Blue Plan", "hold"],
+    ]);
+    expect(statuses(onboardingStops)).toEqual([
+      ["Acme Health", "stop"],
+      ["Blue Plan", "stop"],
+    ]);
+    // The row with no linked location carries the clinician's stop beside its
+    // own hold, through clinicianReasons.
+    expect(
+      providerPayerStatuses(snapshot, "p1", TODAY, onboardingStops)[1].reasons.map((reason) => [
+        reason.severity,
+        reason.label,
+      ]),
+    ).toEqual([
+      ["stop", ONBOARDING_LABEL],
+      ["hold", "No location is linked to this enrollment case."],
+    ]);
+  });
+
+  it("changes the Change Feed's assessment and its CSV", () => {
+    const snapshot = onboardingSnapshot();
+    const feed = filterBillingFeed(
+      buildBillingFeed(snapshot, TODAY),
+      { range: 30, kind: "approval" },
+      TODAY,
+    );
+    expect(feed).toHaveLength(1);
+    expect(assessFeedEvent(snapshot, feed[0], TODAY, DEFAULT)?.status).toBe("hold");
+    expect(assessFeedEvent(snapshot, feed[0], TODAY, onboardingStops)?.status).toBe("stop");
+    expect(buildChangeFeedCsv(snapshot, feed, TODAY, DEFAULT).split("\r\n")[1]).toContain('"Hold"');
+    expect(buildChangeFeedCsv(snapshot, feed, TODAY, onboardingStops).split("\r\n")[1]).toContain(
+      '"Do Not Bill"',
+    );
+  });
+
+  it("changes which groups the Lookup search names as current", () => {
+    const snapshot = readySnapshot();
+    snapshot.groups.push({ ...snapshot.groups[0], id: "g2", name: "South Clinic" });
+    snapshot.groupMemberships = [
+      { providerId: "p1", groupId: "g1", startDate: null, endDate: null },
+      { providerId: "p1", groupId: "g2", startDate: "2025-01-01", endDate: null },
+    ];
+    const groups = (rules: BillingReadinessRules) =>
+      searchBillingProviders(snapshot, "ana", TODAY, rules).matches[0].groupNames;
+    expect(groups(DEFAULT)).toEqual(["North Clinic", "South Clinic"]);
+    expect(
+      groups(resolveBillingReadinessRules(null, { membershipWithoutStartDate: "not_current" })),
+    ).toEqual(["South Clinic"]);
   });
 });
