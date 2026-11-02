@@ -38,7 +38,7 @@ import {
   NPI_REGISTRY_CHECKS,
   resolveNpiRegistryPolicy,
 } from "./npiRegistryPolicy";
-import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE, npiCheckDigit } from "./providerIdentity";
+import { NPI_CHECK_DIGIT_MESSAGE, npiCheckDigit } from "./providerIdentity";
 
 function fakeNpi(n: number): string {
   const first9 = `1${String(n).padStart(8, "0")}`;
@@ -555,47 +555,34 @@ describe("importNpiCaptureAdvisories — the registry's answers, facts only", ()
 });
 
 describe("importNpiRowChecks — the run's import NPI checks at commit", () => {
-  const RUN = "run-1";
   const { dispositions } = mixedImport();
   const plan = buildCommitPlan(dispositions, {});
   // Creates come back in plan order: line 2 (an NPI), then line 7 (none).
   const providerIdByLine = importCommitProviderIds(plan, {
     createdProviderIds: ["p-new", "p-bare"],
   });
-  const errorReport = [
-    { line: 9, column: "npi", reason: NPI_FORMAT_MESSAGE },
-    { line: 10, column: "caqh_id", reason: "CAQH must be 8 digits" },
-    { line: 11, column: "npi", reason: "Missing NPI — flagged for manual review" },
-  ];
 
-  it("records a blank-NPI create on its provider, and a row left out for its NPI on the run", () => {
-    expect(importNpiRowChecks({ runId: RUN, plan, errorReport, providerIdByLine })).toEqual([
+  it("records a blank-NPI create on the provider it became (B3)", () => {
+    expect(importNpiRowChecks({ plan, providerIdByLine })).toEqual([
       { check: "import.npi_missing", record: { table: "providers", id: "p-bare" }, line: 7 },
-      // The dedupe's check-digit block (line 6) and the scan's ten-digit error (line 9).
-      { check: "import.npi_unusable", record: { table: "import_runs", id: RUN }, line: 6 },
-      { check: "import.npi_unusable", record: { table: "import_runs", id: RUN }, line: 9 },
     ]);
+  });
+
+  it("records nothing for a row held back for its NPI: it didn't proceed, so nothing was bypassed", () => {
+    // Line 6 fails the check digit and is blocked (a hard block, U3/B3).
     expect(plan.blocked_entries).toContainEqual({
       line: 6,
       column: "npi",
       reason: NPI_CHECK_DIGIT_MESSAGE,
     });
+    const checks = importNpiRowChecks({ plan, providerIdByLine });
+    expect(checks.map((check) => check.line)).not.toContain(6);
+    expect(checks.every((check) => check.check === "import.npi_missing")).toBe(true);
   });
 
-  it("names no provider it can't be sure of, and nothing for other errors", () => {
-    expect(
-      importNpiRowChecks({ runId: RUN, plan, errorReport: [], providerIdByLine: new Map() }),
-    ).toEqual([
-      { check: "import.npi_unusable", record: { table: "import_runs", id: RUN }, line: 6 },
-    ]);
-    expect(
-      importNpiRowChecks({
-        runId: RUN,
-        plan: { creates: [], blocked_entries: [] },
-        errorReport: errorReport.slice(1),
-        providerIdByLine,
-      }),
-    ).toEqual([]);
+  it("names no provider it can't be sure of", () => {
+    expect(importNpiRowChecks({ plan, providerIdByLine: new Map() })).toEqual([]);
+    expect(importNpiRowChecks({ plan: { creates: [] }, providerIdByLine })).toEqual([]);
   });
 });
 

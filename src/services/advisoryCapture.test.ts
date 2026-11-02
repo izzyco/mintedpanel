@@ -186,6 +186,26 @@ describe("recordAdvisories (the seam)", () => {
     ]);
   });
 
+  // One RPC at a time: switching to Promise.all or a fire-and-forget loop
+  // fails this.
+  it("sends one RPC at a time, the next only after the last one answered", async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    respond.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const pending = recordAdvisories(
+      [advisory("npi_registry.not_found"), advisory("npi_registry.inactive")],
+      FORM,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(rpc).toHaveBeenCalledTimes(1);
+    answer({ data: "13400000-0000-4000-a000-0000000c0001", error: null });
+    await pending;
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc.mock.calls.map((call) => (call[1] as { p_check_key: string }).p_check_key)).toEqual([
+      "npi_registry.not_found",
+      "npi_registry.inactive",
+    ]);
+  });
+
   it("sends nothing for a check the seam doesn't map, or for nothing at all", async () => {
     await recordAdvisories([advisory("npi_registry.dea_differs")], FORM);
     await recordAdvisories([], FORM);

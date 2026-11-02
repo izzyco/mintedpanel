@@ -30,10 +30,7 @@ const notFound: Advisory = {
 
 const capture: ImportNpiCapture = {
   registry: [{ line: 4, advisories: [notFound] }],
-  rows: [
-    { check: "import.npi_missing", record: { table: "providers", id: NPI_LESS }, line: 7 },
-    { check: "import.npi_unusable", record: { table: "import_runs", id: RUN }, line: 9 },
-  ],
+  rows: [{ check: "import.npi_missing", record: { table: "providers", id: NPI_LESS }, line: 7 }],
 };
 
 let warn: ReturnType<typeof vi.spyOn>;
@@ -50,7 +47,7 @@ afterEach(() => {
 });
 
 describe("captureImportNpiAdvisories", () => {
-  it("records the registry's answers and the run's NPI checks, each with the run and its line", async () => {
+  it("records the registry's answers and the run's NPI-less creates, each with the run and its line", async () => {
     await captureImportNpiAdvisories(RUN, () => capture);
     expect(rpc.mock.calls).toEqual([
       [
@@ -77,20 +74,31 @@ describe("captureImportNpiAdvisories", () => {
           p_context: { import_run_id: RUN, line: 7 },
         },
       ],
-      [
-        "record_workflow_advisory",
-        {
-          p_org_id: ORG,
-          p_check_key: "import.npi_unusable",
-          p_severity: "advisory",
-          p_record_table: "import_runs",
-          p_record_id: RUN,
-          p_source: "import",
-          p_context: { import_run_id: RUN, line: 9 },
-        },
-      ],
     ]);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  // One RPC at a time: a burst of parallel calls would each start its own
+  // timeout and could time out behind the others.
+  it("sends one RPC at a time, the next only after the last one answered", async () => {
+    const answers: ((value: unknown) => void)[] = [];
+    respond.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const pending = captureImportNpiAdvisories(RUN, () => ({
+      registry: capture.registry,
+      rows: [
+        ...capture.rows,
+        { check: "import.npi_missing", record: { table: "providers", id: PROVIDER }, line: 9 },
+      ],
+    }));
+    // The registry row, then each NPI-less create: each waits for the last.
+    for (let sent = 1; sent <= 3; sent += 1) {
+      await tick();
+      expect(rpc).toHaveBeenCalledTimes(sent);
+      answers[sent - 1]({ data: "13400000-0000-4000-a000-0000000c0001", error: null });
+    }
+    await pending;
+    expect(rpc).toHaveBeenCalledTimes(3);
   });
 
   it("sends nothing when there is nothing to send", async () => {
@@ -104,7 +112,7 @@ describe("captureImportNpiAdvisories", () => {
       error: { code: "23505", message: "value 1234567893 leaked" },
     });
     await expect(captureImportNpiAdvisories(RUN, () => capture)).resolves.toBeUndefined();
-    expect(rpc).toHaveBeenCalledTimes(3);
+    expect(rpc).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(warn.mock.calls[0][0]))).toEqual({
       event: "advisory_record_failed",

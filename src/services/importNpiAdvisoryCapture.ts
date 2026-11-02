@@ -1,9 +1,9 @@
 // MINT-110 PR 2 / MINT-134 — after a successful commit, in the background:
 // the registry's answers for the committed import rows go to the capture seam
-// (advisoryCapture.ts), facts only, and the run's import NPI checks
-// (import.npi_missing, import.npi_unusable) go to the advisory ledger. Each
-// carries the run and the row's line. Building and sending share one
-// try/catch: a failure is logged without values and never reaches the commit.
+// (advisoryCapture.ts), facts only, and the run's creates with no NPI
+// (import.npi_missing) go to the advisory ledger. Each carries the run and the
+// row's line, one RPC at a time. Building and sending share one try/catch: a
+// failure is logged without values and never reaches the commit.
 import type { ImportNpiRowCheck, ImportRowAdvisories } from "@/lib/importNpiVerification";
 import { logAdvisoryCaptureFailure, recordAdvisories } from "@/services/advisoryCapture";
 import { recordAdvisory } from "@/services/advisories";

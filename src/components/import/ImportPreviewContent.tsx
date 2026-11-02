@@ -356,9 +356,9 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
             `${result.created} provider${result.created === 1 ? "" : "s"} created · ${result.updated} updated. Imported providers are Pending Verification.${relText}`,
           );
           // After the toast, in the background: the registry's answers for
-          // the committed rows, the creates with no NPI and the rows left out
-          // for an unusable NPI are recorded, facts only. A failure is logged
-          // without values and never reaches this commit's feedback.
+          // the committed rows and the creates with no NPI are recorded,
+          // facts only. A failure is logged without values and never reaches
+          // this commit's feedback.
           void captureImportNpiAdvisories(run.id, () => {
             const providerIdByLine = importCommitProviderIds(plan, result);
             return {
@@ -368,12 +368,7 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
                 policy,
                 providerIdByLine,
               }),
-              rows: importNpiRowChecks({
-                runId: run.id,
-                plan,
-                errorReport: run.errorReport ?? [],
-                providerIdByLine,
-              }),
+              rows: importNpiRowChecks({ plan, providerIdByLine }),
             };
           });
         },

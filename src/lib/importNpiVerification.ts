@@ -13,27 +13,19 @@
 // advisory shows (`display`): "review_step" lists it on its row here as a
 // quiet one-line note — no confirm, nothing typed — and "backend_only" shows
 // nothing. After commit, the registry's answers for the committed rows go to
-// the capture seam as facts only, with the run's NPI-less creates and the
-// rows left out for an unusable NPI (importNpiRowChecks). "Found" never shows
-// unless the registry fully matched.
+// the capture seam as facts only, with the run's NPI-less creates
+// (importNpiRowChecks). "Found" never shows unless the registry fully matched.
 // Hard rules stay hard: the 10-digit rule and the check digit (the dedupe's,
 // not this module's). Results live in memory only; nothing is stored per row
 // and nothing from the registry reaches the run's error report.
 import {
-  STORED_NPI_CHECK_DIGIT_REASON,
   unresolvedConflicts,
   type CommitPlan,
-  type CommitPlanBlockedEntry,
   type ImportRowDisposition,
   type RunResolutions,
   type StagedImportRow,
 } from "@/lib/importDedupe";
-import {
-  NPI_CHECK_DIGIT_MESSAGE,
-  NPI_FORMAT_MESSAGE,
-  isValidNpi,
-  stripNpiSeparators,
-} from "@/lib/providerIdentity";
+import { isValidNpi, stripNpiSeparators } from "@/lib/providerIdentity";
 import { advisoriesForRecord, type Advisory } from "@/lib/advisories";
 import type { NpiLookupState, NpiRegistryRecord, NpiVerificationView } from "@/lib/npiRegistry";
 import { NPI_REGISTRY_BATCH_PER_MINUTE } from "@/lib/npiRegistryBatch";
@@ -325,32 +317,21 @@ export function importNpiCaptureAdvisories(input: {
   return captured;
 }
 
-/** An import NPI check the advisory ledger registers, for one committed run's
- * row: import.npi_missing on the provider a blank-NPI create became (B3), or
- * import.npi_unusable on the run for a row left out because its NPI isn't ten
- * digits or fails the check digit. */
+/** An import NPI check the advisory ledger records at commit:
+ * import.npi_missing on the provider a blank-NPI create became (B3: a blank
+ * NPI imports). A row held back for a malformed or check-digit-failing NPI
+ * did not proceed (a hard block), so it is no bypassed check and records
+ * nothing. */
 export interface ImportNpiRowCheck {
-  check: "import.npi_missing" | "import.npi_unusable";
-  record: { table: "providers" | "import_runs"; id: string };
+  check: "import.npi_missing";
+  record: { table: "providers"; id: string };
   line: number;
 }
 
-/** The reasons a row is left out for its NPI: the scan's (not ten digits) and
- * the dedupe's (the check digit). */
-const UNUSABLE_NPI_REASONS: ReadonlySet<string> = new Set([
-  NPI_FORMAT_MESSAGE,
-  NPI_CHECK_DIGIT_MESSAGE,
-  STORED_NPI_CHECK_DIGIT_REASON,
-]);
-
 /** The run's import NPI checks at commit: every create with no NPI whose
- * provider is known (importCommitProviderIds), then every row the scan's
- * error report or the plan's blocked entries left out for an unusable NPI,
- * by line. */
+ * provider is known (importCommitProviderIds), by its anchor line. */
 export function importNpiRowChecks(input: {
-  runId: string;
-  plan: Pick<CommitPlan, "creates" | "blocked_entries">;
-  errorReport: readonly CommitPlanBlockedEntry[];
+  plan: Pick<CommitPlan, "creates">;
   providerIdByLine: ReadonlyMap<number, string>;
 }): ImportNpiRowCheck[] {
   const checks: ImportNpiRowCheck[] = [];
@@ -363,17 +344,6 @@ export function importNpiRowChecks(input: {
         line: create.line,
       });
     }
-  }
-  const unusable = new Set<number>();
-  for (const entry of [...input.errorReport, ...input.plan.blocked_entries]) {
-    if (entry.column === "npi" && UNUSABLE_NPI_REASONS.has(entry.reason)) unusable.add(entry.line);
-  }
-  for (const line of [...unusable].sort((a, b) => a - b)) {
-    checks.push({
-      check: "import.npi_unusable",
-      record: { table: "import_runs", id: input.runId },
-      line,
-    });
   }
   return checks;
 }
