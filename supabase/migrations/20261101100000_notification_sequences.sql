@@ -1593,7 +1593,7 @@ GRANT EXECUTE ON FUNCTION public.save_notification_sequence(uuid, text, jsonb) T
 -- 7. Comments.
 -- ---------------------------------------------------------------------------
 COMMENT ON TABLE public.notification_sequence_defaults IS
-  'MINT-107: Minted''s platform default for one purpose (followup_digest | intake_reminder), which every org inherits field by field. No org, no PHI, no enabled column: a default never switches an org on. No digest schedule (G2): how often and when the digest goes out exist only on an org row, once Minted sets it up. Never deleted (trigger notification_sequence_defaults_no_delete): change it instead. Any member of any org reads it; only service_role writes it (Mission Control M6 adds the platform-admin write policy). Seeded by migration 20261031051500.';
+  'MINT-107: Minted''s platform default for one purpose (followup_digest | intake_reminder), which every org inherits field by field. No org, no PHI, no enabled column: a default never switches an org on. No digest schedule (G2): how often and when the digest goes out exist only on an org row, once Minted sets it up. Never deleted (trigger notification_sequence_defaults_no_delete): change it instead. Any member of any org reads it; only service_role writes it (Mission Control M6 adds the platform-admin write policy). Seeded by migration 20261101100000.';
 COMMENT ON COLUMN public.notification_sequence_defaults.bounce_escalation_step IS
   'Intake: the one step whose bounce escalates, to that step''s own cc list, with the bounce notice (bounceEscalationRecipients). 1 by default (Oct 30); 0 = no bounce escalates. An org row overrides it. Mission Control edits it (MINT-113).';
 COMMENT ON COLUMN public.notification_sequence_defaults.digest_cc_allowed IS
