@@ -1,6 +1,6 @@
 // Mission Control M3 regressions in a new synthetic-only PostgreSQL container:
 // organization slug rules, lifecycle stage objects and the transition matrix,
-// the offboarded write freeze, and the organization RPCs
+// the offboarded write freeze, the generation gate, and the organization RPCs
 // (platform_create_organization, platform_grant_membership,
 // platform_org_summary, update_organization_profile). No existing database,
 // network, data mount, hosted credentials, or image pull.
@@ -69,6 +69,11 @@ const leaks = [
     name: "slug no longer fixed once set",
     sql: "DROP TRIGGER organizations_slug_immutable ON public.organizations;",
     label: "slug.immutable",
+  },
+  {
+    name: "case generation open in every stage",
+    sql: "DROP TRIGGER block_generation_when_not_allowed ON public.case_generation_runs;",
+    label: "generation.prospect_refused",
   },
   {
     name: "offboarded organizations treated as writable",
@@ -172,9 +177,9 @@ try {
     emit(`PASS: leak mode "${leak.name}" turns ${leak.label} red`);
   }
   const persisted = sql(
-    "SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'organizations_slug_immutable') + (SELECT count(*) FROM pg_trigger WHERE tgname = 'block_writes_when_offboarded' AND tgrelid = 'public.providers'::regclass) + (SELECT count(*) FROM public.lifecycle_stages WHERE key = 'active' AND allowed_next = ARRAY['offboarded']) + (SELECT count(*) FROM pg_proc WHERE proname = 'org_is_writable' AND prosrc LIKE '%lifecycle_stages%');",
+    "SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'organizations_slug_immutable') + (SELECT count(*) FROM pg_trigger WHERE tgname = 'block_writes_when_offboarded' AND tgrelid = 'public.providers'::regclass) + (SELECT count(*) FROM public.lifecycle_stages WHERE key = 'active' AND allowed_next = ARRAY['offboarded']) + (SELECT count(*) FROM pg_proc WHERE proname = 'org_is_writable' AND prosrc LIKE '%lifecycle_stages%') + (SELECT count(*) FROM pg_trigger WHERE tgname = 'block_generation_when_not_allowed');",
   ).trim();
-  if (persisted !== "4") fail("LEAK_MODE_PERSISTED");
+  if (persisted !== "5") fail("LEAK_MODE_PERSISTED");
 } catch (error) {
   process.stderr.write(
     `${error instanceof Error ? error.message : "MISSION_CONTROL_ORGANIZATIONS_VERIFICATION_FAILED"}\n`,

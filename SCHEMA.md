@@ -847,14 +847,15 @@ follow #540's `is_platform_admin()`.
 
 ## Mission Control M3: organizations, lifecycle stages, write freeze (repository-only)
 
-Four migrations, one per concern, repo-only until an operator applies them
+Five migrations, one per concern, repo-only until an operator applies them
 (staging first): `20261102163000_mc_org_slug_plan_tier.sql`,
 `20261102163100_mc_lifecycle_stages.sql`,
 `20261102163200_mc_offboarded_write_freeze.sql`,
-`20261102163300_mc_platform_org_rpcs.sql`. SQL packet
+`20261102163300_mc_platform_org_rpcs.sql`,
+`20261102163400_mc_generation_gate.sql`. SQL packet
 `supabase/tests/mission-control-organizations.sql`, run by
 `scripts/security/verify-mission-control-organizations.mjs` in CI's P01 job
-(four leak modes). Policy names avoid the `mc_` prefix, which M1's packet pins
+(five leak modes). Policy names avoid the `mc_` prefix, which M1's packet pins
 at six.
 
 ### organizations.slug, organizations.plan_tier
@@ -934,6 +935,20 @@ attached on that call):
 ```sql
 SELECT public.apply_offboarded_write_freeze();
 ```
+
+### The generation gate
+
+Migration `20261102163400_mc_generation_gate.sql`. Sowmya, Nov 2 2026, her
+explicit exception to working rule 2: no case generation until the
+organization is in a stage whose `generation_allowed` behaviour is true
+(`active` only by default, configurable on the stage object). BEFORE INSERT
+trigger `block_generation_when_not_allowed` on `case_generation_runs` (the
+generation path's first write, whose id every `create_case_with_tasks` call of
+the run carries) raises `P0001 generation_not_allowed` with the stage in the
+DETAIL. `org_generation_allowed(p_org_id)` answers the question (no configured
+row: allowed). Same scope as the freeze: API traffic only, not direct database
+sessions. `ManualCaseModal` writes no run and is not gated. The UI mirrors it
+with `GenerationStageGate` (reason instead of the grid).
 
 ### RPCs (SECURITY DEFINER, `search_path = public`, no defaulted arguments, jsonb returns)
 

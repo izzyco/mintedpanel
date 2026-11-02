@@ -557,6 +557,75 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------
+-- Case generation only where the stage allows it (Sowmya, Nov 2 2026: a hard
+-- stop until the organization is active). The generation path's first write
+-- is its case_generation_runs row; the trigger refuses it.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_admin_a uuid := '7d100000-0000-4000-8000-000000000002';
+  v_admin_b uuid := '7d100000-0000-4000-8000-000000000004';
+  v_org_a uuid := '7d200000-0000-4000-8000-000000000001';
+  v_org_b uuid := '7d200000-0000-4000-8000-000000000002';
+  v_run text := $q$INSERT INTO public.case_generation_runs
+      (org_id, created_by, proposed_count, created_count, skipped_existing_count, excluded_count, failed_count)
+      VALUES (%L, %L, 1, 0, 0, 0, 0)$q$;
+  v_active text;
+  v_prospect text;
+  v_onboarding text;
+  v_configured text;
+  v_operator text;
+BEGIN
+  PERFORM pg_temp.mo_claims(v_admin_a);
+  SET LOCAL ROLE authenticated;
+  v_active := pg_temp.mo_try(format(v_run, v_org_a, v_admin_a));
+  RESET ROLE;
+
+  PERFORM pg_temp.mo_no_claims();
+  UPDATE public.organizations SET lifecycle_state = 'prospect' WHERE id = v_org_b;
+  PERFORM pg_temp.mo_claims(v_admin_b);
+  SET LOCAL ROLE authenticated;
+  v_prospect := pg_temp.mo_try(format(v_run, v_org_b, v_admin_b));
+  RESET ROLE;
+
+  PERFORM pg_temp.mo_no_claims();
+  UPDATE public.organizations SET lifecycle_state = 'onboarding' WHERE id = v_org_b;
+  PERFORM pg_temp.mo_claims(v_admin_b);
+  SET LOCAL ROLE authenticated;
+  v_onboarding := pg_temp.mo_try(format(v_run, v_org_b, v_admin_b));
+  RESET ROLE;
+
+  -- Configuration, not code: a stage that allows generation lets it through.
+  BEGIN
+    PERFORM pg_temp.mo_no_claims();
+    UPDATE public.lifecycle_stages SET generation_allowed = true WHERE key = 'onboarding';
+    PERFORM pg_temp.mo_claims(v_admin_b);
+    SET LOCAL ROLE authenticated;
+    v_configured := pg_temp.mo_try(format(v_run, v_org_b, v_admin_b));
+    RESET ROLE;
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'mo_undo_generation_config';
+  EXCEPTION WHEN raise_exception THEN
+    NULL;
+  END;
+  RESET ROLE;
+
+  PERFORM pg_temp.mo_no_claims();
+  v_operator := pg_temp.mo_try(format(v_run, v_org_b, v_admin_b));
+  UPDATE public.organizations SET lifecycle_state = 'active' WHERE id = v_org_b;
+
+  PERFORM pg_temp.mo_assert('generation.active_allowed', v_active = '00000');
+  PERFORM pg_temp.mo_assert('generation.prospect_refused', v_prospect = 'P0001:generation_not_allowed');
+  PERFORM pg_temp.mo_assert('generation.onboarding_refused', v_onboarding = 'P0001:generation_not_allowed');
+  PERFORM pg_temp.mo_assert('generation.stage_config_decides', v_configured = '00000'
+    AND NOT (SELECT generation_allowed FROM public.lifecycle_stages WHERE key = 'onboarding'));
+  PERFORM pg_temp.mo_assert('generation.operator_session_not_api', v_operator = '00000');
+  PERFORM pg_temp.mo_assert('generation.trigger_installed',
+    EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'block_generation_when_not_allowed'
+             AND tgrelid = 'public.case_generation_runs'::regclass));
+END
+$$;
+
+-- ---------------------------------------------------------------------------
 -- platform_org_summary: denied to everyone but platform admins; counts for
 -- exactly the organization asked for; no provider rows or names.
 -- ---------------------------------------------------------------------------

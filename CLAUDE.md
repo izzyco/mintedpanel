@@ -371,13 +371,15 @@ before any schema work.
   (queries in `docs/ops/mission-control-bootstrap.md`, which also holds the
   operator insert for the first platform admin).
 - `20261102163000_mc_org_slug_plan_tier.sql`, `20261102163100_mc_lifecycle_stages.sql`,
-  `20261102163200_mc_offboarded_write_freeze.sql`, `20261102163300_mc_platform_org_rpcs.sql`
+  `20261102163200_mc_offboarded_write_freeze.sql`, `20261102163300_mc_platform_org_rpcs.sql`,
+  `20261102163400_mc_generation_gate.sql`
   — Mission Control M3, repo-only. Apply in order, after M1. Verify:
   `organizations.slug` is NOT NULL with `organizations_slug_key`, four rows in
   `lifecycle_stages`, no `organizations_lifecycle_state_check`, the
   `block_writes_when_offboarded` trigger on every public table with `org_id`
   except the four exempt ones (`SELECT public.apply_offboarded_write_freeze()`
-  returns `{}`), and the five RPCs in `pg_proc`. The UI reads stage defaults
+  returns `{}`), the five RPCs in `pg_proc`, and the
+  `block_generation_when_not_allowed` trigger on `case_generation_runs`. The UI reads stage defaults
   when `lifecycle_stages` is absent, but organization creation, lifecycle
   moves and the Organizations list need the migrations.
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,
@@ -626,9 +628,13 @@ milestones (M1 schema, M2 shell, M3 organizations; M4 users next).
   until they load. The Sidebar switcher groups by stage (In motion,
   Prospects; offboarded drops out), the Portfolio buckets and the store's
   active-org selection read the defaults, the shell shows
-  `OffboardedBanner` for a non-writable stage, and `/generation` shows
-  `GenerationStageNotice` (a labelled note, not a block) when generation is
-  not the stage's normal state.
+  `OffboardedBanner` for a non-writable stage, and `/generation` renders
+  `GenerationStageGate`: when the stage disallows generation (everything but
+  active by default; Sowmya's explicit exception to working rule 2) it shows
+  the reason and whom to ask instead of the grid, and the database refuses
+  the generation path (`block_generation_when_not_allowed` on
+  `case_generation_runs`, the path's first write). `ManualCaseModal` writes
+  no run and is not gated.
 - **`/join/$slug`** is invite-gated: it reloads memberships (which runs
   `claim_invites()`), then looks for the caller's own membership in the org
   with that slug; found → that workspace, otherwise "This link needs an

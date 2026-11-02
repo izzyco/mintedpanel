@@ -215,7 +215,10 @@ contract; clients and both-audience CSV receive explicit safe projections.
 
 Appended as its own section (several open lanes edit the tables above); fold
 into the main tables when the lanes have landed. Migrations `20261102163000`
-to `20261102163300`; details in SCHEMA.md › Mission Control M3.
+to `20261102163400`; details in SCHEMA.md › Mission Control M3.
+`case_generation_runs` gains the BEFORE INSERT trigger
+`block_generation_when_not_allowed` (no generation outside a stage that allows
+it, active by default).
 
 | Table / column                | Layer           | Status  | Writers                                                                        | Notes                                                                                                                                                                                                                                                                                                                                                                              |
 | ----------------------------- | --------------- | ------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

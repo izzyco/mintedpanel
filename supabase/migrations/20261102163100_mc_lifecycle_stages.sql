@@ -10,7 +10,8 @@
 --                      'in_motion', or NULL (hidden)
 --   writable           false freezes every tenant write (the offboarded write
 --                      freeze, migration 20261102163200)
---   generation_allowed the generation UI shows a labelled reason when false
+--   generation_allowed false stops case generation (the UI shows the reason;
+--                      the server refuses: 20261102163400)
 --   shown_by_default   Mission Control's organization list shows the stage
 --                      without the "include offboarded" toggle
 --

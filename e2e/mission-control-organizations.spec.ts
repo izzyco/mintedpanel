@@ -29,6 +29,7 @@ import {
 //   (e) the offboarded banner: reads work, add affordances hidden
 //   (f) the shortcuts: /organizations, /users, /settings take a platform admin
 //       into Mission Control and show anyone else the not-found view
+//   (g) case generation is a hard stop outside a stage that allows it
 
 const AUTH_KEY = "sb-example-auth-token";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -770,6 +771,43 @@ test("(e) an active organization shows no banner and keeps its add affordances",
   await page.goto("/providers");
   await expect(page.getByRole("link", { name: "New Provider" })).toBeVisible({ timeout: 30000 });
   await expect(page.getByText(/is offboarded/)).toHaveCount(0);
+});
+
+for (const stage of ["prospect", "onboarding"]) {
+  test(`(g) case generation is a hard stop for a ${stage} organization: the reason, no grid`, async ({
+    context,
+    page,
+  }) => {
+    const state = initialState({ platformAdmin: false });
+    state.orgs.find((o) => o.id === ROSE)!.lifecycle_state = stage;
+    await installMocks(context, state, ROSE);
+
+    await page.goto("/generation");
+    await expect(page.getByRole("heading", { name: "Generate cases" })).toBeVisible({
+      timeout: 30000,
+    });
+    const reason = page.getByRole("alert").filter({ hasText: "Case generation is off" });
+    await expect(reason).toContainText(
+      `Case generation is off while Rose City Rehab Collective is ${stage === "prospect" ? "Prospect" : "Onboarding"}`,
+    );
+    await expect(reason).toContainText("Ask your Minted contact");
+    // No way through: the grid is not rendered at all.
+    await expect(page.getByText("Nothing to review here yet")).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "By provider" })).toHaveCount(0);
+  });
+}
+
+test("(g) an active organization generates as before", async ({ context, page }) => {
+  const state = initialState({ platformAdmin: false });
+  await installMocks(context, state, ROSE);
+
+  await page.goto("/generation");
+  await expect(page.getByRole("heading", { name: "Generate cases" })).toBeVisible({
+    timeout: 30000,
+  });
+  // The grid renders (with this empty fixture, its own empty state).
+  await expect(page.getByText("Nothing to review here yet")).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText("Case generation is off")).toHaveCount(0);
 });
 
 test("(f) /organizations, /users and /settings take a platform admin into Mission Control", async ({

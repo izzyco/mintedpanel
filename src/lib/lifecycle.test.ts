@@ -5,6 +5,7 @@ import {
   allowedNextStages,
   groupBySwitcherGroup,
   isLifecycleWritable,
+  generationBlockedReason,
   lifecycleActionLabel,
   lifecycleStage,
   lifecycleValuesHiddenByDefault,
@@ -211,5 +212,36 @@ describe("parseLifecycleStages", () => {
     );
     expect(parseLifecycleStages(null)).toEqual(DEFAULT_LIFECYCLE_STAGES);
     expect(parseLifecycleStages([])).toEqual(DEFAULT_LIFECYCLE_STAGES);
+  });
+});
+
+describe("generationBlockedReason (Sowmya, Nov 2 2026: a hard stop until active)", () => {
+  it("is null where generation is allowed", () => {
+    expect(generationBlockedReason(lifecycleStage("active"), "Rose")).toBeNull();
+  });
+
+  it("names the stage, the organization and the stage that opens it", () => {
+    for (const key of ["prospect", "onboarding", "offboarded", "inactive"]) {
+      const stage = lifecycleStage(key);
+      expect(generationBlockedReason(stage, "Rose")).toEqual({
+        title: `Case generation is off while Rose is ${stage.displayName}`,
+        detail:
+          "It opens when Minted moves the organization to Active. Ask your Minted contact to make that move.",
+      });
+    }
+  });
+
+  it("follows the configured behaviour", () => {
+    const stages = DEFAULT_LIFECYCLE_STAGES.map((s) =>
+      s.key === "onboarding" ? { ...s, generationAllowed: true } : s,
+    );
+    expect(
+      generationBlockedReason(lifecycleStage("onboarding", stages), "Rose", stages),
+    ).toBeNull();
+    expect(
+      generationBlockedReason(lifecycleStage("prospect", stages), "Rose", stages)?.detail,
+    ).toBe(
+      "It opens when Minted moves the organization to Onboarding or Active. Ask your Minted contact to make that move.",
+    );
   });
 });

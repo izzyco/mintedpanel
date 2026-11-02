@@ -8,7 +8,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { GenerationGrid } from "@/components/generation/GenerationGrid";
-import { GenerationStageNotice } from "@/components/generation/GenerationStageNotice";
+import { GenerationStageGate } from "@/components/generation/GenerationStageGate";
 import type { GridPivot } from "@/lib/generationGrid";
 
 interface GenerationSearch {
@@ -59,8 +59,9 @@ function GenerationPage() {
           </Button>
         }
       />
-      <GenerationStageNotice />
-      <GenerationGrid scope={scope} defaultPivot={defaultPivot} />
+      <GenerationStageGate>
+        <GenerationGrid scope={scope} defaultPivot={defaultPivot} />
+      </GenerationStageGate>
     </div>
   );
 }

@@ -27,7 +27,7 @@ export interface LifecycleStage {
   switcherGroup: SwitcherGroup;
   /** false freezes every tenant write (the offboarded write freeze). */
   writable: boolean;
-  /** false shows a labelled reason in the generation UI. */
+  /** false stops case generation: the UI shows the reason, the server refuses. */
   generationAllowed: boolean;
   /** Mission Control's organization list shows it without "Include offboarded". */
   shownByDefault: boolean;
@@ -258,4 +258,24 @@ export function lifecycleActionLabel(from: LifecycleStage, to: LifecycleStage): 
   if (!to.writable) return "Offboard";
   if (!from.writable) return "Reopen";
   return `Move to ${to.displayName}`;
+}
+
+/**
+ * Why case generation is off for an organization in `stage`, or null when it
+ * is on. Sowmya, Nov 2 2026: a hard stop until the organization is in a stage
+ * that allows generation (active by default); the database refuses the
+ * generation path too (block_generation_when_not_allowed).
+ */
+export function generationBlockedReason(
+  stage: LifecycleStage,
+  orgName: string,
+  stages: readonly LifecycleStage[] = DEFAULT_LIFECYCLE_STAGES,
+): { title: string; detail: string } | null {
+  if (stage.generationAllowed) return null;
+  const open = stages.filter((s) => s.generationAllowed).map((s) => s.displayName);
+  const where = open.length > 0 ? open.join(" or ") : "a stage that allows it";
+  return {
+    title: `Case generation is off while ${orgName} is ${stage.displayName}`,
+    detail: `It opens when Minted moves the organization to ${where}. Ask your Minted contact to make that move.`,
+  };
 }
