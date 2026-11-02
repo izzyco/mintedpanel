@@ -175,16 +175,19 @@ export function shouldShowCaseFacilityPicker(
 }
 
 /** The launcher is narrower than the step body: only the active incomplete
- * online-form step in an unlocked, unfinished task can send case context. */
+ * online-form step of an unfinished task with no earlier open task can send
+ * case context. Completing out of order is allowed (MINT-135), but the typed
+ * submission the launch ends in accepts only the case's current task and
+ * step, so the launcher stays there. */
 export function isPortalHandoffStepEligible(
   step: SOPStep,
   stepIndex: number,
   firstIncompleteIndex: number,
-  taskLocked: boolean,
+  earlierTaskOpen: boolean,
   taskStatus: TaskStatus,
 ): boolean {
   return (
-    !taskLocked &&
+    !earlierTaskOpen &&
     taskStatus !== "completed" &&
     !step.isCompleted &&
     stepIndex === firstIncompleteIndex &&
@@ -215,7 +218,7 @@ export function stepPortalHandoff<H extends { caseId: string; providerId: string
   >,
   steps: readonly SOPStep[],
   stepIndex: number,
-  taskLocked: boolean,
+  earlierTaskOpen: boolean,
 ): (H & { workStep: PortalHandoffWorkStep }) | undefined {
   const step = steps[stepIndex];
   if (
@@ -228,7 +231,13 @@ export function stepPortalHandoff<H extends { caseId: string; providerId: string
   }
   const firstIncompleteIndex = steps.findIndex((s) => !s.isCompleted);
   if (
-    !isPortalHandoffStepEligible(step, stepIndex, firstIncompleteIndex, taskLocked, task.status)
+    !isPortalHandoffStepEligible(
+      step,
+      stepIndex,
+      firstIncompleteIndex,
+      earlierTaskOpen,
+      task.status,
+    )
   ) {
     return undefined;
   }

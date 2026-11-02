@@ -1,19 +1,14 @@
 // Right-side slide-over that opens on task row click from the case Tasks panel.
 // Lets coordinators run status changes, SOP steps, and notes without leaving the case page.
+// Order is advisory (MINT-135): the task can be completed while earlier tasks
+// are open, and any open step can be ticked; the earlier items stay open and
+// each bypass is recorded quietly as a workflow advisory.
 import { useEffect, useMemo, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useNavigate } from "@tanstack/react-router";
 import { differenceInDays, parseISO } from "date-fns";
 import { toast } from "sonner";
-import {
-  Calendar,
-  CheckCircle2,
-  ExternalLink,
-  Loader2,
-  Lock,
-  MessageSquare,
-  X,
-} from "lucide-react";
+import { Calendar, CheckCircle2, ExternalLink, Loader2, MessageSquare, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
 import { StepBody } from "@/components/cases/StepDetails";
@@ -41,7 +36,9 @@ import type { SOPStep, Task, TaskStatus } from "@/types";
 interface TaskDrawerProps {
   taskId: string | null;
   fallbackTask: Task | null;
-  locked: boolean;
+  /** Earlier tasks on the case still open: they keep Work in portal off this
+   * task. (An out-of-order completion is recorded by the save itself.) */
+  earlierOpenCount: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** token -> value map for the pdf-step filler (from the case page). */
@@ -91,7 +88,7 @@ function statusPillColor(s: TaskStatus): "gray" | "amber" | "green" | "red" {
 export function TaskDrawer({
   taskId,
   fallbackTask,
-  locked,
+  earlierOpenCount,
   open,
   onOpenChange,
   tokenValues,
@@ -128,7 +125,6 @@ export function TaskDrawer({
         : [],
     [task?.sopContent],
   );
-  const firstIncompleteIndex = steps.findIndex((s) => !s.isCompleted);
 
   if (!task) return null;
 
@@ -151,13 +147,12 @@ export function TaskDrawer({
   };
 
   const handleMarkComplete = () => {
-    if (locked || task.status === "completed") return;
+    if (task.status === "completed") return;
     handleSetStatus("completed", "Task completed");
   };
 
   const handleStep = (index: number, checked: boolean) => {
     if (!checked) return;
-    if (index !== firstIncompleteIndex) return;
     const step = steps[index];
     if (!step) return;
     completeStepM.mutate(
@@ -231,33 +226,17 @@ export function TaskDrawer({
               {/* Actions */}
               <div className="space-y-3">
                 {task.status !== "completed" ? (
-                  locked ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex w-full">
-                          <Button
-                            className="w-full bg-[#1B4D3E] hover:bg-[#1B4D3E]/90 text-white"
-                            disabled
-                          >
-                            Mark complete
-                          </Button>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>Complete previous task first</TooltipContent>
-                    </Tooltip>
-                  ) : (
-                    <Button
-                      className="w-full bg-[#1B4D3E] hover:bg-[#1B4D3E]/90 text-white"
-                      onClick={handleMarkComplete}
-                      disabled={!canEdit || updateStatusM.isPending}
-                    >
-                      {updateStatusM.isPending ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        "Mark complete"
-                      )}
-                    </Button>
-                  )
+                  <Button
+                    className="w-full bg-[#1B4D3E] hover:bg-[#1B4D3E]/90 text-white"
+                    onClick={handleMarkComplete}
+                    disabled={!canEdit || updateStatusM.isPending}
+                  >
+                    {updateStatusM.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      "Mark complete"
+                    )}
+                  </Button>
                 ) : null}
 
                 <div className="flex items-center gap-2">
@@ -299,37 +278,20 @@ export function TaskDrawer({
                   <div className="rounded-md border border-[#E8E5E0] divide-y divide-[#E8E5E0]">
                     {steps.map((step, index) => {
                       const isChecked = step.isCompleted;
-                      const isActive = !isChecked && index === firstIncompleteIndex;
-                      const isLocked = !isChecked && !isActive;
                       const stepPortalHandoffContext = stepPortalHandoff(
                         portalHandoff,
                         task,
                         steps,
                         index,
-                        locked,
+                        earlierOpenCount > 0,
                       );
                       return (
                         <div key={step.id} className="flex items-start gap-3 p-3">
-                          {isLocked ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="inline-flex">
-                                  <Checkbox checked={false} disabled />
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                Complete step {firstIncompleteIndex + 1} first
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            <Checkbox
-                              checked={isChecked}
-                              disabled={
-                                isChecked || !isActive || !canEdit || completeStepM.isPending
-                              }
-                              onCheckedChange={(v) => handleStep(index, Boolean(v))}
-                            />
-                          )}
+                          <Checkbox
+                            checked={isChecked}
+                            disabled={isChecked || !canEdit || completeStepM.isPending}
+                            onCheckedChange={(v) => handleStep(index, Boolean(v))}
+                          />
                           <div className="flex-1 space-y-1.5">
                             <p
                               className={`text-[13px] leading-snug ${
@@ -341,28 +303,24 @@ export function TaskDrawer({
                             {/* 2026-07-20 (Wizard tab retired): the full
                                 step body — portal link + resolved fields,
                                 the draft-email Gmail hand-off, the pdf
-                                filler — renders here for unlocked steps;
-                                locked steps stay label-only. */}
-                            {isLocked ? null : (
-                              <StepBody
-                                step={step}
-                                tokenValues={tokenValues}
-                                refreshTokenValues={refreshTokenValues}
-                                pdfContextKey={pdfContextKey}
-                                taskId={task.id}
-                                caseId={task.caseId}
-                                providerId={task.providerId}
-                                groupId={groupId}
-                                providerName={providerName}
-                                groupName={groupName}
-                                portalHandoff={stepPortalHandoffContext}
-                              />
-                            )}
+                                filler — renders here for every step, since
+                                any open step can be worked (MINT-135). */}
+                            <StepBody
+                              step={step}
+                              tokenValues={tokenValues}
+                              refreshTokenValues={refreshTokenValues}
+                              pdfContextKey={pdfContextKey}
+                              taskId={task.id}
+                              caseId={task.caseId}
+                              providerId={task.providerId}
+                              groupId={groupId}
+                              providerName={providerName}
+                              groupName={groupName}
+                              portalHandoff={stepPortalHandoffContext}
+                            />
                           </div>
                           {isChecked ? (
                             <CheckCircle2 className="h-4 w-4 text-[#059669] flex-shrink-0" />
-                          ) : isLocked ? (
-                            <Lock className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0 mt-0.5" />
                           ) : null}
                         </div>
                       );

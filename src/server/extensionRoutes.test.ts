@@ -36,6 +36,7 @@ vi.mock("@/services/submissionTouches", () => ({ recordSubmissionTouch: vi.fn() 
 vi.mock("@/services/orgMemberships", () => ({ listUserOrgMemberships: vi.fn() }));
 vi.mock("@/services/nextBestAction", () => ({ getNextBestAction: vi.fn() }));
 vi.mock("@/services/taskSteps", () => ({ completeTaskStep: vi.fn() }));
+vi.mock("./taskOrderAdvisory", () => ({ recordServerCompletedOutOfOrder: vi.fn() }));
 vi.mock("@/services/extensionViewPrefs", () => ({
   getExtensionViewPrefs: vi.fn(),
   getQuickCardCatalog: vi.fn(),
@@ -61,6 +62,7 @@ import { recordSubmissionTouch } from "@/services/submissionTouches";
 import { listUserOrgMemberships } from "@/services/orgMemberships";
 import { getNextBestAction } from "@/services/nextBestAction";
 import { completeTaskStep } from "@/services/taskSteps";
+import { recordServerCompletedOutOfOrder } from "./taskOrderAdvisory";
 import {
   getExtensionViewPrefs,
   getQuickCardCatalog,
@@ -108,6 +110,7 @@ const recordTouchMock = vi.mocked(recordSubmissionTouch);
 const listMyOrgsMock = vi.mocked(listUserOrgMemberships);
 const getNbaMock = vi.mocked(getNextBestAction);
 const completeStepMock = vi.mocked(completeTaskStep);
+const recordOutOfOrderMock = vi.mocked(recordServerCompletedOutOfOrder);
 const getViewPrefsMock = vi.mocked(getExtensionViewPrefs);
 const putViewPrefsMock = vi.mocked(putExtensionViewPrefs);
 const catalogMock = vi.mocked(getQuickCardCatalog);
@@ -1175,15 +1178,15 @@ describe("task step handler (S4.3 — the one /api task-state write)", () => {
     );
   });
 
-  it("surfaces a blocked step as 409 with the blocker named", async () => {
+  it("surfaces the RPC's 409 with its message", async () => {
     completeStepMock.mockResolvedValue({
       kind: "rejected",
       status: 409,
-      message: 'Complete "Upload W-9" first',
+      message: "Task case organization does not match",
     });
     const res = await handleCompleteTaskStep(TASK, { stepId: "s2" }, ctx());
     expect(res.status).toBe(409);
-    expect((await body(res)).error).toBe('Complete "Upload W-9" first');
+    expect((await body(res)).error).toBe("Task case organization does not match");
   });
 
   it("404s a non-UUID task id before touching the service", async () => {
@@ -2072,6 +2075,15 @@ describe("case touches handler", () => {
     );
   });
 
+  it("MINT-135: wires a task the touch completes to the out-of-order recorder", async () => {
+    recordTouchMock.mockResolvedValue({ kind: "created", touch: { id: "t1" } as never });
+    const c = ctx();
+    await handleCreateCaseTouch(CASE_ID, { kind: "portal_submission" }, c);
+    const task = { id: "task-1", caseId: CASE_ID, sortOrder: 3 };
+    recordTouchMock.mock.calls[0][0].onTaskCompleted?.(task);
+    expect(recordOutOfOrderMock).toHaveBeenCalledWith(c, task);
+  });
+
   it("returns 200 for a duplicate (idempotent replay)", async () => {
     recordTouchMock.mockResolvedValue({ kind: "duplicate", touch: { id: "t1" } as never });
     const res = await handleCreateCaseTouch(CASE_ID, { kind: "portal_submission" }, ctx());
@@ -2141,6 +2153,15 @@ describe("fill events handler", () => {
       expect.objectContaining({ orgId: "org-1", userId: "u1" }),
       { id: "fs1" },
     );
+  });
+
+  it("MINT-135: wires a task the fill completes to the out-of-order recorder", async () => {
+    recordFillEventMock.mockResolvedValue({ kind: "created", session: { id: "fs1" } as never });
+    const c = ctx();
+    await handleCreateFillEvent({ id: "fs1" }, c);
+    const task = { id: "task-1", caseId: "case-1", sortOrder: 3 };
+    recordFillEventMock.mock.calls[0][0].onTaskCompleted?.(task);
+    expect(recordOutOfOrderMock).toHaveBeenCalledWith(c, task);
   });
 
   it("returns 200 for a duplicate (idempotent replay)", async () => {

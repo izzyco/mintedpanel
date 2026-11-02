@@ -964,6 +964,50 @@ describe("recordSubmissionTouch — Stories 5/6/7 write-back", () => {
     );
   });
 
+  it("MINT-135: hands an open task it closes to ctx.onTaskCompleted, without waiting on it", async () => {
+    // A callback that never settles: the request must not wait on it.
+    const onTaskCompleted = vi.fn(() => new Promise(() => {}));
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID, payers: { name: "Cigna" } } },
+      { data: { id: TASK_ID, status: "not_started", case_id: CASE_ID, sort_order: 4 } },
+      { data: null },
+      { data: storedRow },
+      { data: { id: TASK_ID } },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordSubmissionTouch({ ...ctx, onTaskCompleted }, CASE_ID, {
+      ...baseInput,
+      task_id: TASK_ID,
+    });
+
+    expect(result.kind).toBe("created");
+    expect(onTaskCompleted).toHaveBeenCalledTimes(1);
+    expect(onTaskCompleted).toHaveBeenCalledWith({
+      id: TASK_ID,
+      caseId: CASE_ID,
+      sortOrder: 4,
+    });
+  });
+
+  it("MINT-135: does not hand on a task that was already completed", async () => {
+    const onTaskCompleted = vi.fn();
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: { id: TASK_ID, status: "completed", case_id: CASE_ID, sort_order: 4 } },
+      { data: null },
+      { data: storedRow },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    await recordSubmissionTouch({ ...ctx, onTaskCompleted }, CASE_ID, {
+      ...baseInput,
+      task_id: TASK_ID,
+    });
+
+    expect(onTaskCompleted).not.toHaveBeenCalled();
+  });
+
   it("leaves an already-completed task alone (no task_update, no task audit)", async () => {
     const { db, captures } = makeFakeDb([
       { data: { id: CASE_ID } },

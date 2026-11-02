@@ -991,6 +991,51 @@ describe("recordFillEvent — task completion", () => {
   });
 });
 
+describe("recordFillEvent — out-of-order completion (MINT-135)", () => {
+  it("hands an open task it completes to ctx.onTaskCompleted, without waiting on it", async () => {
+    // A callback that never settles: the request must not wait on it.
+    const onTaskCompleted = vi.fn(() => new Promise(() => {}));
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: { id: TASK_ID } },
+      { data: null },
+      { data: storedRow },
+      { data: { id: TASK_ID, status: "in_progress", case_id: CASE_ID, sort_order: 2 } },
+      { data: { id: TASK_ID } },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordFillEvent(
+      { ...ctx, onTaskCompleted },
+      { ...baseInput, taskId: TASK_ID },
+    );
+
+    expect(result.kind).toBe("created");
+    expect(onTaskCompleted).toHaveBeenCalledTimes(1);
+    expect(onTaskCompleted).toHaveBeenCalledWith({
+      id: TASK_ID,
+      caseId: CASE_ID,
+      sortOrder: 2,
+    });
+  });
+
+  it("does not hand on a task that was already completed", async () => {
+    const onTaskCompleted = vi.fn();
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: { id: TASK_ID } },
+      { data: null },
+      { data: storedRow },
+      { data: { id: TASK_ID, status: "completed", case_id: CASE_ID, sort_order: 2 } },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    await recordFillEvent({ ...ctx, onTaskCompleted }, { ...baseInput, taskId: TASK_ID });
+
+    expect(onTaskCompleted).not.toHaveBeenCalled();
+  });
+});
+
 describe("recordFillEvent — exact case Work receipts", () => {
   it("persists the selected task and step from the nested canonical tuple without completing the task", async () => {
     validateWorkContextMock.mockResolvedValue({
