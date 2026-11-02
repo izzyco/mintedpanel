@@ -331,7 +331,7 @@ The single case-activity spine (Story 1, migration `20260707120000_touchlog_entr
 
 ## Mission Control (platform administration)
 
-Migration `20261030180000_mission_control_platform_admins.sql` (applied on
+Migration `20261102160000_mission_control_platform_admins.sql` (applied on
 staging 2026-10-30, ledger `20261030204806`; production unverified). A
 platform admin is a Minted operator who works across organizations. This is a
 platform role, separate from per-org `memberships` roles and from E6.12's

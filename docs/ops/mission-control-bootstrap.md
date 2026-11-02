@@ -12,7 +12,7 @@ the one deliberate exception, and it is an operator action.
 
 ## Status
 
-| Environment                       | Migration `20261030180000`                   | Bootstrap               |
+| Environment                       | Migration `20261102160000`                   | Bootstrap               |
 | --------------------------------- | -------------------------------------------- | ----------------------- |
 | Staging `vmznysvietfaddakkegt`    | applied 2026-10-30, ledger `20261030204806`  | pending operator run    |
 | Production `fkvuhfsqcmujywzgczmc` | not applied; ships with a production release | after the release apply |

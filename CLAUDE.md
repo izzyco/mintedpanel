@@ -355,7 +355,7 @@ before any schema work.
   `isMissingContractSpecialtyKeyError` in `src/lib/dbErrors.ts`); contract
   saves fail until it is applied. Verify the objects listed in the
   migration header.
-- `20261030180000_mission_control_platform_admins.sql` — Mission Control
+- `20261102160000_mission_control_platform_admins.sql` — Mission Control
   M1: `platform_admins`, `admin_audit_log`, four RPCs, six `mc_*` SELECT
   policies. Applied on staging 2026-10-30 (ledger `20261030204806`; all
   four function bodies md5-match the repo); production unverified. Verify:
