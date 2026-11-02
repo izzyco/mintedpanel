@@ -14,8 +14,9 @@
 // and Settings are retired per their owning epics (F6.1.6 redirect table);
 // Audit Log re-homes into the Reporting Center in E6.6.
 //
-// Branding is untouched (F6.1.1 AC): the white layered-jack mark + wordmark
-// stay exactly as shipped. The switcher menu keeps the E0.9 behavior
+// Branding (F6.1.1 AC): the layered-jack mark + wordmark keep their geometry;
+// the mark renders through the rail ink token, white everywhere and rail-ink
+// on the Mission Control rail only. The switcher menu keeps the E0.9 behavior
 // (lifecycle group headings ONLY, never a per-org status label; search above
 // 10 orgs; footer Add organization → /onboarding + View all organizations).
 // User footer: its Settings item lands on /account, the user's own name/title
@@ -44,7 +45,11 @@ import { ROLE_LABELS, usePlatformAdmin } from "@/lib/permissions";
 // The approved white layered-jack mark (E1.0 F1.0.4 / TE-8), copied from
 // docs/redesign/design-system/design-system-reference/assets/logo-white.png —
 // pinned untouched by E6.1 F6.1.1 (the decision-mock gradient square is a
-// placeholder, not a proposal). Never recolored or given effects.
+// placeholder, not a proposal). Never recolored, except the Mission Control
+// rail, where the mark is rail-ink: the PNG is the mask (every opaque pixel in
+// it is pure white, so its alpha is the whole shape) and the fill is the
+// --mp-sidebar-ink token, so the geometry is the file's and the colour is the
+// rail's. No effects.
 import logoWhite from "@/assets/logo-white.png";
 import {
   FolderKanban,
@@ -64,6 +69,19 @@ import {
 } from "lucide-react";
 
 type Icon = typeof FolderKanban;
+
+// The mark as a CSS mask: the fill color is the rail ink token, the shape is
+// the shipped PNG. `contain` + `center` reproduce the old object-contain fit.
+const MARK_MASK_STYLE: React.CSSProperties = {
+  maskImage: `url(${logoWhite})`,
+  WebkitMaskImage: `url(${logoWhite})`,
+  maskSize: "contain",
+  WebkitMaskSize: "contain",
+  maskRepeat: "no-repeat",
+  WebkitMaskRepeat: "no-repeat",
+  maskPosition: "center",
+  WebkitMaskPosition: "center",
+};
 
 type NavLink = { to: string; label: string; icon: Icon };
 
@@ -205,9 +223,16 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
 
   return (
     <aside className="w-full md:w-[232px] flex-shrink-0 bg-mp-sidebar flex flex-col h-full">
-      {/* Logo — untouched branding (F6.1.1 AC) */}
+      {/* Logo (F6.1.1 AC): the shipped PNG as a mask filled from the rail ink
+          token — white on the forest rail, rail-ink on the Mission Control
+          rail. Same geometry, no effects. */}
       <div className="px-5 pt-4 pb-2.5 flex items-center gap-2">
-        <img src={logoWhite} alt="Minted Panel" className="w-6 h-6 object-contain" />
+        <span
+          role="img"
+          aria-label="Minted Panel"
+          className="inline-block h-6 w-6 flex-none bg-mp-sidebar-ink"
+          style={MARK_MASK_STYLE}
+        />
         <span className="text-[14px] font-semibold text-mp-sidebar-ink">Minted Panel</span>
       </div>
 

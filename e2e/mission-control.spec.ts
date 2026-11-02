@@ -54,6 +54,14 @@ const SESSION = {
 // the Mission Control surface's mint (#CFF3E3, styles.css) for a platform admin.
 const FOREST_RAIL = "rgb(12, 42, 29)";
 const MINT_RAIL = "rgb(207, 243, 227)";
+// The logo mark's fill follows the rail ink token: white on the forest rail,
+// rail-ink (#06281D) on the mint rail, the one exception to the white mark.
+const WHITE_MARK = "rgb(255, 255, 255)";
+const MINT_INK_MARK = "rgb(6, 40, 29)";
+
+function mark(page: Page) {
+  return sidebar(page).getByRole("img", { name: "Minted Panel" });
+}
 
 const METRICS = {
   generatedAt: "2026-10-30T13:15:00.000Z",
@@ -252,6 +260,8 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
   // mint rail (the shade is the proposal in styles.css and adjustable there).
   await expect(page.locator('html[data-surface="mission-control"]')).toHaveCount(1);
   await expect(sidebar(page)).toHaveCSS("background-color", MINT_RAIL);
+  await expect(mark(page)).toHaveCSS("mask-image", /logo-white/);
+  await expect(mark(page)).toHaveCSS("background-color", MINT_INK_MARK);
 
   // A Mission Control path with no page yet is an ordinary unknown URL, even
   // for a platform admin: no placeholder page ships.
@@ -265,6 +275,7 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
   });
   await expect(page.locator("html[data-surface]")).toHaveCount(0);
   await expect(sidebar(page)).toHaveCSS("background-color", FOREST_RAIL);
+  await expect(mark(page)).toHaveCSS("background-color", WHITE_MARK);
 });
 
 test("(b) a non-admin gets the generic not-found view, no sidebar entry, and client navigation lands on /", async ({
@@ -282,10 +293,11 @@ test("(b) a non-admin gets the generic not-found view, no sidebar entry, and cli
   await expectNotFound(page);
   expect(await page.locator("main").innerText()).toBe(unknownText);
   await expect(page.getByText(/mission control/i)).toHaveCount(0);
-  // The rail is the ordinary forest too: the palette never hints that the
-  // route exists.
+  // The rail is the ordinary forest too, white mark included: the palette
+  // never hints that the route exists.
   await expect(page.locator("html[data-surface]")).toHaveCount(0);
   await expect(sidebar(page)).toHaveCSS("background-color", FOREST_RAIL);
+  await expect(mark(page)).toHaveCSS("background-color", WHITE_MARK);
 
   await expect(sidebar(page).getByText("Workspace", { exact: true })).toBeVisible();
   await expect(sidebar(page).getByRole("link", { name: "Mission Control" })).toHaveCount(0);
