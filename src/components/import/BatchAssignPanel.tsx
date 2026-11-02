@@ -22,6 +22,7 @@ import { useApplyBatchAssignment, useProviderAssignmentsForRun } from "@/hooks/u
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
 import { localCalendarDate } from "@/lib/systemTokens";
+import { countLabel } from "@/lib/countLabel";
 import { planBatchAssignment } from "@/lib/importDedupe";
 import type { ImportRun } from "@/types";
 
@@ -91,7 +92,7 @@ export function BatchAssignPanel({ run }: { run: ImportRun }) {
       {
         onSuccess: (res) => {
           toast.success(
-            `Assigned ${res.groupsAdded} group + ${res.facilitiesAdded} facility link(s); ${res.skippedProviders} provider(s) already assigned (kept their own).`,
+            `Assigned ${countLabel(res.groupsAdded, "group")} + ${countLabel(res.facilitiesAdded, "facility link")}; ${countLabel(res.skippedProviders, "provider")} already assigned (kept their own).`,
           );
         },
         onError: (e) =>
