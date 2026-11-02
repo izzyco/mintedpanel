@@ -386,6 +386,12 @@ jobs:
             echo "::endgroup::"
           done
 
+      # MINT-134 workflow advisories: append-only ledger, context refusals,
+      # caller and org checks, job dedupe, grants. Rollback-only; any failed
+      # check raises.
+      - name: Run MINT-134 workflow advisories SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-workflow-advisories.sql
+
       # MINT-91 U8: a contact saves with a blank office phone (create org,
       # capture link, /contact lead), and every other required field is still
       # refused. Rollback-only; any failed check raises.
