@@ -1840,6 +1840,227 @@ export type Database = {
         };
         Relationships: [];
       };
+      notification_sends: {
+        Row: {
+          claimed_at: string;
+          job: string;
+          org_id: string;
+          outcome: string;
+          recipient_user_id: string;
+          slot: string;
+        };
+        Insert: {
+          claimed_at?: string;
+          job: string;
+          org_id: string;
+          outcome?: string;
+          recipient_user_id: string;
+          slot: string;
+        };
+        Update: {
+          claimed_at?: string;
+          job?: string;
+          org_id?: string;
+          outcome?: string;
+          recipient_user_id?: string;
+          slot?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_sends_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      notification_sequence_default_steps: {
+        Row: {
+          channel: string;
+          created_at: string;
+          id: string;
+          offset_days: number;
+          position: number;
+          purpose: string;
+          template_key: string;
+          updated_at: string;
+        };
+        Insert: {
+          channel: string;
+          created_at?: string;
+          id?: string;
+          offset_days: number;
+          position: number;
+          purpose: string;
+          template_key: string;
+          updated_at?: string;
+        };
+        Update: {
+          channel?: string;
+          created_at?: string;
+          id?: string;
+          offset_days?: number;
+          position?: number;
+          purpose?: string;
+          template_key?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_sequence_default_steps_purpose_fkey";
+            columns: ["purpose"];
+            isOneToOne: false;
+            referencedRelation: "notification_sequence_defaults";
+            referencedColumns: ["purpose"];
+          },
+        ];
+      };
+      notification_sequence_defaults: {
+        Row: {
+          bounce_escalation_step: number | null;
+          created_at: string;
+          digest_cc_allowed: boolean | null;
+          purpose: string;
+          stop_conditions: string[] | null;
+          target_days_to_ready: number | null;
+          updated_at: string;
+        };
+        Insert: {
+          bounce_escalation_step?: number | null;
+          created_at?: string;
+          digest_cc_allowed?: boolean | null;
+          purpose: string;
+          stop_conditions?: string[] | null;
+          target_days_to_ready?: number | null;
+          updated_at?: string;
+        };
+        Update: {
+          bounce_escalation_step?: number | null;
+          created_at?: string;
+          digest_cc_allowed?: boolean | null;
+          purpose?: string;
+          stop_conditions?: string[] | null;
+          target_days_to_ready?: number | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      notification_sequence_steps: {
+        Row: {
+          cc_recipients: Json;
+          channel: string;
+          created_at: string;
+          id: string;
+          offset_days: number;
+          org_id: string;
+          position: number;
+          sequence_id: string;
+          template_key: string;
+          updated_at: string;
+        };
+        Insert: {
+          cc_recipients?: Json;
+          channel: string;
+          created_at?: string;
+          id?: string;
+          offset_days: number;
+          org_id: string;
+          position: number;
+          sequence_id: string;
+          template_key: string;
+          updated_at?: string;
+        };
+        Update: {
+          cc_recipients?: Json;
+          channel?: string;
+          created_at?: string;
+          id?: string;
+          offset_days?: number;
+          org_id?: string;
+          position?: number;
+          sequence_id?: string;
+          template_key?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_sequence_steps_sequence_fkey";
+            columns: ["org_id", "sequence_id"];
+            isOneToOne: false;
+            referencedRelation: "notification_sequences";
+            referencedColumns: ["org_id", "id"];
+          },
+        ];
+      };
+      notification_sequences: {
+        Row: {
+          bounce_escalation_step: number | null;
+          created_at: string;
+          digest_cc_allowed: boolean | null;
+          digest_frequency: string | null;
+          digest_weekday: number | null;
+          enabled: boolean;
+          id: string;
+          org_id: string;
+          purpose: string;
+          revision: number;
+          second_send_hour: number | null;
+          send_hour: number | null;
+          send_time_zone: string | null;
+          stop_conditions: string[] | null;
+          target_days_to_ready: number | null;
+          updated_at: string;
+          updated_by: string | null;
+        };
+        Insert: {
+          bounce_escalation_step?: number | null;
+          created_at?: string;
+          digest_cc_allowed?: boolean | null;
+          digest_frequency?: string | null;
+          digest_weekday?: number | null;
+          enabled?: boolean;
+          id?: string;
+          org_id: string;
+          purpose: string;
+          revision?: number;
+          second_send_hour?: number | null;
+          send_hour?: number | null;
+          send_time_zone?: string | null;
+          stop_conditions?: string[] | null;
+          target_days_to_ready?: number | null;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Update: {
+          bounce_escalation_step?: number | null;
+          created_at?: string;
+          digest_cc_allowed?: boolean | null;
+          digest_frequency?: string | null;
+          digest_weekday?: number | null;
+          enabled?: boolean;
+          id?: string;
+          org_id?: string;
+          purpose?: string;
+          revision?: number;
+          second_send_hour?: number | null;
+          send_hour?: number | null;
+          send_time_zone?: string | null;
+          stop_conditions?: string[] | null;
+          target_days_to_ready?: number | null;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_sequences_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       org_payer_assignments: {
         Row: {
           archived_at: string | null;
@@ -3638,6 +3859,108 @@ export type Database = {
           },
         ];
       };
+      sms_consent_archive: {
+        Row: {
+          archived_at: string;
+          consent_text_version: string;
+          consented_at: string;
+          created_at: string;
+          id: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id: string | null;
+          recorded_by: string | null;
+          revoked_at: string | null;
+          revoked_source: string | null;
+          source: string;
+        };
+        Insert: {
+          archived_at?: string;
+          consent_text_version: string;
+          consented_at: string;
+          created_at: string;
+          id: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source: string;
+        };
+        Update: {
+          archived_at?: string;
+          consent_text_version?: string;
+          consented_at?: string;
+          created_at?: string;
+          id?: string;
+          org_id?: string;
+          phone_e164?: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source?: string;
+        };
+        Relationships: [];
+      };
+      sms_consents: {
+        Row: {
+          consent_text_version: string;
+          consented_at: string;
+          created_at: string;
+          id: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id: string | null;
+          recorded_by: string | null;
+          revoked_at: string | null;
+          revoked_source: string | null;
+          source: string;
+        };
+        Insert: {
+          consent_text_version: string;
+          consented_at?: string;
+          created_at?: string;
+          id?: string;
+          org_id: string;
+          phone_e164: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source: string;
+        };
+        Update: {
+          consent_text_version?: string;
+          consented_at?: string;
+          created_at?: string;
+          id?: string;
+          org_id?: string;
+          phone_e164?: string;
+          provider_id?: string | null;
+          recorded_by?: string | null;
+          revoked_at?: string | null;
+          revoked_source?: string | null;
+          source?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sms_consents_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "sms_consents_provider_fkey";
+            columns: ["org_id", "provider_id"];
+            isOneToOne: false;
+            referencedRelation: "providers";
+            referencedColumns: ["org_id", "id"];
+          },
+        ];
+      };
       sop_template_drafts: {
         Row: {
           case_type: string | null;
@@ -4553,6 +4876,25 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      claim_notification_send: {
+        Args: {
+          p_job: string;
+          p_org_id: string;
+          p_recipient_user_id: string;
+          p_slot: string;
+        };
+        Returns: boolean;
+      };
+      finish_notification_send: {
+        Args: {
+          p_job: string;
+          p_org_id: string;
+          p_outcome: string;
+          p_recipient_user_id: string;
+          p_slot: string;
+        };
+        Returns: boolean;
+      };
       create_provider_intake_invite: {
         Args: {
           p_actor_id: string;
@@ -4615,6 +4957,7 @@ export type Database = {
       complete_sop_task_step: {
         Args: {
           p_actor_id: string;
+          p_completed_date?: string;
           p_org_id: string;
           p_source: string;
           p_step_id: string;
@@ -5232,6 +5575,10 @@ export type Database = {
         Returns: Json;
       };
       revoke_report_share: { Args: { p_id: string }; Returns: undefined };
+      save_notification_sequence: {
+        Args: { p_org_id: string; p_payload: Json; p_purpose: string };
+        Returns: Json;
+      };
       set_case_status: {
         Args: {
           p_case_id: string;

@@ -232,10 +232,9 @@ function caseDetails(
   today: string,
   followUp: MatrixFollowUp | undefined,
 ) {
-  const daysOpen = Math.max(
-    0,
-    differenceInCalendarDays(parseISO(today), parseISO(cell.case.createdAt)),
-  );
+  // The board derived it (caseDaysOpenFor), so the cell, the Cases list and
+  // the case Details card show one number.
+  const daysOpen = cell.daysOpen;
   const followUpDue = followUp?.nextFollowUpDate ?? null;
   const followUpOverdue = followUpDue !== null && followUpDue < today;
 
@@ -315,7 +314,7 @@ function CaseCellPopover({
               </>
             ) : null}
             <span className="text-muted-foreground">Days open</span>
-            <span>{details.daysOpen}d</span>
+            <span>{details.daysOpen === null ? "—" : `${details.daysOpen}d`}</span>
             <span className="text-muted-foreground">Last touch</span>
             <span>{details.lastTouch}</span>
             <span className="text-muted-foreground">Follow-up</span>

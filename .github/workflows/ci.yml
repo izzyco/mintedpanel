@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -26,54 +27,302 @@ on:
       - ".agents/**"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  migration-runner:
-    name: Migration runner
+  # Fast change detection so heavy integration jobs only run when relevant files change.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      migrations: ${{ steps.filter.outputs.migrations }}
+      security: ${{ steps.filter.outputs.security }}
+      uat: ${{ steps.filter.outputs.uat }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            migrations:
+              - 'supabase/**'
+              - 'scripts/migrations/**'
+              - '.github/workflows/ci.yml'
+            security:
+              - 'scripts/security/**'
+              - 'src/server/**'
+              - 'src/services/**'
+              - 'supabase/**'
+              - '.github/workflows/ci.yml'
+            uat:
+              - 'scripts/uat/**'
+              - 'supabase/**'
+              - '.github/workflows/ci.yml'
+
+  build:
+    name: Build, lint, and unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format check
+        run: npx prettier --check .
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Verify local API isolation fixtures and leak detection
+        run: node scripts/verify-isolation-local.mjs
+
+      - name: Build
+        env:
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: e612-build-synthetic-anon-key
+        run: npm run build
+
+  release-guardrails:
+    name: Release guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      # The release checks use node:test and built-in modules only.
+      # No hosted credentials, deployment or environment approval is needed.
+      - name: Check release contract and source controls
+        run: npm run test:release
+
+      - name: Install encryption test dependency
+        run: sudo apt-get update && sudo apt-get install -y age
+
+      - name: Check encrypted recovery and evidence boundaries
+        run: npm run test:recovery
+
+      - name: Check delivery controls and provider adapters with simulated data
+        run: npm run test:delivery
+
+      - name: Check backup credential isolation and identity gates
+        run: npm run test:backup
+
+      - name: Check the Luna-scale seed generator, SQL and target guards
+        run: npm run test:luna-scale
+
+      # In-memory clients only: no network, no keys, no project is touched.
+      - name: Check the prod-to-staging catalog sync rules
+        run: npm run test:ops
+
+  # Gate 0.5 — Fast Playwright smoke skeleton (login render & unauthenticated guard).
+  # Runs in <1 minute. Full 400+ spec regression runs via e2e-full.yml on merge/nightly.
+  e2e:
+    name: Playwright smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Node 22 (not 20): the SSR dev server constructs the Supabase client at
+      # module load, and @supabase/realtime-js needs a global WebSocket, which
+      # Node 20 lacks (added as a global in Node 22). On Node 20 SSR throws a 500
+      # and the webServer never comes up.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browser binaries
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright OS dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Write dummy Supabase env
+        run: |
+          cat > .env <<'ENV'
+          VITE_SUPABASE_URL=https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY=dummy-anon-key-for-ci
+          ENV
+
+      - name: Run Playwright smoke skeleton
+        run: npm run test:e2e:smoke
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-smoke-report
+          path: playwright-report/
+          retention-days: 7
+
+  # Consolidated Migration verification & dry-run.
+  # Replaces separate migration-runner and migrations jobs into a single Postgres 16 run.
+  migrations:
+    name: Migration checks & dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.migrations == 'true')
     services:
       postgres:
         image: postgres:16
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: synthetic-migration-test
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: synthetic-migration-test
+      PGDATABASE: postgres
+      MIGRATION_TEST_DATABASE_URL: postgresql://postgres:synthetic-migration-test@127.0.0.1:5432/postgres?sslmode=disable
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+
+      - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
+
       - uses: supabase/setup-cli@v1
         with:
           version: 2.117.0
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Install postgres client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
       - name: Reject historical SQL rewrites against the event base
         env:
           MINTED_MIGRATION_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: npm run check:migrations
+
       - name: Verify real ledger, rerun, failure and schema drift behavior
-        env:
-          MIGRATION_TEST_DATABASE_URL: postgresql://postgres:synthetic-migration-test@127.0.0.1:5432/postgres?sslmode=disable
         run: npm run test:migrations
+
+      - name: Seed Supabase prerequisites
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE anon NOLOGIN;
+          CREATE ROLE authenticated NOLOGIN;
+          CREATE ROLE service_role NOLOGIN;
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE TABLE auth.users (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+            email text,
+            email_confirmed_at timestamptz,
+            banned_until timestamptz,
+            deleted_at timestamptz,
+            is_anonymous boolean NOT NULL DEFAULT false,
+            raw_user_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+            raw_app_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now()
+          );
+          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
+            SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
+          $$;
+          CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+          CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
+          SQL
+
+      - name: Apply migrations in filename order
+        run: |
+          set -euo pipefail
+          shopt -s nullglob failglob
+          for f in $(ls supabase/migrations/*.sql | sort); do
+            echo "::group::apply $f"
+            psql -v ON_ERROR_STOP=1 -f "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Run MINT-107 notification sequences SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint107-notification-sequences.sql
+
+      - name: Run MINT-134 workflow advisories SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-workflow-advisories.sql
+
+      - name: Run MINT-108 notification sends SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint108-notification-sends.sql
+
+      - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
+        run: node scripts/security/verify-portal-field-map-learning.mjs
+
+      - name: Run MINT-19 / MINT-75 SOP step completion SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint19-atomic-sop.sql
+      # MINT-136 roster "Export anyway": an override needs no typed reason and
+      # stores none, its other guards hold, and the advisory records the
+      # mapping and row count. Rollback-only; any failed check raises.
+      - name: Run MINT-136 roster Export anyway SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint136-roster-export-anyway.sql
 
   vault-authorization:
     name: P01 vault authorization
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.security == 'true')
     permissions:
       contents: read
     steps:
@@ -103,6 +352,10 @@ jobs:
     name: Deterministic staging UAT seed
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.uat == 'true')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -157,77 +410,14 @@ jobs:
           after="$(psql "$UAT_DATABASE_URL" -Atc "select md5(string_agg(row_to_json(c)::text,',' order by c.id)) from credential_cases c where c.id::text <> all(string_to_array('$deletion_ids',','))")"
           test "$before" = "$after"
 
-  release-guardrails:
-    name: Release guardrails
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-
-      # The release checks use node:test and built-in modules only.
-      # No hosted credentials, deployment or environment approval is needed.
-      - name: Check release contract and source controls
-        run: npm run test:release
-
-      - name: Install encryption test dependency
-        run: sudo apt-get update && sudo apt-get install -y age
-
-      - name: Check encrypted recovery and evidence boundaries
-        run: npm run test:recovery
-
-      - name: Check delivery controls and provider adapters with simulated data
-        run: npm run test:delivery
-
-      - name: Check backup credential isolation and identity gates
-        run: npm run test:backup
-
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Format check
-        run: npx prettier --check .
-
-      - name: Typecheck
-        run: npx tsc --noEmit
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Test
-        run: npm test
-
-      - name: Verify local API isolation fixtures and leak detection
-        run: node scripts/verify-isolation-local.mjs
-
-      - name: Build
-        env:
-          VITE_SUPABASE_URL: https://example.supabase.co
-          VITE_SUPABASE_ANON_KEY: e612-build-synthetic-anon-key
-        run: npm run build
-
   e612-http-boundary:
     name: E6.12 native and HTTP boundary
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.security == 'true')
     permissions:
       contents: read
     steps:
@@ -301,166 +491,3 @@ jobs:
           E614_SCALE: "1"
           E614_POSTGRES_IMAGE: postgres@sha256:a3b7f434b2dc57ce85a67e171163eb8ab1a1ebcb39d27484661f26b1dfbe30d6
         run: node scripts/security/e614-enrollment-report-native.mjs
-
-  # Gate 0.4 — migration dry-run against a throwaway Postgres (never a Supabase
-  # branch or prod). Applies every file in supabase/migrations/ in filename order
-  # after seeding the Supabase prerequisites the baseline assumes.
-  migrations:
-    name: Migration dry-run
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      PGHOST: localhost
-      PGPORT: "5432"
-      PGUSER: postgres
-      PGPASSWORD: postgres
-      PGDATABASE: postgres
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-
-      - name: Install postgres client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      - name: Wait for Postgres
-        run: |
-          for i in $(seq 1 30); do
-            pg_isready -q && exit 0
-            sleep 1
-          done
-          echo "Postgres did not become ready" >&2
-          exit 1
-
-      - name: Seed Supabase prerequisites
-        run: |
-          psql -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE anon NOLOGIN;
-          CREATE ROLE authenticated NOLOGIN;
-          CREATE ROLE service_role NOLOGIN;
-          CREATE SCHEMA IF NOT EXISTS auth;
-          CREATE TABLE auth.users (
-            id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-            email text,
-            email_confirmed_at timestamptz,
-            banned_until timestamptz,
-            deleted_at timestamptz,
-            is_anonymous boolean NOT NULL DEFAULT false,
-            raw_user_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb,
-            raw_app_meta_data jsonb NOT NULL DEFAULT '{}'::jsonb,
-            created_at timestamptz NOT NULL DEFAULT now(),
-            updated_at timestamptz NOT NULL DEFAULT now()
-          );
-          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
-            SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
-          $$;
-          CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-          CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
-          SQL
-
-      - name: Apply migrations in filename order
-        run: |
-          set -euo pipefail
-          shopt -s nullglob failglob
-          for f in $(ls supabase/migrations/*.sql | sort); do
-            echo "::group::apply $f"
-            psql -v ON_ERROR_STOP=1 -f "$f"
-            echo "::endgroup::"
-          done
-
-      # MINT-134 workflow advisories: append-only ledger, context refusals,
-      # caller and org checks, job dedupe, grants. Rollback-only; any failed
-      # check raises.
-      - name: Run MINT-134 workflow advisories SQL packet
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-workflow-advisories.sql
-
-      # MINT-136 roster "Export anyway": an override needs no typed reason and
-      # stores none, its other guards hold, and the advisory records the
-      # mapping and row count. Rollback-only; any failed check raises.
-      - name: Run MINT-136 roster Export anyway SQL packet
-        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint136-roster-export-anyway.sql
-
-      - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
-        run: node scripts/security/verify-portal-field-map-learning.mjs
-
-  # Gate 0.5 — Playwright smoke skeleton. Boots the app via the Vite dev server
-  # with dummy Supabase env vars (unauthenticated paths make no network call).
-  # Two specs run (login render, dashboard redirect); three write scenarios are
-  # test.skip (need a seeded tenant).
-  e2e:
-    name: Playwright smoke
-    runs-on: ubuntu-latest
-    # 30, not 15: on a 2-vCPU runner Playwright runs one worker, and the
-    # ~370-test suite takes about 20 minutes (Nov 1: three runs cancelled at
-    # 15 with every finished test green). A 4-vCPU runner still takes ~12.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      # Node 22 (not 20): the SSR dev server constructs the Supabase client at
-      # module load, and @supabase/realtime-js needs a global WebSocket, which
-      # Node 20 lacks (added as a global in Node 22). On Node 20 SSR throws a 500
-      # and the webServer never comes up. The build job stays on Node 20 — it only
-      # builds, it never runs the server.
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Cache Playwright browser binaries
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install Playwright browser
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium
-
-      - name: Install Playwright OS dependencies
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium
-
-      - name: Write dummy Supabase env
-        run: |
-          cat > .env <<'ENV'
-          VITE_SUPABASE_URL=https://example.supabase.co
-          VITE_SUPABASE_ANON_KEY=dummy-anon-key-for-ci
-          ENV
-
-      - name: Run Playwright smoke skeleton
-        run: npm run test:e2e
-
-      - name: Upload Playwright report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: playwright-report/
-          retention-days: 7

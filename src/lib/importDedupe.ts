@@ -3,6 +3,7 @@ import {
   DEFAULT_IDENTITY_VALIDATION_RULES,
   NPI_CHECK_DIGIT_MESSAGE,
   isValidNpi,
+  stripNpiSeparators,
   type IdentityValidationRules,
 } from "@/lib/providerIdentity";
 
@@ -361,7 +362,9 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
   const rules = inputs.identityRules ?? DEFAULT_IDENTITY_VALIDATION_RULES;
   const byNpi = new Map<string, DedupeProviderRecord[]>();
   for (const p of inputs.providers) {
-    const npi = p.npi?.trim();
+    // MINT-110: imported NPIs arrive with dashes and spaces stripped, so a
+    // stored legacy "123-456-7893" is keyed the same way and still matches.
+    const npi = stripNpiSeparators(p.npi ?? "");
     if (!npi) continue;
     const list = byNpi.get(npi) ?? [];
     // Count distinct provider ids — a duplicated list entry is not two people.
@@ -704,7 +707,10 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
     pushNote(notes, facilityNote);
     pushNote(notes, licenseNote);
     const sameNameNeighbor = nameKey
-      ? (byName.get(nameKey) ?? []).find((p) => p.npi && p.npi.trim() !== "" && p.npi !== npi)
+      ? (byName.get(nameKey) ?? []).find((p) => {
+          const stored = stripNpiSeparators(p.npi ?? "");
+          return stored !== "" && stored !== npi;
+        })
       : undefined;
     if (sameNameNeighbor) {
       pushNote(
