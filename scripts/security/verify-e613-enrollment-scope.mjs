@@ -20,6 +20,7 @@ const context = process.env.E613_DOCKER_CONTEXT || "default";
 const image = process.env.E613_POSTGRES_IMAGE || "postgres:16";
 const e612Migration = "20260925035408_e612_client_access_context.sql";
 const e613Migration = "20260925190537_enrollment_explorer_scope_contract.sql";
+const mint134Migration = "20261101090000_mint134_workflow_advisories.sql";
 const container = `minted-e613-native-${randomUUID()}`;
 const env = Object.fromEntries(
   ["PATH", "HOME", "DOCKER_CONFIG", "LANG"].flatMap((key) =>
@@ -2300,6 +2301,7 @@ function migrations() {
     .sort();
   if (!files.includes(e612Migration)) fail("E613_E612_MIGRATION_MISSING");
   if (!files.includes(e613Migration)) fail("E613_MIGRATION_MISSING");
+  if (!files.includes(mint134Migration)) fail("E613_MINT134_MIGRATION_MISSING");
   const source = readFileSync(`${root}supabase/migrations/${e613Migration}`, "utf8");
   if (!source.trim()) fail("E613_MIGRATION_EMPTY");
   return files;
@@ -2355,11 +2357,22 @@ function applyOne(name, role = "postgres") {
   }
 }
 
-function applyWithRestrictedMigrator(name) {
+// `adminOf` lists roles the executor holds ADMIN OPTION on before the
+// migration, as the hosted executor does on a role it created in an earlier
+// migration (PostgreSQL 16 grants a role's creator ADMIN OPTION; the E6.12
+// verifier asserts it). `check` runs after the apply, before the reassign.
+function applyWithRestrictedMigrator(name, { adminOf = [], check } = {}) {
   sql(`CREATE ROLE e613_restricted_migrator LOGIN CREATEROLE NOSUPERUSER BYPASSRLS;
-       GRANT postgres TO e613_restricted_migrator WITH INHERIT TRUE, SET FALSE;`);
+       GRANT postgres TO e613_restricted_migrator WITH INHERIT TRUE, SET FALSE;
+       ${adminOf
+         .map(
+           (role) =>
+             `GRANT ${role} TO e613_restricted_migrator WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;`,
+         )
+         .join("\n")}`);
   try {
     applyOne(name, "e613_restricted_migrator");
+    check?.();
   } finally {
     sql(`REASSIGN OWNED BY e613_restricted_migrator TO postgres;
          DROP OWNED BY e613_restricted_migrator;
@@ -2368,15 +2381,121 @@ function applyWithRestrictedMigrator(name) {
   }
 }
 
+// MINT-134 creates app_authz.is_restricted_external_user as
+// minted_e612_authz_owner through E6.12's handoff, so it must also work under
+// a non-superuser executor. The helper names a user, so only service_role and
+// the executor (the advisory RPCs' owner) may run it.
+function mint134RestrictedMigrationChecks() {
+  assertEqual(
+    "mint134.restricted_migrator.helper_owner_acl",
+    query(`
+      SELECT pg_get_userbyid(p.proowner) || '|' || p.prosecdef || '|' ||
+             has_function_privilege('public', p.oid, 'EXECUTE') || '|' ||
+             has_function_privilege('anon', p.oid, 'EXECUTE') || '|' ||
+             has_function_privilege('authenticated', p.oid, 'EXECUTE') || '|' ||
+             has_function_privilege('service_role', p.oid, 'EXECUTE') || '|' ||
+             has_function_privilege('e613_restricted_migrator', p.oid, 'EXECUTE') || '|' ||
+             (SELECT pg_get_userbyid(r.proowner)
+                FROM pg_proc r
+               WHERE r.oid = 'public.record_workflow_advisory(uuid, text, text, text, uuid, text, jsonb, uuid)'::regprocedure)
+        FROM pg_proc p
+       WHERE p.oid = 'app_authz.is_restricted_external_user(uuid)'::regprocedure;
+    `),
+    "minted_e612_authz_owner|true|false|false|false|true|true|e613_restricted_migrator",
+  );
+  assertEqual(
+    "mint134.restricted_migrator.temporary_capabilities_removed",
+    query(`
+      SELECT has_schema_privilege('minted_e612_authz_owner', 'app_authz', 'CREATE') || '|' ||
+             pg_has_role('e613_restricted_migrator', 'minted_e612_authz_owner', 'SET') || '|' ||
+             pg_has_role('e613_restricted_migrator', 'minted_e612_authz_owner', 'USAGE') || '|' ||
+             (SELECT count(*)
+                FROM pg_auth_members m
+               WHERE m.roleid = 'minted_e612_authz_owner'::regrole
+                 AND m.member = 'e613_restricted_migrator'::regrole
+                 AND m.grantor = 'e613_restricted_migrator'::regrole)::text;
+    `),
+    "false|false|false|0",
+  );
+  mint134RestrictedMigrationBehaviour();
+}
+
+// The ACLs above don't prove the RPC body runs under a non-superuser owner,
+// so record twice as service_role while the executor still owns it: a client
+// who is also active internal staff is accepted, a client is refused. All of
+// it is rolled back, so the E6.13 fixtures below are untouched.
+function mint134RestrictedMigrationBehaviour() {
+  const org = "13400000-0000-4000-a000-0000000e1300";
+  const staff = "13400000-0000-4000-a000-0000000e1301";
+  const client = "13400000-0000-4000-a000-0000000e1302";
+  const provider = "13400000-0000-4000-a000-0000000e1303";
+  const result = query(`
+    BEGIN;
+    INSERT INTO public.organizations (id, name) VALUES ('${org}', 'MINT-134 E6.13 Synthetic Org');
+    INSERT INTO auth.users (id, email) VALUES
+      ('${staff}', 'm134-e613-staff@example.invalid'),
+      ('${client}', 'm134-e613-client@example.invalid');
+    INSERT INTO public.profiles (id, full_name, email) VALUES
+      ('${staff}', 'MINT-134 E6.13 Staff', 'm134-e613-staff@example.invalid'),
+      ('${client}', 'MINT-134 E6.13 Client', 'm134-e613-client@example.invalid');
+    INSERT INTO public.memberships (org_id, user_id, role) VALUES
+      ('${org}', '${staff}', 'specialist'),
+      ('${org}', '${client}', 'specialist');
+    INSERT INTO public.providers (id, org_id, first_name, last_name) VALUES
+      ('${provider}', '${org}', 'Synthetic', 'Provider');
+    INSERT INTO private.client_identity_classifications (auth_user_id, org_id, email_normalized, state) VALUES
+      ('${staff}', '${org}', 'm134-e613-staff@example.invalid', 'active'),
+      ('${client}', '${org}', 'm134-e613-client@example.invalid', 'active');
+    INSERT INTO private.internal_staff (auth_user_id, org_id, staff_role, manifest_version) VALUES
+      ('${staff}', '${org}', 'specialist', 'mint134-e613-synthetic');
+    CREATE FUNCTION pg_temp.m134_record_as_service_role(p_actor uuid) RETURNS text
+    LANGUAGE plpgsql AS $fn$
+    DECLARE v_id uuid;
+    BEGIN
+      BEGIN
+        SET LOCAL ROLE service_role;
+        v_id := public.record_workflow_advisory(
+          '${org}', 'npi.missing', 'advisory', 'providers', '${provider}', 'api', '{}'::jsonb, p_actor);
+        RESET ROLE;
+        RETURN 'ok:' || (v_id IS NOT NULL)::text;
+      EXCEPTION WHEN OTHERS THEN
+        RETURN SQLSTATE || ':' || SQLERRM;
+      END;
+    END
+    $fn$;
+    SELECT pg_temp.m134_record_as_service_role('${staff}') || '|' ||
+           pg_temp.m134_record_as_service_role('${client}');
+    SELECT (SELECT count(*) FROM public.workflow_advisories WHERE org_id = '${org}')::text || '|' ||
+           (SELECT pg_get_userbyid(proowner) FROM pg_proc
+             WHERE oid = 'public.record_workflow_advisory(uuid, text, text, text, uuid, text, jsonb, uuid)'::regprocedure);
+    ROLLBACK;
+  `);
+  assertEqual(
+    "mint134.restricted_migrator.service_role_record_runs_under_the_non_superuser_owner",
+    result,
+    "ok:true|42501:workflow_advisory_restricted_client\n1|e613_restricted_migrator",
+  );
+}
+
 function applyMigrationChain(files) {
   const at612 = files.indexOf(e612Migration);
   const at613 = files.indexOf(e613Migration);
-  if (at612 < 0 || at613 <= at612) fail("E613_MIGRATION_ORDER_INVALID");
+  const at134 = files.indexOf(mint134Migration);
+  if (at612 < 0 || at613 <= at612 || at134 <= at613) fail("E613_MIGRATION_ORDER_INVALID");
   for (const name of files.slice(0, at612)) applyOne(name);
   applyWithRestrictedMigrator(e612Migration);
   for (const name of files.slice(at612 + 1, at613)) applyOne(name);
   applyWithRestrictedMigrator(e613Migration);
-  for (const name of files.slice(at613 + 1)) applyOne(name);
+  for (const name of files.slice(at613 + 1)) {
+    if (name === mint134Migration) {
+      applyWithRestrictedMigrator(name, {
+        adminOf: ["minted_e612_authz_owner"],
+        check: mint134RestrictedMigrationChecks,
+      });
+    } else {
+      applyOne(name);
+    }
+  }
 }
 
 function assertEqual(label, actual, expected) {

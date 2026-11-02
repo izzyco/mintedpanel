@@ -4812,6 +4812,65 @@ export type Database = {
           },
         ];
       };
+      workflow_advisories: {
+        Row: {
+          actor_id: string | null;
+          actor_role: string | null;
+          bypassed_at: string;
+          check_key: string;
+          context: Json;
+          id: string;
+          job: string | null;
+          org_id: string;
+          record_id: string;
+          record_table: string;
+          resolved_at: string | null;
+          resolved_by: string | null;
+          severity_at_time: string;
+          source: string;
+        };
+        Insert: {
+          actor_id?: string | null;
+          actor_role?: string | null;
+          bypassed_at?: string;
+          check_key: string;
+          context?: Json;
+          id?: string;
+          job?: string | null;
+          org_id: string;
+          record_id: string;
+          record_table: string;
+          resolved_at?: string | null;
+          resolved_by?: string | null;
+          severity_at_time: string;
+          source: string;
+        };
+        Update: {
+          actor_id?: string | null;
+          actor_role?: string | null;
+          bypassed_at?: string;
+          check_key?: string;
+          context?: Json;
+          id?: string;
+          job?: string | null;
+          org_id?: string;
+          record_id?: string;
+          record_table?: string;
+          resolved_at?: string | null;
+          resolved_by?: string | null;
+          severity_at_time?: string;
+          source?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "workflow_advisories_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -5893,6 +5952,41 @@ export type Database = {
           p_total_rows: number;
         };
         Returns: Json;
+      };
+      record_workflow_advisory: {
+        Args: {
+          p_actor_id?: string;
+          p_check_key: string;
+          p_context?: Json;
+          p_org_id: string;
+          p_record_id: string;
+          p_record_table: string;
+          p_severity: string;
+          p_source: string;
+        };
+        Returns: string;
+      };
+      record_job_advisory: {
+        Args: {
+          p_check_key: string;
+          p_context?: Json;
+          p_job: string;
+          p_org_id: string;
+          p_record_id: string;
+          p_record_table: string;
+          p_severity: string;
+        };
+        Returns: string | null;
+      };
+      resolve_workflow_advisories: {
+        Args: {
+          p_check_key: string;
+          p_org_id: string;
+          p_record_id: string;
+          p_record_table: string;
+          p_resolved_by?: string;
+        };
+        Returns: number;
       };
       validate_capture_token: { Args: { p_token: string }; Returns: Json };
       validate_report_share: { Args: { p_token: string }; Returns: Json };
