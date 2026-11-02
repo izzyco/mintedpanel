@@ -1,0 +1,502 @@
+// NPI Registry (NPPES) lookup — MINT-110. The pure half, shared by the server
+// route and the browser: the wire shapes, input validation, the name match,
+// and the verification message staff see under an NPI field. No I/O.
+//
+// The registry is a check, never a gate (Sowmya's standing rule, Oct 31): a
+// missing record, a name that differs, or an organization or inactive number
+// is an advisory, shown on the form's review step or kept for Mission Control
+// only (src/lib/npiRegistryPolicy, src/lib/npiRegistryReview). The registry
+// being down, rate limited or refusing the query is never a block either. The
+// CMS check digit and the 10-digit rule (src/lib/providerIdentity) stay hard.
+// Nothing here says an NPI is verified unless the registry's record matched.
+import { isValidNpi, stripNpiSeparators } from "@/lib/providerIdentity";
+import { US_STATES } from "@/lib/usStates";
+import {
+  DEFAULT_NPI_REGISTRY_POLICY,
+  type NpiFillOnPick,
+  type NpiRegistryOutcome,
+  type NpiRegistryPolicy,
+} from "@/lib/npiRegistryPolicy";
+
+/** The most matches a name search returns; the route asks the registry for one
+ * more so it can say the list was cut short. */
+export const NPI_REGISTRY_RESULT_CAP = 10;
+/** NPPES stores at most 35 characters for a first or last name. */
+export const NPI_REGISTRY_NAME_MAX = 35;
+export const NPI_REGISTRY_UNAVAILABLE_MESSAGE = "NPI Registry is unavailable";
+export const NPI_REGISTRY_QUERY_REJECTED_MESSAGE =
+  "The NPI Registry would not run that search — check the name for unusual characters";
+export const NPI_REGISTRY_RATE_LIMIT_MESSAGE =
+  "Too many NPI Registry lookups — wait a minute and try again";
+
+export type NpiEnumerationType = "NPI-1" | "NPI-2";
+
+export interface NpiRegistryName {
+  firstName: string | null;
+  lastName: string | null;
+  middleName?: string | null;
+  /** The registry's label for the name, such as "Former Name". */
+  type?: string | null;
+}
+
+/** One taxonomy the registry lists, with the state license it names. */
+export interface NpiRegistryTaxonomy {
+  code: string;
+  description: string | null;
+  primary: boolean;
+  license: string | null;
+  /** The state that issued `license`. */
+  licenseState: string | null;
+}
+
+export interface NpiRegistryAddress {
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  state: string | null;
+  /** As the registry stores it: five or nine digits for a US address. */
+  postalCode: string | null;
+  countryCode: string | null;
+  phone: string | null;
+}
+
+/** An "other identifier" the registry lists, such as a Medicaid number. */
+export interface NpiRegistryIdentifier {
+  identifier: string;
+  /** The registry's description of it ("MEDICAID", "OTHER"). */
+  type: string | null;
+  state: string | null;
+  issuer: string | null;
+}
+
+/** Public registry fields only, exactly as the registry spells them. */
+export interface NpiRegistryRecord {
+  npi: string;
+  /** NPI-1 is an individual, NPI-2 an organization. */
+  enumerationType: NpiEnumerationType;
+  firstName: string | null;
+  middleName: string | null;
+  lastName: string | null;
+  /** NPI-2 records only. */
+  organizationName: string | null;
+  credential: string | null;
+  primaryTaxonomy: { code: string; description: string | null } | null;
+  practiceCity: string | null;
+  practiceState: string | null;
+  status: "active" | "inactive";
+  /** YYYY-MM-DD */
+  enumerationDate: string | null;
+  /** Former and other names the registry lists for an individual. */
+  otherNames: NpiRegistryName[];
+  // What picking a match can fill or show (src/lib/npiRegistryFill.ts). The
+  // server always sends them; they are optional so a record built without
+  // them reads as "the registry listed none".
+  /** NPI-1 only ("JR", "III"). */
+  suffix?: string | null;
+  /** NPI-1 only: the sex NPPES records, "F" or "M". Offered as a candidate
+   * for the form's Gender, never filled by a pick (A36). */
+  sex?: "F" | "M" | null;
+  /** Every taxonomy, the primary first. */
+  taxonomies?: NpiRegistryTaxonomy[];
+  practiceAddress?: NpiRegistryAddress | null;
+  mailingAddress?: NpiRegistryAddress | null;
+  /** Secondary practice locations. */
+  otherPracticeAddresses?: NpiRegistryAddress[];
+  identifiers?: NpiRegistryIdentifier[];
+}
+
+export interface NpiRegistrySearchInput {
+  firstName: string;
+  lastName: string;
+  /** Two-letter code; omitted or "" searches every state. */
+  state?: string | null;
+}
+
+export interface NpiRegistrySearchResult {
+  results: NpiRegistryRecord[];
+  /** The registry had more matches than NPI_REGISTRY_RESULT_CAP. */
+  truncated: boolean;
+  /** When the registry answered (ISO timestamp); a cached answer keeps its
+   * own. Optional: a reply built without it reads as "pulled when received". */
+  pulledAt?: string;
+}
+
+export interface NpiRegistryLookupResult {
+  /** null when the registry has no record for the NPI. */
+  record: NpiRegistryRecord | null;
+  pulledAt?: string;
+}
+
+export interface ValidNpiRegistrySearch {
+  firstName: string;
+  lastName: string;
+  state: string | null;
+}
+
+export type Validation<T> = { ok: true; value: T } | { ok: false; error: string };
+
+const STATE_SET: ReadonlySet<string> = new Set(US_STATES);
+
+// Letters NFD cannot split into a base letter plus an accent, spelled the way
+// NPPES stores them (plain uppercase ASCII).
+const TRANSLITERATIONS: Readonly<Record<string, string>> = {
+  ß: "ss",
+  ẞ: "SS",
+  æ: "ae",
+  Æ: "AE",
+  œ: "oe",
+  Œ: "OE",
+  ø: "o",
+  Ø: "O",
+  ł: "l",
+  Ł: "L",
+  đ: "d",
+  Đ: "D",
+  ð: "d",
+  Ð: "D",
+  þ: "th",
+  Þ: "TH",
+  ħ: "h",
+  Ħ: "H",
+  ı: "i",
+  ŀ: "l",
+  Ŀ: "L",
+  ŋ: "n",
+  Ŋ: "N",
+  ŧ: "t",
+  Ŧ: "T",
+  ſ: "s",
+};
+const TRANSLITERATE_RE = new RegExp(`[${Object.keys(TRANSLITERATIONS).join("")}]`, "gu");
+// Curly and look-alike apostrophes typed or pasted into a name.
+const APOSTROPHES_RE = /[‘’‛ʼ′`´]/g;
+// Generational suffixes and degree initials staff tack onto a name. Only
+// trailing words go, and never the last remaining one ("Smith Jr" → "Smith").
+const NAME_SUFFIXES: ReadonlySet<string> = new Set([
+  "jr",
+  "sr",
+  "ii",
+  "iii",
+  "iv",
+  "md",
+  "phd",
+  "dpt",
+  "esq",
+]);
+// What NPPES accepts once a name is folded: a letter, then letters, spaces,
+// apostrophes, periods and hyphens.
+const REGISTRY_NAME_RE = /^[A-Za-z][A-Za-z' .-]*$/;
+
+/** A name as the registry spells it. Everything after the first comma goes
+ * (", Jr.", ", PT", ", DO" — a credential typed after the name, while a real
+ * surname like "Do" is kept); curly apostrophes are made straight; letters like
+ * "ł", "ø" and "ß" are transliterated; NFKD then removes accents and unfolds
+ * ligatures and compatibility forms ("ﬁ" → "fi", "Ⅱ" → "II"); a period after a
+ * single letter and trailing periods go ("J." → "J", "St. John" is kept); and a
+ * trailing bare suffix is dropped ("Smith Jr" → "Smith"). Used for both the
+ * registry query and the name match, so the two always agree. */
+export function foldNameForRegistry(name: string): string {
+  const folded = (name.split(",")[0] ?? "")
+    .replace(APOSTROPHES_RE, "'")
+    .replace(TRANSLITERATE_RE, (letter) => TRANSLITERATIONS[letter] ?? letter)
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    // "J." → "J" (a period after a lone letter), then periods ending the name.
+    .replace(/(?<![A-Za-z])([A-Za-z])\./g, "$1")
+    .trim()
+    .replace(/\.+$/, "");
+  const words = folded.split(/\s+/).filter(Boolean);
+  while (words.length > 1 && NAME_SUFFIXES.has(words[words.length - 1].toLowerCase())) {
+    words.pop();
+  }
+  return words.join(" ");
+}
+
+function readName(value: unknown): string {
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+}
+
+function nameProblem(folded: string): string | null {
+  // Nothing left once folded (", PT", "..."): ask for the name itself.
+  if (!folded) return "Enter a first and last name to search the NPI Registry";
+  if (!REGISTRY_NAME_RE.test(folded)) {
+    const chars = [...folded];
+    const bad = /[A-Za-z]/.test(chars[0] ?? "")
+      ? (chars.find((char) => !/[A-Za-z' -]/.test(char)) ?? "")
+      : (chars[0] ?? "");
+    return `The NPI Registry takes Latin letters, spaces, apostrophes, periods and hyphens, starting with a letter — "${bad}" can't be searched`;
+  }
+  if (folded.length > NPI_REGISTRY_NAME_MAX) {
+    return `Names must be ${NPI_REGISTRY_NAME_MAX} characters or fewer`;
+  }
+  return null;
+}
+
+/** The search input the route accepts (and the button enables on): first and
+ * last name required, state optional. The value carries the folded names
+ * (foldNameForRegistry), which is what goes to the registry. */
+export function validateNpiRegistrySearch(input: unknown): Validation<ValidNpiRegistrySearch> {
+  const body = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const record = body as Record<string, unknown>;
+  const rawFirst = readName(record.firstName);
+  const rawLast = readName(record.lastName);
+  if (!rawFirst || !rawLast) {
+    return { ok: false, error: "Enter a first and last name to search the NPI Registry" };
+  }
+  const firstName = foldNameForRegistry(rawFirst);
+  const lastName = foldNameForRegistry(rawLast);
+  const problem = nameProblem(firstName) ?? nameProblem(lastName);
+  if (problem) return { ok: false, error: problem };
+  const rawState = record.state;
+  if (rawState !== undefined && rawState !== null && typeof rawState !== "string") {
+    return { ok: false, error: "Choose a two-letter US state" };
+  }
+  const state = (rawState ?? "").trim().toUpperCase();
+  if (state && !STATE_SET.has(state)) return { ok: false, error: "Choose a two-letter US state" };
+  return { ok: true, value: { firstName, lastName, state: state || null } };
+}
+
+/** The by-number input: an NPI (dashes and spaces allowed) that passes the CMS
+ * check digit. A number that fails it is never sent to the registry. */
+export function validateNpiRegistryLookup(input: unknown): Validation<string> {
+  const body = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const raw = (body as Record<string, unknown>).npi;
+  const npi = typeof raw === "string" ? stripNpiSeparators(raw) : "";
+  if (!isValidNpi(npi))
+    return { ok: false, error: "Enter a 10-digit NPI with a valid check digit" };
+  return { ok: true, value: npi };
+}
+
+// Case, spaces and punctuation ignored on top of the registry fold:
+// "O'Brien" = "OBRIEN", "Smith-Jones" = "SMITH JONES", "Łukasz" = "LUKASZ".
+function matchKey(value: string | null | undefined): string {
+  return foldNameForRegistry(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
+export type NpiNameMatch = "match" | "mismatch" | "unchecked";
+
+// The typed first name as words ("Mary Ann", "Mary-Ann" → ["mary", "ann"]).
+function firstNameWords(value: string): string[] {
+  return foldNameForRegistry(value)
+    .split(/[\s-]+/)
+    .map((word) => matchKey(word))
+    .filter(Boolean);
+}
+
+/** Whether the names staff typed match the registry record. Last names must be
+ * equal (case, accents and punctuation ignored).
+ * - One typed first-name word must be the start of the registry first name:
+ *   an initial or short form ("J" or "Chris" against CHRISTOPHER). A registry
+ *   initial ("J") matches any first name with that letter.
+ * - Several typed words ("Mary Ann", "Mary-Ann", "Jane A"): the first must be
+ *   the registry first name (or match its initial) and the rest must be the
+ *   start of the middle name.
+ * A longer typed name never matches a shorter registry one, middle name or
+ * not: "Danielle" is not DANIEL LEE, "Paula" is not PAUL ANTHONY. "Maryann"
+ * against MARY ANN is a soft mismatch, a warning only. The registry's former
+ * and other names count too. "unchecked" until staff have typed both names. */
+export function compareNpiRegistryName(
+  typed: { firstName: string; lastName: string },
+  record: NpiRegistryRecord,
+): NpiNameMatch {
+  const typedWords = firstNameWords(typed.firstName);
+  const last = matchKey(typed.lastName);
+  if (typedWords.length === 0 || !last) return "unchecked";
+  const [typedFirst, ...typedRest] = typedWords;
+  const names = [
+    { firstName: record.firstName, middleName: record.middleName, lastName: record.lastName },
+    ...record.otherNames.map((name) => ({ ...name, middleName: name.middleName ?? null })),
+  ];
+  const matches = names.some((name) => {
+    if (matchKey(name.lastName) !== last) return false;
+    // A registry first name may itself hold two words ("MARY ANN"); its
+    // words after the first count as the start of the middle name.
+    const [registryFirst = "", ...registryRest] = firstNameWords(name.firstName ?? "");
+    if (!registryFirst) return false;
+    const initialMatches = registryFirst.length === 1 && typedFirst.startsWith(registryFirst);
+    if (typedRest.length === 0) {
+      // One word: the start of the registry's first word (never longer), or
+      // the whole two-word registry first name written as one ("Maryann").
+      return (
+        registryFirst.startsWith(typedFirst) ||
+        initialMatches ||
+        [registryFirst, ...registryRest].join("") === typedFirst
+      );
+    }
+    if (typedFirst !== registryFirst && !initialMatches) return false;
+    const registryMiddle = [...registryRest, matchKey(name.middleName)].join("");
+    return registryMiddle.startsWith(typedRest.join(""));
+  });
+  return matches ? "match" : "mismatch";
+}
+
+/** "JANE A DOE" for an individual, the organization name for an NPI-2. */
+export function registryDisplayName(record: NpiRegistryRecord): string {
+  if (record.enumerationType === "NPI-2") return record.organizationName ?? "Organization";
+  return [record.firstName, record.middleName, record.lastName].filter(Boolean).join(" ");
+}
+
+/** "JANE A DOE, PT · Physical Therapist · DENVER, CO", skipping empty parts. */
+export function registrySummary(record: NpiRegistryRecord): string {
+  const name = registryDisplayName(record);
+  const who = record.credential ? `${name}, ${record.credential}` : name;
+  const place = [record.practiceCity, record.practiceState].filter(Boolean).join(", ");
+  return [who, record.primaryTaxonomy?.description ?? null, place || null]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+}
+
+/** What the NPI field's registry check is doing, as the form's hook sees it. */
+export type NpiLookupState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "done"; record: NpiRegistryRecord | null };
+
+type TypedName = { firstName: string; lastName: string };
+
+/** The NPI to check, or null: only a check-digit-valid NPI, and only when the
+ * form asks (an unchanged stored NPI is not re-checked). */
+export function npiToCheck(npi: string, verify: boolean): string | null {
+  return verify && isValidNpi(npi) ? npi : null;
+}
+
+// The failures staff can act on — the rate limit, and the registry refusing
+// the query (a 422) — keep their own message; anything else (an outage, an
+// expired session, a dropped connection) reads as the registry being
+// unavailable.
+const ACTIONABLE_MESSAGES: ReadonlySet<string> = new Set([
+  NPI_REGISTRY_RATE_LIMIT_MESSAGE,
+  NPI_REGISTRY_QUERY_REJECTED_MESSAGE,
+]);
+
+/** The message staff see for a failed registry call. */
+export function npiRegistryErrorMessage(error: unknown): string {
+  return error instanceof Error && ACTIONABLE_MESSAGES.has(error.message)
+    ? error.message
+    : NPI_REGISTRY_UNAVAILABLE_MESSAGE;
+}
+
+/** A lookup query (from useNpiRegistryLookup) as a lookup state. A query that
+ * has no answer and is not fetching — disabled (no active organization) or
+ * paused (offline) — is "idle": not checked. */
+export function npiLookupStateOf(
+  checkable: string | null,
+  query: {
+    isError: boolean;
+    error: unknown;
+    data?: NpiRegistryLookupResult;
+    fetchStatus?: "fetching" | "paused" | "idle";
+  },
+): NpiLookupState {
+  if (checkable === null) return { status: "idle" };
+  if (query.isError) return { status: "error", message: npiRegistryErrorMessage(query.error) };
+  if (query.data) return { status: "done", record: query.data.record };
+  return query.fetchStatus === undefined || query.fetchStatus === "fetching"
+    ? { status: "loading" }
+    : { status: "idle" };
+}
+
+/** The registry answer a policy can act on, or null when there is none: no
+ * checkable NPI, the check is running or failed, or the record matches. */
+export function npiLookupOutcome(
+  state: NpiLookupState,
+  typed: TypedName,
+): NpiRegistryOutcome | null {
+  if (state.status !== "done") return null;
+  const record = state.record;
+  if (!record) return "notFound";
+  if (record.enumerationType === "NPI-2") return "organizationNumber";
+  if (record.status !== "active") return "inactive";
+  if (compareNpiRegistryName(typed, record) === "mismatch") return "nameMismatch";
+  return null;
+}
+
+export interface NpiVerificationView {
+  tone: "neutral" | "ok" | "warn";
+  title: string;
+  detail: string | null;
+}
+
+/** The note under an NPI field; null means there is nothing to say: no
+ * checkable NPI yet, or an answer the policy keeps for Mission Control only
+ * ("backend_only"). Never a block, and "ok" only when the record matched. */
+export function npiVerificationView(
+  state: NpiLookupState,
+  typed: TypedName,
+  policy: NpiRegistryPolicy = DEFAULT_NPI_REGISTRY_POLICY,
+): NpiVerificationView | null {
+  if (state.status === "idle") return null;
+  if (state.status === "loading") {
+    return { tone: "neutral", title: "Checking the NPI Registry…", detail: null };
+  }
+  if (state.status === "error") return { tone: "warn", title: state.message, detail: null };
+  const record = state.record;
+  const outcome = npiLookupOutcome(state, typed);
+  if (outcome && policy.display[outcome] === "backend_only") return null;
+  if (!record) {
+    return {
+      tone: "warn",
+      title: "Not found in the NPI Registry",
+      detail: "Re-check the number; deactivated NPIs are not listed.",
+    };
+  }
+  if (outcome === "organizationNumber") {
+    return {
+      tone: "warn",
+      title: "This NPI belongs to an organization",
+      detail: `The registry lists ${registryDisplayName(record)}. A provider's Type 1 NPI is an individual's.`,
+    };
+  }
+  if (outcome === "inactive") {
+    return {
+      tone: "warn",
+      title: "The NPI Registry lists this NPI as inactive",
+      detail: registrySummary(record),
+    };
+  }
+  if (outcome === "nameMismatch") {
+    return {
+      tone: "warn",
+      title: "Found in the NPI Registry, but the name differs",
+      detail: `The registry lists ${registrySummary(record)}.`,
+    };
+  }
+  // Listed, but with a name not typed yet there is nothing to compare: never
+  // "found" until the name matches.
+  if (compareNpiRegistryName(typed, record) === "unchecked") {
+    return {
+      tone: "neutral",
+      title: "In the NPI Registry; name not checked yet",
+      detail: `${registrySummary(record)}. Type the first and last name to compare.`,
+    };
+  }
+  return { tone: "ok", title: "Found in the NPI Registry", detail: registrySummary(record) };
+}
+
+/** What the name search is doing, as the form's hook sees it. */
+export type NpiSearchState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "done"; result: NpiRegistrySearchResult };
+
+/** What the search status line announces. */
+export function npiSearchStatusText(
+  state: NpiSearchState,
+  fillOnPick: NpiFillOnPick = DEFAULT_NPI_REGISTRY_POLICY.fillOnPick,
+): string {
+  if (state.status === "idle") return "";
+  if (state.status === "loading") return "Searching the NPI Registry…";
+  if (state.status === "error") return `${state.message}. You can still type the NPI.`;
+  const count = state.result.results.length;
+  if (count === 0) return "No individuals in the NPI Registry match that name.";
+  const matches = `${count} ${count === 1 ? "match" : "matches"} in the NPI Registry`;
+  return state.result.truncated
+    ? `${matches} — showing the first ${NPI_REGISTRY_RESULT_CAP}. Add a state to narrow it.`
+    : fillOnPick === "npi_only"
+      ? `${matches}. Pick one to fill the NPI.`
+      : `${matches}. Pick one to fill the NPI and any blank fields.`;
+}
