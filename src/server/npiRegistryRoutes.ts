@@ -6,12 +6,16 @@
 //     → { record: NpiRegistryRecord | null }          null = not in the registry
 //   POST /api/npi-registry/verify-batch  { npis }     1–10 NPIs (MINT-110 PR 2)
 //     → { results: [{ npi, status: "checked" | "unavailable", record }] }
+//   POST /api/npi-registry/pulls  { providerId, npi, sourced, confirmed }
+//     → 201 { pull: { id, pulledAt, sourced, confirmed } }   (MINT-110 PR 3)
 //
 // POST, not GET, so typed names and NPIs stay out of URLs and request logs.
 // All run behind the full org guard (authenticate()) and are writer-only: the
-// consumers are the provider create/edit forms and the import review. They
-// read no org data and write no audit row — the registry is public, and
-// nothing here is stored.
+// consumers are the provider create/edit forms and the import review. The
+// lookups read no org data and write no audit row — the registry is public,
+// and nothing they answer is stored. /pulls is the one writer: after a save
+// that used a registry answer it stores the reply as source data
+// (provider_registry_pulls), one insert, for a provider of the caller's org.
 //
 // Limits are per server instance: per-user fixed windows (typed lookups, and
 // the import's batch checks counted per NPI) and a short TTL cache, all in
@@ -22,6 +26,7 @@
 // a cache hit faster than a miss, so response timing can hint that someone
 // searched the same public name recently; accepted, because the cache holds
 // only public registry data and no caller, org or provider detail.
+import type { Json } from "@/integrations/supabase/types";
 import { fail, ok } from "./envelope";
 import { isWriter, type AuthContext } from "./guard";
 import {
@@ -49,6 +54,12 @@ import {
   type NpiRegistryBatchItemResult,
   type NpiRegistryBatchResult,
 } from "@/lib/npiRegistryBatch";
+import {
+  keepNpiRegistrySourced,
+  validateNpiRegistryPull,
+  type NpiRegistryPullResult,
+} from "@/lib/npiRegistryPulls";
+import { stripNpiSeparators } from "@/lib/providerIdentity";
 
 export const NPI_REGISTRY_RATE_LIMIT = 30;
 export const NPI_REGISTRY_RATE_WINDOW_MS = 60_000;
@@ -224,4 +235,112 @@ export async function handleNpiRegistryVerifyBatch(
   }
   const result: NpiRegistryBatchResult = { results };
   return privateResponse(ok(result));
+}
+
+/** MINT-110 PR 3: after a save that used a registry answer (a pick, or the
+ * check of a new or changed NPI), store that answer as the provider's source
+ * data. Writer-only; then the body; then the provider, which must be the
+ * caller's org's (a 404 otherwise, before anything else) and hold that NPI (a
+ * 409). The reply is the server's cached answer for the NPI or a fresh
+ * lookup, never anything the client sent; a fresh lookup spends the batch
+ * window (NPI_REGISTRY_BATCH_PER_MINUTE), the budget for calls nobody typed.
+ * `sourced` keeps only the fields whose saved value equals the reply's
+ * (keepNpiRegistrySourced). One insert with the service-role client; the org
+ * and the actor come from the guard. `confirmed` stamps the actor as the
+ * confirmer (Add Provider's Review step). A registry failure writes nothing:
+ * the save went through already, and the caller logs and moves on. */
+export async function handleNpiRegistryPull(
+  body: unknown,
+  ctx: AuthContext,
+  deps: NppesDeps = {},
+): Promise<Response> {
+  if (!isWriter(ctx)) {
+    return privateResponse(fail(403, "Only admins and specialists can record NPI Registry pulls"));
+  }
+  const input = validateNpiRegistryPull(body);
+  if (!input.ok) return privateResponse(fail(422, input.error));
+  const { providerId, npi, sourced: claimed, confirmed } = input.value;
+
+  const { data: provider, error: providerError } = await ctx.db
+    .from("providers")
+    .select("id, npi, credentials, taxonomy_code, gender, phone")
+    .eq("org_id", ctx.orgId)
+    .eq("id", providerId)
+    .maybeSingle();
+  if (providerError) throw providerError;
+  if (!provider) return privateResponse(fail(404, "Provider not found"));
+  if (stripNpiSeparators((provider.npi ?? "").trim()) !== npi) {
+    return privateResponse(fail(409, "The provider does not hold that NPI"));
+  }
+
+  const key = `npi:${npi}`;
+  let answer = cache.get(key) as NpiRegistryLookupResult | undefined;
+  if (!answer) {
+    const decision = batchLimiter.take(ctx.userId);
+    if (!decision.allowed) {
+      const response = privateResponse(fail(429, NPI_REGISTRY_BATCH_RATE_LIMIT_MESSAGE));
+      response.headers.set("Retry-After", String(decision.retryAfterSeconds));
+      return response;
+    }
+    try {
+      answer = await lookupNppes(npi, deps);
+      cache.set(key, answer);
+    } catch (error) {
+      if (error instanceof NpiRegistryQueryRejectedError) {
+        return privateResponse(fail(422, error.message));
+      }
+      if (error instanceof NpiRegistryUnavailableError) {
+        // The failure kind and upstream status only — never the NPI.
+        console.warn(
+          `[npi-registry] pull: upstream unavailable: ${error.kind}${error.status ? ` ${error.status}` : ""}`,
+        );
+        return privateResponse(fail(502, NPI_REGISTRY_UNAVAILABLE_MESSAGE));
+      }
+      throw error;
+    }
+  }
+
+  let licenses: { state: string; number: string | null }[] = [];
+  if (claimed.licenses?.length) {
+    const { data: rows, error: licenseError } = await ctx.db
+      .from("state_licenses")
+      .select("state, license_number")
+      .eq("org_id", ctx.orgId)
+      .eq("provider_id", providerId);
+    if (licenseError) throw licenseError;
+    licenses = (rows ?? []).map((row) => ({ state: row.state, number: row.license_number }));
+  }
+  const sourced = keepNpiRegistrySourced(
+    claimed,
+    {
+      credentials: provider.credentials,
+      taxonomyCode: provider.taxonomy_code,
+      gender: provider.gender,
+      phone: provider.phone,
+      licenses,
+    },
+    answer.record,
+  );
+
+  const now = new Date().toISOString();
+  const { data: row, error: insertError } = await ctx.db
+    .from("provider_registry_pulls")
+    .insert({
+      org_id: ctx.orgId,
+      provider_id: providerId,
+      npi,
+      pulled_at: answer.pulledAt ?? now,
+      pulled_by: ctx.userId,
+      reply: (answer.record ?? null) as unknown as Json,
+      sourced: sourced as unknown as Json,
+      confirmed_at: confirmed ? now : null,
+      confirmed_by: confirmed ? ctx.userId : null,
+    })
+    .select("id, pulled_at")
+    .single();
+  if (insertError) throw insertError;
+  const result: NpiRegistryPullResult = {
+    pull: { id: row.id, pulledAt: row.pulled_at, sourced, confirmed },
+  };
+  return privateResponse(ok(result, null, 201));
 }

@@ -524,6 +524,22 @@ async function mockBatchRoute(context: BrowserContext, opts: { holdFrom?: number
   return calls;
 }
 
+/** MINT-110 PR 3: what a commit records as each checked row's registry source
+ * data (POST /api/npi-registry/pulls), answered 201. Only the provider and the
+ * NPI travel; the server fetches the reply. */
+async function mockPullsRoute(context: BrowserContext) {
+  const pulls: Record<string, unknown>[] = [];
+  await context.route(/\/api\/npi-registry\/pulls/, async (route) => {
+    pulls.push(route.request().postDataJSON() as Record<string, unknown>);
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { pull: { id: "pull" } }, error: null, meta: null }),
+    });
+  });
+  return pulls;
+}
+
 function progressBar(page: Page) {
   return page.getByRole("progressbar", { name: "NPI Registry checks" });
 }
@@ -552,6 +568,7 @@ test("MINT-119: a 100-row upload checks new providers' NPIs with progress, time 
   const wire: WireLog = { commitCalls: 0 };
   await context.route(/\/(rest|auth)\/v1\//, makeHandler(fixtures, wire));
   const calls = await mockBatchRoute(context);
+  const pulls = await mockPullsRoute(context);
   await seedAuth(context);
   await page.clock.install();
 
@@ -661,6 +678,22 @@ test("MINT-119: a 100-row upload checks new providers' NPIs with progress, time 
   expect(wire.commitCalls).toBe(1);
   expect(wire.lastPlan).toEqual({ creates: 100, blocked: 0, blockedText: "[]" });
   expect(calls).toHaveLength(11);
+  // MINT-110 PR 3: after the commit, one pull per checked row, one request at
+  // a time, on the provider the row became: nothing sourced, nothing
+  // confirmed, and only the NPI from the file.
+  await expect.poll(() => pulls.length, { timeout: 20000 }).toBe(100);
+  expect(new Set(pulls.map((pull) => pull.npi))).toEqual(
+    new Set(PROVIDERS.map((provider) => provider.npi)),
+  );
+  for (const pull of pulls) {
+    expect(pull).toEqual({
+      providerId: expect.stringMatching(/^imp-prov-/),
+      npi: expect.any(String),
+      sourced: {},
+      confirmed: false,
+    });
+  }
+  expect(new Set(pulls.map((pull) => pull.providerId)).size).toBe(100);
 });
 
 test("MINT-119: cancelling the import stops the lookups and aborts the one in flight", async ({
@@ -706,6 +739,7 @@ test("MINT-119: Stop ends the checks, rows left say so, and the import can still
   await context.route(/\/(rest|auth)\/v1\//, makeHandler(fixtures, wire));
   // The third request is in flight when staff stop.
   const calls = await mockBatchRoute(context, { holdFrom: 3 });
+  const pulls = await mockPullsRoute(context);
   await seedAuth(context);
   await page.clock.install();
 
@@ -745,6 +779,12 @@ test("MINT-119: Stop ends the checks, rows left say so, and the import can still
     timeout: 20000,
   });
   expect(wire.commitCalls).toBe(1);
+  // MINT-110 PR 3: a pull for each of the 20 rows the registry answered; the
+  // 80 nobody checked record none.
+  await expect.poll(() => pulls.length, { timeout: 20000 }).toBe(20);
+  expect(pulls.map((pull) => pull.npi)).toEqual(
+    PROVIDERS.slice(0, 20).map((provider) => provider.npi),
+  );
 });
 
 test("MINT-119: leaving the review mid-check aborts the lookup in flight and sends no more", async ({
@@ -786,6 +826,7 @@ test("A39: Commit never waits for the checks — it stops them and every row goe
   await context.route(/\/(rest|auth)\/v1\//, makeHandler(fixtures, wire));
   // The third request never answers: it is still in flight at Commit.
   const calls = await mockBatchRoute(context, { holdFrom: 3 });
+  const pulls = await mockPullsRoute(context);
   const failed: string[] = [];
   page.on("requestfailed", (request) => {
     if (request.url().includes("/api/npi-registry/verify-batch")) failed.push(request.url());
@@ -815,4 +856,6 @@ test("A39: Commit never waits for the checks — it stops them and every row goe
   await expect.poll(() => failed.length).toBe(1);
   for (let i = 0; i < 4; i += 1) await page.clock.fastForward(11_000);
   expect(calls).toHaveLength(3);
+  // MINT-110 PR 3: only the 20 rows checked before Commit record a pull.
+  await expect.poll(() => pulls.length, { timeout: 20000 }).toBe(20);
 });

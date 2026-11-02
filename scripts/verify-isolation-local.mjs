@@ -160,12 +160,16 @@ const EXPECTED_FAILS = {
   intakesession: ["35d"],
   // MINT-110: the NPI Registry proxy serves an anonymous caller (36b) and a
   // read-only billing member (36c). The anonymous leak opens the whole
-  // /api/npi-registry/ prefix, so the batch route's anonymous check (37b)
-  // reddens with it.
-  npiregistry: ["36b", "36c", "37b"],
+  // /api/npi-registry/ prefix, so the batch and pulls routes' anonymous checks
+  // (37b, 38c) redden with it.
+  npiregistry: ["36b", "36c", "37b", "38c"],
   // MINT-110 PR 2: the batch NPI check serves an anonymous caller (37b) and a
   // read-only billing member (37c), and its answers can be cached (37d).
   npibatch: ["37b", "37c", "37d"],
+  // MINT-110 PR 3: a registry pull crosses the org wall — the route records
+  // one for another org's provider (38b), and PostgREST takes direct writes
+  // (38e) and reads every org's pulls, to billing too (38f).
+  registrypulls: ["38b", "38e", "38f"],
 };
 
 function failedAssertions(output) {

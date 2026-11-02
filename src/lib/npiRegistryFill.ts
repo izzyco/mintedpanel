@@ -316,27 +316,40 @@ function phoneDigits(value: string): string {
   return value.replace(/\D/g, "");
 }
 
+/** The Gender value the registry's sex maps to ("female", "male"), or null
+ * (A36: NPPES records sex, F or M; nothing else is offered). */
+export function npiRegistryGender(record: NpiRegistryRecord): string | null {
+  const sex = record.sex;
+  return sex === "F" || sex === "M" ? SEX_GENDER[sex] : null;
+}
+
+/** The primary practice location's phone as "303-555-0199" (never the mailing
+ * address's), US only, or null (A36). */
+export function npiRegistryPhone(record: NpiRegistryRecord): string | null {
+  const practice = record.practiceAddress;
+  const us = !practice?.countryCode || practice.countryCode === "US";
+  return us ? usPhoneCandidate(practice?.phone) : null;
+}
+
 // The registry's values for Gender and Phone (A36), whatever the form holds:
 // the sex when it maps to one of the form's Gender options, and the primary
 // practice location's phone (never the mailing address's), US only.
 function registryCandidates(record: NpiRegistryRecord, form: NpiFillForm): NpiFieldCandidate[] {
   const candidates: NpiFieldCandidate[] = [];
   const sex = record.sex;
-  if (form.gender && (sex === "F" || sex === "M")) {
-    const value = SEX_GENDER[sex];
-    if (form.gender.options.includes(value)) {
+  const gender = npiRegistryGender(record);
+  if (form.gender && gender && (sex === "F" || sex === "M")) {
+    if (form.gender.options.includes(gender)) {
       candidates.push({
         field: "gender",
         label: NPI_FILL_FIELD.gender,
-        value,
+        value: gender,
         registryText: `sex: ${SEX_WORD[sex]}`,
         inUse: false,
       });
     }
   }
-  const practice = record.practiceAddress;
-  const us = !practice?.countryCode || practice.countryCode === "US";
-  const phone = us ? usPhoneCandidate(practice?.phone) : null;
+  const phone = npiRegistryPhone(record);
   if (form.phone !== undefined && phone) {
     candidates.push({
       field: "phone",
@@ -358,9 +371,11 @@ function nameLine(name: NpiRegistryName): string {
   return name.type ? `${full} (${name.type})` : full;
 }
 
-// Each state license the registry names, the primary taxonomy's first, once
-// per state and number.
-function registryLicenses(record: NpiRegistryRecord): { state: string; number: string }[] {
+/** Each state license the registry names, the primary taxonomy's first, once
+ * per state and number. */
+export function npiRegistryLicenses(
+  record: NpiRegistryRecord,
+): { state: string; number: string }[] {
   const seen = new Set<string>();
   const licenses: { state: string; number: string }[] = [];
   for (const taxonomy of record.taxonomies ?? []) {
@@ -506,7 +521,7 @@ export function planNpiRegistryFill(
   if (taxonomyChanged) (trace.taxonomyCode ? filled : cleared).push(NPI_FILL_FIELD.taxonomyCode);
 
   const notAdded: string[] = [];
-  const licenses = registryLicenses(record);
+  const licenses = npiRegistryLicenses(record);
   // First, the licenses already on the form: an added row this match also
   // lists stays. Marked before anything is filled or added, so what a pick
   // adds never depends on the order the registry lists its licenses in.
@@ -893,6 +908,8 @@ export function npiRegistrySourcedFields(
   taxonomyCode: boolean;
   gender: boolean;
   phone: boolean;
+  /** The license rows that still hold what a pick added or filled. */
+  licenses: { state: string; number: string }[];
   lines: { label: string; values: string[] }[];
 } {
   const holds = (write: NpiPickWrite | null | undefined, value: string, touched: boolean) =>
@@ -916,10 +933,12 @@ export function npiRegistrySourcedFields(
   if (pick && gender) put(pick.pulledAt, `Gender ${providerGenderLabel(form.gender?.value)}`);
   if (pick && phone) put(pick.pulledAt, `Phone ${form.phone?.value}`);
   if (pick && taxonomyCode) put(pick.pulledAt, `Taxonomy code ${form.taxonomyCode}`);
+  const licenses: { state: string; number: string }[] = [];
   for (const row of form.licenses) {
     const origin = row.origin;
     if (!origin || origin.touched || !origin.pulledAt || !row.number.trim()) continue;
     put(origin.pulledAt, `${row.state} license ${row.number}`);
+    licenses.push({ state: row.state, number: row.number });
   }
-  return { credentials, taxonomyCode, gender, phone, lines };
+  return { credentials, taxonomyCode, gender, phone, licenses, lines };
 }

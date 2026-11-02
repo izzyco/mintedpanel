@@ -20,6 +20,7 @@ import {
   importCommittedLines,
   importNpiAnnouncement,
   importNpiCaptureAdvisories,
+  importNpiPulls,
   importNpiChecksKey,
   importNpiCommitWarning,
   importNpiProgressText,
@@ -551,6 +552,18 @@ describe("importNpiCaptureAdvisories — the registry's answers, facts only", ()
         providerIdByLine: new Map(),
       }),
     ).toEqual([]);
+  });
+
+  // MINT-110 PR 3: one pull per committed row the registry answered, found or
+  // not, a full match included; nothing sourced, nothing confirmed, and no
+  // registry data from the browser.
+  it("records a pull for each committed row the registry answered", () => {
+    expect(importNpiPulls({ items, snapshot: snap, providerIdByLine })).toEqual([
+      { providerId: "prov-2", npi: items[0].npi, sourced: {}, confirmed: false },
+      { providerId: "prov-3", npi: items[1].npi, sourced: {}, confirmed: false },
+      { providerId: "prov-4", npi: items[2].npi, sourced: {}, confirmed: false },
+    ]);
+    expect(importNpiPulls({ items, snapshot: snap, providerIdByLine: new Map() })).toEqual([]);
   });
 });
 

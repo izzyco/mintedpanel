@@ -67,6 +67,9 @@ vi.mock("@/hooks/useNpiRegistry", () => ({
 vi.mock("@/services/importNpiAdvisoryCapture", () => ({
   captureImportNpiAdvisories: vi.fn(),
 }));
+vi.mock("@/services/npiRegistry", () => ({
+  recordNpiRegistryPulls: vi.fn(),
+}));
 vi.mock("@/hooks/useImportNpiVerification", () => ({
   useImportNpiVerification: () => ({
     snapshot: state.snapshot,
@@ -76,6 +79,7 @@ vi.mock("@/hooks/useImportNpiVerification", () => ({
 }));
 
 import { captureImportNpiAdvisories } from "@/services/importNpiAdvisoryCapture";
+import { recordNpiRegistryPulls } from "@/services/npiRegistry";
 import { ImportPreviewContent } from "./ImportPreviewContent";
 
 function fakeNpi(n: number): string {
@@ -174,6 +178,7 @@ beforeEach(() => {
   };
   commitMutate.mockClear();
   vi.mocked(captureImportNpiAdvisories).mockClear();
+  vi.mocked(recordNpiRegistryPulls).mockClear();
 });
 
 function commit(): { plan: CommitPlan; options: CommitOptions } {
@@ -228,9 +233,22 @@ describe("ImportPreviewContent's commit hands its NPI advisories to the capture"
     ]);
   });
 
+  // MINT-110 PR 3: each checked row's answer becomes its provider's source
+  // data; the browser sends only the provider and the NPI.
+  it("records a registry pull for each committed row the registry answered", () => {
+    const { options } = commit();
+    expect(recordNpiRegistryPulls).not.toHaveBeenCalled();
+    options.onSuccess(committed);
+    expect(recordNpiRegistryPulls).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recordNpiRegistryPulls).mock.calls[0][0]).toEqual([
+      { providerId: "p-avery", npi: NEW_A, sourced: {}, confirmed: false },
+    ]);
+  });
+
   it("hands nothing over when the run was already committed", () => {
     const { options } = commit();
     options.onSuccess({ ...committed, alreadyCommitted: true });
     expect(captureImportNpiAdvisories).not.toHaveBeenCalled();
+    expect(recordNpiRegistryPulls).not.toHaveBeenCalled();
   });
 });

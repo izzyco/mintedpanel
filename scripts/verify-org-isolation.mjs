@@ -74,6 +74,9 @@
 // all target another org's case/provider, which the server must REJECT (404)
 // before writing anything. Provider POST-create is intentionally NOT exercised
 // here — a real create would drift the demo-org counts assertions 1/2 pin.
+// The PostgREST probes of 38e (MINT-110 PR 3) go to SUPABASE_URL directly and
+// are built so that even a broken grant writes nothing (no org_id and a
+// CHECK-failing NPI; UPDATE and DELETE match no row).
 // Nothing here writes production data.
 //
 // Exit code: 0 = all pass, 1 = any assertion failed, 2 = missing env,
@@ -193,6 +196,29 @@ async function apiPatch(path, payload, { token, orgId } = {}) {
     body = JSON.parse(raw);
   } catch {
     /* non-JSON → body stays null; raw holds the page */
+  }
+  return { status: res.status, body, raw };
+}
+
+// One PostgREST call against Supabase itself (not the deploy), signed the way
+// a browser can sign it: the anon key plus the user's JWT. Used only to prove
+// a table refuses direct writes and scopes direct reads (38e/38f); every write
+// sent here is a probe a correct database refuses.
+async function restCall(method, path, { token, payload } = {}) {
+  const headers = { apikey: env.SUPABASE_ANON_KEY, prefer: "return=minimal" };
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (payload !== undefined) headers["content-type"] = "application/json";
+  const res = await fetch(`${env.SUPABASE_URL.replace(/\/+$/, "")}/rest/v1/${path}`, {
+    method,
+    headers,
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
+  const raw = await res.text();
+  let body = null;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    /* empty or non-JSON → body stays null */
   }
   return { status: res.status, body, raw };
 }
@@ -1945,6 +1971,114 @@ function looksLikeVercelGate(r) {
       "37c. Billing (read-only) NPI Registry batch check -> 403",
       readOnlyBatch.status === 403 && readOnlyBatch.body?.data == null,
       `status=${readOnlyBatch.status} (expect 403) dataPresent=${readOnlyBatch.body?.data != null}`,
+    );
+  }
+
+  // 38-38f — MINT-110 PR 3: NPI Registry pulls. Unlike 36/37 this route
+  // WRITES org data (provider_registry_pulls), so the wall is tenancy as well
+  // as role: another org's provider is a 404 (38b), an anonymous caller a 401
+  // (38c), a read-only member a 403 (38d). 38 is the positive control: an
+  // empty body 422s, which proves the route is live. On a correct server none
+  // of these reads a provider for the caller, calls the registry or writes:
+  // validation, the org-scoped provider read and the role all answer first.
+  const pullsProbe = await apiPost("/api/npi-registry/pulls", {}, { token: kansasTok });
+  if (pullsProbe.status === 404) {
+    console.log("SKIP  38/38b/38c/38d. NPI Registry pulls — route not deployed");
+  } else {
+    check(
+      "38. Kansas POST /api/npi-registry/pulls with an empty body -> 422 (route is live)",
+      pullsProbe.status === 422,
+      `status=${pullsProbe.status} (expect 422)`,
+    );
+    const crossOrgPull = await apiPost(
+      "/api/npi-registry/pulls",
+      { providerId: env.SOUTHPARK_PROVIDER_ID, npi: "1234567893", sourced: {}, confirmed: false },
+      { token: kansasTok },
+    );
+    check(
+      "38b. Kansas pull for a South Park provider -> 404 (never another org's provider)",
+      crossOrgPull.status === 404 && crossOrgPull.body?.data == null,
+      `status=${crossOrgPull.status} (expect 404) dataPresent=${crossOrgPull.body?.data != null}`,
+      { leak: true },
+    );
+    const anonymousPull = await apiPost("/api/npi-registry/pulls", {
+      providerId: env.KANSAS_PROVIDER_ID,
+      npi: "1234567893",
+      sourced: {},
+      confirmed: false,
+    });
+    check(
+      "38c. Anonymous NPI Registry pull -> 401",
+      anonymousPull.status === 401 && anonymousPull.body?.data == null,
+      `status=${anonymousPull.status} (expect 401) dataPresent=${anonymousPull.body?.data != null}`,
+    );
+    const readOnlyPull = await apiPost(
+      "/api/npi-registry/pulls",
+      { providerId: env.SOUTHPARK_PROVIDER_ID, npi: "1234567893", sourced: {}, confirmed: false },
+      { token: spTok },
+    );
+    check(
+      "38d. Billing (read-only) NPI Registry pull for its own org's provider -> 403",
+      readOnlyPull.status === 403 && readOnlyPull.body?.data == null,
+      `status=${readOnlyPull.status} (expect 403) dataPresent=${readOnlyPull.body?.data != null}`,
+    );
+  }
+
+  // 38e/38f — the table itself, straight through PostgREST with a user's JWT.
+  // 38e: no direct INSERT, UPDATE or DELETE. The INSERT probe has no org_id
+  // and an NPI the table's CHECK refuses, and the UPDATE and DELETE probes
+  // match no row, so even a broken grant writes nothing. 38f: Kansas reads no
+  // South Park row, and the South Park billing member reads none at all
+  // (billing gets nothing, even of its own org).
+  const pullsRead = await restCall("GET", "provider_registry_pulls?select=id,org_id", {
+    token: kansasTok,
+  });
+  if (pullsRead.status === 404) {
+    console.log("SKIP  38e/38f. provider_registry_pulls — table not applied");
+  } else {
+    const noRow = "id=eq.00000000-0000-0000-0000-000000000000";
+    const writes = [
+      await restCall("POST", "provider_registry_pulls", {
+        token: kansasTok,
+        payload: {
+          provider_id: env.KANSAS_PROVIDER_ID,
+          npi: "gate-probe",
+          pulled_at: "1970-01-01T00:00:00Z",
+          pulled_by: "00000000-0000-0000-0000-000000000000",
+          sourced: {},
+        },
+      }),
+      await restCall("PATCH", `provider_registry_pulls?${noRow}`, {
+        token: kansasTok,
+        payload: { sourced: {} },
+      }),
+      await restCall("DELETE", `provider_registry_pulls?${noRow}`, { token: kansasTok }),
+    ];
+    check(
+      "38e. PostgREST INSERT/UPDATE/DELETE on provider_registry_pulls -> refused (401/403)",
+      writes.every((w) => w.status === 401 || w.status === 403),
+      `statuses=${writes.map((w) => w.status).join("/")} (expect 401 or 403 each)`,
+      { leak: true },
+    );
+    const billingRead = await restCall("GET", "provider_registry_pulls?select=id,org_id", {
+      token: spTok,
+    });
+    const kansasRows = Array.isArray(pullsRead.body) ? pullsRead.body : null;
+    const billingRows = Array.isArray(billingRead.body) ? billingRead.body : null;
+    const leaked = (kansasRows ?? []).filter((r) => r.org_id === env.SOUTHPARK_ORG).length;
+    check(
+      "38f. PostgREST SELECT on provider_registry_pulls -> the caller's org only; billing none",
+      pullsRead.status === 200 &&
+        kansasRows !== null &&
+        leaked === 0 &&
+        // The mock seeds a Kansas pull, so the read is never vacuous there.
+        (!IS_LOCAL_MOCK_API || kansasRows.length > 0) &&
+        billingRead.status === 200 &&
+        billingRows !== null &&
+        billingRows.length === 0,
+      `kansas status=${pullsRead.status} rows=${kansasRows?.length ?? "n/a"} southPark=${leaked}; ` +
+        `billing status=${billingRead.status} rows=${billingRows?.length ?? "n/a"} (expect 0)`,
+      { leak: true },
     );
   }
 

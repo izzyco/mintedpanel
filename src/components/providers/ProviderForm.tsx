@@ -33,7 +33,9 @@ import {
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
 import type { NpiReviewAdvisory, NpiReviewFixTarget } from "@/lib/npiRegistryReview";
+import { npiRegistryPullForSave, npiRegistryPullSourced } from "@/lib/npiRegistryPulls";
 import { taxonomyAfterPresetChange } from "@/lib/providerTaxonomyPreset";
+import { recordNpiRegistryPulls } from "@/services/npiRegistry";
 
 export {
   emptyProviderFormState,
@@ -201,6 +203,18 @@ export function ProviderForm({
       // The registry check may still be running: its advisories go to the
       // capture once it ends (A30). A blank NPI is recorded as missing (B3).
       if (typeof savedId === "string") {
+        // MINT-110 PR 3: the registry answer this save used becomes the
+        // provider's source data, in the background. Submitting the Review
+        // step confirms the registry-sourced values (A35).
+        const pull = npiRegistryPullForSave({
+          providerId: savedId,
+          npi: form.npi,
+          checked: true,
+          pickedNpi: npiPick?.npi ?? null,
+          sourced: npiRegistryPullSourced(npiSourced, form),
+          confirmed: true,
+        });
+        if (pull) void recordNpiRegistryPulls([pull]);
         recordNpiAdvisories({
           recordId: savedId,
           npi: form.npi,

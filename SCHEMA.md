@@ -654,6 +654,38 @@ view token; internal digests remain server-side. CSV uses an explicit client-saf
 snapshot/authority check after serialization and before direct delivery. It
 creates no persistent artifact or asynchronous work.
 
+## MINT-110 NPI Registry pulls (repository-only)
+
+`20261102150000_mint110_provider_registry_pulls.sql` adds the registry's source
+data and provenance (MINT-110 PR 3). Applied by an operator, staging first.
+
+### provider_registry_pulls
+
+`id`, `org_id` (FK, cascades), `provider_id` (FK `(org_id, provider_id)` →
+`providers (org_id, id)`, cascades, so a row can't name another org's
+provider), `npi` (ten digits), `pulled_at` (when the registry answered: the
+server's `pulledAt`), `pulled_by`, `reply` (jsonb object: the trimmed public
+reply, `NpiRegistryRecord` in `src/lib/npiRegistry.ts`; NULL when the registry
+has no record), `sourced` (jsonb object: any of `credentials`, `taxonomyCode`,
+`gender`, `phone`, `licenses: [{state, number}]`, the fields whose saved value
+came from this pull), `confirmed_at` and `confirmed_by` (both set, or both NULL:
+an Add Provider Review step submit), `created_at`. Index
+`(org_id, provider_id, pulled_at DESC)`.
+
+One row per save that used a registry answer: a pick, or the check of a new or
+changed NPI. Written only by `POST /api/npi-registry/pulls`: the org guard,
+writers only, the provider in the caller's org and holding that NPI, the reply
+from the server's cache or NPPES (never the client), `sourced` cut to the
+fields whose saved value equals the reply's (`keepNpiRegistrySourced` in
+`src/lib/npiRegistryPulls.ts`), one insert with the service-role client. No
+triggers. Rows are never updated: a later pull adds its own row and never
+changes a provider value.
+
+RLS on. `provider_registry_pulls_select`: members of the row's org whose role
+is admin or specialist; billing reads nothing. Grants: authenticated SELECT;
+service_role SELECT and INSERT; nothing for anon. Packet:
+`supabase/tests/mint110-registry-pulls.sql`.
+
 ## MINT-134 workflow advisories (repository-only)
 
 `20261101090000_mint134_workflow_advisories.sql` adds the ledger behind the

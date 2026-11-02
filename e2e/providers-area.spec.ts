@@ -1127,9 +1127,19 @@ test("MINT-110: record inline NPI edit saves at once; the check finishes after a
   // The registry, mocked at the browser: it lists only Brooke Ostrander. A
   // lookup of a held NPI waits until the spec releases it.
   const lookups: unknown[] = [];
+  // MINT-110 PR 3: what a save records as registry source data, kept apart.
+  const pulls: unknown[] = [];
   const held = new Map<string, Promise<void>>();
   await context.route(/\/api\/npi-registry\//, async (route) => {
     const body = route.request().postDataJSON() as { npi?: string };
+    if (new URL(route.request().url()).pathname.endsWith("/pulls")) {
+      pulls.push(body);
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { pull: { id: "pull-1" } }, error: null, meta: null }),
+      });
+    }
     lookups.push(body);
     const gate = held.get(String(body.npi));
     if (gate) await gate;
@@ -1221,4 +1231,17 @@ test("MINT-110: record inline NPI edit saves at once; the check finishes after a
   ]);
   await expect(page.getByText(/in the NPI Registry/)).toHaveCount(0);
   expect(lookups).toEqual([{ npi: "1234567810" }, { npi: "1234567893" }]);
+  // MINT-110 PR 3: each saved NPI's check is a later pull, its own row of
+  // source data: nothing sourced, nothing confirmed, and no provider value
+  // changed by it.
+  await expect
+    .poll(() => pulls)
+    .toEqual([
+      { providerId: "pr-brooke", npi: "1234567810", sourced: {}, confirmed: false },
+      { providerId: "pr-brooke", npi: "1234567893", sourced: {}, confirmed: false },
+    ]);
+  expect(providerPatches().map((request) => request.body)).toEqual([
+    { npi: "1234567810" },
+    { npi: "1234567893" },
+  ]);
 });
