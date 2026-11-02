@@ -140,12 +140,28 @@ export async function createContract(input: ContractInput): Promise<Contract> {
   return created;
 }
 
+/** createContractsIfMissing's insert committed, but writing the status history
+ * or audit row of at least one created record failed afterwards. The records
+ * exist: `created` lists them, so the caller can say so. */
+export class ContractFollowUpWriteError extends Error {
+  readonly created: Contract[];
+  constructor(created: Contract[]) {
+    super(
+      "The contract records were saved, but their status history or audit could not be written.",
+    );
+    this.name = "ContractFollowUpWriteError";
+    this.created = created;
+  }
+}
+
 /** Creates the records whose (group, payer, state, specialty) key holds none
  * yet, in one insert: a key that already has a record is skipped by the
  * unique index (ON CONFLICT DO NOTHING), so this never duplicates a record and
  * never changes one. Each created record gets the status history and audit
- * row createContract writes. Returns only the created records. "+ Add state"
- * in the contracts matrix saves its Not started records with it (GCM-33). */
+ * row createContract writes; every one is attempted, and if any fails this
+ * throws ContractFollowUpWriteError (the records are saved). Returns only the
+ * created records. "+ Add state" in the contracts matrix saves its Not
+ * started records with it (GCM-33). */
 export async function createContractsIfMissing(
   inputs: readonly ContractInput[],
 ): Promise<Contract[]> {
@@ -166,7 +182,7 @@ export async function createContractsIfMissing(
     .select("*");
   if (error) throw translateDbError(error);
   const created = camelizeRow<Contract[]>(data ?? []);
-  await Promise.all(
+  const followUps = await Promise.allSettled(
     created.map(async (contract) => {
       if (contract.contractingStatusId) {
         await appendStatusHistory({
@@ -185,6 +201,9 @@ export async function createContractsIfMissing(
       });
     }),
   );
+  if (followUps.some((result) => result.status === "rejected")) {
+    throw new ContractFollowUpWriteError(created);
+  }
   return created;
 }
 

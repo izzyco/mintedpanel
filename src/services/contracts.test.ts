@@ -20,6 +20,7 @@ vi.mock("@/services/cases", () => ({
 }));
 
 import {
+  ContractFollowUpWriteError,
   createContract,
   createContractsIfMissing,
   getContract,
@@ -515,9 +516,39 @@ describe("createContractsIfMissing", () => {
         error: { code: "42501", message: "new row violates row-level security policy" },
       }),
     );
-    await expect(createContractsIfMissing(inputs)).rejects.toBeTruthy();
+    const failure = await createContractsIfMissing(inputs).catch((error: unknown) => error);
+    expect(failure).toBeTruthy();
+    expect(failure).not.toBeInstanceOf(ContractFollowUpWriteError);
     expect(appendStatusHistoryMock).not.toHaveBeenCalled();
     expect(writeAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("says the records were saved when a history or audit write fails after the insert", async () => {
+    fromMock.mockReturnValue(
+      upsertChain({
+        data: ["c-p1", "c-p2"].map((id, index) => ({
+          id,
+          group_id: "g-3",
+          payer_id: `p-${index + 1}`,
+          state: "LA",
+          specialty_key: "nutrition",
+          contracting_status_id: NOT_STARTED,
+        })),
+        error: null,
+      }),
+    );
+    writeAuditMock.mockRejectedValueOnce(new Error("audit_log insert failed"));
+
+    const failure = await createContractsIfMissing(inputs).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ContractFollowUpWriteError);
+    expect((failure as ContractFollowUpWriteError).created.map((c) => c.id)).toEqual([
+      "c-p1",
+      "c-p2",
+    ]);
+    // Every follow-up write is still attempted.
+    expect(appendStatusHistoryMock).toHaveBeenCalledTimes(2);
+    expect(writeAuditMock).toHaveBeenCalledTimes(2);
   });
 });
 

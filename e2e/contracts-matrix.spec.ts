@@ -648,6 +648,21 @@ test("Also apply into a shared state records the specialty separately", async ({
   ).toBeVisible();
 });
 
+/** "+ Add state" in the Nutrition heading for Group Name 3 / LA. The save
+ * button names how many Not started records it saves; no confirm step. */
+async function addNutritionLa(page: Page, buttonLabel: string) {
+  await region(page, "Nutrition").getByRole("button", { name: "+ Add state" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "Add a Nutrition state" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Add column", exact: true })).toBeDisabled();
+  await dialog.getByRole("combobox", { name: "Group" }).click();
+  await page.getByRole("option", { name: "Group Name 3", exact: true }).click();
+  await dialog.getByRole("combobox", { name: "State" }).click();
+  await page.getByRole("option", { name: "LA", exact: true }).click();
+  await dialog.getByRole("button", { name: buttonLabel, exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+}
+
 test("+ Add state saves Not started records, so the planned column persists", async ({ page }) => {
   const { fixtures, writes } = await installMatrix(page);
   const contractPosts: { url: string; prefer: string }[] = [];
@@ -658,23 +673,22 @@ test("+ Add state saves Not started records, so the planned column persists", as
   });
   await page.goto("/reporting/contracts-matrix");
 
+  // The Groups filter narrows the view to Groups 1 and 3: the Nutrition
+  // table then has no payer rows. Saved records never follow the view.
+  await page.getByRole("button", { name: "Group Name 2", pressed: true }).click();
+  await expect(
+    region(page, "Nutrition").getByText(
+      "No payers yet. Add a network target for one of these groups, or add a payer.",
+    ),
+  ).toBeVisible();
+
   // US-15: plan Nutrition in LA for Group Name 3 before a dietitian starts.
-  async function addNutritionLa() {
-    await region(page, "Nutrition").getByRole("button", { name: "+ Add state" }).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog.getByRole("heading", { name: "Add a Nutrition state" })).toBeVisible();
-    await dialog.getByRole("combobox", { name: "Group" }).click();
-    await page.getByRole("option", { name: "Group Name 3", exact: true }).click();
-    await dialog.getByRole("combobox", { name: "State" }).click();
-    await page.getByRole("option", { name: "LA", exact: true }).click();
-    // No confirm step: Add column saves.
-    await dialog.getByRole("button", { name: "Add column" }).click();
-    await expect(page.getByRole("dialog")).toHaveCount(0);
-  }
-  await addNutritionLa();
+  // The button shows what the click saves; there is no confirm step.
+  await addNutritionLa(page, "Add column · 2 Not started records");
 
   // One insert that skips existing keys: a Not started Nutrition record for
-  // each payer serving LA. Blue KC serves only KS and MO, so it gets none.
+  // each payer of the default Nutrition table (all groups) serving LA. Blue
+  // KC serves only KS and MO, so it gets none.
   await expect(
     page.getByText("Added LA for Group Name 3 (Nutrition): 2 Not started records."),
   ).toBeVisible();
@@ -703,7 +717,9 @@ test("+ Add state saves Not started records, so the planned column persists", as
     region(page, "Nutrition").getByRole("button", {
       name: `${payer}, Nutrition, Group Name 3, LA: ${status}`,
     });
-  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "LA", "NE"]);
+  // Still narrowed to Groups 1 and 3: the saved records now give the
+  // table its payer rows.
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "LA", "NE"]);
   await expect(nutritionLa("Payer 1", "Not Started")).toContainText("Not started");
   await expect(nutritionLa("Payer 2", "Not Started")).toBeVisible();
 
@@ -722,11 +738,39 @@ test("+ Add state saves Not started records, so the planned column persists", as
   ).toHaveLength(2);
 
   // Adding the same state again saves nothing: no record is duplicated.
-  await addNutritionLa();
+  await addNutritionLa(page, "Add column for this visit");
   await expect(
     page.getByText(/Added LA for Group Name 3 \(Nutrition\) for this visit only/),
   ).toBeVisible();
   expect(contractPosts).toHaveLength(1);
+});
+
+test("+ Add state counts a record saved by someone else after the page loaded", async ({
+  page,
+}) => {
+  const { fixtures, writes } = await installMatrix(page);
+  await page.goto("/reporting/contracts-matrix");
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "NE"]);
+
+  // Meanwhile a colleague records Payer 1's all-specialties agreement there.
+  fixtures.contracts.push(
+    contractRow("c-p1-la-all", GROUP_3, PAYER_1, "LA", "all", STATUS.submitted),
+  );
+  // The page still shows its loaded data, so the button counts 2...
+  await addNutritionLa(page, "Add column · 2 Not started records");
+
+  // ...but the save reads the latest records first: only Payer 2 gets one,
+  // and Payer 1's cell shows the shared agreement.
+  await expect(
+    page.getByText("Added LA for Group Name 3 (Nutrition): 1 Not started record."),
+  ).toBeVisible();
+  const contractWrites = writes.filter((write) => write.table === "contracts");
+  expect(contractWrites.map((write) => write.body.payer_id)).toEqual([PAYER_2]);
+  await expect(
+    region(page, "Nutrition").getByRole("button", {
+      name: "Payer 1, Nutrition, Group Name 3, LA: Application Submitted (All specialties)",
+    }),
+  ).toBeVisible();
 });
 
 test("a billing user gets a read-only dialog and no add affordances", async ({ page }) => {

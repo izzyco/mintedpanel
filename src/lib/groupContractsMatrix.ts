@@ -1023,24 +1023,24 @@ export interface ContractsMatrixNotStartedRecord {
 
 /** GCM-33: the records "+ Add state" saves when a writer adds (group, state)
  * to a specialty's table, so the planned column persists for everyone. One
- * Not started record of that specialty for every payer row the table shows
- * with the column, whatever the payer search, Status and States filters,
- * whose cell there is empty. A payer whose plan does not serve the state gets
- * none, and so does one that already has a record there (the specialty's own
- * or the group's all-specialties record): nothing is duplicated or covered
- * over. Payer rows A–Z. Empty when the group is not shown. */
+ * Not started record of that specialty for every payer row of the
+ * specialty's default table (every active group, plus the planned group even
+ * when inactive) that has an empty cell in the new column. Saved data never
+ * follows the view: the Groups, States, Status and payer search filters, and
+ * rows or columns added this session, do not change the set. A payer whose
+ * plan does not serve the state gets none, and so does one that already has a
+ * record there (the specialty's own or the group's all-specialties record):
+ * nothing is duplicated or covered over. Payer rows A–Z. Empty for an
+ * unknown group. */
 export function notStartedRecordsForAddedState<C extends ContractsMatrixContract>(
   input: ContractsMatrixInput<C>,
-  options: ContractsMatrixOptions,
   column: ContractsMatrixAddedColumn,
 ): ContractsMatrixNotStartedRecord[] {
   const matrix = buildContractsMatrix(input, {
-    ...options,
     specialties: [column.specialty],
-    selectedStates: null,
-    statusFilter: null,
-    payerSearch: "",
-    addedColumns: [...(options.addedColumns ?? []), column],
+    selectedGroupIds: null,
+    contextGroupId: column.groupId,
+    addedColumns: [column],
   });
   const table = matrix.tables.find((candidate) => candidate.specialty === column.specialty);
   const columnKey = matrixColumnKey(column.groupId, column.state);

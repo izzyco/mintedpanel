@@ -90,6 +90,10 @@ vi.mock("@/lib/permissions", () => ({
   useCanWrite: () => permissions.canWrite,
 }));
 
+vi.mock("@/services/contracts", () => ({
+  ContractFollowUpWriteError: class ContractFollowUpWriteError extends Error {},
+}));
+
 import { AddStateDialog } from "./ContractsMatrixAddDialogs";
 import { GroupContractsMatrix } from "./GroupContractsMatrix";
 
@@ -118,20 +122,24 @@ describe("+ Add state on the contracts matrix (GCM-33)", () => {
     expect(createIfMissing).not.toHaveBeenCalled();
   });
 
-  it("says the added column is kept with Not started records, with no confirm step", () => {
+  it("says the column is kept for all of the table's payers, with no confirm step", () => {
+    const countFor = vi.fn(() => 12);
     const html = renderToStaticMarkup(
       <AddStateDialog
         specialtyLabel="Nutrition"
         groups={[{ id: "g-1", name: "Group Name 1" }]}
+        countFor={countFor}
         onAdd={vi.fn()}
         onClose={vi.fn()}
       />,
     );
     expect(html).toContain("Add a Nutrition state");
     expect(html).toContain(
-      "Each payer in the table that serves the state and has no record there gets a Not started record, so the column stays for everyone.",
+      "Every payer in the Nutrition table, across all groups and whatever the filters show, that serves the state and has no record there gets a Not started record, so the column stays for everyone.",
     );
-    expect(html).toContain("Add column");
+    // No state chosen yet: no count to show, and nothing computed.
+    expect(html).toContain(">Add column<");
+    expect(countFor).not.toHaveBeenCalled();
     expect(html).not.toMatch(/Are you sure|Confirm/);
   });
 });

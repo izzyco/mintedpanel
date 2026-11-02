@@ -40,6 +40,7 @@ import {
   type ContractsMatrixTable as MatrixTable,
 } from "@/lib/groupContractsMatrix";
 import { useCanWrite } from "@/lib/permissions";
+import { ContractFollowUpWriteError } from "@/services/contracts";
 import type { Contract } from "@/types";
 import { ContractDetailDrawer } from "./ContractDetailDrawer";
 import { AddPayerDialog, AddStateDialog } from "./ContractsMatrixAddDialogs";
@@ -192,18 +193,38 @@ export function GroupContractsMatrix({
   );
 
   // GCM-33: "+ Add state" shows the column at once and saves a Not started
-  // record for each payer row with an empty cell in it, as one insert that
-  // skips any record that already exists, so the column persists for
-  // everyone. With no such payer the column shows for this visit only.
+  // record for each payer of the specialty's default table with an empty cell
+  // in it (never following the view's filters), as one insert that skips any
+  // record that already exists, so the column persists for everyone. With no
+  // such payer the column shows for this visit only. The dialog's button
+  // shows the count from the same rule before the click.
   const { mutateAsync: createIfMissing } = useCreateContractsIfMissing();
+  const { refetch: refetchContracts } = contractsQ;
+  const countNotStartedFor = useCallback(
+    (specialty: ContractSpecialty, groupId: string, state: string) =>
+      notStartedRecordsForAddedState(matrixInput, { specialty, groupId, state }).length,
+    [matrixInput],
+  );
   const handleAddState = useCallback(
     async (specialty: ContractSpecialty, groupId: string, state: string) => {
       if (!canWrite) return;
       const column: ContractsMatrixAddedColumn = { specialty, groupId, state };
       setAddedColumns((current) => [...current, column]);
-      const records = notStartedRecordsForAddedState(matrixInput, matrixOptions, column);
       const groupName = matrixInput.groups.find((group) => group.id === groupId)?.name ?? "";
       const where = `${state.toUpperCase()} for ${groupName} (${CONTRACT_SPECIALTY_LABELS[specialty]})`;
+      // Read the latest records first, so one saved by someone else since
+      // the page loaded (an all-specialties agreement, say) is counted.
+      const latest = await refetchContracts();
+      if (latest.isError || !latest.data) {
+        toast.error(
+          `${where} shows for this visit only. The latest contracts could not be loaded, so no records were saved.`,
+        );
+        return;
+      }
+      const records = notStartedRecordsForAddedState(
+        { ...matrixInput, contracts: latest.data },
+        column,
+      );
       if (records.length === 0) {
         toast.message(
           `Added ${where} for this visit only. No payer in the table has an open cell there, so no records were saved.`,
@@ -214,6 +235,13 @@ export function GroupContractsMatrix({
         const created = await createIfMissing(records);
         toast.success(`Added ${where}: ${countLabel(created.length, "Not started record")}.`);
       } catch (error) {
+        if (error instanceof ContractFollowUpWriteError) {
+          // The insert committed; only the history or audit rows failed.
+          toast.error(
+            `Saved ${countLabel(error.created.length, "Not started record")} for ${where}; their history or audit could not be written.`,
+          );
+          return;
+        }
         toast.error(
           `${where} shows for this visit only. Its Not started records were not saved.${
             error instanceof Error && error.message ? ` ${error.message}` : ""
@@ -221,7 +249,7 @@ export function GroupContractsMatrix({
         );
       }
     },
-    [canWrite, createIfMissing, matrixInput, matrixOptions],
+    [canWrite, createIfMissing, matrixInput, refetchContracts],
   );
 
   // GCM-20: a case link opens the full view and only highlights its cell.
@@ -639,6 +667,7 @@ export function GroupContractsMatrix({
           <AddStateDialog
             specialtyLabel={CONTRACT_SPECIALTY_LABELS[addStateFor]}
             groups={selectedGroups}
+            countFor={(groupId, state) => countNotStartedFor(addStateFor, groupId, state)}
             onAdd={(groupId, state) => void handleAddState(addStateFor, groupId, state)}
             onClose={() => setAddStateFor(null)}
           />
