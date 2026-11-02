@@ -1012,6 +1012,48 @@ test("Slice E: an approved case shows the payer-issued IDs under the payer's own
   await expect(details.getByText("Confirmed effective")).toBeVisible();
 });
 
+// MINT-75 — ticking a task's LAST SOP step in the drawer completes the task
+// through complete_sop_task_step, which takes the browser's local day. A Denver
+// coordinator at 11:25 PM MDT on Oct 19, when UTC is already Oct 20; e2e runs
+// under TZ=UTC, so the browser zone is pinned here.
+test.describe("MINT-75: the last SOP step completes its task on the browser's day", () => {
+  test.use({ timezoneId: "America/Denver" });
+
+  test("the step-completion RPC carries p_completed_date 2026-10-19", async ({ context, page }) => {
+    const fixtures = makeFixtures();
+    const task = fixtures.tasks[1];
+    task.sop_content[0].isCompleted = true;
+    const { handler } = makeHandler(fixtures);
+    await context.route(/\/(rest|auth)\/v1\//, handler);
+    const rpcBodies: Record<string, unknown>[] = [];
+    await page.route("**/rest/v1/rpc/complete_sop_task_step", (route) => {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      rpcBodies.push(body);
+      task.sop_content[1].isCompleted = true;
+      task.status = "completed";
+      task.completed_date = String(body.p_completed_date);
+      return route.fulfill(json({ kind: "ok", allDone: true, task }));
+    });
+    await seedAuth(context);
+    await page.clock.setFixedTime(new Date("2026-10-20T05:25:00Z"));
+
+    await page.goto(`/cases/${CASE_ID}`);
+    const taskTitle = page.getByText("Complete the enrollment form in the portal", { exact: true });
+    await expect(taskTitle).toBeVisible({ timeout: 30000 });
+    await taskTitle.click();
+    const drawer = page.getByRole("dialog");
+    await drawer.getByRole("checkbox", { checked: false, disabled: false }).click();
+    await expect
+      .poll(() => rpcBodies[0] ?? null)
+      .toMatchObject({
+        p_task_id: "task-2",
+        p_step_id: "s3",
+        p_source: "panel",
+        p_completed_date: "2026-10-19",
+      });
+  });
+});
+
 test("E1.3: Locations section — add a second location, make it primary, remove the first, and the change survives a reload", async ({
   context,
   page,
@@ -1093,4 +1135,46 @@ test("E1.3: Locations section — add a second location, make it primary, remove
   });
   await expect(detailsAfterReload.getByText("Boulder Main St Clinic")).toHaveCount(0);
   await expect(detailsAfterReload.getByText("Primary", { exact: true })).toBeVisible();
+});
+
+// MINT-75 — a coordinator in Denver at 11:25 PM MDT on Oct 19, when UTC is
+// already Oct 20. e2e runs under TZ=UTC, so the browser zone is pinned here.
+// Completing a task, logging a note and the touch form's default all land on
+// the local day, and a stored completion date renders as that same day.
+test.describe("MINT-75: activity dates follow the browser's time zone", () => {
+  test.use({ timezoneId: "America/Denver" });
+
+  test("a late-evening completion, note and touch default all say Oct 19", async ({
+    context,
+    page,
+  }) => {
+    const fixtures = makeFixtures();
+    fixtures.tasks[0].completed_date = "2026-10-19";
+    const { handler, writes } = makeHandler(fixtures);
+    await context.route(/\/(rest|auth)\/v1\//, handler);
+    await seedAuth(context);
+    await page.clock.setFixedTime(new Date("2026-10-20T05:25:00Z"));
+
+    await page.goto(`/cases/${CASE_ID}`);
+    // A calendar-only completed_date is shown on its own day, not shifted.
+    await expect(page.getByText("Completed Oct 19, 2026")).toBeVisible({ timeout: 30000 });
+
+    await page
+      .getByRole("button", { name: "Complete Complete the enrollment form in the portal" })
+      .click();
+    await expect
+      .poll(() => writes.find((w) => w.table === "tasks" && w.method === "PATCH")?.body ?? null)
+      .toMatchObject({ status: "completed", completed_date: "2026-10-19" });
+
+    await page.getByRole("button", { name: "Add note" }).click();
+    await page.getByPlaceholder("Add an internal note...").fill("Called the payer back.");
+    await page.getByRole("button", { name: "Save note" }).click();
+    await expect
+      .poll(() => writes.find((w) => w.table === "touches" && w.method === "POST")?.body ?? null)
+      .toMatchObject({ entry_type: "note", touch_date: "2026-10-19" });
+
+    // The touch form's Date is the first date input while the filters are shut.
+    await page.getByRole("button", { name: "Add touch" }).click();
+    await expect(page.locator('input[type="date"]').first()).toHaveValue("2026-10-19");
+  });
 });
