@@ -848,10 +848,10 @@ follow #540's `is_platform_admin()`.
 ## Mission Control M3: organizations, lifecycle stages, write freeze (repository-only)
 
 Four migrations, one per concern, repo-only until an operator applies them
-(staging first): `20261101160000_mc_org_slug_plan_tier.sql`,
-`20261101160100_mc_lifecycle_stages.sql`,
-`20261101160200_mc_offboarded_write_freeze.sql`,
-`20261101160300_mc_platform_org_rpcs.sql`. SQL packet
+(staging first): `20261102163000_mc_org_slug_plan_tier.sql`,
+`20261102163100_mc_lifecycle_stages.sql`,
+`20261102163200_mc_offboarded_write_freeze.sql`,
+`20261102163300_mc_platform_org_rpcs.sql`. SQL packet
 `supabase/tests/mission-control-organizations.sql`, run by
 `scripts/security/verify-mission-control-organizations.mjs` in CI's P01 job
 (four leak modes). Policy names avoid the `mc_` prefix, which M1's packet pins

@@ -33,7 +33,7 @@ describe("normalizeLifecycle", () => {
 
 describe("DEFAULT_LIFECYCLE_STAGES", () => {
   it("mirrors the migration's seed, row for row", () => {
-    const sql = readFileSync("supabase/migrations/20261101160100_mc_lifecycle_stages.sql", "utf8");
+    const sql = readFileSync("supabase/migrations/20261102163100_mc_lifecycle_stages.sql", "utf8");
     for (const stage of DEFAULT_LIFECYCLE_STAGES) {
       const next = stage.allowedNext.map((key) => `'${key}'`).join(", ");
       const group = stage.switcherGroup ? `'${stage.switcherGroup}'` : "NULL";

@@ -214,8 +214,8 @@ contract; clients and both-audience CSV receive explicit safe projections.
 ## Mission Control M3 additions (repository-only)
 
 Appended as its own section (several open lanes edit the tables above); fold
-into the main tables when the lanes have landed. Migrations `20261101160000`
-to `20261101160300`; details in SCHEMA.md › Mission Control M3.
+into the main tables when the lanes have landed. Migrations `20261102163000`
+to `20261102163300`; details in SCHEMA.md › Mission Control M3.
 
 | Table / column                | Layer           | Status  | Writers                                                                        | Notes                                                                                                                                                                                                                                                                                                                                                                              |
 | ----------------------------- | --------------- | ------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

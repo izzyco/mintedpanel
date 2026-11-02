@@ -9,7 +9,7 @@
 --   switcher_group     the org switcher / Portfolio group: 'prospects',
 --                      'in_motion', or NULL (hidden)
 --   writable           false freezes every tenant write (the offboarded write
---                      freeze, migration 20261101160200)
+--                      freeze, migration 20261102163200)
 --   generation_allowed the generation UI shows a labelled reason when false
 --   shown_by_default   Mission Control's organization list shows the stage
 --                      without the "include offboarded" toggle

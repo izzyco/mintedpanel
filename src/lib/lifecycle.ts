@@ -9,7 +9,7 @@
 // normalizeLifecycle() first: the legacy value `inactive` reads as
 // `offboarded` (public.normalize_lifecycle_state() is the database's copy of
 // the same one-line rule). DEFAULT_LIFECYCLE_STAGES mirrors the migration's
-// seed (20261101160100) by hand and is what every reader uses until the
+// seed (20261102163100) by hand and is what every reader uses until the
 // configured rows have loaded, or when they cannot load.
 
 /** A stage key as stored in organizations.lifecycle_state. */
@@ -41,7 +41,7 @@ export const LEGACY_LIFECYCLE_ALIASES: Readonly<Record<string, LifecycleStageKey
 /** The column default, used for a missing value. */
 export const DEFAULT_LIFECYCLE_KEY: LifecycleStageKey = "active";
 
-/** Mirrors the lifecycle_stages seed in 20261101160100 (keep the two in sync). */
+/** Mirrors the lifecycle_stages seed in 20261102163100 (keep the two in sync). */
 export const DEFAULT_LIFECYCLE_STAGES: readonly LifecycleStage[] = [
   {
     key: "prospect",

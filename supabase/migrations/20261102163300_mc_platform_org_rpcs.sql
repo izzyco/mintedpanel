@@ -5,7 +5,7 @@
 --     overload with no duplicate-name refusal (organization row, the caller as
 --     its first admin member, the canonical status_configs, the audit_log
 --     row), with the operator's slug passed to the insert through the
---     transaction-local setting minted.new_org_slug (20261101160000); then
+--     transaction-local setting minted.new_org_slug (20261102163000); then
 --     the prospect stage, plan_tier and the owner party (the same owner checks
 --     and party rows as the 3-arg overload). A name that matches an existing
 --     organization's normalized name is allowed (Sowmya, Nov 1 2026: business

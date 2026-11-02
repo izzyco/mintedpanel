@@ -370,8 +370,8 @@ before any schema work.
   the four functions in `pg_proc` and six `pg_policies` rows named `mc_%`
   (queries in `docs/ops/mission-control-bootstrap.md`, which also holds the
   operator insert for the first platform admin).
-- `20261101160000_mc_org_slug_plan_tier.sql`, `20261101160100_mc_lifecycle_stages.sql`,
-  `20261101160200_mc_offboarded_write_freeze.sql`, `20261101160300_mc_platform_org_rpcs.sql`
+- `20261102163000_mc_org_slug_plan_tier.sql`, `20261102163100_mc_lifecycle_stages.sql`,
+  `20261102163200_mc_offboarded_write_freeze.sql`, `20261102163300_mc_platform_org_rpcs.sql`
   — Mission Control M3, repo-only. Apply in order, after M1. Verify:
   `organizations.slug` is NOT NULL with `organizations_slug_key`, four rows in
   `lifecycle_stages`, no `organizations_lifecycle_state_check`, the

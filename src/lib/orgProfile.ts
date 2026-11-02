@@ -3,7 +3,7 @@
 //
 // The slug is the only naming rule that exists today: a DNS label, unique,
 // fixed once created (organizations_slug_format, organizations_slug_key and
-// the organizations_slug_immutable trigger, migration 20261101160000). The
+// the organizations_slug_immutable trigger, migration 20261102163000). The
 // database is the authority; this module prefills and checks the form.
 
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
