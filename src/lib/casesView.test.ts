@@ -225,3 +225,17 @@ describe("pagination", () => {
     expect(pageCount(20, 10)).toBe(2);
   });
 });
+
+describe("sortFlatRows by Days open (MINT-73)", () => {
+  it("sorts by the number, and an unknown Days open last regardless of direction", () => {
+    const young = row({ caseId: "y", daysOpen: 3 });
+    const old = row({ caseId: "o", daysOpen: 40 });
+    const unknown = row({ caseId: "u", daysOpen: null });
+    expect(
+      sortFlatRows([unknown, old, young], "daysOpen", "asc", new Map()).map((r) => r.caseId),
+    ).toEqual(["y", "o", "u"]);
+    expect(
+      sortFlatRows([unknown, young, old], "daysOpen", "desc", new Map()).map((r) => r.caseId),
+    ).toEqual(["o", "y", "u"]);
+  });
+});

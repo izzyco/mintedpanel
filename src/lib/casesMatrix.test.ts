@@ -37,6 +37,7 @@ function input(overrides: Partial<CasesMatrixInput> = {}): CasesMatrixInput {
     tasks: [],
     followUps: new Map(),
     exclusions: [],
+    caseAgeStops: new Map(),
     ...overrides,
   };
 }
@@ -441,5 +442,78 @@ describe("buildCasesMatrix", () => {
         state: "WI",
       },
     });
+  });
+});
+
+describe("buildCasesMatrix Days open (MINT-73, D22)", () => {
+  // Offset-less timestamps parse as local time, so these hold in any timezone.
+  const twoCases = (status: CaseStatus) =>
+    input({
+      cases: [
+        {
+          id: "open",
+          providerId: "provider-1",
+          groupId: "group-1",
+          payerId: "payer-1",
+          state: "WI",
+          caseStatus: "in_progress",
+          confirmedEffectiveDate: null,
+          createdAt: "2026-08-01T12:00:00",
+        },
+        {
+          id: "closed",
+          providerId: "provider-1",
+          groupId: "group-1",
+          payerId: "payer-2",
+          state: "WI",
+          caseStatus: status,
+          confirmedEffectiveDate: null,
+          createdAt: "2026-08-01T12:00:00",
+        },
+      ],
+      payers: [
+        { id: "payer-1", name: "Aetna" },
+        { id: "payer-2", name: "Cigna" },
+      ],
+      targets: [
+        { payerId: "payer-1", groupId: "group-1", state: "WI", status: "active" },
+        { payerId: "payer-2", groupId: "group-1", state: "WI", status: "active" },
+      ],
+      caseAgeStops: new Map([["closed", "2026-08-11T09:00:00"]]),
+    });
+
+  it("counts an open case to today and stops an approved or denied one at its recorded close", () => {
+    for (const status of ["approved", "denied"] as const) {
+      const result = buildCasesMatrix(twoCases(status));
+      expect(caseCell(result, "payer-1").daysOpen).toBe(24);
+      expect(caseCell(result, "payer-2").daysOpen).toBe(10);
+    }
+  });
+
+  it("keeps counting under the 'never' rule", () => {
+    const result = buildCasesMatrix({
+      ...twoCases("approved"),
+      caseAgeRules: { freezeAt: "never" },
+    });
+    expect(caseCell(result, "payer-2").daysOpen).toBe(24);
+  });
+
+  it("has no Days open for a Not Pursuing case (D11)", () => {
+    const result = buildCasesMatrix(twoCases("not_pursuing"));
+    expect(caseCell(result, "payer-1").daysOpen).toBe(24);
+    expect(caseCell(result, "payer-2").daysOpen).toBeNull();
+  });
+
+  it("keeps counting a closed case with no recorded close", () => {
+    const result = buildCasesMatrix({ ...twoCases("approved"), caseAgeStops: new Map() });
+    expect(caseCell(result, "payer-2").daysOpen).toBe(24);
+  });
+
+  it("leaves a closed case's Days open unknown when the stops could not be read", () => {
+    for (const status of ["approved", "denied"] as const) {
+      const result = buildCasesMatrix({ ...twoCases(status), caseAgeStops: null });
+      expect(caseCell(result, "payer-1").daysOpen).toBe(24);
+      expect(caseCell(result, "payer-2").daysOpen).toBeNull();
+    }
   });
 });

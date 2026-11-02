@@ -14,7 +14,11 @@ vi.mock("@/integrations/supabase/externalClient", async () => {
 });
 
 import { getBillingReadinessSnapshot, type BillingReadinessServiceCtx } from "./billingReadiness";
-import { buildBillingFeed, evaluateBillingReadiness } from "@/lib/billingReadiness";
+import {
+  buildBillingFeed,
+  DEFAULT_BILLING_READINESS_RULES,
+  evaluateBillingReadiness,
+} from "@/lib/billingReadiness";
 
 type Row = Record<string, unknown>;
 const TABLES = [
@@ -301,7 +305,12 @@ describe("a generated case's location", () => {
       createFixtureDb(fixtures(caseFacilities)).ctx,
       TODAY,
     );
-    const assessment = evaluateBillingReadiness(snapshot, selection, TODAY);
+    const assessment = evaluateBillingReadiness(
+      snapshot,
+      selection,
+      TODAY,
+      DEFAULT_BILLING_READINESS_RULES,
+    );
     return { snapshot, reasons: assessment?.reasons.map((reason) => reason.label) ?? [] };
   };
 
