@@ -4,6 +4,12 @@ import type { Database } from "@/integrations/supabase/types";
 import { validateWorkContextForFillReceipt } from "@/services/workContext";
 
 vi.mock("@/services/workContext", () => ({ validateWorkContextForFillReceipt: vi.fn() }));
+// MINT-135: the out-of-order recorder is its own module (taskOrderAdvisory.test.ts);
+// here it is a mock, so the fake db sees no extra read.
+const recordCompletedOutOfOrderMock = vi.hoisted(() => vi.fn());
+vi.mock("@/services/taskOrderAdvisory", () => ({
+  recordServerCompletedOutOfOrder: (...args: unknown[]) => recordCompletedOutOfOrderMock(...args),
+}));
 
 import {
   portalKeyLabel,
@@ -962,6 +968,45 @@ describe("recordSubmissionTouch — Stories 5/6/7 write-back", () => {
         after: expect.objectContaining({ taskId: TASK_ID, pdfAttached: true }),
       }),
     );
+  });
+
+  it("MINT-135: hands an open task it closes to the out-of-order recorder, without waiting on it", async () => {
+    recordCompletedOutOfOrderMock.mockReset();
+    // A recorder that never settles: the request must not wait on it.
+    recordCompletedOutOfOrderMock.mockReturnValue(new Promise(() => {}));
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID, payers: { name: "Cigna" } } },
+      { data: { id: TASK_ID, status: "not_started", case_id: CASE_ID, sort_order: 4 } },
+      { data: null },
+      { data: storedRow },
+      { data: { id: TASK_ID } },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordSubmissionTouch(ctx, CASE_ID, { ...baseInput, task_id: TASK_ID });
+
+    expect(result.kind).toBe("created");
+    expect(recordCompletedOutOfOrderMock).toHaveBeenCalledTimes(1);
+    expect(recordCompletedOutOfOrderMock).toHaveBeenCalledWith(ctx, {
+      id: TASK_ID,
+      caseId: CASE_ID,
+      sortOrder: 4,
+    });
+  });
+
+  it("MINT-135: does not hand on a task that was already completed", async () => {
+    recordCompletedOutOfOrderMock.mockReset();
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: { id: TASK_ID, status: "completed", case_id: CASE_ID, sort_order: 4 } },
+      { data: null },
+      { data: storedRow },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    await recordSubmissionTouch(ctx, CASE_ID, { ...baseInput, task_id: TASK_ID });
+
+    expect(recordCompletedOutOfOrderMock).not.toHaveBeenCalled();
   });
 
   it("leaves an already-completed task alone (no task_update, no task audit)", async () => {

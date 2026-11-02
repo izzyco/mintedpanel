@@ -6,6 +6,12 @@ import type { Database } from "@/integrations/supabase/types";
 // at load; stub it so this ctx-only suite needs no real env.
 vi.mock("@/integrations/supabase/externalClient", () => ({ supabase: {} }));
 vi.mock("@/services/workContext", () => ({ validateWorkContext: vi.fn() }));
+// MINT-135: the out-of-order recorder is its own module (taskOrderAdvisory.test.ts);
+// here it is a mock, so the fake db sees no extra read.
+const recordCompletedOutOfOrderMock = vi.hoisted(() => vi.fn());
+vi.mock("@/services/taskOrderAdvisory", () => ({
+  recordServerCompletedOutOfOrder: (...args: unknown[]) => recordCompletedOutOfOrderMock(...args),
+}));
 
 import {
   recordFillEvent,
@@ -988,6 +994,49 @@ describe("recordFillEvent — task completion", () => {
     expect(writeAudit).toHaveBeenCalledWith(
       expect.objectContaining({ actionType: "CREATE", entityType: "fill_session" }),
     );
+  });
+});
+
+describe("recordFillEvent — out-of-order completion (MINT-135)", () => {
+  it("hands an open task it completes to the recorder, without waiting on it", async () => {
+    recordCompletedOutOfOrderMock.mockReset();
+    // A recorder that never settles: the request must not wait on it.
+    recordCompletedOutOfOrderMock.mockReturnValue(new Promise(() => {}));
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: { id: TASK_ID } },
+      { data: null },
+      { data: storedRow },
+      { data: { id: TASK_ID, status: "in_progress", case_id: CASE_ID, sort_order: 2 } },
+      { data: { id: TASK_ID } },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    const result = await recordFillEvent(ctx, { ...baseInput, taskId: TASK_ID });
+
+    expect(result.kind).toBe("created");
+    expect(recordCompletedOutOfOrderMock).toHaveBeenCalledTimes(1);
+    expect(recordCompletedOutOfOrderMock).toHaveBeenCalledWith(ctx, {
+      id: TASK_ID,
+      caseId: CASE_ID,
+      sortOrder: 2,
+    });
+  });
+
+  it("does not hand on a task that was already completed", async () => {
+    recordCompletedOutOfOrderMock.mockReset();
+    const { db } = makeFakeDb([
+      { data: { id: CASE_ID } },
+      { data: { id: TASK_ID } },
+      { data: null },
+      { data: storedRow },
+      { data: { id: TASK_ID, status: "completed", case_id: CASE_ID, sort_order: 2 } },
+    ]);
+    const { ctx } = ctxWith(db);
+
+    await recordFillEvent(ctx, { ...baseInput, taskId: TASK_ID });
+
+    expect(recordCompletedOutOfOrderMock).not.toHaveBeenCalled();
   });
 });
 

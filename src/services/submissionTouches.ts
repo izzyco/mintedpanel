@@ -54,6 +54,7 @@ import { CANONICAL_TOUCH_TYPES } from "@/lib/touchTypes";
 import { dispositionRequiresContext, isDisposition } from "@/lib/touchDispositions";
 import type { Touch, TouchOutcome, TouchType } from "@/types";
 import { validateWorkContextForFillReceipt } from "@/services/workContext";
+import { recordServerCompletedOutOfOrder } from "@/services/taskOrderAdvisory";
 
 export interface SubmissionTouchServiceCtx {
   db: SupabaseClient<Database>;
@@ -591,17 +592,23 @@ export async function recordSubmissionTouch(
   // cross-org (or nonexistent) task_id is a 404 before any write — the gate's
   // assertion 13. status decides whether the submit transitions it (an
   // already-completed task is a no-op, never a duplicate task_update).
-  let taskBefore: { id: string; status: string } | null = null;
+  type TaskBefore = {
+    id: string;
+    status: string;
+    case_id: string | null;
+    sort_order: number | null;
+  };
+  let taskBefore: TaskBefore | null = null;
   if (input.task_id != null) {
     const { data, error } = await ctx.db
       .from("tasks")
-      .select("id, status")
+      .select("id, status, case_id, sort_order")
       .eq("id", input.task_id)
       .eq("org_id", ctx.orgId)
       .maybeSingle();
     if (error) throw error;
     if (!data) return reject(404, "Task not found");
-    taskBefore = data as { id: string; status: string };
+    taskBefore = data as TaskBefore;
   }
 
   // ---- idempotency: same id in THIS org = a replay; return the stored row.
@@ -722,6 +729,12 @@ export async function recordSubmissionTouch(
       before: { status: taskBefore.status },
       after: { status: "completed" },
       description: "Task completed by extension submit",
+    });
+    // MINT-135: an out-of-order completion is recorded, never awaited.
+    void recordServerCompletedOutOfOrder(ctx, {
+      id: taskBefore.id,
+      caseId: taskBefore.case_id,
+      sortOrder: taskBefore.sort_order,
     });
   }
 

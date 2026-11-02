@@ -27,6 +27,7 @@ import {
 } from "@/lib/workContext";
 import { validateWorkContext } from "@/services/workContext";
 import { isCalendarDateString } from "@/lib/systemTokens";
+import { recordServerCompletedOutOfOrder } from "@/services/taskOrderAdvisory";
 
 export interface FillSessionServiceCtx {
   db: SupabaseClient<Database>;
@@ -570,7 +571,7 @@ async function belongsToContractAssignment(
 async function completeTaskForFill(ctx: FillSessionServiceCtx, taskId: string): Promise<void> {
   const { data: before, error: beforeErr } = await ctx.db
     .from("tasks")
-    .select("id, status")
+    .select("id, status, case_id, sort_order")
     .eq("id", taskId)
     .eq("org_id", ctx.orgId)
     .maybeSingle();
@@ -593,6 +594,12 @@ async function completeTaskForFill(ctx: FillSessionServiceCtx, taskId: string): 
     before: { status: before.status },
     after: { status: "completed" },
     description: "Task completed by extension fill",
+  });
+  // MINT-135: an out-of-order completion is recorded, never awaited.
+  void recordServerCompletedOutOfOrder(ctx, {
+    id: taskId,
+    caseId: before.case_id,
+    sortOrder: before.sort_order,
   });
 }
 

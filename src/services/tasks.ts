@@ -14,11 +14,12 @@ import {
   stepAttachmentPatch,
 } from "@/lib/sopStepAttachments";
 import { translateDbError } from "@/lib/dbErrors";
-import { isPayerFormRemoved, markPayerFormRemoved } from "@/lib/payerForms";
+import { markPayerFormRemoved } from "@/lib/payerForms";
 import { ADVISORY_RECORD_FAILED, reportAdvisoryFailure } from "@/lib/advisoryChecks";
 import { logNote } from "@/services/touches";
 import { completeTaskStep } from "@/services/taskSteps";
 import { recordAdvisory } from "@/services/advisories";
+import { countEarlierOpenCaseTasks } from "@/services/taskOrderAdvisory";
 import type { SOPStep, SOPStepAttachment, Task, TaskStatus } from "@/types";
 
 export interface CaseTaskInput {
@@ -219,26 +220,12 @@ async function updateTaskSopContentWithRevision(
 }
 
 /** MINT-135: after a save that moved `task` to completed, record
- * task.completed_out_of_order when earlier tasks of its case are still open:
- * a lower sort_order, not completed, and not a removed payer form (the RPC's
- * and record_typed_enrollment_submission's rule). Fire-and-forget: it never
- * throws or rejects, and a failed read is one advisory_record_failed line. */
+ * task.completed_out_of_order when earlier tasks of its case are still open
+ * (the shared rule in taskOrderAdvisory.ts). Fire-and-forget: it never throws
+ * or rejects, and a failed read is one advisory_record_failed line. */
 async function recordCompletedOutOfOrder(orgId: string, task: Task): Promise<void> {
   try {
-    if (!task.caseId || typeof task.sortOrder !== "number") return;
-    const { data, error } = await supabase
-      .from("tasks")
-      .select("status, sort_order, sop_content")
-      .eq("org_id", orgId)
-      .eq("case_id", task.caseId);
-    if (error) throw error;
-    const earlierOpenCount = (data ?? []).filter(
-      (row) =>
-        typeof row.sort_order === "number" &&
-        row.sort_order < task.sortOrder &&
-        row.status !== "completed" &&
-        !isPayerFormRemoved(row.sop_content),
-    ).length;
+    const earlierOpenCount = await countEarlierOpenCaseTasks(supabase, orgId, task);
     if (earlierOpenCount === 0) return;
     await recordAdvisory(
       "task.completed_out_of_order",

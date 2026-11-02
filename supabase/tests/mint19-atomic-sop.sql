@@ -15,7 +15,9 @@ BEGIN;
 -- grant: anon appears only in privilege checks, and the RPC's service_role
 -- branch skips auth.uid(); the triggers it fires reach auth.uid() only through
 -- SECURITY DEFINER functions, which run as their owner. auth.role() and
--- auth.jwt() are not called anywhere on this path.
+-- auth.jwt() are not called anywhere on this path. (Only the three MINT-135
+-- record_typed_enrollment_submission checks grant service_role auth access,
+-- for themselves, and revoke it right after.)
 GRANT USAGE ON SCHEMA auth TO authenticated;
 SET LOCAL client_min_messages = warning;
 
@@ -920,11 +922,6 @@ SELECT pg_temp.mint19_assert(
 -- CI creates a minimally privileged service_role. Emulate the real Supabase
 -- BYPASSRLS attribute only inside this rollback-only verification transaction.
 ALTER ROLE service_role BYPASSRLS;
--- MINT-135: record_typed_enrollment_submission reads auth.uid() and locks
--- its portal row under service_role. Mirror those hosted grants (the mint58
--- packet's), rolled back with the transaction.
-GRANT USAGE ON SCHEMA auth TO service_role;
-GRANT SELECT, UPDATE ON public.portals TO service_role;
 SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000002';
 SET LOCAL ROLE service_role;
 SELECT pg_temp.mint19_assert(
@@ -1003,6 +1000,16 @@ SELECT pg_temp.mint19_assert(
     'extension'
   ) ->> 'status')::integer = 404
 );
+-- MINT-135: record_typed_enrollment_submission reads auth.uid() and locks
+-- its portal row under service_role. Mirror those hosted grants (the mint58
+-- packet's) for these three checks only, then revoke them, so every other
+-- service_role check still runs without auth access: a complete_sop_task_step
+-- that read auth.uid() on its service_role branch fails here as in CI.
+-- CI's service_role holds neither grant, so the revoke restores it exactly.
+RESET ROLE;
+GRANT USAGE ON SCHEMA auth TO service_role;
+GRANT SELECT, UPDATE ON public.portals TO service_role;
+SET LOCAL ROLE service_role;
 SELECT pg_temp.mint19_assert(
   'MINT-135 the typed submission still refuses a step while an earlier step is open',
   (SELECT r ->> 'kind' = 'rejected'
@@ -1028,6 +1035,10 @@ SELECT pg_temp.mint19_assert(
   (pg_temp.mint135_typed_submission('form-2', '89000000-0000-4000-8000-000000000004')
      ->> 'message') = 'Enrollment portal configuration is stale'
 );
+RESET ROLE;
+REVOKE USAGE ON SCHEMA auth FROM service_role;
+REVOKE SELECT, UPDATE ON public.portals FROM service_role;
+SET LOCAL ROLE service_role;
 SELECT pg_temp.mint19_assert(
   'MINT-135 an out-of-order extension tick completes',
   (public.complete_sop_task_step(
