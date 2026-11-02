@@ -1,7 +1,7 @@
 // Summary tab of the Reports page. Filters + status/payer charts, avg days
 // to approval by payer, and coordinator workload table with CSV export.
 import { useMemo, useState } from "react";
-import { differenceInCalendarDays, parseISO } from "date-fns";
+import { differenceInCalendarDays, format, parseISO, subDays } from "date-fns";
 import { Download } from "lucide-react";
 import {
   Bar,
@@ -32,6 +32,7 @@ import { useProviders } from "@/hooks/useProviders";
 import { usePayers, useStatusConfigs } from "@/hooks/useAdmin";
 import { useProviderGroups, useCoordinators } from "@/hooks/useLookups";
 import { useTouchSummary } from "@/hooks/useReports";
+import { activityDateRules, todayForActivity } from "@/lib/activityDate";
 
 const ALL = "__all__";
 
@@ -152,7 +153,9 @@ export function SummaryTab() {
       openByCoord.set(c.assignedTo, (openByCoord.get(c.assignedTo) ?? 0) + 1);
     });
 
-    const todayStr = new Date().toISOString().slice(0, 10);
+    // MINT-75 (Addendum 11, I1): "today" and the 30-day window below are the
+    // activity day, as on the case pages; by default the viewer's own day.
+    const todayStr = todayForActivity(new Date(), activityDateRules());
     const overdueByCoord = new Map<string, number>();
     const caseAssignee = new Map<string, string | null>();
     filteredCases.forEach((c) => caseAssignee.set(c.id, c.assignedTo));
@@ -165,9 +168,7 @@ export function SummaryTab() {
       overdueByCoord.set(assignee, (overdueByCoord.get(assignee) ?? 0) + 1);
     });
 
-    const since = new Date();
-    since.setDate(since.getDate() - 30);
-    const sinceStr = since.toISOString().slice(0, 10);
+    const sinceStr = format(subDays(parseISO(todayStr), 30), "yyyy-MM-dd");
     const touchesByCoord = new Map<string, number>();
     (touchesQ.data ?? []).forEach((t) => {
       if (!t.coordinatorId) return;

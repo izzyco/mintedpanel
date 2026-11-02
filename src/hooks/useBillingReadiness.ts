@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   buildBillingFeed,
+  resolveBillingReadinessRules,
+  type BillingReadinessRules,
   type BillingReadinessSnapshot,
   type BillingFeedEvent,
 } from "@/lib/billingReadiness";
@@ -14,6 +16,8 @@ export interface BillingReadinessQueryData {
   assessedAt: string;
   snapshot: BillingReadinessSnapshot;
   feed: BillingFeedEvent[];
+  /** The rules every assessment of this snapshot uses, resolved once with it. */
+  rules: BillingReadinessRules;
 }
 
 function localTodayIso(): string {
@@ -67,6 +71,9 @@ export function useBillingReadiness(): BillingReadinessData {
         assessedAt: new Date().toISOString(),
         snapshot,
         feed: buildBillingFeed(snapshot, asOf),
+        // No platform or organization override is stored yet (the Mission
+        // Control setting is MINT-129), so this resolves to the defaults.
+        rules: resolveBillingReadinessRules(),
       };
     },
   });

@@ -38,13 +38,23 @@ const orgRow = (id: string, name: string, lifecycle: string, created: string) =>
   created_at: created,
 });
 
-// Date-only offsets from the real clock (the reports read localTodayIso).
-// Offsets sit ≥2 days from every window boundary so UTC-vs-local day skew
-// can't flip a bucket.
+// Date-only offsets from the real clock, as LOCAL calendar dates: the reports
+// read localTodayIso, so an exact day count ("Overdue by 19 days") holds in
+// any timezone. Offsets still sit ≥2 days from every window boundary.
 function daysFromNow(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  const pad = (v: number) => String(v).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// A created_at timestamp at LOCAL noon n days from now, so the case's local
+// opening day is exactly daysFromNow(n) in any timezone.
+function localNoonIso(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  d.setHours(12, 0, 0, 0);
+  return d.toISOString();
 }
 
 const GROUP_ID = "44444444-4444-4444-8444-444444444444";
@@ -74,6 +84,7 @@ const caseRow = (
   payerId: string,
   state: string,
   caseStatus: string,
+  createdAt = "2026-07-01T00:00:00Z",
 ) => ({
   id,
   org_id: ORG_A,
@@ -85,7 +96,7 @@ const caseRow = (
   case_status: caseStatus,
   payer_pipeline_state: "not_started",
   credentialing_status_id: null,
-  created_at: "2026-07-01T00:00:00Z",
+  created_at: createdAt,
   updated_at: "2026-07-01T00:00:00Z",
 });
 
@@ -285,20 +296,42 @@ test("TS-135 — the Launches report groups by group, sorts by date, and flags a
       facilityRow("f-soon2", "Westside Clinic", daysFromNow(12)),
       // +90d, zero providers — outside the approaching window → NOT at risk.
       facilityRow("f-far", "Northside Clinic", daysFromNow(90)),
-      // -10d, recently launched → shows, never at risk.
+      // -19d, staffed, and a case opened before go-live still holds it →
+      // Overdue (MINT-100).
+      facilityRow("f-overdue", "Southside Clinic", daysFromNow(-19)),
+      // -20d, staffed, and its only open case was opened after go-live → shows,
+      // not flagged (MINT-100 A2).
+      facilityRow("f-late", "Lateline Clinic", daysFromNow(-20)),
+      // -10d, launched with nothing outstanding → shows, not flagged.
       facilityRow("f-recent", "Downtown Clinic", daysFromNow(-10)),
-      // -60d and dateless → excluded from the report entirely.
+      // -60d, zero providers → still at risk inside 90 days → Overdue.
       facilityRow("f-old", "Bygone Clinic", daysFromNow(-60)),
+      // -45d, staffed, nothing open → past the 30-day window → excluded.
+      facilityRow("f-faded", "Faded Clinic", daysFromNow(-45)),
+      // -120d, zero providers → past the 90-day overdue window → excluded.
+      facilityRow("f-stale", "Stale Clinic", daysFromNow(-120)),
+      // Dateless → its own "No go-live date" section, never flagged.
       facilityRow("f-dateless", "Someday Clinic", null),
     ],
     provider_facility_assignments: [
       { id: "a-1", org_id: ORG_A, provider_id: "p-1", facility_id: "f-soon2", is_primary: true },
       { id: "a-2", org_id: ORG_A, provider_id: "p-2", facility_id: "f-recent", is_primary: true },
+      { id: "a-3", org_id: ORG_A, provider_id: "p-3", facility_id: "f-overdue", is_primary: true },
+      { id: "a-4", org_id: ORG_A, provider_id: "p-4", facility_id: "f-faded", is_primary: true },
+      { id: "a-5", org_id: ORG_A, provider_id: "p-5", facility_id: "f-late", is_primary: true },
     ],
-    credential_cases: [caseRow("c-open", "p-1", "pay-anthem", "TX", "in_progress")],
+    credential_cases: [
+      caseRow("c-open", "p-1", "pay-anthem", "TX", "in_progress"),
+      caseRow("c-overdue", "p-3", "pay-anthem", "TX", "submitted", localNoonIso(-40)),
+      caseRow("c-late", "p-5", "pay-anthem", "TX", "in_progress", localNoonIso(-5)),
+    ],
     // Open cases reach a location through case_facilities, never through the
     // provider's assignments.
-    case_facilities: [{ id: "cf-1", org_id: ORG_A, case_id: "c-open", facility_id: "f-soon2" }],
+    case_facilities: [
+      { id: "cf-1", org_id: ORG_A, case_id: "c-open", facility_id: "f-soon2" },
+      { id: "cf-2", org_id: ORG_A, case_id: "c-overdue", facility_id: "f-overdue" },
+      { id: "cf-3", org_id: ORG_A, case_id: "c-late", facility_id: "f-late" },
+    ],
   });
   await page.goto("/reporting/launches");
   await expect(page.getByRole("heading", { name: "Launches", exact: true })).toBeVisible({
@@ -307,16 +340,33 @@ test("TS-135 — the Launches report groups by group, sorts by date, and flags a
   // The at-risk rule is explained inline (F6.6.2 AC).
   await expect(
     page.getByText(
-      "At risk = go-live within 30 days with open cases still pending or no providers assigned.",
+      "At risk = go-live within 30 days with open cases still pending or no providers assigned. Overdue = go-live passed within the last 90 days and either is still true, counting only cases opened before go-live. Opened locations with neither show for 30 days.",
     ),
   ).toBeVisible();
   // Grouped by group.
   await expect(page.getByRole("heading", { name: "Shelby Sports Rehab" })).toBeVisible();
-  // Date order within the group: soonest first; old/dateless excluded.
+  // Date order within the group: soonest first; out-of-window rows excluded.
   const names = page.locator("tbody tr td:first-child");
-  await expect(names.first()).toContainText("Downtown Clinic");
-  await expect(page.getByText("Bygone Clinic")).toHaveCount(0);
-  await expect(page.getByText("Someday Clinic")).toHaveCount(0);
+  await expect(names.first()).toContainText("Bygone Clinic");
+  await expect(page.getByText("Faded Clinic")).toHaveCount(0);
+  await expect(page.getByText("Stale Clinic")).toHaveCount(0);
+  const bygone = page.locator("tr", { hasText: "Bygone Clinic" });
+  await expect(bygone.getByText("Overdue by 60 days — no providers assigned")).toBeVisible();
+  // MINT-100: the dateless location lists in its own section, unflagged.
+  const noDate = page.getByRole("region", { name: "No go-live date" });
+  await expect(noDate.locator("tr", { hasText: "Someday Clinic" })).toContainText(
+    "Shelby Sports Rehab",
+  );
+  await expect(noDate.getByText(/At risk|Overdue/)).toHaveCount(0);
+  // MINT-100: a passed go-live still at risk reads Overdue, same reasons.
+  const southside = page.locator("tr", { hasText: "Southside Clinic" });
+  await expect(southside.getByText("Overdue by 19 days — open cases still pending")).toBeVisible();
+  // MINT-100 A2: a case opened after go-live doesn't flag it; it still counts
+  // in the Open cases column.
+  const lateline = page.locator("tr", { hasText: "Lateline Clinic" });
+  await expect(lateline).toBeVisible();
+  await expect(lateline.locator("td").nth(3)).toHaveText("1");
+  await expect(lateline.getByText(/At risk|Overdue/)).toHaveCount(0);
   // At-risk flags per the stated rule.
   const eastside = page.locator("tr", { hasText: "Eastside Clinic" });
   await expect(eastside.getByText("At risk — no providers assigned")).toBeVisible();
@@ -325,7 +375,7 @@ test("TS-135 — the Launches report groups by group, sorts by date, and flags a
   const northside = page.locator("tr", { hasText: "Northside Clinic" });
   await expect(northside.getByText("At risk", { exact: false })).toHaveCount(0);
   const downtown = page.locator("tr", { hasText: "Downtown Clinic" });
-  await expect(downtown.getByText("At risk", { exact: false })).toHaveCount(0);
+  await expect(downtown.getByText(/At risk|Overdue/)).toHaveCount(0);
 });
 
 test("TS-136 — the Denials report: provider-first rows, payer pivot, cycle states, CSV export", async ({

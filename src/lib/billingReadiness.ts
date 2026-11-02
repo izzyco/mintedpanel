@@ -2,6 +2,7 @@ import { canonicalLabel } from "@/lib/canonicalStatuses";
 import { isStatusHistorySeed } from "@/lib/caseStatus";
 import { APPROVED_LABEL, IN_NETWORK_LABEL } from "@/lib/statusLabels";
 import { taxonomyLabel } from "@/lib/providerTaxonomy";
+import type { ProviderStatus } from "@/types";
 
 export type BillingReadinessStatus = "ready" | "hold" | "stop";
 export type BillingFeedKind = "approval" | "facility_added" | "termination" | "license_expiration";
@@ -13,7 +14,7 @@ export interface BillingProvider {
   lastName: string;
   npi: string | null;
   taxonomyCode: string | null;
-  status: string;
+  status: ProviderStatus;
   verificationState: string | null;
   isTestProvider: boolean;
 }
@@ -180,6 +181,86 @@ export interface BillingFeedFilters {
   payerId?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Rules
+//
+// Which clinician and membership facts hold or stop billing is policy, so it
+// is configuration, resolved field by field: the organization's value, else
+// the platform's, else the default. The defaults are the PM's decisions of
+// Oct 20, 2026. Nothing stores an override yet; the Mission Control setting
+// is MINT-129.
+//
+// Not configurable, because they are facts about the enrollment or a
+// compliance floor rather than policy: an Active clinician is
+// billable-eligible, a terminated clinician is Do Not Bill, and every other
+// stop (no exact case, a case that is not effective, an inactive payer,
+// facility or group, a passed termination date, a missing or failed license)
+// stays as built.
+
+/** How an Onboarding clinician counts against billing. */
+export type BillingStatusSeverity = BillingReason["severity"];
+
+export interface BillingProviderStatusSeverity {
+  /** "hold" (default): Onboarding is the create default and is rarely
+   * flipped, so it holds rather than stops. "stop": Do Not Bill. */
+  onboarding: BillingStatusSeverity;
+}
+
+export interface BillingReadinessRules {
+  providerStatusSeverity: BillingProviderStatusSeverity;
+  /** "current" (default): a group membership with no start date counts as
+   * current, as in the enrollment readiness matrix; a recorded future start
+   * still holds. "not_current": it holds until a start date is recorded. */
+  membershipWithoutStartDate: "current" | "not_current";
+}
+
+/** The platform default: the PM's decisions of Oct 20, 2026. */
+export const DEFAULT_BILLING_READINESS_RULES: Readonly<BillingReadinessRules> = Object.freeze({
+  providerStatusSeverity: Object.freeze({ onboarding: "hold" } as const),
+  membershipWithoutStartDate: "current",
+});
+
+/** A platform or organization override. A null or missing field inherits,
+ * one status at a time. */
+export interface BillingReadinessRulesOverride {
+  providerStatusSeverity?:
+    | {
+        readonly [K in keyof BillingProviderStatusSeverity]?:
+          BillingProviderStatusSeverity[K] | null;
+      }
+    | null;
+  membershipWithoutStartDate?: BillingReadinessRules["membershipWithoutStartDate"] | null;
+}
+
+const SEVERITIES: readonly unknown[] = ["hold", "stop"];
+const MEMBERSHIP_CHOICES: readonly unknown[] = ["current", "not_current"];
+/** Field by field: the organization's value, else the platform's, else the
+ * default. A stored value of the wrong shape is skipped like a missing one. */
+export function resolveBillingReadinessRules(
+  platform?: BillingReadinessRulesOverride | null,
+  organization?: BillingReadinessRulesOverride | null,
+): BillingReadinessRules {
+  const pick = <T>(values: readonly unknown[], choices: readonly unknown[], fallback: T): T =>
+    (values.find((value) => value != null && choices.includes(value)) as T | undefined) ?? fallback;
+  return {
+    providerStatusSeverity: {
+      onboarding: pick(
+        [
+          organization?.providerStatusSeverity?.onboarding,
+          platform?.providerStatusSeverity?.onboarding,
+        ],
+        SEVERITIES,
+        DEFAULT_BILLING_READINESS_RULES.providerStatusSeverity.onboarding,
+      ),
+    },
+    membershipWithoutStartDate: pick(
+      [organization?.membershipWithoutStartDate, platform?.membershipWithoutStartDate],
+      MEMBERSHIP_CHOICES,
+      DEFAULT_BILLING_READINESS_RULES.membershipWithoutStartDate,
+    ),
+  };
+}
+
 const PTA_TAXONOMY = "225200000X";
 const OTA_TAXONOMY_PREFIX = "224Z";
 const FEED_WINDOW_DAYS = 90;
@@ -223,16 +304,30 @@ function shiftDays(date: string, days: number): string | null {
   return value.toISOString().slice(0, 10);
 }
 
+// A membership with no start date counts as started (PM decision 2026-10-20),
+// as in the enrollment readiness matrix (`evaluateEnrollmentReadiness`), which
+// drops a membership only once its end date has passed. Here a recorded future
+// start still holds, and a passed end date takes the clinician off the group.
 function isCurrentMembership(
   row: BillingGroupMembership,
   today: string,
+  rules: BillingReadinessRules,
 ): { current: boolean; missing: boolean; invalid: boolean } {
-  if (!row.startDate) return { current: false, missing: true, invalid: false };
-  if (!validIsoDate(row.startDate) || (row.endDate !== null && !validIsoDate(row.endDate))) {
+  // The "not_current" rule: the behaviour before Oct 20. No start date holds,
+  // ahead of any date check.
+  if (rules.membershipWithoutStartDate === "not_current" && !row.startDate) {
+    return { current: false, missing: true, invalid: false };
+  }
+  if (
+    (row.startDate !== null && !validIsoDate(row.startDate)) ||
+    (row.endDate !== null && !validIsoDate(row.endDate))
+  ) {
     return { current: false, missing: false, invalid: true };
   }
   return {
-    current: row.startDate <= today && (row.endDate === null || row.endDate >= today),
+    current:
+      (row.startDate === null || row.startDate <= today) &&
+      (row.endDate === null || row.endDate >= today),
     missing: false,
     invalid: false,
   };
@@ -341,10 +436,26 @@ function providerFacilityEvidence(
   state: string | null,
   today: string,
   includeCase: boolean,
+  rules: BillingReadinessRules,
 ): BillingReason[] {
   const reasons: BillingReason[] = [];
-  if (provider.status !== "active") {
-    reasons.push({ severity: "stop", label: "The clinician is not active." });
+  // An Active clinician is billable-eligible and a terminated one is Do Not
+  // Bill (a fact and a compliance floor, not settings). "onboarding" (the
+  // create default, rarely flipped) counts as the rules say, a hold by
+  // default, so an approved, effective enrollment never reads as a stop (PM
+  // decision 2026-10-20).
+  if (provider.status === "terminated") {
+    reasons.push({ severity: "stop", label: "The clinician is terminated." });
+  } else if (provider.status === "onboarding") {
+    reasons.push({
+      severity: rules.providerStatusSeverity.onboarding,
+      label:
+        "Clinician is still marked Onboarding. Mark them Active once they start seeing patients.",
+    });
+  } else if (provider.status !== "active") {
+    // Unreachable under today's providers_status_check; a status added later
+    // holds until this rule learns it.
+    reasons.push({ severity: "hold", label: "The clinician status is not recognized." });
   }
   if (provider.verificationState !== "verified") {
     reasons.push({ severity: "hold", label: "Clinician verification is incomplete." });
@@ -366,7 +477,7 @@ function providerFacilityEvidence(
     const memberships = snapshot.groupMemberships.filter(
       (row) => row.providerId === provider.id && row.groupId === group.id,
     );
-    const states = memberships.map((row) => isCurrentMembership(row, today));
+    const states = memberships.map((row) => isCurrentMembership(row, today, rules));
     if (states.some((result) => result.invalid)) {
       reasons.push({ severity: "hold", label: "The group membership dates are invalid." });
     } else if (states.some((result) => result.current)) {
@@ -397,7 +508,7 @@ function providerFacilityEvidence(
       label: "Conflicting clinician-to-facility assignments are recorded.",
     });
   } else if (!assignments[0].startDate) {
-    reasons.push({ severity: "hold", label: "The facility assignment start date is missing." });
+    // No start date counts as started: it does not change readiness (D14).
   } else if (!validIsoDate(assignments[0].startDate)) {
     reasons.push({ severity: "hold", label: "The facility assignment start date is invalid." });
   } else if (assignments[0].startDate > today) {
@@ -429,6 +540,7 @@ function supervisorCandidates(
   group: BillingGroup | null,
   state: string | null,
   today: string,
+  rules: BillingReadinessRules,
 ): BillingSupervisorCandidate[] {
   if (!group || !state || !facility.isActive || !group.isActive) return [];
   return snapshot.providers
@@ -438,8 +550,8 @@ function supervisorCandidates(
         provider.status === "active" &&
         provider.verificationState === "verified" &&
         !provider.isTestProvider &&
-        providerFacilityEvidence(snapshot, provider, facility, group, state, today, true).length ===
-          0,
+        providerFacilityEvidence(snapshot, provider, facility, group, state, today, true, rules)
+          .length === 0,
     )
     .map((provider) => ({
       providerId: provider.id,
@@ -450,10 +562,13 @@ function supervisorCandidates(
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** `rules` defaults to DEFAULT_BILLING_READINESS_RULES, so callers that pass
+ * none get the decided behaviour. */
 export function evaluateBillingReadiness(
   snapshot: BillingReadinessSnapshot,
   selection: BillingSelection,
   today: string,
+  rules: BillingReadinessRules = DEFAULT_BILLING_READINESS_RULES,
 ): BillingAssessment | null {
   if (!validIsoDate(today)) return null;
   const provider = snapshot.providers.find((row) => row.id === selection.providerId);
@@ -473,6 +588,7 @@ export function evaluateBillingReadiness(
     state,
     today,
     false,
+    rules,
   );
   const exactCases = snapshot.cases.filter(
     (row) =>
@@ -593,7 +709,7 @@ export function evaluateBillingReadiness(
   const isPta = normalizedTaxonomy === PTA_TAXONOMY;
   const isOta = normalizedTaxonomy.startsWith(OTA_TAXONOMY_PREFIX);
   const candidates = isPta
-    ? supervisorCandidates(snapshot, provider.id, facility, group, state, today)
+    ? supervisorCandidates(snapshot, provider.id, facility, group, state, today, rules)
     : [];
   if (isPta) {
     reasons.push({
@@ -825,9 +941,8 @@ export function buildBillingFeed(
       (row) =>
         row.providerId === license.providerId &&
         row.facilityId &&
-        row.startDate &&
-        validIsoDate(row.startDate) &&
-        row.startDate <= today,
+        // An undated assignment counts as current (D14).
+        (!row.startDate || (validIsoDate(row.startDate) && row.startDate <= today)),
     );
     for (const assignment of matchingAssignments) {
       const facility = snapshot.facilities.find((row) => row.id === assignment.facilityId);
@@ -908,6 +1023,7 @@ export function buildNewlyBillableDigestCsv(
   snapshot: BillingReadinessSnapshot,
   events: BillingFeedEvent[],
   today: string,
+  rules: BillingReadinessRules = DEFAULT_BILLING_READINESS_RULES,
 ): string {
   const columns: Array<keyof DigestRow> = [
     "providerName",
@@ -954,6 +1070,7 @@ export function buildNewlyBillableDigestCsv(
       snapshot,
       { providerId: event.providerId, facilityId: event.facilityId, payerId: event.payerId },
       today,
+      rules,
     );
     if (
       assessment?.status !== "ready" ||
