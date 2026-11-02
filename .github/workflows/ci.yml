@@ -318,6 +318,12 @@ jobs:
       - name: Verify facility assignments save without a start date on disposable PostgreSQL
         run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/pfa-start-date-optional.sql
 
+      # MINT-134 registry additions: the added check keys, record tables and
+      # context keys accepted, unknown ones refused, owners and grants kept.
+      # Rollback-only; any failed check raises.
+      - name: Run MINT-134 registry additions SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-registry-additions.sql
+
   vault-authorization:
     name: P01 vault authorization
     runs-on: ubuntu-latest

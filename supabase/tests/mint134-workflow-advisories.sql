@@ -182,8 +182,11 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- Fixtures: org A (admin, specialist, billing), org B (admin), a signed-in
--- user with no membership, and one record in org A in every record table.
--- Organizations seed their roster templates by trigger; the mapping uses one.
+-- user with no membership, and one record in org A in every record table
+-- (the registry additions' parties, organizations and memberships included;
+-- notification_sequences is not on main, and
+-- mint134-registry-additions.sql covers it). Organizations seed their roster
+-- templates by trigger; the mapping uses one.
 -- ---------------------------------------------------------------------------
 INSERT INTO public.organizations (id, name) VALUES
   ('13400000-0000-4000-a000-00000000000a', 'MINT-134 Synthetic Org A'),
@@ -268,6 +271,9 @@ SELECT '13400000-0000-4000-a000-0000000a0009', t.org_id, t.id,
 INSERT INTO public.sop_templates (id, org_id, name, task_definitions, case_type) VALUES
   ('13400000-0000-4000-a000-0000000a0010', '13400000-0000-4000-a000-00000000000a',
    'MINT-134 Synthetic SOP', '[]'::jsonb, 'enrollment');
+INSERT INTO public.parties (id, org_id, name, created_by) VALUES
+  ('13400000-0000-4000-a000-0000000a0013', '13400000-0000-4000-a000-00000000000a',
+   'MINT-134 Synthetic Contact A', '13400000-0000-4000-a000-000000000001');
 
 INSERT INTO pg_temp.m134_records VALUES
   ('providers', '13400000-0000-4000-a000-0000000a0001'),
@@ -278,7 +284,13 @@ INSERT INTO pg_temp.m134_records VALUES
   ('facilities', '13400000-0000-4000-a000-0000000a0007'),
   ('import_runs', '13400000-0000-4000-a000-0000000a0008'),
   ('roster_mappings', '13400000-0000-4000-a000-0000000a0009'),
-  ('sop_templates', '13400000-0000-4000-a000-0000000a0010');
+  ('sop_templates', '13400000-0000-4000-a000-0000000a0010'),
+  ('parties', '13400000-0000-4000-a000-0000000a0013'),
+  ('organizations', '13400000-0000-4000-a000-00000000000a');
+INSERT INTO pg_temp.m134_records
+SELECT 'memberships', m.id FROM public.memberships AS m
+ WHERE m.org_id = '13400000-0000-4000-a000-00000000000a'
+   AND m.user_id = '13400000-0000-4000-a000-000000000001';
 
 -- A role that holds EXECUTE but is neither authenticated nor service_role.
 CREATE ROLE m134_other_caller NOLOGIN;
@@ -291,7 +303,7 @@ GRANT EXECUTE ON FUNCTION public.resolve_workflow_advisories(uuid, text, text, u
   TO m134_other_caller;
 
 SELECT pg_temp.m134_mark('fixtures_one_org_a_record_in_every_record_table',
-  (SELECT count(*) = 9 FROM pg_temp.m134_records)
+  (SELECT count(*) = 12 FROM pg_temp.m134_records)
   AND private.workflow_advisory_record_in_org('providers', '13400000-0000-4000-a000-0000000a0001', '13400000-0000-4000-a000-00000000000a')
   AND (SELECT bool_and(private.workflow_advisory_record_in_org(
                          record_table, record_id, '13400000-0000-4000-a000-00000000000a'))
@@ -407,11 +419,13 @@ SELECT pg_temp.m134_mark('guard_freezes_every_column_but_the_stamp',
       AND c.column_name NOT IN ('resolved_at', 'resolved_by')
       AND p.oid = 'private.workflow_advisories_guard()'::regprocedure));
 
--- The record-in-org check has a branch for each table the CHECK allows.
+-- The record-in-org check has a branch for each table the CHECK allows: the
+-- 12 fixture tables here, and notification_sequences (the 13th, covered by
+-- mint134-registry-additions.sql).
 SELECT pg_temp.m134_mark('record_table_set_and_org_check_agree',
   (SELECT count(*) FROM pg_constraint AS k,
           regexp_matches(pg_get_constraintdef(k.oid), '''([a-z_]+)''', 'g') AS m
-    WHERE k.conname = 'workflow_advisories_record_table_check') = 9
+    WHERE k.conname = 'workflow_advisories_record_table_check') = 13
   AND (SELECT bool_and(
                 position(quote_literal(r.record_table) IN pg_get_constraintdef(k.oid)) > 0
                 AND position(format('FROM public.%s AS r', r.record_table) IN p.prosrc) > 0)
@@ -517,9 +531,9 @@ SELECT pg_temp.m134_mark('a_null_context_is_stored_as_an_empty_object',
      WHERE id = pg_temp.m134_ok_id('rec_null_context') AND context = '{}'::jsonb
   ));
 SELECT pg_temp.m134_mark('every_record_table_accepts_a_record_of_the_org',
-  (SELECT count(*) = 9 AND bool_and(result ~ '^ok:[0-9a-f-]{36}$')
+  (SELECT count(*) = 12 AND bool_and(result ~ '^ok:[0-9a-f-]{36}$')
      FROM pg_temp.m134_calls WHERE name LIKE 'table\_ok\_%')
-  AND (SELECT count(DISTINCT record_table) = 9 FROM public.workflow_advisories
+  AND (SELECT count(DISTINCT record_table) = 12 FROM public.workflow_advisories
         WHERE check_key = 'roster_export.override'));
 
 -- ---------------------------------------------------------------------------
@@ -572,7 +586,7 @@ SELECT pg_temp.m134_run('cross_org_' || record_table, 'authenticated',
     record_table, record_id))
   FROM pg_temp.m134_records;
 SELECT pg_temp.m134_mark('another_orgs_record_is_refused_in_every_record_table',
-  (SELECT count(*) = 9 AND bool_and(result = '22023:workflow_advisory_record_not_in_org')
+  (SELECT count(*) = 12 AND bool_and(result = '22023:workflow_advisory_record_not_in_org')
      FROM pg_temp.m134_calls WHERE name LIKE 'cross\_org\_%'));
 SELECT pg_temp.m134_mark('a_missing_record_or_one_in_another_table_is_refused',
   pg_temp.m134_run('refuse_missing_record', 'authenticated', '13400000-0000-4000-a000-000000000001',
@@ -588,10 +602,10 @@ SELECT pg_temp.m134_run('refuse_table_' || t, 'authenticated',
   '13400000-0000-4000-a000-000000000001',
   pg_temp.m134_rec('13400000-0000-4000-a000-00000000000a', 'config.override_ignored',
     t, '13400000-0000-4000-a000-00000000000a'))
-  FROM unnest(ARRAY['organizations', 'profiles', 'notification_sequences', 'memberships',
-                    'workflow_advisories', 'Providers']) AS t;
+  FROM unnest(ARRAY['profiles', 'payers', 'state_licenses', 'workflow_advisories',
+                    'Providers']) AS t;
 SELECT pg_temp.m134_mark('a_table_outside_the_closed_set_is_refused',
-  (SELECT count(*) = 6 AND bool_and(result = '22023:workflow_advisory_record_table_invalid')
+  (SELECT count(*) = 5 AND bool_and(result = '22023:workflow_advisory_record_table_invalid')
      FROM pg_temp.m134_calls WHERE name LIKE 'refuse\_table\_%'));
 
 SELECT pg_temp.m134_run('refuse_source_' || coalesce(s, 'null'), 'authenticated',
@@ -806,7 +820,7 @@ INSERT INTO pg_temp.m134_context_cases (label, expect_valid, context) VALUES
   ('a_timestamp', false, '{"at": "2026-11-01T09:00:00Z"}'),
   ('free_text', false, '{"note": "called twice, no answer"}'),
   ('an_undeclared_flag', false, '{"name_differs": true}'),
-  ('a_key_dropped_until_its_conversion', false, '{"sequence_id": "13400000-0000-4000-a000-0000000a0001"}'),
+  ('an_undeclared_id_key', false, '{"party_id": "13400000-0000-4000-a000-0000000a0001"}'),
   ('a_value_outside_a_closed_vocabulary', false, '{"column": "home_phone"}'),
   ('a_case_type_in_capitals', false, '{"case_type": "Enrollment"}'),
   ('an_attribute_outside_the_vocabulary', false, '{"attributes": ["caqh_id", "favorite_color"]}'),
@@ -1025,7 +1039,7 @@ SELECT pg_temp.m134_mark('job_refuses_' || j.label,
     ('an_unknown_severity', 'm134-recheck', '13400000-0000-4000-a000-00000000000a'::uuid,
      'providers', '{}', 'warning', '22023:workflow_advisory_severity_invalid'),
     ('a_table_outside_the_set', 'm134-recheck', '13400000-0000-4000-a000-00000000000a'::uuid,
-     'organizations', '{}', 'advisory', '22023:workflow_advisory_record_table_invalid')
+     'profiles', '{}', 'advisory', '22023:workflow_advisory_record_table_invalid')
   ) AS j(label, job, org, record_table, context, severity, expected);
 
 SELECT pg_temp.m134_mark('job_refuses_an_unregistered_key',
@@ -1121,7 +1135,7 @@ SELECT pg_temp.m134_mark('resolve_refuses_' || r.label,
     ('a_resolver_from_another_org', 'npi_registry.unchecked', 'providers',
      '13400000-0000-4000-a000-0000000a0011'::uuid, '13400000-0000-4000-a000-000000000004'::uuid,
      '42501:workflow_advisory_not_a_member'),
-    ('a_table_outside_the_set', 'npi_registry.unchecked', 'organizations',
+    ('a_table_outside_the_set', 'npi_registry.unchecked', 'profiles',
      '13400000-0000-4000-a000-00000000000a'::uuid, NULL::uuid,
      '22023:workflow_advisory_record_table_invalid'),
     ('an_invalid_key', 'NPI', 'providers',
