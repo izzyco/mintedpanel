@@ -1840,6 +1840,41 @@ export type Database = {
         };
         Relationships: [];
       };
+      notification_sends: {
+        Row: {
+          claimed_at: string;
+          job: string;
+          org_id: string;
+          outcome: string;
+          recipient_user_id: string;
+          slot: string;
+        };
+        Insert: {
+          claimed_at?: string;
+          job: string;
+          org_id: string;
+          outcome?: string;
+          recipient_user_id: string;
+          slot: string;
+        };
+        Update: {
+          claimed_at?: string;
+          job?: string;
+          org_id?: string;
+          outcome?: string;
+          recipient_user_id?: string;
+          slot?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_sends_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notification_sequence_default_steps: {
         Row: {
           channel: string;
@@ -4841,6 +4876,25 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      claim_notification_send: {
+        Args: {
+          p_job: string;
+          p_org_id: string;
+          p_recipient_user_id: string;
+          p_slot: string;
+        };
+        Returns: boolean;
+      };
+      finish_notification_send: {
+        Args: {
+          p_job: string;
+          p_org_id: string;
+          p_outcome: string;
+          p_recipient_user_id: string;
+          p_slot: string;
+        };
+        Returns: boolean;
+      };
       create_provider_intake_invite: {
         Args: {
           p_actor_id: string;
