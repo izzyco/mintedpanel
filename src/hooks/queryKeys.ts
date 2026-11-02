@@ -31,9 +31,14 @@ export const queryKeys = {
   // the board's denial history.
   enrollmentFacts: (orgId: string) => ["enrollment-facts", orgId] as const,
   caseDenialEntries: (orgId: string) => ["cases", orgId, "denial-entries"] as const,
+  // MINT-73 — when each closed case's "Days open" stopped. Same "cases" prefix
+  // ride, so a status change re-derives it with the list.
+  caseAgeStops: (orgId: string, statuses: readonly string[]) =>
+    ["cases", orgId, "age-stops", [...statuses]] as const,
   // Org-wide case_facilities links (Launches). Same "cases" prefix ride.
   orgCaseFacilityLinks: (orgId: string) => ["cases", orgId, "facility-links"] as const,
   providerReadinessFacts: (orgId: string) => ["provider-readiness-facts", orgId] as const,
+  onboardingFunnel: (orgId: string) => ["onboarding-funnel", orgId] as const,
   groupReadinessDocuments: (orgId: string) => ["group-readiness-documents", orgId] as const,
   groupInsurancePolicies: (orgId: string) => ["group-insurance-policies", orgId] as const,
   templates: (orgId: string) => ["templates", orgId] as const,
@@ -111,8 +116,11 @@ export const queryKeys = {
   // active org (it renders without one). RLS scopes the read to the caller's
   // member orgs; org switch clears it via queryClient.removeQueries() anyway.
   portfolio: () => ["portfolio"] as const,
+  // Portfolio footprint (RC-05): cross-org and USER-scoped — the rows span
+  // every org the caller belongs to, so the identity is the user, not an org.
+  portfolioFootprint: (userId: string) => ["portfolio-footprint", userId] as const,
   // E1.6 — cross-org global catalog keys (deliberately un-scoped, like
-  // portfolio()/orgStates(): the catalog is platform-level data).
+  // portfolio(): the catalog is platform-level data).
   payerCatalog: () => ["payer-catalog"] as const,
   // Global provider lookup (spike PoC). CROSS-org and USER-scoped: the result
   // set spans every org the caller belongs to, so scoping it to the active org
@@ -124,6 +132,13 @@ export const queryKeys = {
   // footprint spans every org the caller belongs to, keyed by Type-1 NPI.
   // Loaded only when the inspector opens, never from the typeahead.
   providerDossier: (userId: string, npi: string) => ["provider-dossier", userId, npi] as const,
+  // MINT-110 NPI Registry (NPPES) reads. Public data, but fetched through the
+  // org-guarded /api route, so keyed by org like every other read.
+  npiRegistryLookup: (orgId: string, npi: string) => ["npi-registry", orgId, "npi", npi] as const,
+  npiRegistrySearch: (
+    orgId: string,
+    input: { firstName: string; lastName: string; state: string },
+  ) => ["npi-registry", orgId, "search", input] as const,
   // Org CRM contacts (redesign E0.2): owner + customer + sales-rep parties.
   orgContacts: (orgId: string) => ["org-contacts", orgId] as const,
   // Full Party model (redesign E0.3): all parties in an org + the global,
@@ -143,8 +158,7 @@ export const queryKeys = {
   // session inside the service — no id rides the key.
   myProfile: () => ["my-profile"] as const,
   // Reporting Center (redesign E0.6). CROSS-org (renders without an active org):
-  // per-org geography for the state breakdown, and the caller's shares per report.
-  orgStates: () => ["org-states"] as const,
+  // the caller's shares per report.
   reportShares: (reportKey: string) => ["report-shares", reportKey] as const,
   // E4.2 Payer & SOP admin module. (The reason-code and queue-ranking editor
   // keys retired with their editors — E6.6 F6.6.6 fixed defaults; the Denied

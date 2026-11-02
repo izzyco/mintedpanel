@@ -58,7 +58,7 @@ const USER_B = "22222222-2222-4222-8222-222222222222";
 const STRANGER = "99999999-9999-4999-8999-999999999999";
 const ALL_STOPS = ["submitted", "paused", "withdrawn", "provider_replied"] as const;
 
-/** Minted's seeded intake default (migration 20261101100000). */
+/** Minted's seeded intake default (migration 20261101110100). */
 const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "intake_reminder",
   stopConditions: [...ALL_STOPS],
@@ -975,7 +975,7 @@ describe("send time (answer 5)", () => {
       expect(isIanaTimeZone(zone)).toBe(false);
     }
     const migration = readFileSync(
-      "supabase/migrations/20261101100000_notification_sequences.sql",
+      "supabase/migrations/20261101110100_notification_sequences.sql",
       "utf8",
     );
     expect(migration).toContain(`p_zone ~ '${IANA_TIME_ZONE_PATTERN.source.replace("\\/", "/")}'`);
@@ -1282,7 +1282,7 @@ describe("notification policy rules: decided defaults", () => {
 
   it("match the seeded defaults in the migration", () => {
     const migration = readFileSync(
-      "supabase/migrations/20261101100000_notification_sequences.sql",
+      "supabase/migrations/20261101110100_notification_sequences.sql",
       "utf8",
     );
     expect(migration).toMatch(
@@ -1701,7 +1701,7 @@ describe("Minted's intake default: days 1, 2 and 3 (Sowmya, Oct 31)", () => {
 
   it("is what the migration seeds", () => {
     const migration = readFileSync(
-      "supabase/migrations/20261101100000_notification_sequences.sql",
+      "supabase/migrations/20261101110100_notification_sequences.sql",
       "utf8",
     );
     expect(migration).toMatch(

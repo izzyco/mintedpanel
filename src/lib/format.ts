@@ -1,5 +1,8 @@
 // Shared date formatting helpers used across route files.
 // Standardizes on 'MMM d, yyyy' (and 'MMM d, yyyy · h:mm a' for timestamps).
+// All of it reads the browser's time zone: a timestamp renders as the local
+// day it happened on, and a calendar-only `yyyy-MM-dd` value renders as that
+// same day in every zone (parseISO reads it as local midnight, not UTC).
 import { format, parseISO } from "date-fns";
 
 export function fmtDate(value: string | null | undefined): string {

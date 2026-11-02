@@ -1,4 +1,4 @@
-// MINT-107 — organization notification sequences (migration 20261101100000).
+// MINT-107 — organization notification sequences (migration 20261101110100).
 //
 // Reads go straight to the tables under RLS: the org's own rows (any member
 // of the org) and Minted's platform defaults (any member of any org). The
@@ -10,7 +10,7 @@
 // is an admin of the org, enforces the revision for concurrent editors, and
 // writes its own audit row, so this service does not call writeAudit.
 //
-// Deploy order: until migration 20261101100000 is applied, PostgREST reports
+// Deploy order: until migration 20261101110100 is applied, PostgREST reports
 // the tables missing (PGRST205 / 42P01). The read returns
 // `{ status: "unavailable" }` rather than throwing, so the card says the
 // feature is not switched on yet and the query never retries an error.

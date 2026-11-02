@@ -116,8 +116,11 @@ const EXPECTED_FAILS = {
   caseprofile: ["6b"],
   fillevents: ["7", "7b", "7c", "7d"],
   cases: ["8b", "8d"],
-  // The case-search leak surfaces a cross-org case row in ?q= results (15b).
-  casesearch: ["15b"],
+  // The case-search leak surfaces a cross-org case row in ?q= results, at the
+  // default page (15b) and at &limit=50 (15c).
+  casesearch: ["15b", "15c"],
+  // A server that honours &limit= past the cap of 50 (15d).
+  casesearchcap: ["15d"],
   touches: ["9", "9b", "9c", "9d"],
   tasks: ["13"],
   casecontext: ["14b"],
@@ -158,6 +161,9 @@ const EXPECTED_FAILS = {
   providerinvites: ["35b", "35c"],
   // A provider intake session reads another org's provider (35d).
   intakesession: ["35d"],
+  // MINT-110: the NPI Registry proxy serves an anonymous caller (36b) and a
+  // read-only billing member (36c).
+  npiregistry: ["36b", "36c"],
 };
 
 function failedAssertions(output) {

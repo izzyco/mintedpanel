@@ -15,12 +15,13 @@ import {
   type StagedImportRow,
   type UpdateDisposition,
 } from "@/lib/importDedupe";
+import { NPI_CHECK_DIGIT_MESSAGE } from "@/lib/providerIdentity";
 
 const JANE = {
   id: "prov-jane",
   firstName: "Jane",
   lastName: "Shelby",
-  npi: "1234567890",
+  npi: "1234567893",
   specialty: "Physical Therapy",
 };
 const GROUP1 = { id: "grp-1", name: "Shelby Group 1", tin: "123456789" };
@@ -67,7 +68,7 @@ const newProviderRow = (line: number, extra: Record<string, string | null> = {})
   row(line, {
     provider_first_name: "Nora",
     provider_last_name: "Newton",
-    npi: "1112223334",
+    npi: "1112223338",
     specialty: "Physical Therapy",
     group_name: GROUP1.name,
     group_tin: GROUP1.tin,
@@ -88,7 +89,7 @@ describe("dedupeImportRows — five-part matching", () => {
     const out = dedupeImportRows(baseInputs([newProviderRow(2)]));
     expect(out).toHaveLength(1);
     const create = only(out, "create")[0];
-    expect(create.provider.npi).toBe("1112223334");
+    expect(create.provider.npi).toBe("1112223338");
     expect(create.groupIds).toEqual([GROUP1.id]);
     expect(create.facilityIds).toEqual([FAC1.id]);
     expect(create.licenses).toEqual([
@@ -126,26 +127,110 @@ describe("dedupeImportRows — five-part matching", () => {
     expect(update.conflicts).toHaveLength(0);
   });
 
-  it("blocks missing-NPI rows for manual review — matched by name or not, never merged", () => {
+  it("blocks a missing-NPI row whose name matches an existing provider — never merged", () => {
+    const out = dedupeImportRows(baseInputs([janeRow(2, { npi: null })]));
+    expect(out).toEqual([
+      expect.objectContaining({
+        kind: "blocked",
+        line: 2,
+        column: "npi",
+        reason: MISSING_NPI_MATCH_REASON,
+      }),
+    ]);
+  });
+
+  // B3 (Sowmya, Nov 1): an NPI is optional everywhere.
+  it("creates a new provider with no NPI from a missing-NPI row no one else matches by name", () => {
+    const out = dedupeImportRows(baseInputs([newProviderRow(2, { npi: null })]));
+    const create = only(out, "create");
+    expect(create).toHaveLength(1);
+    expect(create[0].npi).toBe("");
+    expect(create[0].provider.npi).toBeNull();
+    expect(create[0].groupIds).toEqual([GROUP1.id]);
+    expect(buildCommitPlan(out, {}).creates[0].provider.npi).toBeNull();
+  });
+
+  it("folds missing-NPI rows of one name into one new provider", () => {
     const out = dedupeImportRows(
       baseInputs([
-        janeRow(2, { npi: null }),
-        row(3, { provider_first_name: "Totally", provider_last_name: "Unknown", npi: null }),
+        newProviderRow(2, { npi: null }),
+        newProviderRow(3, {
+          npi: null,
+          group_name: GROUP2.name,
+          group_tin: GROUP2.tin,
+          license_state: "SC",
+          license_number: "SC-200",
+        }),
       ]),
     );
-    const blocked = only(out, "blocked");
-    expect(blocked).toHaveLength(2);
-    expect(blocked[0].reason).toBe(MISSING_NPI_MATCH_REASON);
-    expect(blocked[1].reason).toBe(MISSING_NPI_REASON);
-    expect(blocked.every((b) => b.column === "npi")).toBe(true);
+    expect(out).toHaveLength(1);
+    const [create] = only(out, "create");
+    expect(create.lines).toEqual([2, 3]);
+    expect(create.groupIds).toEqual([GROUP1.id, GROUP2.id]);
+    expect(create.licenses.map((l) => l.state)).toEqual(["NC", "SC"]);
+  });
+
+  it("blocks a missing-NPI row whose name matches a row with an NPI in the same file", () => {
+    for (const rows of [
+      [newProviderRow(2), newProviderRow(3, { npi: null })],
+      [newProviderRow(2, { npi: null }), newProviderRow(3)],
+    ]) {
+      const out = dedupeImportRows(baseInputs(rows));
+      expect(only(out, "create")).toEqual([expect.objectContaining({ npi: "1112223338" })]);
+      expect(only(out, "blocked")).toEqual([
+        expect.objectContaining({ column: "npi", reason: MISSING_NPI_MATCH_REASON }),
+      ]);
+    }
+  });
+
+  it("blocks a row with neither an NPI nor a name", () => {
+    const out = dedupeImportRows(baseInputs([row(2, { npi: null, group_name: GROUP1.name })]));
+    expect(out).toEqual([
+      expect.objectContaining({ kind: "blocked", column: "npi", reason: MISSING_NPI_REASON }),
+    ]);
   });
 
   it("treats a name match with a DIFFERENT existing NPI as a new provider, with a note", () => {
-    const out = dedupeImportRows(baseInputs([janeRow(2, { npi: "9998887776" })]));
+    const out = dedupeImportRows(baseInputs([janeRow(2, { npi: "9998887779" })]));
     const create = only(out, "create")[0];
     expect(create).toBeDefined();
-    expect(create.npi).toBe("9998887776");
+    expect(create.npi).toBe("9998887779");
     expect(create.notes.some((n) => n.includes("different NPI"))).toBe(true);
+  });
+
+  it("blocks a NEW provider whose NPI fails the CMS check digit (MINT-7)", () => {
+    const out = dedupeImportRows(baseInputs([newProviderRow(2, { npi: "1112223334" })]));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      kind: "blocked",
+      line: 2,
+      column: "npi",
+      reason: NPI_CHECK_DIGIT_MESSAGE,
+    });
+  });
+
+  it("blocks an NPI filled onto an NPI-less existing provider when the check digit fails", () => {
+    const inputs = baseInputs([janeRow(2, { npi: "1234567890" })]);
+    inputs.providers = [{ ...JANE, npi: null }];
+    const out = dedupeImportRows(inputs);
+    expect(out).toEqual([
+      expect.objectContaining({ kind: "blocked", column: "npi", reason: NPI_CHECK_DIGIT_MESSAGE }),
+    ]);
+  });
+
+  it("re-imports an existing provider whose stored NPI predates the check digit", () => {
+    const legacy = { ...JANE, npi: "1093817465" };
+    const inputs = baseInputs([
+      janeRow(2, { npi: legacy.npi }),
+      janeRow(3, { npi: legacy.npi, group_name: GROUP2.name, group_tin: GROUP2.tin }),
+    ]);
+    inputs.providers = [legacy];
+    const out = dedupeImportRows(inputs);
+    expect(out.some((d) => d.kind === "blocked")).toBe(false);
+    const update = only(out, "update")[0];
+    expect(update.providerId).toBe(JANE.id);
+    expect(update.lines).toEqual([2, 3]);
+    expect(update.addGroupIds).toEqual([GROUP2.id]);
   });
 
   it("turns a name match on an NPI-less existing provider into an NPI-fill conflict (update, not create)", () => {
@@ -350,6 +435,38 @@ describe("dedupeImportRows — five-part matching", () => {
   });
 });
 
+describe("stored NPIs with separators (MINT-110)", () => {
+  it("matches a legacy dashed stored NPI instead of creating a duplicate", () => {
+    const inputs = baseInputs([janeRow(2, { group_name: GROUP2.name, group_tin: GROUP2.tin })]);
+    inputs.providers = [{ ...JANE, npi: "123-456-7893" }];
+    const out = dedupeImportRows(inputs);
+    expect(only(out, "create")).toHaveLength(0);
+    expect(only(out, "update")[0]?.providerId).toBe(JANE.id);
+  });
+
+  it("blocks, never merges, two existing providers whose NPIs differ only by separators", () => {
+    const inputs = baseInputs([janeRow(2)]);
+    inputs.providers = [
+      { ...JANE, id: "prov-jane-a", npi: "1234567893" },
+      { ...JANE, id: "prov-jane-b", npi: "123-456-7893" },
+    ];
+    const out = dedupeImportRows(inputs);
+    expect(only(out, "create")).toHaveLength(0);
+    expect(only(out, "update")).toHaveLength(0);
+    const blocked = only(out, "blocked");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].reason).toMatch(/matches multiple existing providers/);
+  });
+
+  it("does not flag a spaced stored NPI as a different NPI for the same name", () => {
+    const inputs = baseInputs([janeRow(2)]);
+    inputs.providers = [{ ...JANE, npi: " 123 456 7893 " }];
+    const out = dedupeImportRows(inputs);
+    expect(only(out, "create")).toHaveLength(0);
+    expect(JSON.stringify(out)).not.toContain("has a different NPI");
+  });
+});
+
 describe("conflict detection + resolution (TS-62)", () => {
   it("flags a specialty conflict with the existing value as the shown default", () => {
     const out = dedupeImportRows(baseInputs([janeRow(2, { specialty: "Occupational Therapy" })]));
@@ -457,7 +574,7 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
       const rows = [
         janeRow(2, { license_state: "NC", license_number: "NC-100" }),
         janeRow(3, {
-          npi: "9998887776",
+          npi: "9998887779",
           group_name: GROUP2.name,
           group_tin: GROUP2.tin,
           facility_name: FAC2.name,
@@ -521,7 +638,7 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
     const inputs = baseInputs([
       janeRow(2),
       janeRow(3, { provider_first_name: "Janet" }),
-      janeRow(4, { npi: "9998887776", license_state: "CO", license_number: "CO-300" }),
+      janeRow(4, { npi: "9998887779", license_state: "CO", license_number: "CO-300" }),
     ]);
     inputs.providers = [
       { ...JANE, npi: null },
@@ -531,12 +648,12 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
   });
 
   it("keeps an unrelated clean identity committable beside a disputed identity", () => {
-    const inputs = baseInputs([janeRow(2), janeRow(3, { npi: "9998887776" }), newProviderRow(4)]);
+    const inputs = baseInputs([janeRow(2), janeRow(3, { npi: "9998887779" }), newProviderRow(4)]);
     inputs.providers = [{ ...JANE, npi: null }];
     const dispositions = dedupeImportRows(inputs);
     const plan = buildCommitPlan(dispositions, { [JANE.id]: { npi: "imported" } });
     expect(plan.creates).toHaveLength(1);
-    expect(plan.creates[0].provider.npi).toBe("1112223334");
+    expect(plan.creates[0].provider.npi).toBe("1112223338");
     expect(plan.updates).toEqual([]);
     expect(plan.blocked_entries.map((entry) => entry.line)).toEqual([2, 3]);
   });
@@ -556,11 +673,11 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
   });
 
   it("blocks multiple NPI-less same-name targets even when a same-name NPI neighbor exists", () => {
-    const inputs = baseInputs([janeRow(2, { npi: "1111111111" })]);
+    const inputs = baseInputs([janeRow(2, { npi: "1111111112" })]);
     inputs.providers = [
       { ...JANE, id: "prov-npiless-1", npi: null },
       { ...JANE, id: "prov-npiless-2", npi: null },
-      { ...JANE, id: "prov-with-npi", npi: "9999999999" },
+      { ...JANE, id: "prov-with-npi", npi: "9999999995" },
     ];
     expectIdentityBlocked(inputs);
   });
@@ -577,18 +694,18 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
   it.each(directions)(
     "preserves a create when a distinct-NPI neighbor rules out the only legacy target (%s rows)",
     (direction) => {
-      const rows = [janeRow(2, { npi: "1111111111" }), newProviderRow(3, { npi: "1111111111" })];
+      const rows = [janeRow(2, { npi: "1111111112" }), newProviderRow(3, { npi: "1111111112" })];
       const inputs = baseInputs(direction === "reversed" ? rows.reverse() : rows);
       inputs.providers = [
         { ...JANE, npi: null },
-        { ...JANE, id: "prov-with-npi", npi: "9999999999" },
+        { ...JANE, id: "prov-with-npi", npi: "9999999995" },
       ];
       const dispositions = dedupeImportRows(inputs);
       const plan = buildCommitPlan(dispositions, {});
       expect(plan.blocked_entries).toEqual([]);
       expect(plan.updates).toEqual([]);
       expect(plan.creates).toHaveLength(1);
-      expect(plan.creates[0].provider.npi).toBe("1111111111");
+      expect(plan.creates[0].provider.npi).toBe("1111111112");
       expect(only(dispositions, "create")[0].lines.slice().sort()).toEqual([2, 3]);
     },
   );
@@ -596,7 +713,7 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
   it.each(directions)(
     "blocks an eligible legacy match mixed with a distinct-NPI create (%s rows)",
     (direction) => {
-      const rows = [janeRow(2, { npi: "1111111111" }), newProviderRow(3, { npi: "1111111111" })];
+      const rows = [janeRow(2, { npi: "1111111112" }), newProviderRow(3, { npi: "1111111112" })];
       const inputs = baseInputs(direction === "reversed" ? rows.reverse() : rows);
       inputs.providers = [
         { ...JANE, npi: null },
@@ -605,7 +722,7 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
           id: "prov-with-npi",
           firstName: "Nora",
           lastName: "Newton",
-          npi: "9999999999",
+          npi: "9999999995",
         },
       ];
       expectIdentityBlocked(inputs);
@@ -617,13 +734,13 @@ describe("P02 — provider identity separation (audit Session #69)", () => {
       row(2, {
         provider_first_name: "Nora",
         provider_last_name: "Newton",
-        npi: "1111111111",
+        npi: "1111111112",
         group_name: GROUP1.name,
         group_tin: GROUP1.tin,
         facility_name: FAC1.name,
       }),
-      janeRow(3, { npi: "1111111111" }),
-      janeRow(4, { npi: "2222222222" }),
+      janeRow(3, { npi: "1111111112" }),
+      janeRow(4, { npi: "2222222228" }),
     ]);
     inputs.providers = [{ ...JANE, npi: null }];
     expectIdentityBlocked(inputs);
@@ -718,12 +835,13 @@ describe("summarizeImportPreview — exact reconciliation (F3.1.1)", () => {
     ];
     const out = dedupeImportRows(baseInputs(rows));
     const summary = summarizeImportPreview(out, {}, 3);
-    // rows 2+3 fold into one create; row 4+7 fold into one Jane update
-    // (group add, no conflict); rows 5+6 are blocked; 3 scan errors ride in.
-    expect(summary.createProviders).toBe(1);
+    // rows 2+3 fold into one create and row 6 (no NPI, no name match, B3) is
+    // another; row 4+7 fold into one Jane update (group add, no conflict);
+    // row 5 is blocked; 3 scan errors ride in.
+    expect(summary.createProviders).toBe(2);
     expect(summary.updateProviders).toBe(1);
     expect(summary.skippedProviders).toBe(0);
-    expect(summary.blockedRows).toBe(2 + 3);
+    expect(summary.blockedRows).toBe(1 + 3);
     expect(summary.stagedRowsCovered).toBe(rows.length);
   });
 

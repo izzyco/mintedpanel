@@ -99,6 +99,7 @@ npx playwright test e2e/<spec>.spec.ts
 | Wizard — Provider Group section                            | `provider-group.spec.ts`                                    |
 | Wizard — Facilities section                                | `facilities-wizard.spec.ts`                                 |
 | Wizard — Provider Roster section (+ roster upload card)    | `provider-roster.spec.ts`, `roster-import.spec.ts`          |
+| NPI Registry search + verify (mocked `/api/npi-registry`)  | `npi-registry.spec.ts`                                      |
 | Wizard — Assignments section                               | `assignments-wizard.spec.ts`                                |
 | Wizard — Payer Network section                             | `payer-network.spec.ts`                                     |
 | Provider record — Readiness section (relocated 2026-07-21) | `provider-readiness.spec.ts`                                |
@@ -108,9 +109,12 @@ npx playwright test e2e/<spec>.spec.ts
 | Surface                                                        | Spec(s)                               |
 | -------------------------------------------------------------- | ------------------------------------- |
 | `/reporting`, `/reporting/portfolio`                           | `reporting-center.spec.ts`            |
+| `/reporting/provider-onboarding`                               | `reporting-center.spec.ts`            |
+| `/reporting/billing-readiness` (Lookup + Change Feed)          | `billing-readiness.spec.ts`           |
 | `/portfolio` redirect + all-inactive fallback                  | `portfolio-inactive-fallback.spec.ts` |
 | `/reporting/expiring-credentials` + document tables (provider, | `document-storage.spec.ts`            |
 | group, case verification, signed upload/download)              |                                       |
+| `/reporting/audit-log` (entity links, labels, keyboard expand) | `audit-log-report.spec.ts`            |
 
 ### Payers & admin
 
