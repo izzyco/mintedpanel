@@ -1,6 +1,6 @@
 -- MINT-108 notification_sends packet: claim_notification_send /
 -- finish_notification_send and the access boundary of notification_sends
--- (supabase/migrations/20261031060000_notification_sends.sql).
+-- (supabase/migrations/20261101100100_notification_sends.sql).
 --
 -- Run after all migrations in a disposable PostgreSQL database, never against
 -- hosted. CI's Migration dry-run job runs it right after the MINT-107 packet:
@@ -45,7 +45,7 @@ BEGIN
      OR (SELECT prorettype FROM pg_catalog.pg_proc
           WHERE oid = to_regprocedure('public.claim_notification_send(text, text, uuid, uuid)'))
         <> 'boolean'::regtype THEN
-    RAISE EXCEPTION 'mint108-notification-sends.sql runs after supabase/migrations/20261031060000_notification_sends.sql';
+    RAISE EXCEPTION 'mint108-notification-sends.sql runs after supabase/migrations/20261101100100_notification_sends.sql';
   END IF;
 END;
 $$;

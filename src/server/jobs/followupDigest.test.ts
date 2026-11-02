@@ -74,7 +74,7 @@ const SENTINELS = [SENTINEL_NOTE, SENTINEL_DOB, SENTINEL_SSN, "SENTINEL"];
 
 const STAMP = { created_at: "2026-10-30T00:00:00Z", updated_at: "2026-10-30T00:00:00Z" };
 
-/** Minted's platform defaults, as migration 20261031051500 seeds them. The
+/** Minted's platform defaults, as migration 20261101100000 seeds them. The
  *  digest default has no schedule (G2): no frequency, weekday, hour or zone. */
 function defaultTables(): Record<string, FakeRow[]> {
   return {

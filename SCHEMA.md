@@ -814,8 +814,8 @@ bounce_escalation_step, updated_at)`; the platform-managed
 
 ## MINT-108 notification sends (repository-only, operator apply pending)
 
-Migration `20261031060000_notification_sends.sql`, applied after
-`20261031051500`. The per-recipient send record behind scheduled
+Migration `20261101100100_notification_sends.sql`, applied after
+`20261101100000`. The per-recipient send record behind scheduled
 notification jobs. There is no run ledger (MINT-106): every call to a job
 runs it, so a job that emails people claims each send here before sending
 it, and sends only what it claimed. The first user is the follow-up digest

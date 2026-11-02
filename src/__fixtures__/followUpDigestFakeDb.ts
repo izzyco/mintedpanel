@@ -1,6 +1,6 @@
 // An in-memory stand-in for the tables the follow-up digest job reads, and
 // for public.notification_sends and its two RPCs
-// (supabase/migrations/20261031060000_notification_sends.sql), for the
+// (supabase/migrations/20261101100100_notification_sends.sql), for the
 // MINT-108 job tests.
 //
 // Reads: from(table).select(columns, { count }).eq().in().or().order(), then

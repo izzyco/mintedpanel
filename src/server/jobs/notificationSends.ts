@@ -1,6 +1,6 @@
 // notification_sends (MINT-108): the per-recipient send record behind
 // scheduled notification jobs, reached only through its two service-role
-// RPCs (supabase/migrations/20261031060000_notification_sends.sql).
+// RPCs (supabase/migrations/20261101100100_notification_sends.sql).
 //
 // There is no run ledger (MINT-106): every call runs the job. So a job that
 // emails people claims each send first, keyed on (job, slot, org,
