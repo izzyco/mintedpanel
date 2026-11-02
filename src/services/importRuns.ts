@@ -20,6 +20,7 @@ import {
 } from "@/services/orgSettings";
 import { matchGroupLocator } from "@/lib/groupLocator";
 import { decodeDelimited } from "@/lib/importSections";
+import { providerNameKey } from "@/lib/importDedupe";
 import { DAY_KEYS, emptyHoursDraft, encodeHours } from "@/lib/facilityHours";
 import { normalizeWebsiteUrl } from "@/lib/providerGroup";
 import { attachGroupPayer, listPayerNetworkTargets } from "@/services/payerNetworkTargets";
@@ -286,13 +287,26 @@ async function applyProviderRelationships(
 
   const { data: providerRows, error: pErr } = await supabase
     .from("providers")
-    .select("id, npi")
+    .select("id, npi, first_name, last_name")
     .eq("org_id", orgId)
     .in("id", providerIds);
   if (pErr) throw pErr;
   const providerByNpi = new Map(
     (providerRows ?? []).filter((r) => r.npi).map((r) => [String(r.npi), r.id as string]),
   );
+  // A row without an NPI (B3) joins its provider by name: the dedupe creates
+  // one NPI-less provider per name and blocks a name it cannot tell apart. A
+  // name held by two NPI-less providers joins neither, so a later change can
+  // never attach a row to the wrong one.
+  const npilessProviderByName = new Map<string, string>();
+  const npilessNamesSeenTwice = new Set<string>();
+  for (const r of providerRows ?? []) {
+    if (r.npi) continue;
+    const key = providerNameKey(r.first_name, r.last_name);
+    if (npilessProviderByName.has(key)) npilessNamesSeenTwice.add(key);
+    npilessProviderByName.set(key, r.id as string);
+  }
+  for (const key of npilessNamesSeenTwice) npilessProviderByName.delete(key);
 
   const { data: groupRows, error: gErr } = await supabase
     .from("provider_groups")
@@ -337,7 +351,9 @@ async function applyProviderRelationships(
   const seenGroup = new Set<string>();
   for (const m of rows) {
     const npi = m.npi ? String(m.npi) : null;
-    const providerId = npi ? providerByNpi.get(npi) : undefined;
+    const providerId = npi
+      ? providerByNpi.get(npi)
+      : npilessProviderByName.get(providerNameKey(m.provider_first_name, m.provider_last_name));
     if (!providerId) continue;
     if (m.facility_id && liveFacilityIds.has(m.facility_id)) {
       const key = `${providerId}|${m.facility_id}`;
