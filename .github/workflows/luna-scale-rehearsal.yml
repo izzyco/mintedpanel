@@ -1,15 +1,8 @@
 name: Luna Scale Rehearsal
 
 on:
+  # Manual dispatch only — run on-demand for scale rehearsal to prevent auto-runs
   workflow_dispatch:
-  push:
-    paths:
-      - "scripts/luna-scale/**"
-      - ".github/workflows/luna-scale-rehearsal.yml"
-  pull_request:
-    paths:
-      - "scripts/luna-scale/**"
-      - ".github/workflows/luna-scale-rehearsal.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
