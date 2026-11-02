@@ -99,9 +99,11 @@ npx playwright test e2e/<spec>.spec.ts
 | Wizard — Provider Group section                            | `provider-group.spec.ts`                                    |
 | Wizard — Facilities section                                | `facilities-wizard.spec.ts`                                 |
 | Wizard — Provider Roster section (+ roster upload card)    | `provider-roster.spec.ts`, `roster-import.spec.ts`          |
+| NPI Registry search + verify (mocked `/api/npi-registry`)  | `npi-registry.spec.ts`                                      |
 | Wizard — Assignments section                               | `assignments-wizard.spec.ts`                                |
 | Wizard — Payer Network section                             | `payer-network.spec.ts`                                     |
 | Provider record — Readiness section (relocated 2026-07-21) | `provider-readiness.spec.ts`                                |
+| Import review NPI checks (mocked `verify-batch`)           | `import-npi-verification.spec.ts`                           |
 
 ### Reporting & portfolio
 

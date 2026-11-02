@@ -31,6 +31,10 @@ export const queryKeys = {
   // the board's denial history.
   enrollmentFacts: (orgId: string) => ["enrollment-facts", orgId] as const,
   caseDenialEntries: (orgId: string) => ["cases", orgId, "denial-entries"] as const,
+  // MINT-73 — when each closed case's "Days open" stopped. Same "cases" prefix
+  // ride, so a status change re-derives it with the list.
+  caseAgeStops: (orgId: string, statuses: readonly string[]) =>
+    ["cases", orgId, "age-stops", [...statuses]] as const,
   // Org-wide case_facilities links (Launches). Same "cases" prefix ride.
   orgCaseFacilityLinks: (orgId: string) => ["cases", orgId, "facility-links"] as const,
   providerReadinessFacts: (orgId: string) => ["provider-readiness-facts", orgId] as const,
@@ -128,6 +132,13 @@ export const queryKeys = {
   // footprint spans every org the caller belongs to, keyed by Type-1 NPI.
   // Loaded only when the inspector opens, never from the typeahead.
   providerDossier: (userId: string, npi: string) => ["provider-dossier", userId, npi] as const,
+  // MINT-110 NPI Registry (NPPES) reads. Public data, but fetched through the
+  // org-guarded /api route, so keyed by org like every other read.
+  npiRegistryLookup: (orgId: string, npi: string) => ["npi-registry", orgId, "npi", npi] as const,
+  npiRegistrySearch: (
+    orgId: string,
+    input: { firstName: string; lastName: string; state: string },
+  ) => ["npi-registry", orgId, "search", input] as const,
   // Org CRM contacts (redesign E0.2): owner + customer + sales-rep parties.
   orgContacts: (orgId: string) => ["org-contacts", orgId] as const,
   // Full Party model (redesign E0.3): all parties in an org + the global,
@@ -166,6 +177,8 @@ export const queryKeys = {
     ["documents", orgId, "group", groupId] as const,
   orgDocuments: (orgId: string) => ["documents", orgId, "org"] as const,
   documentUploaders: (orgId: string, ids: string) => ["document-uploaders", orgId, ids] as const,
+  // MINT-107 org notification sequences (both purposes, with their steps).
+  notificationSequences: (orgId: string) => ["notification-sequences", orgId] as const,
 } as const;
 
 export const FIVE_MINUTES = 5 * 60 * 1000;

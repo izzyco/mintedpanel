@@ -27,6 +27,8 @@ import {
 } from "@/lib/importSections";
 import { ROSTER_TEMPLATE_HEADERS } from "@/lib/rosterImport";
 import { emptyProviderFormState } from "@/components/providers/providerFormShared";
+import { dedupeImportRows } from "@/lib/importDedupe";
+import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE } from "@/lib/providerIdentity";
 import type { ScannedRow } from "@/lib/rosterImport";
 
 // Build one data record from a header→cell map (template order) and scan it.
@@ -450,7 +452,7 @@ describe("provider scan (TE-2/TE-6)", () => {
 
   it.each([
     ["email", "not-an-email"],
-    ["npi", "0234567893"],
+    ["npi", "12345678"],
     ["caqh_id", "1234567"],
     ["is_new_grad", "maybe"],
     ["license_type", "temporary"],
@@ -460,10 +462,92 @@ describe("provider scan (TE-2/TE-6)", () => {
     expect(row.errorColumn).toBe(column);
   });
 
+  it("rejects a provider NPI that is not ten digits with Add Provider's message", () => {
+    // (Nine bare digits would be swept as an SSN first, so not used here.)
+    for (const npi of ["12345678", "12345678930", "12345A7893"]) {
+      const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi });
+      expect(row.rowState).toBe("error");
+      expect(row.errorColumn).toBe("npi");
+      expect(row.errorReason).toBe(NPI_FORMAT_MESSAGE);
+    }
+  });
+
+  it.each(["2345678900", "0234567895"])(
+    "stages a ten-digit NPI %s that does not start with 1 — the check digit is the NPI rule, not the first digit",
+    (npi) => {
+      const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi });
+      expect(row.rowState).toBe("staged");
+      expect(row.mapped?.npi).toBe(npi);
+    },
+  );
+
+  it("a new provider still needs the check digit: valid any first digit creates, a wrong one blocks at dedupe", () => {
+    const staged = ["2345678900", "0234567893"].map((npi, i) => {
+      const row = scanRow(PROVIDER_DESCRIPTOR, {
+        ...PROVIDER_ROW,
+        npi,
+        provider_last_name: `Synth${i}`,
+      });
+      expect(row.rowState).toBe("staged");
+      return { line: i + 2, mapped: row.mapped };
+    });
+    const dispositions = dedupeImportRows({
+      rows: staged,
+      providers: [],
+      groups: [],
+      facilities: [],
+      groupAssignments: [],
+      facilityAssignments: [],
+      licenses: [],
+    });
+    expect(dispositions[0]).toMatchObject({ kind: "create", npi: "2345678900" });
+    expect(dispositions[1]).toMatchObject({
+      kind: "blocked",
+      column: "npi",
+      reason: NPI_CHECK_DIGIT_MESSAGE,
+    });
+  });
+
   it("stages a 10-digit NPI with a wrong check digit — the check binds at dedupe, new identities only (MINT-7)", () => {
     const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "1234567890" });
     expect(row.rowState).toBe("staged");
     expect(row.mapped?.npi).toBe("1234567890");
+  });
+
+  it.each(["123-456-7893", "123 456 7893", " 123\u2013456\u20137893 "])(
+    "stages a typed NPI %j with its dashes and spaces stripped (MINT-110)",
+    (npi) => {
+      const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi });
+      expect(row.rowState).toBe("staged");
+      expect(row.mapped?.npi).toBe("1234567893");
+      // The persisted source cell stays as uploaded.
+      expect(row.raw.npi).toBe(npi.trim());
+    },
+  );
+
+  it("still rejects other NPI junk after stripping (MINT-110)", () => {
+    for (const npi of ["123.456.7893", "NPI 1234567893", "12345678x3"]) {
+      const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi });
+      expect(row.rowState).toBe("error");
+      expect(row.errorColumn).toBe("npi");
+    }
+    // B3 (Nov 1): an NPI is optional at import, so a cell of separators only
+    // strips to blank and the row stages without an NPI.
+    const dashesOnly = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, npi: "---" });
+    expect(dashesOnly.rowState).toBe("staged");
+    expect(dashesOnly.mapped?.npi ?? "").toBe("");
+  });
+
+  it("quotes a bad group NPI as uploaded, not as stripped (MINT-110)", () => {
+    const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, group_npi: "190-283-374" });
+    expect(row.rowState).toBe("error");
+    expect(row.errorReason).toBe('group_npi must be exactly 10 digits, got "190-283-374"');
+  });
+
+  it("strips a dashed group Type 2 NPI the same way (MINT-110)", () => {
+    const row = scanRow(PROVIDER_DESCRIPTOR, { ...PROVIDER_ROW, group_npi: "190-283-3742" });
+    expect(row.rowState).toBe("staged");
+    expect(row.mapped?.group_npi).toBe("1902833742");
   });
 
   it("rejects an impossible calendar date, naming the column", () => {
