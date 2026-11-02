@@ -1,24 +1,94 @@
-// SEAM — where advisories will be recorded for Mission Control (Sowmya's
-// standing rule, Oct 31: every noncritical check that was bypassed is
-// recorded: what, who, when, why it matters, which record).
+// Where the NPI Registry's advisories are recorded for Mission Control
+// (Sowmya's standing rule, Oct 31: every noncritical check that was bypassed
+// is recorded: what, who, when, why it matters, which record).
 //
-// The advisory store and its API come from the foundational capture PR, which
-// is being designed. Until it lands this records NOTHING, and says so in its
-// result: callers get { recorded: false } and must not report the advisories
-// as captured. When the API is known, replace this body — not the callers.
-// Who and when are the capture's to stamp, not the caller's.
+// The store is MINT-134's workflow advisories ledger: recordAdvisory
+// (src/services/advisories.ts) sends one row per advisory through the
+// record_workflow_advisory RPC, which stamps who and when from the session.
+// This seam maps #564's and #566's advisory shape (src/lib/advisories.ts) to
+// the ledger's registry (src/lib/advisoryChecks.ts): its check key, the
+// provider, and the context the registry declares for that key. The ledger's
+// context is closed, so the field, where the advisory showed and whether
+// staff confirmed it stay behind. Every registry check #564 hands over has a
+// ledger key (the registry additions migration added the three differences:
+// since A30c the roster form and the record page don't show them, so the
+// ledger is their only trace); anything else is not recorded.
+//
+// Never throws. A failed RPC is logged by recordAdvisory (advisory_record_failed,
+// the check key and the SQLSTATE); anything else that fails here is logged as
+// advisory_capture_failed with the check keys and the SQLSTATE. The front end
+// stays quiet.
 import type { Advisory } from "@/lib/advisories";
+import type { AdvisoryContextFor, CheckKey } from "@/lib/advisoryChecks";
+import { recordAdvisory } from "@/services/advisories";
 
-export interface AdvisoryCaptureResult {
-  recorded: false;
-  reason: "advisory_store_not_built";
+/** The NPI Registry check keys #564 and #566 hand over, and the ledger's key
+ * for each. */
+const LEDGER_KEYS = {
+  "npi_registry.organization_number": "npi_registry.organization_number",
+  "npi_registry.not_found": "npi_registry.not_found",
+  "npi_registry.name_mismatch": "npi_registry.name_mismatch",
+  "npi_registry.inactive": "npi_registry.inactive",
+  "npi_registry.not_checked": "npi_registry.unchecked",
+  "npi_registry.credentials_differ": "npi_registry.credentials_differ",
+  "npi_registry.taxonomy_differs": "npi_registry.taxonomy_differs",
+  "npi_registry.license_differs": "npi_registry.license_differs",
+} as const satisfies Record<string, CheckKey>;
+type LedgerKey = (typeof LEDGER_KEYS)[keyof typeof LEDGER_KEYS];
+
+/** The provider forms that save an NPI. */
+export type AdvisoryFormSurface = "add_provider" | "roster_form" | "record_edit";
+
+/** Where the advisories came from: a provider form (source panel), or a
+ * committed import row (source import). */
+export type AdvisoryOrigin =
+  { surface: AdvisoryFormSurface } | { surface: "import"; importRunId: string; line: number };
+
+export interface LedgerAdvisory {
+  key: LedgerKey;
+  record: { table: "providers"; id: string };
+  context: AdvisoryContextFor<LedgerKey>;
 }
 
+/** One advisory in the ledger's terms, or null when the ledger has no key for
+ * its check or the record isn't saved. */
+export function toLedgerAdvisory(
+  advisory: Advisory,
+  origin: AdvisoryOrigin,
+): LedgerAdvisory | null {
+  const key = Object.prototype.hasOwnProperty.call(LEDGER_KEYS, advisory.check)
+    ? LEDGER_KEYS[advisory.check as keyof typeof LEDGER_KEYS]
+    : null;
+  const id = advisory.record.id;
+  if (!key || advisory.record.table !== "providers" || !id) return null;
+  return {
+    key,
+    record: { table: "providers", id },
+    context:
+      origin.surface === "import"
+        ? { surface: "import", import_run_id: origin.importRunId, line: origin.line }
+        : { surface: origin.surface },
+  };
+}
+
+/** Record the advisories, one ledger row each, in order. Resolves, never
+ * rejects. */
 export async function recordAdvisories(
   advisories: readonly Advisory[],
-): Promise<AdvisoryCaptureResult> {
-  void advisories;
-  return { recorded: false, reason: "advisory_store_not_built" };
+  origin: AdvisoryOrigin,
+): Promise<void> {
+  try {
+    const source = origin.surface === "import" ? "import" : "panel";
+    for (const advisory of advisories) {
+      const row = toLedgerAdvisory(advisory, origin);
+      if (row) await recordAdvisory(row.key, row.record, row.context, source);
+    }
+  } catch (error) {
+    logAdvisoryCaptureFailure(
+      error,
+      advisories.map((advisory) => advisory.check),
+    );
+  }
 }
 
 /** What a failed capture logs: the event, the check keys, and the database

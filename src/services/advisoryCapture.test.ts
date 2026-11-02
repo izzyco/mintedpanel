@@ -1,25 +1,247 @@
-// The capture seam records nothing until the advisory store exists, and says
-// so: no caller may report an advisory as captured.
-import { describe, expect, it } from "vitest";
-import { advisoryCaptureFailureLog, recordAdvisories } from "@/services/advisoryCapture";
+// The capture seam maps #564's and #566's advisories to the MINT-134 ledger
+// and records them through recordAdvisory: the ledger's key, the provider, the
+// source and the context the registry declares. The client and the active org
+// are mocked, so the suite sees exactly what the RPC would be sent. Nothing a
+// capture does can throw into a form or a commit.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-describe("recordAdvisories (seam)", () => {
-  it("records nothing and says why", async () => {
-    await expect(
-      recordAdvisories([
-        {
-          check: "npi_registry.not_found",
-          record: { table: "providers", id: "prov-1", field: "npi" },
-          display: "review_step",
-          whyItMatters: "The NPI Registry has no record of this NPI.",
-          context: { confirmed: false },
-        },
-      ]),
-    ).resolves.toEqual({ recorded: false, reason: "advisory_store_not_built" });
-    await expect(recordAdvisories([])).resolves.toEqual({
-      recorded: false,
-      reason: "advisory_store_not_built",
+const respond = vi.hoisted(() => vi.fn());
+const rpc = vi.hoisted(() => vi.fn((..._args: unknown[]) => ({ abortSignal: () => respond() })));
+const activeOrg = vi.hoisted(() => vi.fn(() => "13400000-0000-4000-a000-00000000000a"));
+
+vi.mock("@/integrations/supabase/externalClient", () => ({
+  supabase: { rpc: (...args: unknown[]) => rpc(...args) },
+}));
+vi.mock("@/lib/audit", () => ({ requireActiveOrg: () => activeOrg() }));
+
+import type { Advisory } from "@/lib/advisories";
+import { isAdvisoryContextValid } from "@/lib/advisoryChecks";
+import {
+  advisoryCaptureFailureLog,
+  recordAdvisories,
+  toLedgerAdvisory,
+  type AdvisoryOrigin,
+} from "@/services/advisoryCapture";
+
+const ORG = "13400000-0000-4000-a000-00000000000a";
+const PROVIDER = "13400000-0000-4000-a000-0000000a0001";
+const RUN = "13400000-0000-4000-a000-0000000a0008";
+
+function advisory(check: string, over: Partial<Advisory> = {}): Advisory {
+  return {
+    check,
+    record: { table: "providers", id: PROVIDER, field: "npi" },
+    display: "review_step",
+    whyItMatters: "Why it matters.",
+    context: { confirmed: false },
+    ...over,
+  };
+}
+
+const FORM: AdvisoryOrigin = { surface: "add_provider" };
+const IMPORT: AdvisoryOrigin = { surface: "import", importRunId: RUN, line: 12 };
+
+let warn: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  rpc.mockClear();
+  respond.mockReset();
+  respond.mockResolvedValue({ data: "13400000-0000-4000-a000-0000000c0001", error: null });
+  activeOrg.mockReset();
+  activeOrg.mockReturnValue(ORG);
+  warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("toLedgerAdvisory (the mapping)", () => {
+  it("maps each registry answer to the ledger's key", () => {
+    const keys = [
+      ["npi_registry.organization_number", "npi_registry.organization_number"],
+      ["npi_registry.not_found", "npi_registry.not_found"],
+      ["npi_registry.name_mismatch", "npi_registry.name_mismatch"],
+      ["npi_registry.inactive", "npi_registry.inactive"],
+      ["npi_registry.not_checked", "npi_registry.unchecked"],
+      ["npi_registry.credentials_differ", "npi_registry.credentials_differ"],
+      ["npi_registry.taxonomy_differs", "npi_registry.taxonomy_differs"],
+      ["npi_registry.license_differs", "npi_registry.license_differs"],
+    ];
+    for (const [theirs, ours] of keys) {
+      expect(toLedgerAdvisory(advisory(theirs), FORM)?.key).toBe(ours);
+    }
+  });
+
+  it("drops a check the seam doesn't map", () => {
+    for (const check of [
+      "npi_registry.dea_differs",
+      "npi_registry.unchecked",
+      "npi.missing",
+      "toString",
+      "",
+    ]) {
+      expect(toLedgerAdvisory(advisory(check), FORM)).toBeNull();
+    }
+  });
+
+  it("names the saved provider, and nothing for an unsaved record", () => {
+    expect(toLedgerAdvisory(advisory("npi_registry.not_found"), FORM)?.record).toEqual({
+      table: "providers",
+      id: PROVIDER,
     });
+    expect(
+      toLedgerAdvisory(
+        advisory("npi_registry.not_found", {
+          record: { table: "providers", id: null, field: "npi" },
+        }),
+        FORM,
+      ),
+    ).toBeNull();
+  });
+
+  it("carries the form's surface, or the import run, line and surface, and no field, display or confirmation", () => {
+    const confirmed = advisory("npi_registry.name_mismatch", {
+      record: { table: "providers", id: PROVIDER, field: "firstName" },
+      display: "backend_only",
+      context: { confirmed: true },
+    });
+    expect(toLedgerAdvisory(confirmed, { surface: "roster_form" })?.context).toEqual({
+      surface: "roster_form",
+    });
+    expect(toLedgerAdvisory(confirmed, { surface: "record_edit" })?.context).toEqual({
+      surface: "record_edit",
+    });
+    const fromImport = toLedgerAdvisory(confirmed, IMPORT);
+    expect(fromImport?.context).toEqual({ surface: "import", import_run_id: RUN, line: 12 });
+    expect(isAdvisoryContextValid(fromImport?.context)).toBe(true);
+  });
+});
+
+describe("recordAdvisories (the seam)", () => {
+  it("calls record_workflow_advisory with the ledger's fields for a form save", async () => {
+    await recordAdvisories([advisory("npi_registry.not_checked")], FORM);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("record_workflow_advisory", {
+      p_org_id: ORG,
+      p_check_key: "npi_registry.unchecked",
+      p_severity: "advisory",
+      p_record_table: "providers",
+      p_record_id: PROVIDER,
+      p_source: "panel",
+      p_context: { surface: "add_provider" },
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("records the registry's differences too, the license row's field left behind", async () => {
+    await recordAdvisories(
+      [
+        advisory("npi_registry.credentials_differ", {
+          record: { table: "providers", id: PROVIDER, field: "credentials" },
+        }),
+        advisory("npi_registry.taxonomy_differs", {
+          record: { table: "providers", id: PROVIDER, field: "taxonomyCode" },
+        }),
+        advisory("npi_registry.license_differs", {
+          record: { table: "providers", id: PROVIDER, field: "licenses.0.number" },
+          context: { confirmed: true },
+        }),
+      ],
+      { surface: "roster_form" },
+    );
+    expect(rpc.mock.calls.map((call) => call[1])).toEqual(
+      [
+        "npi_registry.credentials_differ",
+        "npi_registry.taxonomy_differs",
+        "npi_registry.license_differs",
+      ].map((key) => ({
+        p_org_id: ORG,
+        p_check_key: key,
+        p_severity: "advisory",
+        p_record_table: "providers",
+        p_record_id: PROVIDER,
+        p_source: "panel",
+        p_context: { surface: "roster_form" },
+      })),
+    );
+  });
+
+  it("records an import row's advisories with the import source, run and line", async () => {
+    await recordAdvisories(
+      [advisory("npi_registry.name_mismatch"), advisory("npi_registry.inactive")],
+      IMPORT,
+    );
+    expect(rpc.mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining({
+        p_check_key: "npi_registry.name_mismatch",
+        p_source: "import",
+        p_context: { import_run_id: RUN, line: 12, surface: "import" },
+      }),
+      expect.objectContaining({
+        p_check_key: "npi_registry.inactive",
+        p_source: "import",
+        p_context: { import_run_id: RUN, line: 12, surface: "import" },
+      }),
+    ]);
+  });
+
+  // One RPC at a time: switching to Promise.all or a fire-and-forget loop
+  // fails this.
+  it("sends one RPC at a time, the next only after the last one answered", async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    respond.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const pending = recordAdvisories(
+      [advisory("npi_registry.not_found"), advisory("npi_registry.inactive")],
+      FORM,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(rpc).toHaveBeenCalledTimes(1);
+    answer({ data: "13400000-0000-4000-a000-0000000c0001", error: null });
+    await pending;
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc.mock.calls.map((call) => (call[1] as { p_check_key: string }).p_check_key)).toEqual([
+      "npi_registry.not_found",
+      "npi_registry.inactive",
+    ]);
+  });
+
+  it("sends nothing for a check the seam doesn't map, or for nothing at all", async () => {
+    await recordAdvisories([advisory("npi_registry.dea_differs")], FORM);
+    await recordAdvisories([], FORM);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("an RPC error or rejection never throws: one safe line with the check key and SQLSTATE", async () => {
+    respond.mockResolvedValueOnce({
+      data: null,
+      error: { code: "42501", message: "value 1234567893 for Jane Doe" },
+    });
+    respond.mockRejectedValueOnce(
+      Object.assign(new Error("Jane Doe 1234567893"), { code: "08006" }),
+    );
+    await expect(
+      recordAdvisories(
+        [advisory("npi_registry.not_found"), advisory("npi_registry.inactive")],
+        FORM,
+      ),
+    ).resolves.toBeUndefined();
+    expect(warn.mock.calls.map((call: unknown[]) => JSON.parse(String(call[0])))).toEqual([
+      { event: "advisory_record_failed", check_key: "npi_registry.not_found", sqlstate: "42501" },
+      { event: "advisory_record_failed", check_key: "npi_registry.inactive", sqlstate: "08006" },
+    ]);
+    const logged = JSON.stringify(warn.mock.calls);
+    for (const value of ["Jane", "1234567893", PROVIDER, ORG]) expect(logged).not.toContain(value);
+  });
+
+  it("no active org never throws either", async () => {
+    activeOrg.mockImplementation(() => {
+      throw new Error("No active organization");
+    });
+    await expect(
+      recordAdvisories([advisory("npi_registry.not_found")], FORM),
+    ).resolves.toBeUndefined();
+    expect(rpc).not.toHaveBeenCalled();
   });
 });
 

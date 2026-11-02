@@ -61,6 +61,7 @@ import {
   importCommittedLines,
   importNpiCaptureAdvisories,
   importNpiCommitWarning,
+  importNpiRowChecks,
   selectImportNpiChecks,
   summarizeImportNpiRows,
   type ImportNpiRowResult,
@@ -359,16 +360,21 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
             `${result.created} provider${result.created === 1 ? "" : "s"} created · ${result.updated} updated. Imported providers are Pending Verification.${relText}`,
           );
           // After the toast, in the background: the registry's answers for
-          // the committed rows go to the capture seam, facts only. A failure
-          // is logged without values and never reaches this commit's feedback.
-          void captureImportNpiAdvisories(() =>
-            importNpiCaptureAdvisories({
-              items: npiChecks,
-              snapshot: npiAtCommit,
-              policy,
-              providerIdByLine: importCommitProviderIds(plan, result),
-            }),
-          );
+          // the committed rows and the creates with no NPI are recorded,
+          // facts only. A failure is logged without values and never reaches
+          // this commit's feedback.
+          void captureImportNpiAdvisories(run.id, () => {
+            const providerIdByLine = importCommitProviderIds(plan, result);
+            return {
+              registry: importNpiCaptureAdvisories({
+                items: npiChecks,
+                snapshot: npiAtCommit,
+                policy,
+                providerIdByLine,
+              }),
+              rows: importNpiRowChecks({ plan, providerIdByLine }),
+            };
+          });
         },
         onError: (e) =>
           toast.error(e instanceof Error ? e.message : "Couldn't commit the import run."),

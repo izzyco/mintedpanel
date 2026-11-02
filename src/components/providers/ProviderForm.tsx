@@ -216,12 +216,13 @@ export function ProviderForm({
     try {
       const savedId = await onSubmit(form);
       // The registry check may still be running: its advisories go to the
-      // capture once it ends (A30), with what staff confirmed.
+      // capture once it ends (A30). A blank NPI is recorded as missing (B3).
       if (typeof savedId === "string") {
         recordNpiAdvisories({
           recordId: savedId,
           npi: form.npi,
           verify: true,
+          surface: "add_provider",
           typed: { firstName: form.firstName, lastName: form.lastName },
           entered: reviewEntered,
           confirmed: npiConfirmed,

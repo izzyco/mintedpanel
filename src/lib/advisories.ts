@@ -11,10 +11,11 @@
 // show values; it is reduced to this shape before capture
 // (toCapturedAdvisory).
 //
-// The advisory store does not exist yet (the foundational capture PR is being
-// designed); until it lands, src/services/advisoryCapture.ts is the one seam,
-// and it records nothing. Who and when are the capture's to stamp (the
-// session and the server clock), and org_id comes from the session too.
+// src/services/advisoryCapture.ts is the one seam: it maps this shape to the
+// MINT-134 advisory ledger's registry (src/lib/advisoryChecks.ts) and records
+// what the ledger has a key and a context for. Who and when are the ledger's
+// to stamp (the session and the server clock), and org_id comes from the
+// session too.
 //
 // Pure: no runtime imports.
 

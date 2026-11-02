@@ -570,13 +570,15 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       await update.mutateAsync(patch);
       toast.success("Saved.");
       setEditing(false);
-      if (typeof patch.npi === "string") {
-        // The registry check of the new NPI goes on after the save.
-        setSavedNpi({ npi: patch.npi, ...npiNames });
+      if (patch.npi !== undefined) {
+        // The registry check of a new NPI goes on after the save; a cleared
+        // NPI is recorded as missing (B3).
+        if (patch.npi !== null) setSavedNpi({ npi: patch.npi, ...npiNames });
         recordNpiAdvisories({
           recordId: provider.id,
-          npi: patch.npi,
+          npi: patch.npi ?? "",
           verify: true,
+          surface: "record_edit",
           typed: npiNames,
           entered: {
             credentials: (draft.credentials ?? "").trim(),

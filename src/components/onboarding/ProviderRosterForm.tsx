@@ -321,6 +321,7 @@ function FormBody({
       recordId,
       npi: npiDigits,
       verify: npiChanged,
+      surface: "roster_form",
       typed: { firstName: form.firstName, lastName: form.lastName },
       entered: {
         credentials: form.credentials,
