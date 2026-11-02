@@ -638,10 +638,11 @@ export const PROVIDER_DESCRIPTOR: SectionDescriptor = {
   headers: PROVIDER_TEMPLATE_HEADERS,
   templateFilename: "provider-import-template.csv",
   helperText:
-    "Re-download the current template; old versions are rejected. One row per provider × license (repeat identity columns for extra licenses, facilities, groups, or enrollments). Contact, education, gender, start date, new-grad/CAQH, and license type fields are optional. facility_name accepts the exact facility name or the location's street address — the first facility on the file is the primary. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Only the last 4 SSN digits in ssn_last4.",
+    "Re-download the current template; old versions are rejected. One row per provider × license (repeat identity columns for extra licenses, facilities, groups, or enrollments). NPI, contact, education, gender, start date, new-grad/CAQH, and license type fields are optional; a row without an NPI imports by name and is held for review when that name already exists. facility_name accepts the exact facility name or the location's street address — the first facility on the file is the primary. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Only the last 4 SSN digits in ssn_last4.",
   optionalHeaders: ["group_npi", "gender"],
   spec: {
-    required: ["provider_first_name", "provider_last_name", "npi"],
+    // NPI is optional (B3); a row without one imports by name.
+    required: ["provider_first_name", "provider_last_name"],
     requireGroupKey: true,
     tinColumns: ["group_tin"],
     npiColumns: ["group_npi"],
