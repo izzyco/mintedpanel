@@ -32,6 +32,7 @@
     "verify:luna-scale": "node scripts/luna-scale/verify-luna-scale.mjs",
     "test:luna-scale": "node --test scripts/luna-scale/*.test.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test e2e/login.spec.ts e2e/dashboard.spec.ts",
     "format": "prettier --write .",
     "wiki:build": "node scripts/build-wiki-site.mjs"
   },
