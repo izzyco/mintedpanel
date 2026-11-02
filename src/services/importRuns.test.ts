@@ -84,6 +84,7 @@ function installTransport(
           providers: [
             { id: "provider-1", npi: NPI },
             { id: "provider-2", npi: OTHER_NPI },
+            { id: "provider-3", npi: null, first_name: "Nora", last_name: "Newton" },
           ]
             .map((p) => ({ ...p, start_date: providerStartDates[p.id] ?? null }))
             .filter((p) => !ids || ids.includes(p.id)),
@@ -275,6 +276,33 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
       "UT",
       "AZ",
     ]);
+  });
+
+  it("attaches a row with no NPI to the provider created for its name (B3)", async () => {
+    installTransport([
+      {
+        line: 2,
+        mapped: {
+          npi: null,
+          provider_first_name: " nora ",
+          provider_last_name: "NEWTON",
+          group_tin: GROUPS[0].tin,
+          enrollment_payer_id: "payer-1",
+          enrollment_state: "CO",
+        },
+      },
+    ]);
+    mocks.rpc.mockResolvedValue({
+      data: { created: 1, created_provider_ids: ["provider-3"] },
+      error: null,
+    });
+
+    const result = await commitImportRun("run-1", { ...updatePlan(), updates: [] });
+
+    expect(result.relationships.enrollmentFacts).toBe(1);
+    expect(mocks.createEnrollmentFact).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: "provider-3", groupId: "group-1", state: "CO" }),
+    );
   });
 
   it("prunes a deleted facility while preserving live assignments and enrollment facts", async () => {

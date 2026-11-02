@@ -14,6 +14,7 @@
 // grain by importSections.test.ts and the staged pipeline by
 // roster-import.spec.ts — the commit relationship pass is pinned here at the
 // wire in TS-113's harness (write-through fact POST).
+import { RECHECK_STORED_RULES, serveIdentityValidationRules } from "./fixtures/identityRules";
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
 
 const AUTH_KEY = "sb-example-auth-token";
@@ -999,4 +1000,153 @@ test("F05: license editor blocks reversed dates inline and accepts equal dates",
       }),
     ]),
   );
+});
+
+test("MINT-7: Add Provider blocks a wrong NPI check digit inline; the corrected NPI saves", async ({
+  context,
+  page,
+}) => {
+  const fixtures = baseFixtures();
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+
+  await page.goto("/providers/new");
+  await expect(page.getByRole("heading", { name: "Add provider" })).toBeVisible({
+    timeout: 30000,
+  });
+  await page.getByLabel("First name", { exact: true }).fill("Taylor");
+  await page.getByLabel("Last name", { exact: true }).fill("Provider");
+  await page.getByRole("button", { name: "Next" }).click();
+
+  const npi = page.getByLabel("NPI", { exact: true });
+  await npi.fill("1234567890");
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.getByText("NPI check digit is invalid — re-check the number")).toBeVisible();
+  await expect(npi).toBeVisible();
+
+  await npi.fill("1234567893");
+  for (let step = 0; step < 3; step += 1) {
+    await page.getByRole("button", { name: "Next" }).click();
+  }
+  await page.getByRole("button", { name: "Create provider" }).click();
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+  const createWrites = requests.filter(
+    (request) => request.method === "POST" && request.path === "providers",
+  );
+  expect(createWrites).toHaveLength(1);
+  expect((createWrites[0].body as Record<string, unknown>).npi).toBe("1234567893");
+});
+
+test("MINT-129: under recheckStoredOnEdit, the record checks the stored NPI on an unrelated edit", async ({
+  context,
+  page,
+}) => {
+  const fixtures = baseFixtures();
+  // pr-brooke's stored NPI (1093817465) fails the CMS check digit on purpose.
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await serveIdentityValidationRules(context, RECHECK_STORED_RULES);
+  await seedAuth(context);
+  const providerPatches = () =>
+    requests.filter((request) => request.method === "PATCH" && request.path === "providers");
+
+  await page.goto("/providers/pr-brooke");
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+
+  // A phone change alone is blocked by the stored NPI, and nothing is written.
+  await page.getByRole("button", { name: "Edit details" }).click();
+  await page.getByLabel("Phone", { exact: true }).fill("252-555-0142");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toContainText("NPI check digit is invalid");
+  expect(providerPatches()).toHaveLength(0);
+
+  // Correcting the NPI saves both edits in one patch.
+  await page.locator("#identity-npi").fill("1093817462");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(providerPatches().map((request) => request.body)).toEqual([
+    { phone: "252-555-0142", npi: "1093817462" },
+  ]);
+});
+
+test("MINT-129: under recheckStoredOnEdit, a valid stored NPI with dashes passes and stays out of the patch", async ({
+  context,
+  page,
+}) => {
+  const fixtures = baseFixtures();
+  const brooke = fixtures.providers.find((row) => row.id === "pr-brooke");
+  if (!brooke) throw new Error("Missing synthetic provider pr-brooke");
+  brooke.npi = "109-381-7462";
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await serveIdentityValidationRules(context, RECHECK_STORED_RULES);
+  await seedAuth(context);
+
+  await page.goto("/providers/pr-brooke");
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+  await page.getByRole("button", { name: "Edit details" }).click();
+  await page.getByLabel("Phone", { exact: true }).fill("252-555-0142");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(
+    requests
+      .filter((request) => request.method === "PATCH" && request.path === "providers")
+      .map((request) => request.body),
+  ).toEqual([{ phone: "252-555-0142" }]);
+});
+
+test("MINT-7: record inline edit checks only a changed NPI's check digit", async ({
+  context,
+  page,
+}) => {
+  const fixtures = baseFixtures();
+  // The stored NPI (1093817465) fails the CMS check digit on purpose.
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+  const providerPatches = () =>
+    requests.filter((request) => request.method === "PATCH" && request.path === "providers");
+
+  await page.goto("/providers/pr-brooke");
+  await expect(page.getByRole("heading", { name: "Provider Info" })).toBeVisible({
+    timeout: 30000,
+  });
+
+  // Unchanged legacy NPI: an unrelated edit still saves.
+  await page.getByRole("button", { name: "Edit details" }).click();
+  await page.getByLabel("Phone", { exact: true }).fill("252-555-0142");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(providerPatches().map((request) => request.body)).toEqual([{ phone: "252-555-0142" }]);
+
+  // A changed NPI with a wrong check digit is an inline error and no write.
+  await page.getByRole("button", { name: "Edit details" }).click();
+  const npi = page.locator("#identity-npi");
+  await npi.fill("1234567890");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("alert")).toContainText("NPI check digit is invalid");
+  expect(providerPatches()).toHaveLength(1);
+
+  await npi.fill("1234567893");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("button", { name: "Edit details" })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(providerPatches().map((request) => request.body)).toEqual([
+    { phone: "252-555-0142" },
+    { npi: "1234567893" },
+  ]);
 });
