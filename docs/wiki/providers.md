@@ -32,9 +32,10 @@ Journey B — the consolidated people record.
 - **Taxonomy is a dropdown**, not free text: NUCC codes for the specialties
   we enroll (PT + dietitian today). Specialty label stays editable beside
   it when needed.
-- **Facility assignment requires a start date.** Saving without one used to
-  fail with a raw database toast; the form now collects the date and the
-  error reads as a sentence if anything else is missing.
+- **A facility assignment can be saved without a start date.** Add
+  Provider starts the assignments today when Start date is left blank. A
+  missing date never blocks a save: the record reads "Start date needed"
+  until it is entered.
 - **The first facility you pick is the primary location** (payer forms ask
   for one). A lone location is marked primary automatically; with several,
   the first stays primary until you change it on the record with **Make

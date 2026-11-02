@@ -10,6 +10,8 @@ import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
 import { translateDbError } from "@/lib/dbErrors";
+import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { ensureFirstFacilityPrimary, insertAssignmentRows } from "@/services/providerAssignments";
 import { createEnrollmentFact, listEnrollmentFacts } from "@/services/enrollmentFacts";
 import {
@@ -265,6 +267,7 @@ export interface ProviderRelationshipSummary {
 async function applyProviderRelationships(
   stagedRows: { mapped: Record<string, string | null> | null }[],
   providerIds: string[],
+  assignmentStartDate: string | null,
 ): Promise<ProviderRelationshipSummary> {
   const summary: ProviderRelationshipSummary = {
     facilityAssignments: 0,
@@ -288,12 +291,15 @@ async function applyProviderRelationships(
 
   const { data: providerRows, error: pErr } = await supabase
     .from("providers")
-    .select("id, npi, first_name, last_name")
+    .select("id, npi, first_name, last_name, start_date")
     .eq("org_id", orgId)
     .in("id", providerIds);
   if (pErr) throw pErr;
   const providerByNpi = new Map(
     (providerRows ?? []).filter((r) => r.npi).map((r) => [String(r.npi), r.id as string]),
+  );
+  const providerStartDate = new Map(
+    (providerRows ?? []).map((r) => [r.id as string, (r.start_date as string | null) ?? null]),
   );
   // A row without an NPI (B3) joins its provider by name: the dedupe creates
   // one NPI-less provider per name and blocks a name it cannot tell apart. A
@@ -391,14 +397,13 @@ async function applyProviderRelationships(
   }
 
   if (facilityInserts.length > 0) {
-    // The pfa start_date CHECK rejects dateless inserts — relationship rows
-    // from the CSV default to today (the batch-assign precedent).
-    const today = new Date().toISOString().slice(0, 10);
+    // As in the commit RPC: the assignment starts on the provider's start
+    // date, else the Add Provider rule's (blankAssignmentStartDate).
     await insertAssignmentRows(
       facilityInserts.map((f) => ({
         providerId: f.providerId,
         facilityId: f.facilityId,
-        startDate: today,
+        startDate: providerStartDate.get(f.providerId) ?? assignmentStartDate,
       })),
     );
     summary.facilityAssignments = facilityInserts.length;
@@ -441,9 +446,16 @@ export async function commitImportRun(
     fn: string,
     args: Record<string, unknown>,
   ) => Promise<{ data: unknown; error: { message: string } | null }>;
+  // A facility assignment the CSV gives no start date (the provider has none)
+  // gets the Add Provider rule's: the local today by default, or none
+  // (MINT-116; the resolution useAddProviderRules makes).
+  const assignmentStartDate = blankAssignmentStartDate(
+    resolveAddProviderRules(),
+    localCalendarDate(new Date()),
+  );
   const { data, error } = await rpc("commit_import_run", {
     p_run_id: runId,
-    p_plan: plan as unknown as Record<string, unknown>,
+    p_plan: { ...plan, assignment_start_date: assignmentStartDate },
   });
   if (error) throw new Error(error.message);
   const raw = (data ?? {}) as {
@@ -475,6 +487,7 @@ export async function commitImportRun(
     relationships = await applyProviderRelationships(
       stagedSnapshot.filter((row) => !blockedLines.has(row.line)),
       [...result.createdProviderIds, ...result.updatedProviderIds],
+      assignmentStartDate,
     );
     await ensureFirstFacilityPrimary([...result.createdProviderIds, ...result.updatedProviderIds]);
   }
@@ -526,13 +539,12 @@ export interface BatchAssignmentResult {
  * The plan comes from the pure planBatchAssignment (explicit row data wins —
  * only assignment GAPS are filled); both insert paths are idempotent under
  * the DB uniques (TE-7), so running it twice adds nothing. New facility
- * assignments carry the caller's start date (the pfa start_date CHECK
- * rejects dateless inserts). */
+ * assignments carry the caller's start date, or none. */
 export async function applyBatchAssignment(input: {
   runId: string;
   groupId: string | null;
   facilityIds: string[];
-  startDate: string;
+  startDate: string | null;
   plan: BatchAssignmentPlan;
 }): Promise<BatchAssignmentResult> {
   const orgId = requireActiveOrg();

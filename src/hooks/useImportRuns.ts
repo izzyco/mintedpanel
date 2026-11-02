@@ -470,7 +470,7 @@ export function useApplyBatchAssignment() {
       runId: string;
       groupId: string | null;
       facilityIds: string[];
-      startDate: string;
+      startDate: string | null;
       plan: BatchAssignmentPlan;
     }) => applyBatchAssignment(input),
     onSuccess: () => {

@@ -163,10 +163,6 @@ export function GroupsFacilitiesPanel({
       setDialogError("Pick a facility.");
       return;
     }
-    if (!startDraft) {
-      setDialogError("A start date is required.");
-      return;
-    }
     const drafts = [
       ...currentDrafts(),
       { facilityId: facilityDraft, startDate: startDraft, isPrimary: myFacilities.length === 0 },
@@ -298,7 +294,7 @@ export function GroupsFacilitiesPanel({
                     )}
                     <span className="font-medium">{f.name}</span>
                     <span className="text-muted-foreground">
-                      {f.startDate ? `starts ${fmtDate(f.startDate)}` : "no start date"}
+                      {f.startDate ? `starts ${fmtDate(f.startDate)}` : "Start date needed"}
                     </span>
                     {canWrite ? (
                       <span className="ml-auto inline-flex items-center gap-2">

@@ -27,6 +27,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { addProviderStartDateHint, addProviderStartDatePrefill } from "@/lib/addProviderRules";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { GroupAssignmentPicker } from "@/components/onboarding/GroupAssignmentPicker";
 import { LicenseListEditor } from "@/components/onboarding/LicenseListEditor";
 import {
@@ -36,7 +38,11 @@ import {
   licenseDraftsEqual,
   type LicenseDraft,
 } from "@/components/onboarding/licenseDraft";
-import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
+import {
+  useAddProviderRules,
+  useProvider,
+  useProviderGroupAssignments,
+} from "@/hooks/useProviders";
 import { useStateLicensesByProvider } from "@/hooks/useLookups";
 import { useCreateProviderWithDetails, useUpdateProviderWithLicenses } from "@/hooks/useProviders";
 import { useCreateEnrollmentFact } from "@/hooks/useEnrollmentFacts";
@@ -222,6 +228,16 @@ function FormBody({
 
   const createMut = useCreateProviderWithDetails();
   const updateMut = useUpdateProviderWithLicenses(provider?.id ?? "");
+  // Adding a provider: a prefilled Start date says so while it is still in the
+  // field (AddProviderRules, MINT-116). Editing shows the stored value as is.
+  const addProviderRules = useAddProviderRules();
+  const startDateHint = provider
+    ? undefined
+    : addProviderStartDateHint(addProviderRules, {
+        startDate: form.startDate,
+        facilityCount: 0,
+        today: localCalendarDate(new Date()),
+      });
   const pending = createMut.isPending || updateMut.isPending;
   const phoneRules = usePhoneValidationRules();
 
@@ -684,6 +700,9 @@ function FormBody({
                 onChange={(e) => set({ startDate: e.target.value })}
                 className="h-9"
               />
+              {startDateHint ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{startDateHint}</p>
+              ) : null}
             </div>
           </div>
           <NpiRegistryAssist
@@ -1050,6 +1069,13 @@ export function ProviderRosterForm({
   groups: ProviderGroup[];
   onClose: () => void;
 }) {
+  // Create mode opens the Start date blank by default; a prefill (MINT-116)
+  // is shown and editable, and saving writes what the field shows.
+  const addProviderRules = useAddProviderRules();
+  const createForm = useMemo(() => {
+    const startDate = addProviderStartDatePrefill(addProviderRules, localCalendarDate(new Date()));
+    return startDate ? { ...EMPTY_FORM, startDate } : EMPTY_FORM;
+  }, [addProviderRules]);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto border-[#E8E5E0] shadow-none">
@@ -1062,7 +1088,7 @@ export function ProviderRosterForm({
           <FormBody
             provider={null}
             groups={groups}
-            initialForm={EMPTY_FORM}
+            initialForm={createForm}
             initialLicenses={[{ ...EMPTY_LICENSE_DRAFT }]}
             initialLicenseRows={[]}
             initialAssignments={[]}

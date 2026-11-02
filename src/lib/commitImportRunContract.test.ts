@@ -56,14 +56,14 @@ describe("latest commit_import_run migration contract", () => {
     );
   });
 
-  it("makes the first facility on the file primary and starts the assignment on the provider start date", () => {
+  it("makes the first facility on the file primary and starts the assignment on the provider start date, else the plan's", () => {
     const createLoop = executableSql.match(
       /jsonb_array_elements_text\(COALESCE\(v_entry -> 'facility_ids'[\s\S]*?END LOOP;/i,
     )?.[0];
     if (!createLoop) throw new Error("Facility create loop not found in commit_import_run");
     expect(createLoop).toMatch(/WITH ORDINALITY/i);
     expect(createLoop).toMatch(/\(v_ord = 1\)/);
-    expect(createLoop).toMatch(/COALESCE\(\(v_provider ->> 'start_date'\)::date, CURRENT_DATE\)/);
+    expect(createLoop).toMatch(/COALESCE\(\(v_provider ->> 'start_date'\)::date, v_blank_start\)/);
     const updateLoop = executableSql.match(
       /jsonb_array_elements_text\(COALESCE\(v_entry -> 'add_facility_ids'[\s\S]*?END LOOP;/i,
     )?.[0];
@@ -71,7 +71,15 @@ describe("latest commit_import_run migration contract", () => {
     // Existing providers keep their primary; the new assignment starts when the provider did.
     expect(updateLoop).toMatch(/v_fid, false,/);
     expect(updateLoop).toMatch(
-      /COALESCE\(\(SELECT p\.start_date FROM providers p WHERE p\.id = v_pid\), CURRENT_DATE\)/,
+      /COALESCE\(\(SELECT p\.start_date FROM providers p WHERE p\.id = v_pid\), v_blank_start\)/,
+    );
+  });
+
+  // MINT-96 (B10): a blank assignment date follows the client's Add Provider
+  // rule (local today, or null under "no default"); an older plan keeps today.
+  it("takes a blank assignment's start date from the plan, else today", () => {
+    expect(executableSql).toMatch(
+      /v_blank_start date := CASE\s+WHEN p_plan \? 'assignment_start_date' THEN \(p_plan ->> 'assignment_start_date'\)::date\s+ELSE CURRENT_DATE\s+END;/,
     );
   });
 

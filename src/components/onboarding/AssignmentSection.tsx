@@ -92,11 +92,9 @@ export function AssignmentSection({ wizard }: SectionBodyProps) {
                       >
                         <MapPin className="h-3 w-3" />
                         <span>{facility?.name ?? "Unknown location"}</span>
-                        {a.startDate ? (
-                          <span className="text-[11px] opacity-80">
-                            since {fmtDate(a.startDate)}
-                          </span>
-                        ) : null}
+                        <span className="text-[11px] opacity-80">
+                          {a.startDate ? `since ${fmtDate(a.startDate)}` : "Start date needed"}
+                        </span>
                         {a.isPrimary ? (
                           <span
                             className="flex items-center gap-0.5 text-[11px] font-medium"

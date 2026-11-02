@@ -315,6 +315,9 @@ jobs:
       - name: Run MINT-91 contact phone SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint91-contact-phone-optional.sql
 
+      - name: Verify facility assignments save without a start date on disposable PostgreSQL
+        run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/pfa-start-date-optional.sql
+
   vault-authorization:
     name: P01 vault authorization
     runs-on: ubuntu-latest

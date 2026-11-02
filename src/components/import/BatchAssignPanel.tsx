@@ -20,6 +20,8 @@ import {
 import { DatePicker } from "@/components/DatePicker";
 import { useApplyBatchAssignment, useProviderAssignmentsForRun } from "@/hooks/useImportRuns";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
+import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { countLabel } from "@/lib/countLabel";
 import { planBatchAssignment } from "@/lib/importDedupe";
 import type { ImportRun } from "@/types";
@@ -34,7 +36,12 @@ export function BatchAssignPanel({ run }: { run: ImportRun }) {
 
   const [groupId, setGroupId] = useState<string>(NONE);
   const [facilityIds, setFacilityIds] = useState<string[]>([]);
-  const [startDate, setStartDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  // Opens with the Add Provider rule's date (MINT-116; resolved as
+  // commitImportRun does): the local today by default, or blank. The batch
+  // saves what the field shows.
+  const [startDate, setStartDate] = useState<string>(
+    () => blankAssignmentStartDate(resolveAddProviderRules(), localCalendarDate(new Date())) ?? "",
+  );
 
   const activeGroups = (groupsQ.data ?? []).filter((g) => g.isActive);
   const activeFacilities = (facilitiesQ.data ?? []).filter((f) => f.isActive);
@@ -79,7 +86,7 @@ export function BatchAssignPanel({ run }: { run: ImportRun }) {
         runId: run.id,
         groupId: groupId === NONE ? null : groupId,
         facilityIds,
-        startDate,
+        startDate: startDate || null,
         plan,
       },
       {
@@ -164,7 +171,7 @@ export function BatchAssignPanel({ run }: { run: ImportRun }) {
       <div className="flex items-center gap-2">
         <Button
           className="h-9 bg-[#1B4D3E] text-white hover:bg-[#163F33]"
-          disabled={nothingSelected || applyMut.isPending || (!startDate && facilityIds.length > 0)}
+          disabled={nothingSelected || applyMut.isPending}
           onClick={apply}
         >
           {applyMut.isPending ? "Assigning…" : "Assign batch"}
