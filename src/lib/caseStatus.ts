@@ -74,6 +74,10 @@ export const OPEN_CASE_STATUSES: readonly CaseStatus[] = [
  * Approved and Not Pursuing move only by admin correction. */
 export const TERMINAL_CASE_STATUSES: readonly CaseStatus[] = ["approved", "denied", "not_pursuing"];
 
+/** The two closes that are the payer's answer. Not Pursuing is the third
+ * terminal, but it is our own decision to stop, not the payer's. */
+export const PAYER_DECISION_CASE_STATUSES: readonly CaseStatus[] = ["approved", "denied"];
+
 // Spine position for the forward-jump rule. Terminals carry no rank.
 const SPINE_RANK: Partial<Record<CaseStatus, number>> = {
   not_started: 0,

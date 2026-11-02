@@ -2345,3 +2345,137 @@ export interface RosterExportSnapshot {
   fileName: string;
   downloadPath: string;
 }
+
+// MINT-107 organization notification sequences (migration 20261101110100).
+// Configuration only: nothing in the app sends these messages yet. Minted's
+// platform default (one per purpose) is inherited field by field by each
+// org's own row, except the digest's schedule, which only an org row has
+// (G2: no default); resolveNotificationSequence() in
+// src/lib/notificationSequences.ts gives the effective sequence. The pure
+// rules (resolution, validation, ordering, the start-date cadence) live
+// there; the template catalog in src/lib/notificationTemplates.ts.
+export type NotificationPurpose = "followup_digest" | "intake_reminder";
+export type NotificationChannel = "email" | "sms";
+export type NotificationStopCondition = "submitted" | "paused" | "withdrawn" | "provider_replied";
+/** How often the follow-up digest goes out (A8). */
+export type DigestFrequency = "daily" | "weekly" | "twice_daily";
+
+/** One cc'd escalation recipient on a step: a member, or everyone holding a role. */
+export type NotificationCcRecipient =
+  { kind: "user"; userId: string } | { kind: "role"; role: AppRole };
+
+/**
+ * notification_sequences: one org's own settings for one purpose. A null
+ * setting uses Minted's default (NotificationSequenceDefault), except the
+ * digest's schedule: all null means Minted has not set the digest up for the
+ * org (G2: no default). `enabled` is never inherited.
+ */
+export interface NotificationSequence {
+  id: string;
+  orgId: string;
+  purpose: NotificationPurpose;
+  /** Minted's to set (A9: off until Minted turns notifications on at kickoff). */
+  enabled: boolean;
+  /** Intake only; null uses Minted's default. Always null for the digest. */
+  stopConditions: NotificationStopCondition[] | null;
+  /** Intake only (1 to 90); null uses Minted's default. Always null for the digest. */
+  targetDaysToReady: number | null;
+  /**
+   * Intake only, org-owned: the step whose bounce escalates to its cc list
+   * (0: none); null uses Minted's default. Always null for the digest.
+   */
+  bounceEscalationStep: number | null;
+  /**
+   * Digest only, platform-managed (Addendum 10): daily, weekly or twice a
+   * day. Part of the digest schedule, which Minted sets per org as one
+   * group with digestWeekday, sendHour, sendTimeZone and secondSendHour
+   * (A10): all set, or all null when the digest is not set up (G2).
+   */
+  digestFrequency: DigestFrequency | null;
+  /** Digest only, platform-managed: the weekly ISO weekday (1 = Monday). Part of the schedule. */
+  digestWeekday: number | null;
+  /** Digest only, platform-managed: the local send hour (0 to 23). Part of the schedule. */
+  sendHour: number | null;
+  /** Digest only, platform-managed: the IANA zone of sendHour. Part of the schedule. */
+  sendTimeZone: string | null;
+  /** Digest only, platform-managed: the twice-a-day second hour, later than sendHour. Part of the schedule. */
+  secondSendHour: number | null;
+  /**
+   * Digest only, platform-managed: Minted's per-org override of whether the
+   * digest step may carry a cc list; null uses Minted's default (false).
+   */
+  digestCcAllowed: boolean | null;
+  /** Optimistic-concurrency counter, bumped on every save. */
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+/** notification_sequence_steps: one ordered message of an org's own steps. */
+export interface NotificationSequenceStep {
+  id: string;
+  sequenceId: string;
+  orgId: string;
+  /** 1-based; offsets strictly increase with position. */
+  position: number;
+  offsetDays: number;
+  channel: NotificationChannel;
+  templateKey: string;
+  /** Ordered: the first entry is cc'd first. Empty by default; always empty for the digest. */
+  ccRecipients: NotificationCcRecipient[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * notification_sequence_defaults: Minted's platform default for one purpose,
+ * inherited by every org. No org, no `enabled`, no cc list, and no digest
+ * schedule (G2: only an org row has one). Only Minted writes it (Mission
+ * Control later).
+ */
+export interface NotificationSequenceDefault {
+  purpose: NotificationPurpose;
+  /** Intake: set. Digest: null. */
+  stopConditions: NotificationStopCondition[] | null;
+  /** Intake: set. Digest: null. */
+  targetDaysToReady: number | null;
+  /** Intake: set (1: a bounce on step 1 escalates; 0: none). Digest: null. */
+  bounceEscalationStep: number | null;
+  /** Digest: set (false: coordinators only, D59). Intake: null. Minted's alone. */
+  digestCcAllowed: boolean | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** notification_sequence_default_steps: one ordered step of a platform default. */
+export interface NotificationSequenceDefaultStep {
+  id: string;
+  purpose: NotificationPurpose;
+  /** 1-based; offsets strictly increase with position. */
+  position: number;
+  offsetDays: number;
+  channel: NotificationChannel;
+  templateKey: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SmsConsentSource = "intake_form" | "staff_recorded" | "sms_keyword";
+export type SmsConsentRevokedSource = "sms_stop" | "provider_request" | "staff_recorded";
+
+/** sms_consents: a provider's recorded agreement to receive texts at one number. */
+export interface SmsConsent {
+  id: string;
+  orgId: string;
+  /** null once the provider was deleted: the consent evidence stays. */
+  providerId: string | null;
+  phoneE164: string;
+  consentedAt: string;
+  source: SmsConsentSource;
+  consentTextVersion: string;
+  recordedBy: string | null;
+  revokedAt: string | null;
+  revokedSource: SmsConsentRevokedSource | null;
+  createdAt: string;
+}

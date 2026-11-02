@@ -5,6 +5,7 @@ import {
   type Page,
   type BrowserContext,
 } from "./fixtures/legacy-access-context";
+import { RECHECK_STORED_RULES, serveIdentityValidationRules } from "./fixtures/identityRules";
 
 // E1.3 TE-10 — Provider Roster coverage over the mock harness:
 //   TS-33 Tree Hill first provider: CAQH baseline + required group
@@ -446,7 +447,13 @@ test("TS-34: two-TIN provider — both groups assigned, first primary; last-assi
   await dialog.getByLabel("Assign Shelby Performance Group LLC").click();
   await dialog.locator("#prov-first").fill("Quinn");
   await dialog.locator("#prov-last").fill("James");
+  // MINT-7: a 10-digit NPI with the wrong CMS check digit is an inline error
+  // and nothing is written; the corrected number saves.
   await dialog.locator("#prov-npi").fill("1093817465");
+  await dialog.getByRole("button", { name: "Save provider" }).click();
+  await expect(dialog).toContainText("NPI check digit is invalid");
+  expect(fixtures.providers!).toHaveLength(0);
+  await dialog.locator("#prov-npi").fill("1093817462");
   await dialog.getByRole("button", { name: "Save provider" }).click();
 
   await expect(card).toContainText("Quinn James", { timeout: 15000 });
@@ -681,6 +688,8 @@ function p03Fixtures() {
         group_id: "g-NC",
         first_name: "Brooke",
         last_name: "Ostrander",
+        // Fails the NPI check digit on purpose (MINT-7): the roster editor
+        // saves without re-validating an unchanged stored NPI.
         npi: "1093817465",
       }),
     ],
@@ -1109,4 +1118,101 @@ test("P03: a saved add with failed cache refresh requires reload and never repea
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("row", { name: /CO-SAVED/ })).toBeVisible();
   expect(insertAttempts).toBe(1);
+});
+
+// MINT-129: the roster form under recheckStoredOnEdit (served in place of the
+// default rules). prov-ob's stored NPI (1093817465) fails the check digit.
+async function openRecheckRoster(context: BrowserContext, page: Page, storedNpi: string) {
+  const fixtures = p03Fixtures();
+  (fixtures.providers as Record<string, unknown>[])[0].npi = storedNpi;
+  const handler = makeHandler(fixtures);
+  const providerPatches: Record<string, unknown>[] = [];
+  await context.route(/\/(rest|auth)\/v1\//, (route) => {
+    const req = route.request();
+    if (req.method() === "PATCH" && new URL(req.url()).pathname.endsWith("/rest/v1/providers"))
+      providerPatches.push(JSON.parse(req.postData() ?? "{}") as Record<string, unknown>);
+    return handler(route);
+  });
+  await serveIdentityValidationRules(context, RECHECK_STORED_RULES);
+  const dialog = await openP03Roster(context, page);
+  await expect(dialog.locator("#prov-npi")).toHaveValue(storedNpi);
+  return { dialog, providerPatches };
+}
+
+test("MINT-129: under recheckStoredOnEdit, the roster form checks the stored NPI on an unrelated edit", async ({
+  context,
+  page,
+}) => {
+  const { dialog, providerPatches } = await openRecheckRoster(context, page, "1093817465");
+
+  // A phone change alone is blocked by the stored NPI, and nothing is written.
+  await dialog.locator("#prov-phone").fill("252-555-0142");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toContainText("NPI check digit is invalid");
+  expect(providerPatches).toEqual([]);
+
+  // Correcting the NPI saves both edits.
+  await dialog.locator("#prov-npi").fill("1093817462");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(providerPatches).toEqual([
+    expect.objectContaining({ phone: "252-555-0142", npi: "1093817462" }),
+  ]);
+});
+
+test("MINT-129: under recheckStoredOnEdit, the roster form passes a valid stored NPI typed with dashes", async ({
+  context,
+  page,
+}) => {
+  const { dialog, providerPatches } = await openRecheckRoster(context, page, "109-381-7462");
+  await dialog.locator("#prov-phone").fill("252-555-0142");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toHaveCount(0);
+  // An unchanged stored NPI goes back exactly as stored (MINT-110: an
+  // unrelated edit never rewrites it), so the re-check adds nothing to the
+  // patch.
+  expect(providerPatches).toEqual([
+    expect.objectContaining({ phone: "252-555-0142", npi: "109-381-7462" }),
+  ]);
+});
+
+test("MINT-110: a name-only roster edit does not check the stored NPI against the NPI Registry", async ({
+  context,
+  page,
+}) => {
+  const fixtures = p03Fixtures();
+  (fixtures.providers as Record<string, unknown>[])[0].npi = "1093817462";
+  const handler = makeHandler(fixtures);
+  const providerPatches: Record<string, unknown>[] = [];
+  await context.route(/\/(rest|auth)\/v1\//, (route) => {
+    const req = route.request();
+    if (req.method() === "PATCH" && new URL(req.url()).pathname.endsWith("/rest/v1/providers"))
+      providerPatches.push(JSON.parse(req.postData() ?? "{}") as Record<string, unknown>);
+    return handler(route);
+  });
+  const registryCalls: unknown[] = [];
+  await context.route(/\/api\/npi-registry\//, async (route) => {
+    registryCalls.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { record: null }, error: null, meta: null }),
+    });
+  });
+  const dialog = await openP03Roster(context, page);
+  await expect(dialog.locator("#prov-npi")).toHaveValue("1093817462");
+
+  // Addendum 10: only an NPI that is new or changed is checked; a new name
+  // alone leaves the stored NPI unchecked, on the form and after the save.
+  await dialog.locator("#prov-first").fill("Renamed");
+  await expect(
+    dialog.getByText(/in the NPI Registry|Checking the NPI Registry|NPI Registry is unavailable/),
+  ).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(providerPatches).toEqual([
+    expect.objectContaining({ first_name: "Renamed", npi: "1093817462" }),
+  ]);
+  await page.waitForTimeout(500);
+  expect(registryCalls).toEqual([]);
 });

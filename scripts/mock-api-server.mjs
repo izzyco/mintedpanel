@@ -23,7 +23,8 @@
 //   caseprofile cross-org case-bound profile served instead of 404 (6b)
 //   fillevents  cross-org fill-event accepted and stored             (7, 7b)
 //   cases       cross-org provider's case list served instead of 404 (8b)
-//   casesearch  cross-org case rows leak into ?q= search results      (15b)
+//   casesearch  cross-org case rows leak into ?q= search results (15b, 15c)
+//   casesearchcap ?q= honours any &limit=, past the cap of 50          (15d)
 //   touches     cross-org submission touch accepted and stored       (9, 9b)
 //   tasks       cross-org task_id closed by a submission touch        (13)
 //   casecontext cross-org case context served instead of 404         (14b)
@@ -115,6 +116,7 @@ export const LEAK_MODES = [
   "fillevents",
   "cases",
   "casesearch",
+  "casesearchcap",
   "touches",
   "tasks",
   "casecontext",
@@ -132,7 +134,15 @@ export const LEAK_MODES = [
   "e613isolation",
   "providerinvites",
   "intakesession",
+  "npiregistry",
+  "npibatch",
 ];
+
+// GET /api/cases?q= result limit — mirrors CASE_SEARCH_DEFAULT_LIMIT and
+// CASE_SEARCH_MAX_LIMIT in src/server/caseSearchLimit.ts (no platform setting
+// exists before M6; a request may name &limit= from 1 to the cap of 50).
+const CASE_SEARCH_DEFAULT_LIMIT = 5;
+const CASE_SEARCH_MAX_LIMIT = 50;
 
 const USERS = {
   [FIXTURES.KANSAS_EMAIL]: {
@@ -755,6 +765,28 @@ export async function createMockApiServer(options = {}) {
         lastName: sp ? "Park" : "One",
         email: sp ? "sp.provider@example.test" : "kay.one@example.test",
       });
+    }
+
+    // --- MINT-110 PR 2 leak "npibatch", part 1: the batch NPI check answers
+    // an anonymous caller. (The "npiregistry" leak below opens the whole
+    // /api/npi-registry/ prefix, so it reddens 37b as well.)
+    if (
+      leak === "npibatch" &&
+      /^\/api\/npi-registry\/verify-batch\/?$/.test(url.pathname) &&
+      !(req.headers.authorization ?? "").startsWith("Bearer ")
+    ) {
+      return envelope(res, 200, { results: [] });
+    }
+
+    // --- MINT-110 leak "npiregistry", part 1: the NPI Registry proxy answers
+    // an anonymous caller (an open proxy). The pass path 401s below like any
+    // other route.
+    if (
+      leak === "npiregistry" &&
+      /^\/api\/npi-registry\//.test(url.pathname) &&
+      !(req.headers.authorization ?? "").startsWith("Bearer ")
+    ) {
+      return envelope(res, 200, { results: [], truncated: false });
     }
 
     // --- auth: resolve the caller, then the org (x-org-id needs membership) ---
@@ -1625,6 +1657,65 @@ export async function createMockApiServer(options = {}) {
       });
     }
 
+    // --- /api/npi-registry/* (MINT-110) ---
+    // Public registry data, so there is no org row to leak; the wall is the
+    // guard and the role. Writer-only; the body is validated before any
+    // registry call (an empty search body 422s). Never calls out: a valid
+    // request gets an empty answer. Leak "npiregistry", part 2: a billing
+    // (read-only) member is served.
+    const npiRegistryMatch = url.pathname.match(/^\/api\/npi-registry\/(search|lookup)\/?$/);
+    if (npiRegistryMatch) {
+      if (method !== "POST") return envelope(res, 405, null, "Method not allowed");
+      if (user.role === "billing" && leak !== "npiregistry") {
+        return envelope(res, 403, null, "Only admins and specialists can search the NPI Registry");
+      }
+      const body = (await readBody(req)) ?? {};
+      res.setHeader("cache-control", "private, no-store, max-age=0");
+      if (npiRegistryMatch[1] === "search") {
+        if (!body.firstName || !body.lastName) {
+          return envelope(res, 422, null, "Enter a first and last name to search the NPI Registry");
+        }
+        return envelope(res, 200, { results: [], truncated: false });
+      }
+      if (typeof body.npi !== "string" || !/^\d{10}$/.test(body.npi.replace(/[-\s]/g, ""))) {
+        return envelope(res, 422, null, "Enter a 10-digit NPI with a valid check digit");
+      }
+      return envelope(res, 200, { record: null });
+    }
+
+    // --- /api/npi-registry/verify-batch (MINT-110 PR 2) ---
+    // Writer-only, then validated (1 to 10 check-digit-valid NPIs), before any
+    // registry call. Never calls out: each valid NPI comes back checked with no
+    // record. Leak "npibatch", part 2: a billing (read-only) member is served,
+    // and the answers lose Cache-Control: no-store.
+    if (/^\/api\/npi-registry\/verify-batch\/?$/.test(url.pathname)) {
+      if (method !== "POST") return envelope(res, 405, null, "Method not allowed");
+      if (user.role === "billing" && leak !== "npibatch") {
+        return envelope(
+          res,
+          403,
+          null,
+          "Only admins and specialists can check NPIs in the NPI Registry",
+        );
+      }
+      const body = (await readBody(req)) ?? {};
+      if (leak !== "npibatch") res.setHeader("cache-control", "private, no-store, max-age=0");
+      const npis = Array.isArray(body.npis) ? body.npis : [];
+      const valid = npis.every(
+        (npi) => typeof npi === "string" && /^\d{10}$/.test(npi.replace(/[-\s]/g, "")),
+      );
+      if (npis.length === 0 || npis.length > 10 || !valid) {
+        return envelope(res, 422, null, "Send 1 to 10 NPIs to check");
+      }
+      return envelope(res, 200, {
+        results: npis.map((npi) => ({
+          npi: npi.replace(/[-\s]/g, ""),
+          status: "checked",
+          record: null,
+        })),
+      });
+    }
+
     // --- /api/payer-forms/* (Payer PDF) ---
     // These rows are GLOBAL: no org_id, one blank form per payer shared by every
     // org. That inverts the usual mock shape — there is no cross-org 404 to
@@ -1901,7 +1992,30 @@ export async function createMockApiServer(options = {}) {
                     (caseDigits != null && digits !== "" && digits.includes(caseDigits))
                   );
                 });
-        return envelope(res, 200, rows, null, { total: rows.length });
+        // At most meta.limit rows — the request's &limit= (a whole number from
+        // 1 to 50, else a 422), or the default 5 (CASE_SEARCH_DEFAULT_LIMIT in
+        // src/server/caseSearchLimit.ts). meta.limit is the limit applied,
+        // meta.total counts every match and meta.truncated says whether data
+        // holds all of them; all three are always sent on this mode.
+        const rawLimit = url.searchParams.get("limit");
+        const requested = rawLimit !== null && /^\d+$/.test(rawLimit) ? Number(rawLimit) : null;
+        // Leak "casesearchcap": any positive &limit= is honoured, past the cap
+        // (assertion 15d red).
+        const maxLimit = leak === "casesearchcap" ? Number.MAX_SAFE_INTEGER : CASE_SEARCH_MAX_LIMIT;
+        if (rawLimit !== null && !(requested >= 1 && requested <= maxLimit)) {
+          return envelope(
+            res,
+            422,
+            null,
+            `limit must be a whole number from 1 to ${CASE_SEARCH_MAX_LIMIT}`,
+          );
+        }
+        const limit = requested ?? CASE_SEARCH_DEFAULT_LIMIT;
+        return envelope(res, 200, rows.slice(0, limit), null, {
+          total: rows.length,
+          truncated: rows.length > limit,
+          limit,
+        });
       }
       return envelope(res, 422, null, "providerId or q query parameter is required");
     }

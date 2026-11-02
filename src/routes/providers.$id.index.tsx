@@ -74,9 +74,20 @@ import { useCases, useCaseDenialEntries, useDenialReasonCodes } from "@/hooks/us
 import { useEnrollmentReadiness } from "@/hooks/useEnrollmentReadiness";
 import { AddTouchDialog, type TouchCaseCandidate } from "@/components/cases/AddTouchDialog";
 import { usePayers } from "@/hooks/useAdmin";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import { useCanWrite } from "@/lib/permissions";
 import { isValidEmail } from "@/lib/contactValidation";
-import { isValidNpi } from "@/lib/providerGroup";
+import {
+  NPI_CHECK_DIGIT_MESSAGE,
+  NPI_FORMAT_MESSAGE,
+  isValidNpi,
+  stripNpiSeparators,
+} from "@/lib/providerIdentity";
+import {
+  NpiRegistryCheckNote,
+  NpiRegistryQuietNote,
+} from "@/components/providers/NpiRegistryAssist";
+import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
 import { hasValidLicenseDateOrder, LICENSE_DATE_ORDER_ERROR } from "@/lib/licenseDates";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -364,9 +375,15 @@ interface FieldDef {
   value: string | null;
   type?: "text" | "date" | "gender";
   validate?: (value: string) => string | null;
+  /** Applied to the trimmed draft before validation and save. */
+  normalize?: (value: string) => string;
   masked?: boolean;
   mono?: boolean;
   display?: (value: string | null) => string;
+  /** Set only under IdentityValidationRules.recheckStoredOnEdit (MINT-129):
+   * an unchanged stored value is validated on save too, after this
+   * normalization. It never reaches the save patch. */
+  recheckStoredAs?: (stored: string) => string;
 }
 type Cell = FieldDef | { ssn: true };
 
@@ -374,10 +391,33 @@ const CELL_LABEL = "text-[12px] font-semibold uppercase tracking-[0.05em] text-[
 
 function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite: boolean }) {
   const update = useUpdateProvider(provider.id);
+  const identityRules = useIdentityValidationRules();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // MINT-110: the third NPI write path follows the same rule as Add Provider
+  // and the roster form — separators stripped, ten digits, the check digit
+  // (facts about the number, which stay hard). The NPI Registry check never
+  // holds up the save: a changed NPI saves at once, the check finishes in the
+  // background, and a mismatch shows as a quiet note under the NPI (A30).
+  // Only a changed NPI is checked; a stored one is never re-checked.
+  const npiPolicy = useNpiRegistryPolicy();
+  const npiDraft = stripNpiSeparators((draft.npi ?? "").trim());
+  const npiChanged = editing && npiDraft !== stripNpiSeparators((provider.npi ?? "").trim());
+  const npiNames = {
+    firstName: editing ? (draft.firstName ?? "") : provider.firstName,
+    lastName: editing ? (draft.lastName ?? "") : provider.lastName,
+  };
+  const npiNoticeId = "identity-npi-registry-note";
+  const recordNpiAdvisories = useRecordNpiAdvisoriesAfterSave();
+  // The NPI this edit just saved, and the name it was saved with.
+  const [savedNpi, setSavedNpi] = useState<{
+    npi: string;
+    firstName: string;
+    lastName: string;
+  } | null>(null);
 
   const dateDisplay = (v: string | null) => (v ? fmtDate(v) : "—");
   const groups: { title: string; cells: Cell[] }[] = [
@@ -419,7 +459,17 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           key: "npi",
           value: provider.npi ?? null,
           mono: true,
-          validate: (v) => (isValidNpi(v) ? null : "NPI is 10 digits."),
+          // MINT-110: "123-456-7890" and "123 456 7890" save as digits.
+          normalize: stripNpiSeparators,
+          // Runs only when the NPI changed (see save) — MINT-7 check digit.
+          validate: (v) => {
+            if (!/^\d{10}$/.test(v)) return NPI_FORMAT_MESSAGE;
+            return isValidNpi(v) ? null : NPI_CHECK_DIGIT_MESSAGE;
+          },
+          // Off by default; under recheckStoredOnEdit (MINT-129) an unchanged
+          // stored NPI is checked on save too, separators stripped as the
+          // roster form strips them.
+          recheckStoredAs: identityRules.recheckStoredOnEdit ? stripNpiSeparators : undefined,
         },
         { label: "CAQH ID", key: "caqhId", value: provider.caqhId ?? null, mono: true },
         { label: "Specialty", key: "specialty", value: provider.specialty ?? null },
@@ -469,16 +519,28 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
     setEditing(true);
   };
 
+  const draftOf = (f: FieldDef): string => {
+    const draftValue = draft[f.key] ?? "";
+    if (f.type === "gender") return draftValue;
+    return f.normalize ? f.normalize(draftValue.trim()) : draftValue.trim();
+  };
+  // The stored value under the same normalization, so a legacy "123-456-7890"
+  // left untouched is not seen as a change (and never re-validated).
+  const storedOf = (f: FieldDef): string | null =>
+    f.normalize && f.value !== null ? f.normalize(f.value.trim()) || null : (f.value ?? null);
+
   const save = async () => {
     const errors: Record<string, string> = {};
     for (const f of fields) {
-      const draftValue = draft[f.key] ?? "";
-      const v = f.type === "gender" ? draftValue : draftValue.trim();
+      const v = draftOf(f);
       // Validate only fields the user actually changed — a legacy invalid
       // value in an untouched field must not block an unrelated edit.
-      const changed = (v === "" ? null : v) !== (f.value ?? null);
+      const changed = (v === "" ? null : v) !== storedOf(f);
       if (changed && v !== "" && f.validate) {
         const message = f.validate(v);
+        if (message) errors[f.key] = message;
+      } else if (!changed && v !== "" && f.validate && f.recheckStoredAs) {
+        const message = f.validate(f.recheckStoredAs(v));
         if (message) errors[f.key] = message;
       }
     }
@@ -489,10 +551,9 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
     // here (the E6.4 wipe-defect protection holds by construction).
     const patch: Partial<ProviderInput> = {};
     for (const f of fields) {
-      const draftValue = draft[f.key] ?? "";
-      const value = f.type === "gender" ? draftValue : draftValue.trim();
+      const value = draftOf(f);
       const next = value === "" ? null : value;
-      if (next !== (f.value ?? null)) (patch as Record<string, string | null>)[f.key] = next;
+      if (next !== storedOf(f)) (patch as Record<string, string | null>)[f.key] = next;
     }
     if (Object.keys(patch).length === 0) {
       setEditing(false);
@@ -502,6 +563,23 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       await update.mutateAsync(patch);
       toast.success("Saved.");
       setEditing(false);
+      if (typeof patch.npi === "string") {
+        // The registry check of the new NPI goes on after the save.
+        setSavedNpi({ npi: patch.npi, ...npiNames });
+        recordNpiAdvisories({
+          recordId: provider.id,
+          npi: patch.npi,
+          verify: true,
+          typed: npiNames,
+          entered: {
+            credentials: (draft.credentials ?? "").trim(),
+            taxonomyCode: (draft.taxonomyCode ?? "").trim(),
+            licenses: [],
+          },
+          confirmed: new Set(),
+          policy: npiPolicy,
+        });
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : "Could not save.");
     }
@@ -577,6 +655,14 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
                             ? c.display(c.value)
                             : (c.value ?? "—")}
                       </p>
+                      {c.key === "npi" && savedNpi && savedNpi.npi === (c.value ?? "") ? (
+                        <NpiRegistryQuietNote
+                          npi={savedNpi.npi}
+                          firstName={savedNpi.firstName}
+                          lastName={savedNpi.lastName}
+                          policy={npiPolicy}
+                        />
+                      ) : null}
                     </div>
                   );
                 }
@@ -612,6 +698,15 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
                       <Input
                         id={`identity-${c.key}`}
                         type={c.type === "date" ? "date" : "text"}
+                        aria-invalid={fieldErrors[c.key] ? true : undefined}
+                        aria-describedby={
+                          [
+                            c.key === "npi" ? npiNoticeId : null,
+                            fieldErrors[c.key] ? `identity-${c.key}-error` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" ") || undefined
+                        }
                         value={draft[c.key] ?? ""}
                         onChange={(e) => {
                           setDraft((d) => ({ ...d, [c.key]: e.target.value }));
@@ -621,9 +716,23 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
                       />
                     )}
                     {fieldErrors[c.key] ? (
-                      <p role="alert" className="text-[12px] text-[#B91C1C]">
+                      <p
+                        id={`identity-${c.key}-error`}
+                        role="alert"
+                        className="text-[12px] text-[#B91C1C]"
+                      >
                         {fieldErrors[c.key]}
                       </p>
+                    ) : null}
+                    {c.key === "npi" ? (
+                      <NpiRegistryCheckNote
+                        noticeId={npiNoticeId}
+                        npi={npiDraft}
+                        verify={npiChanged}
+                        firstName={npiNames.firstName}
+                        lastName={npiNames.lastName}
+                        policy={npiPolicy}
+                      />
                     ) : null}
                   </div>
                 );

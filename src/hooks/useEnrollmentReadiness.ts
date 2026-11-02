@@ -7,6 +7,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
+import { resolveCaqhAttestationWindowDays } from "@/lib/caqhAttestation";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
 import { useFacilities, useOrgStateLicenses, useProviderGroups } from "@/hooks/useLookups";
 import { useProviderGroupAssignments } from "@/hooks/useProviders";
@@ -109,6 +110,8 @@ export function useEnrollmentReadiness(): EnrollmentReadinessData {
       facilities: facilitiesQ.data ?? [],
       groupDocuments: documentsQ.data ?? [],
       groupInsurancePolicies: insuranceQ.data ?? [],
+      // The shared CAQH window (A26); nothing stores an override yet (MINT-125).
+      caqhAttestationWindowDays: resolveCaqhAttestationWindowDays(null, null),
     });
   }, [
     resolved,

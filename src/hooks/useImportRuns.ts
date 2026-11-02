@@ -30,6 +30,7 @@ import {
   useProviderGroupAssignments,
 } from "@/hooks/useProviders";
 import { useFacilities, useOrgStateLicenses, useProviderGroups } from "@/hooks/useLookups";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import {
   dedupeFacilityRows,
   dedupeGroupRows,
@@ -217,6 +218,7 @@ export function useImportPreview(runId: string | null) {
   const groupAssignmentsQ = useProviderGroupAssignments();
   const facilityAssignmentsQ = useProviderAssignments();
   const licensesQ = useOrgStateLicenses();
+  const identityRules = useIdentityValidationRules();
 
   const queries = [
     runQ,
@@ -230,9 +232,13 @@ export function useImportPreview(runId: string | null) {
   ];
   const isLoading = queries.some((q) => q.isLoading);
   const isError = queries.some((q) => q.isError);
+  // Every read has answered (MINT-110 PR 2): until then the dedupe would run
+  // over a partial picture (no existing providers yet = every row a "create").
+  const settled = queries.every((q) => q.isSuccess);
 
   const dispositions = useMemo(() => {
-    if (!rowsQ.data) return null;
+    // The existing providers decide create vs. match: never dedupe without them.
+    if (!rowsQ.data || !providersQ.data) return null;
     return dedupeImportRows({
       rows: rowsQ.data,
       providers: (providersQ.data ?? []).map((p) => ({
@@ -269,6 +275,7 @@ export function useImportPreview(runId: string | null) {
           issueDate: l.issueDate,
           expirationDate: l.expirationDate,
         })),
+      identityRules,
     });
   }, [
     rowsQ.data,
@@ -278,9 +285,18 @@ export function useImportPreview(runId: string | null) {
     groupAssignmentsQ.data,
     facilityAssignmentsQ.data,
     licensesQ.data,
+    identityRules,
   ]);
 
-  return { run: runQ.data ?? null, dispositions, isLoading, isError };
+  // The staged rows too, for checks that read a row's own cells (MINT-110).
+  return {
+    run: runQ.data ?? null,
+    rows: rowsQ.data ?? null,
+    dispositions,
+    isLoading,
+    isError,
+    settled,
+  };
 }
 
 /** Commit invalidates every cache the RPC's writes feed — providers, both

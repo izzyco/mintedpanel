@@ -17,10 +17,18 @@ import { NotFoundView } from "@/components/NotFoundView";
 import { AccessContextBoundary } from "@/components/access/AccessContextBoundary";
 import { useAuthStore, registerQueryClient } from "@/lib/auth-store";
 import { isMissionControlPath } from "@/lib/missionControl";
+import { describeError } from "@/lib/errorIdentifiers";
 import { Toaster } from "@/components/ui/sonner";
 
 function ErrorComponent({ error, reset }: { error: unknown; reset: () => void }) {
-  console.error(error);
+  // SSR renders this boundary too. A production server log holds the error's
+  // identifiers only (SEC-03: a raw error can carry row data); the browser
+  // console and a dev server keep the full error.
+  if (import.meta.env.SSR && !import.meta.env.DEV) {
+    console.error("[ssr] root error boundary", JSON.stringify(describeError(error)));
+  } else {
+    console.error(error);
+  }
   const router = useRouter();
   useEffect(() => {
     reportLovableError(error, { boundary: "tanstack_root_error_component" });

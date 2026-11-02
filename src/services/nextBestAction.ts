@@ -25,6 +25,7 @@ import {
   type GroupContractInput,
   type ProviderReadinessFacts,
 } from "@/lib/enrollmentReadiness";
+import { resolveCaqhAttestationWindowDays } from "@/lib/caqhAttestation";
 import { currentGroupReadinessDocuments } from "@/lib/documents";
 import type { PayerPipelineState } from "@/lib/payerPipeline";
 import { isCaseStatus } from "@/lib/caseStatus";
@@ -376,6 +377,8 @@ export async function getNextBestAction(
       (insuranceRes.data ?? []) as Array<{ group_id: string; policy_end_date: string | null }>
     ).map((p) => ({ groupId: p.group_id, policyEndDate: p.policy_end_date })),
     contracts,
+    // The shared CAQH window (A26); nothing stores an override yet (MINT-125).
+    caqhAttestationWindowDays: resolveCaqhAttestationWindowDays(null, null),
   }).map((row) => ({
     providerId: row.providerId,
     groupId: row.groupId,

@@ -35,10 +35,10 @@ import { toCsv } from "@/lib/csv";
 import { matchFacilityLocator, type FacilityLocatorRecord } from "@/lib/facilityLocator";
 import { matchGroupLocator, type GroupMatchCandidate } from "@/lib/groupLocator";
 import { validatePayerAttachRow, type PayerAttachScanContext } from "@/lib/groupPayerAttach";
+import { NPI_FORMAT_MESSAGE, stripNpiSeparators } from "@/lib/providerIdentity";
 import {
   CAQH_RE,
   EMAIL_RE,
-  NPI_RE,
   type ProviderFormState,
 } from "@/components/providers/providerFormShared";
 import type { ImportEntityKind } from "@/types";
@@ -349,6 +349,15 @@ interface MapCtx {
 
 const NULLABLE = (v: string): string | null => (v ? v : null);
 
+function stripNpiCells(
+  raw: Record<string, string>,
+  columns: readonly string[],
+): Record<string, string> {
+  const cells = { ...raw };
+  for (const h of columns) if (cells[h]) cells[h] = stripNpiSeparators(cells[h]);
+  return cells;
+}
+
 // The section scan (E3.3 TE-3): the shared SSN sweep + shape + required checks,
 // then the section's format checks in template order, then the section mapper.
 // ONE error per row, deterministic order (SSN sweep first). Pure + fully
@@ -357,6 +366,9 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
   const spec = descriptor.spec;
   const swept = sweepSsn(record, headers, spec.tinColumns);
   const raw = swept.raw;
+  // MINT-110: NPI cells are checked and mapped with their dashes and spaces
+  // stripped; `raw` keeps each cell as uploaded.
+  const cells = stripNpiCells(raw, [...spec.npiColumns, ...(spec.addProviderNpiColumns ?? [])]);
   let errorColumn: string | null = swept.error?.column ?? null;
   let errorReason: string | null = swept.error?.reason ?? null;
   const fail = (column: string | null, reason: string) => {
@@ -374,7 +386,7 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
   }
 
   for (const h of spec.required) {
-    if (!raw[h]) fail(h, `${h} is required`);
+    if (!cells[h]) fail(h, `${h} is required`);
   }
   if (spec.requireGroupKey && !(raw.group_name ?? "").trim() && !(raw.group_tin ?? "").trim()) {
     fail("group_name", "A parent group is required — provide group_name or group_tin");
@@ -385,7 +397,7 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
   const multis: Record<string, string[]> = {};
   for (const h of headers) {
     if (h === "") continue;
-    const v = raw[h] ?? "";
+    const v = cells[h] ?? "";
     const ignored = Object.entries(spec.ignoredWhenTrue ?? {}).some(
       ([toggle, fields]) => coerceBool(raw[toggle] ?? "").value === true && fields.includes(h),
     );
@@ -397,10 +409,16 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
       fail(h, `${h} must be a single letter, got "${v}"`);
     }
     if (spec.npiColumns.includes(h) && v && !isNpi(v)) {
-      fail(h, `${h} must be exactly 10 digits, got "${v}"`);
+      fail(h, `${h} must be exactly 10 digits, got "${raw[h] ?? ""}"`);
     }
-    if (spec.addProviderNpiColumns?.includes(h) && v && !NPI_RE.test(v)) {
-      fail(h, "NPI must be 10 digits and start with 1");
+    // A provider's NPI, as Add Provider checks it: ten digits (no first-digit
+    // rule; the CMS check digit is the NPI rule). The check digit itself binds
+    // at dedupe: always on a new identity (MINT-7), and on a row matching a
+    // stored NPI only when the identity rules re-check stored NPIs (MINT-129,
+    // off by default), so by default a re-import of a provider whose stored
+    // NPI predates the check never newly fails.
+    if (spec.addProviderNpiColumns?.includes(h) && v && !isNpi(v)) {
+      fail(h, NPI_FORMAT_MESSAGE);
     }
     if (spec.caqhColumns?.includes(h) && v && !CAQH_RE.test(v)) {
       fail(h, "CAQH must be 8 digits");
@@ -441,7 +459,7 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
   }
 
   if (errorReason === null && descriptor.validateRow) {
-    const crossColumn = descriptor.validateRow(raw);
+    const crossColumn = descriptor.validateRow(cells);
     if (crossColumn) fail(crossColumn.column, crossColumn.reason);
   }
 
@@ -450,16 +468,16 @@ function scanWith(descriptor: SectionDescriptor, record: CsvRecord, headers: str
   }
 
   const ctx: MapCtx = {
-    cell: (h) => raw[h] ?? "",
-    nullable: (h) => NULLABLE(raw[h] ?? ""),
-    upper: (h) => NULLABLE((raw[h] ?? "").toUpperCase()),
+    cell: (h) => cells[h] ?? "",
+    nullable: (h) => NULLABLE(cells[h] ?? ""),
+    upper: (h) => NULLABLE((cells[h] ?? "").toUpperCase()),
     date: (h) => dates[h] ?? null,
     multi: (h) => {
-      const items = multis[h] ?? decodeDelimited(raw[h] ?? "");
+      const items = multis[h] ?? decodeDelimited(cells[h] ?? "");
       return spec.multiValueStateColumns.includes(h) ? items.map((it) => it.toUpperCase()) : items;
     },
     bool: (h) => {
-      const v = raw[h] ?? "";
+      const v = cells[h] ?? "";
       if (!v) return null;
       return coerceBool(v).value ? "true" : "false";
     },
@@ -638,10 +656,11 @@ export const PROVIDER_DESCRIPTOR: SectionDescriptor = {
   headers: PROVIDER_TEMPLATE_HEADERS,
   templateFilename: "provider-import-template.csv",
   helperText:
-    "Re-download the current template; old versions are rejected. One row per provider × license (repeat identity columns for extra licenses, facilities, groups, or enrollments). Contact, education, gender, start date, new-grad/CAQH, and license type fields are optional. facility_name accepts the exact facility name or the location's street address — the first facility on the file is the primary. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Only the last 4 SSN digits in ssn_last4.",
+    "Re-download the current template; old versions are rejected. One row per provider × license (repeat identity columns for extra licenses, facilities, groups, or enrollments). NPI, contact, education, gender, start date, new-grad/CAQH, and license type fields are optional; a row without an NPI imports by name and is held for review when that name already exists. facility_name accepts the exact facility name or the location's street address — the first facility on the file is the primary. The parent group is matched by group_name, then group_tin, then group_npi (the group's Type 2 NPI) when that TIN is on more than one group. Only the last 4 SSN digits in ssn_last4.",
   optionalHeaders: ["group_npi", "gender"],
   spec: {
-    required: ["provider_first_name", "provider_last_name", "npi"],
+    // NPI is optional (B3); a row without one imports by name.
+    required: ["provider_first_name", "provider_last_name"],
     requireGroupKey: true,
     tinColumns: ["group_tin"],
     npiColumns: ["group_npi"],

@@ -63,6 +63,17 @@
 //   SOUTHPARK_GROUP_ID     A South Park provider_groups id for 35b (cross-org
 //                          invite must 404). 35-35c SKIP while the invite routes
 //                          are off; 35d runs against the local mock only.
+//   SEARCH_QUERY           Case search query for assertion 15 (default "a").
+//   SEARCH_LEAK_QUERY      Case search query for 15b (default "South Park"). It
+//                          must match NO Kansas case (provider name, payer
+//                          name, tracking id or case number) and would match
+//                          South Park's fixture case under a leak: 15b requires
+//                          meta.total === 0, because the search returns only
+//                          its first meta.limit rows (default 5) and a leaked
+//                          row past them would escape the id check. 15c
+//                          repeats it at &limit=50 (the cap, the extension's
+//                          "Show more"); 15d asks for &limit=51 and needs a
+//                          422 (a panel with MINT-14 S3's &limit=).
 //   (no new env needed for 25/25b/26 — the document upload-intent + finalize
 //   write-path pair, ASD BITE-ASD-04, closing the TD-53 gap; they reuse
 //   KANSAS_PROVIDER_ID/SOUTHPARK_PROVIDER_ID as the owner ids.)
@@ -1235,7 +1246,10 @@ function looksLikeVercelGate(r) {
   // 15b. ...and a search that would surface a South Park case under a leak must
   //      never return that case's id or its provider's id. Org-scoped in
   //      production (Kansas only ever sees Kansas cases, so the ids never
-  //      appear for any query); the leak mode makes it red.
+  //      appear for any query); the leak mode makes it red. The search returns
+  //      only its first meta.limit rows (default 5), so a leaked case can sit
+  //      past the rows checked by id: SEARCH_LEAK_QUERY matches no Kansas case,
+  //      and meta.total (every match, not only the rows sent) must be 0.
   const searchLeak = await apiGet(
     `/api/cases?q=${encodeURIComponent(env.SEARCH_LEAK_QUERY ?? "South Park")}`,
     { token: kansasTok },
@@ -1244,11 +1258,44 @@ function looksLikeVercelGate(r) {
   const searchLeakedCase = searchRows.some(
     (r) => r?.id === env.SOUTHPARK_CASE_ID || r?.providerId === env.SOUTHPARK_PROVIDER_ID,
   );
+  const searchLeakTotal = searchLeak.body?.meta?.total;
   check(
-    "15b. Kansas case search never returns a South Park case or provider id",
-    searchLeak.status === 200 && !searchLeakedCase,
-    `status=${searchLeak.status} rows=${searchRows.length} leaked=${searchLeakedCase}`,
+    "15b. Kansas case search never returns a South Park case or provider id, and matches nothing",
+    searchLeak.status === 200 && !searchLeakedCase && searchLeakTotal === 0,
+    `status=${searchLeak.status} rows=${searchRows.length} total=${searchLeakTotal} leaked=${searchLeakedCase}`,
     { leak: true },
+  );
+  // 15c. The same search at the largest page a client can ask for (&limit=50,
+  //      MINT-14 S3 "Show more"): still nothing matches and no South Park id
+  //      in any of up to 50 rows. A wider page must not widen the org scope.
+  const searchLeakMax = await apiGet(
+    `/api/cases?q=${encodeURIComponent(env.SEARCH_LEAK_QUERY ?? "South Park")}&limit=50`,
+    { token: kansasTok },
+  );
+  const searchMaxRows = searchLeakMax.body?.data ?? [];
+  const searchMaxLeaked = searchMaxRows.some(
+    (r) => r?.id === env.SOUTHPARK_CASE_ID || r?.providerId === env.SOUTHPARK_PROVIDER_ID,
+  );
+  const searchMaxTotal = searchLeakMax.body?.meta?.total;
+  check(
+    "15c. Kansas case search at &limit=50 never returns a South Park case or provider id, and matches nothing",
+    searchLeakMax.status === 200 &&
+      searchMaxRows.length <= 50 &&
+      !searchMaxLeaked &&
+      searchMaxTotal === 0,
+    `status=${searchLeakMax.status} rows=${searchMaxRows.length} total=${searchMaxTotal} leaked=${searchMaxLeaked}`,
+    { leak: true },
+  );
+  // 15d. ...and the cap holds: &limit=51 is refused (422), never clamped or
+  //      honoured, so no request reads a page past the cap.
+  const searchOverCap = await apiGet(
+    `/api/cases?q=${encodeURIComponent(env.SEARCH_LEAK_QUERY ?? "South Park")}&limit=51`,
+    { token: kansasTok },
+  );
+  check(
+    "15d. Kansas case search refuses &limit=51 with a 422 (the cap is 50)",
+    searchOverCap.status === 422 && searchOverCap.body?.data == null,
+    `status=${searchOverCap.status} dataPresent=${searchOverCap.body?.data != null}`,
   );
 
   // 16. Fill-only SSN release (E4.4 F4.4.2): a Kansas writer requesting the
@@ -1869,6 +1916,83 @@ function looksLikeVercelGate(r) {
     );
   } else {
     console.log("SKIP  35d. intake session scope — local mock only (needs an emailed code)");
+  }
+
+  // 36-36c — MINT-110 NPI Registry lookup. These routes read no org data (the
+  // registry is public), so there is no cross-org row to leak; the wall to
+  // prove is that the server never proxies the registry for an anonymous
+  // caller or a read-only member. 36 is the positive control: an empty body
+  // 422s, which proves the route is live, so 36b/36c can't pass against a dead
+  // route. On a correct server none of the three reaches the registry.
+  const npiProbe = await apiPost("/api/npi-registry/search", {}, { token: kansasTok });
+  if (npiProbe.status === 404) {
+    console.log("SKIP  36/36b/36c. NPI Registry lookup — route not deployed");
+  } else {
+    check(
+      "36. Kansas POST /api/npi-registry/search with an empty body -> 422 (route is live)",
+      npiProbe.status === 422,
+      `status=${npiProbe.status} (expect 422)`,
+    );
+    const anonymous = await apiPost("/api/npi-registry/search", {
+      firstName: "Gate",
+      lastName: "Probe",
+    });
+    check(
+      "36b. Anonymous NPI Registry search -> 401 (never an open proxy)",
+      anonymous.status === 401 && anonymous.body?.data == null,
+      `status=${anonymous.status} (expect 401) dataPresent=${anonymous.body?.data != null}`,
+    );
+    const readOnly = await apiPost(
+      "/api/npi-registry/lookup",
+      { npi: "1234567893" },
+      { token: spTok },
+    );
+    check(
+      "36c. Billing (read-only) NPI Registry lookup -> 403",
+      readOnly.status === 403 && readOnly.body?.data == null,
+      `status=${readOnly.status} (expect 403) dataPresent=${readOnly.body?.data != null}`,
+    );
+  }
+
+  // 37-37d — MINT-110 PR 2: the import review's batch NPI check. The same wall
+  // as 36: no org data to leak, so prove the route is live (37: an empty body
+  // 422s before any registry call), that it never runs for an anonymous
+  // caller (37b) or a read-only member (37c), and that its answers are
+  // no-store (37d). None of these reaches the registry on a correct server:
+  // validation and role both answer first.
+  const batchProbe = await apiPost("/api/npi-registry/verify-batch", {}, { token: kansasTok });
+  if (batchProbe.status === 404) {
+    console.log("SKIP  37/37b/37c/37d. NPI Registry batch check — route not deployed");
+  } else {
+    check(
+      "37. Kansas POST /api/npi-registry/verify-batch with an empty body -> 422 (route is live)",
+      batchProbe.status === 422,
+      `status=${batchProbe.status} (expect 422)`,
+    );
+    // Every verify-batch answer is private: never stored by a browser or proxy.
+    check(
+      "37d. verify-batch answers are never cached (Cache-Control: no-store)",
+      /no-store/i.test(batchProbe.cacheControl ?? ""),
+      `cache-control=${batchProbe.cacheControl ?? "(none)"}`,
+    );
+    const anonymousBatch = await apiPost("/api/npi-registry/verify-batch", {
+      npis: ["1234567893"],
+    });
+    check(
+      "37b. Anonymous NPI Registry batch check -> 401 (never an open proxy)",
+      anonymousBatch.status === 401 && anonymousBatch.body?.data == null,
+      `status=${anonymousBatch.status} (expect 401) dataPresent=${anonymousBatch.body?.data != null}`,
+    );
+    const readOnlyBatch = await apiPost(
+      "/api/npi-registry/verify-batch",
+      { npis: ["1234567893"] },
+      { token: spTok },
+    );
+    check(
+      "37c. Billing (read-only) NPI Registry batch check -> 403",
+      readOnlyBatch.status === 403 && readOnlyBatch.body?.data == null,
+      `status=${readOnlyBatch.status} (expect 403) dataPresent=${readOnlyBatch.body?.data != null}`,
+    );
   }
 
   // ---- Pass/fail table ----
