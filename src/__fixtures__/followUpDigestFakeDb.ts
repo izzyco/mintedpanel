@@ -15,8 +15,19 @@
 // the row is claimed or sent; the finish takes sent or failed and touches
 // only a claimed row. The SQL itself is exercised by
 // supabase/tests/mint108-notification-sends.sql.
+//
+// And MINT-134's two job RPCs (supabase/migrations/
+// 20261101090000_mint134_workflow_advisories.sql, 20261102140000_...):
+// record_job_advisory keeps one open row per (org, check, record) and answers
+// null for a repeat while it is open; resolve_workflow_advisories stamps the
+// open rows for (org, check, record) and answers how many. Like the SQL, a
+// record must be the org's own row (organizations) or one of its memberships,
+// and a context must be valid, with its ids the org's. Each rpc() is awaitable
+// and has supabase-js's .abortSignal(). The SQL is exercised by
+// supabase/tests/mint134-*.sql.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
+import { isAdvisoryContextValid, isCheckKey } from "@/lib/advisoryChecks";
 import { JOB_NAME_RE } from "@/server/jobs/registry";
 import { NOTIFICATION_SLOT_RE } from "@/server/jobs/notificationSends";
 
@@ -48,12 +59,27 @@ export interface FakeNotificationSend {
 }
 
 type SendRpc = "claim_notification_send" | "finish_notification_send";
+type AdvisoryRpc = "record_job_advisory" | "resolve_workflow_advisories";
+
+/** A workflow_advisories row a job wrote. */
+export interface FakeJobAdvisory {
+  id: string;
+  org_id: string;
+  check_key: string;
+  severity_at_time: string;
+  record_table: string;
+  record_id: string;
+  job: string;
+  context: Record<string, unknown>;
+  resolved: boolean;
+}
 
 export interface FakeDigestDb {
   db: SupabaseClient<Database>;
   tables: Record<string, FakeRow[]>;
   reads: FakeRead[];
   sends: FakeNotificationSend[];
+  advisories: FakeJobAdvisory[];
   rpcCalls: Array<{ fn: string; args: Record<string, unknown> }>;
   /** A read of this table answers with this error, every time. */
   failTable: Record<string, FakeError>;
@@ -61,6 +87,8 @@ export interface FakeDigestDb {
   failRead: ((read: FakeRead) => FakeError | null) | null;
   /** The next call of this RPC answers with this error. */
   failNextRpc: Partial<Record<SendRpc, FakeError>>;
+  /** Every call of this advisory RPC answers with this error. */
+  failRpc: Partial<Record<AdvisoryRpc, FakeError>>;
   /** A claim for one of these recipients answers with a connection error. */
   failClaimFor: Set<string>;
 }
@@ -95,10 +123,12 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
     tables,
     reads: [],
     sends: [],
+    advisories: [],
     rpcCalls: [],
     failTable: {},
     failRead: null,
     failNextRpc: {},
+    failRpc: {},
     failClaimFor: new Set(),
   };
 
@@ -215,8 +245,72 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
     return { data: true, error: null };
   };
 
-  const rpc = async (fn: string, args: Record<string, unknown>): Promise<Result> => {
-    state.rpcCalls.push({ fn, args });
+  const refused = (message: string): Result => ({ data: null, error: { code: "22023", message } });
+  const rows = (table: string) => state.tables[table] ?? [];
+  const recordInOrg = (table: unknown, id: unknown, orgId: unknown) =>
+    table === "organizations"
+      ? id === orgId
+      : table === "memberships"
+        ? rows("memberships").some((m) => m.id === id && m.org_id === orgId)
+        : false;
+  const contextIdsInOrg = (context: Record<string, unknown>, orgId: unknown) =>
+    (context.sequence_id === undefined ||
+      rows("notification_sequences").some(
+        (s) => s.id === context.sequence_id && s.org_id === orgId,
+      )) &&
+    (context.recipient_id === undefined ||
+      rows("memberships").some((m) => m.user_id === context.recipient_id && m.org_id === orgId));
+  const openAdvisories = (args: Record<string, unknown>) =>
+    state.advisories.filter(
+      (row) =>
+        !row.resolved &&
+        row.org_id === args.p_org_id &&
+        row.check_key === args.p_check_key &&
+        row.record_table === args.p_record_table &&
+        row.record_id === args.p_record_id,
+    );
+
+  const recordJobAdvisory = (args: Record<string, unknown>): Result => {
+    const context = (args.p_context ?? {}) as Record<string, unknown>;
+    if (typeof args.p_job !== "string" || !JOB_NAME_RE.test(args.p_job)) {
+      return refused("workflow_advisory_job_invalid");
+    }
+    if (!isCheckKey(args.p_check_key)) return refused("workflow_advisory_check_key_invalid");
+    if (args.p_severity !== "advisory" && args.p_severity !== "block") {
+      return refused("workflow_advisory_severity_invalid");
+    }
+    if (!isAdvisoryContextValid(context)) return refused("workflow_advisory_context_invalid");
+    if (!recordInOrg(args.p_record_table, args.p_record_id, args.p_org_id)) {
+      return refused("workflow_advisory_record_not_in_org");
+    }
+    if (!contextIdsInOrg(context, args.p_org_id)) {
+      return refused("workflow_advisory_context_not_in_org");
+    }
+    // ON CONFLICT ... WHERE resolved_at IS NULL DO NOTHING: null for a repeat.
+    if (openAdvisories(args).length > 0) return { data: null, error: null };
+    const id = `13400000-0000-4000-8000-${String(state.advisories.length + 1).padStart(12, "0")}`;
+    state.advisories.push({
+      id,
+      org_id: String(args.p_org_id),
+      check_key: args.p_check_key,
+      severity_at_time: args.p_severity,
+      record_table: String(args.p_record_table),
+      record_id: String(args.p_record_id),
+      job: args.p_job,
+      context: structuredClone(context),
+      resolved: false,
+    });
+    return { data: id, error: null };
+  };
+
+  const resolveAdvisories = (args: Record<string, unknown>): Result => {
+    if (!isCheckKey(args.p_check_key)) return refused("workflow_advisory_check_key_invalid");
+    const open = openAdvisories(args);
+    for (const row of open) row.resolved = true;
+    return { data: open.length, error: null };
+  };
+
+  const answer = (fn: string, args: Record<string, unknown>): Result => {
     if (fn === "claim_notification_send" || fn === "finish_notification_send") {
       const injected = state.failNextRpc[fn];
       if (injected) {
@@ -225,7 +319,19 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
       }
       return fn === "claim_notification_send" ? claim(args) : finish(args);
     }
+    if (fn === "record_job_advisory" || fn === "resolve_workflow_advisories") {
+      const injected = state.failRpc[fn];
+      if (injected) return { data: null, error: injected };
+      return fn === "record_job_advisory" ? recordJobAdvisory(args) : resolveAdvisories(args);
+    }
     return { data: null, error: { code: "PGRST202", message: "Could not find the function" } };
+  };
+
+  // Answered at call time, like the SQL; awaitable, with .abortSignal().
+  const rpc = (fn: string, args: Record<string, unknown>) => {
+    state.rpcCalls.push({ fn, args });
+    const result = Promise.resolve(answer(fn, args));
+    return Object.assign(result, { abortSignal: () => result });
   };
 
   state.db = { from, rpc } as unknown as SupabaseClient<Database>;

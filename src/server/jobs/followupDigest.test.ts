@@ -182,9 +182,13 @@ function stepRow(orgId: string, overrides: Partial<FakeRow> = {}): FakeRow {
   };
 }
 
+/** The membership's id, a UUID like the database's: the user's, ending in the org's. */
+const membershipIdOf = (orgId: string, userId: string) =>
+  `${userId.slice(0, 24)}${orgId.slice(24)}`;
+
 function membership(orgId: string, userId: string, role: string, first: string): FakeRow {
   return {
-    id: `m-${orgId}-${userId}`,
+    id: membershipIdOf(orgId, userId),
     org_id: orgId,
     user_id: userId,
     role,
@@ -1499,5 +1503,194 @@ describe("followup-digest: daily, weekly or twice a day (A8)", () => {
       counts({ orgs_due: 1 }),
     );
     expect(timesTo(JANE_TO)).toEqual(["2026-10-31T13:00:00.000Z", "2026-10-31T19:00:00.000Z"]);
+  });
+});
+
+describe("followup-digest: bypassed checks (MINT-134)", () => {
+  // Org A's digest sequence id as the database has it: a UUID.
+  const SEQ_A = "aaaaaaaa-0000-4000-8000-00000000000a";
+  const NEXT_HOUR = new Date("2026-10-31T14:00:00Z");
+  let warn: MockInstance<(...args: unknown[]) => void>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  const recordCalls = () => fake.rpcCalls.filter((c) => c.fn === "record_job_advisory");
+  const resolveCalls = () => fake.rpcCalls.filter((c) => c.fn === "resolve_workflow_advisories");
+  const warned = () => warn.mock.calls.map((call) => JSON.parse(String(call[0])) as unknown);
+
+  /** world(), but org A's unassigned follow-up is next week: nothing to record. */
+  function cleanWorld(options: WorldOptions = {}): World {
+    const w = world(options);
+    const touch = w.tables.touches.find((t) => t.case_id === w.cases.unassigned.id) as FakeRow;
+    touch.next_follow_up_date = "2026-11-07";
+    return w;
+  }
+  const withoutEmail = (w: World, userId: string) => {
+    const m = w.tables.memberships.find((r) => r.org_id === ORG_A && r.user_id === userId);
+    (m as FakeRow).profiles = { ...((m as FakeRow).profiles as FakeRow), email: "not an address" };
+    return w;
+  };
+  const failReadsOf = (orgId: string) => {
+    fake.failRead = (read) =>
+      read.table === "touches" &&
+      read.filters.some(([, column, value]) => column === "org_id" && value === orgId)
+        ? { code: "57014", message: "canceling statement due to statement timeout" }
+        : null;
+  };
+  const unusableStepA = { a: { id: SEQ_A }, aStep: { sequence_id: SEQ_A, channel: "sms" } };
+
+  it.each([
+    {
+      key: "digest.step_unusable",
+      setup: () => {
+        fake = createFollowUpDigestFakeDb(cleanWorld(unusableStepA).tables);
+      },
+      row: {
+        record_table: "organizations",
+        record_id: ORG_A,
+        severity_at_time: "advisory",
+        context: { problem: "channel_unsupported", sequence_id: SEQ_A },
+      },
+    },
+    {
+      key: "digest.recipient_no_email",
+      setup: () => {
+        fake = createFollowUpDigestFakeDb(withoutEmail(cleanWorld(), JANE).tables);
+      },
+      // The registry marks it critical (factual accuracy), so it records as a block.
+      row: {
+        record_table: "memberships",
+        record_id: membershipIdOf(ORG_A, JANE),
+        severity_at_time: "block",
+        context: { recipient_id: JANE },
+      },
+    },
+    {
+      key: "digest.org_failed",
+      setup: () => {
+        fake = createFollowUpDigestFakeDb(cleanWorld().tables);
+        failReadsOf(ORG_A);
+      },
+      row: {
+        record_table: "organizations",
+        record_id: ORG_A,
+        severity_at_time: "block",
+        context: {},
+      },
+    },
+    {
+      key: "digest.unassigned_follow_ups",
+      setup: () => {
+        fake = createFollowUpDigestFakeDb(world().tables);
+      },
+      row: {
+        record_table: "organizations",
+        record_id: ORG_A,
+        severity_at_time: "advisory",
+        context: { count: 1 },
+      },
+    },
+  ])("records $key once across two hourly runs", async ({ key, setup, row }) => {
+    setup();
+    await runFollowUpDigest(ctx(), deps());
+    await runFollowUpDigest(ctx(NEXT_HOUR), deps());
+    // Both runs asked; the open row absorbed the second.
+    expect(recordCalls().map((c) => c.args.p_check_key)).toEqual([key, key]);
+    expect(fake.advisories).toEqual([
+      expect.objectContaining({
+        org_id: ORG_A,
+        check_key: key,
+        job: JOB,
+        resolved: false,
+        ...row,
+      }),
+    ]);
+    expect(warned()).toEqual([]);
+  });
+
+  it("records nothing when there is no problem, and resolves only on a send, not every hour", async () => {
+    fake = createFollowUpDigestFakeDb(cleanWorld().tables);
+    expect(await runFollowUpDigest(ctx(), deps())).toEqual(
+      counts({ orgs_due: 2, digests_sent: 3 }),
+    );
+    // One per digest sent (its coordinator) and one per org that sent (its step).
+    expect(resolveCalls()).toHaveLength(5);
+    expect(await runFollowUpDigest(ctx(NEXT_HOUR), deps())).toEqual(counts({ orgs_due: 2 }));
+    expect(resolveCalls()).toHaveLength(5);
+    expect(recordCalls()).toEqual([]);
+    expect(fake.advisories).toEqual([]);
+    expect(warned()).toEqual([]);
+  });
+
+  it("resolves the step once the org sends again, a coordinator's no-email once they get a digest, and records a recurrence anew", async () => {
+    fake = createFollowUpDigestFakeDb(cleanWorld(unusableStepA).tables);
+    await runFollowUpDigest(ctx(), deps());
+    const stepA = fake.tables.notification_sequence_steps.find(
+      (s) => s.sequence_id === SEQ_A,
+    ) as FakeRow;
+    const jane = fake.tables.memberships.find(
+      (m) => m.org_id === ORG_A && m.user_id === JANE,
+    ) as FakeRow;
+    const janeEmail = (jane.profiles as FakeRow).email;
+
+    // 9 am: the step is fixed, and Jane has no usable address.
+    stepA.channel = "email";
+    jane.profiles = { ...(jane.profiles as FakeRow), email: "" };
+    await runFollowUpDigest(ctx(NEXT_HOUR), deps());
+    expect(recipients()).toEqual(["bill@example.test", "omar@example.test"]);
+    // 10 am: Jane's address is fixed.
+    jane.profiles = { ...(jane.profiles as FakeRow), email: janeEmail };
+    await runFollowUpDigest(ctx(new Date("2026-10-31T15:00:00Z")), deps());
+    expect(recipients()).toContain("jane@example.test");
+    expect(fake.advisories.map((r) => [r.check_key, r.resolved])).toEqual([
+      ["digest.step_unusable", true],
+      ["digest.recipient_no_email", true],
+    ]);
+
+    // Next day the step breaks again: a new row, since the last was resolved.
+    stepA.channel = "sms";
+    await runFollowUpDigest(ctx(new Date("2026-11-01T14:00:00Z")), deps());
+    expect(fake.advisories.map((r) => [r.check_key, r.resolved])).toEqual([
+      ["digest.step_unusable", true],
+      ["digest.recipient_no_email", true],
+      ["digest.step_unusable", false],
+    ]);
+    expect(warned()).toEqual([]);
+  });
+
+  it("never fails the run or a send when recording fails: one safe line each", async () => {
+    const timeout = { code: "57014", message: "canceling statement due to statement timeout" };
+    // Org A: an unassigned follow-up and Jane with no address; org B's reads fail.
+    fake = createFollowUpDigestFakeDb(withoutEmail(world(), JANE).tables);
+    failReadsOf(ORG_B);
+    fake.failRpc = { record_job_advisory: timeout, resolve_workflow_advisories: timeout };
+    const result = await runFollowUpDigest(ctx(), deps());
+    expect(result).toEqual(
+      counts({ orgs_due: 2, orgs_failed: 1, digests_sent: 1, unassigned_follow_ups: 1 }),
+    );
+    expect(recipients()).toEqual(["omar@example.test"]);
+    expect(ledgerRows()).toEqual([[JOB, TODAY, ORG_A, OMAR, "sent"]]);
+    const line = (event: string, key: string) => ({ event, check_key: key, sqlstate: "57014" });
+    expect(warned()).toEqual([
+      line("advisory_record_failed", "digest.unassigned_follow_ups"),
+      line("advisory_record_failed", "digest.recipient_no_email"),
+      line("advisory_resolve_failed", "digest.recipient_no_email"),
+      line("advisory_resolve_failed", "digest.step_unusable"),
+      line("advisory_record_failed", "digest.org_failed"),
+    ]);
+
+    // An unusable step: the org is still skipped, the other still sent.
+    warn.mockClear();
+    sent = [];
+    fake = createFollowUpDigestFakeDb(cleanWorld({ bStep: { channel: "sms" } }).tables);
+    fake.failRpc = { record_job_advisory: timeout };
+    expect(await runFollowUpDigest(ctx(), deps())).toEqual(
+      counts({ orgs_due: 2, orgs_skipped_template: 1, digests_sent: 2 }),
+    );
+    expect(recipients()).toEqual(["jane@example.test", "omar@example.test"]);
+    expect(warned()).toEqual([line("advisory_record_failed", "digest.step_unusable")]);
+    expect(fake.advisories).toEqual([]);
   });
 });
