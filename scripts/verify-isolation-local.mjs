@@ -116,8 +116,11 @@ const EXPECTED_FAILS = {
   caseprofile: ["6b"],
   fillevents: ["7", "7b", "7c", "7d"],
   cases: ["8b", "8d"],
-  // The case-search leak surfaces a cross-org case row in ?q= results (15b).
-  casesearch: ["15b"],
+  // The case-search leak surfaces a cross-org case row in ?q= results, at the
+  // default page (15b) and at &limit=50 (15c).
+  casesearch: ["15b", "15c"],
+  // A server that honours &limit= past the cap of 50 (15d).
+  casesearchcap: ["15d"],
   touches: ["9", "9b", "9c", "9d"],
   tasks: ["13"],
   casecontext: ["14b"],

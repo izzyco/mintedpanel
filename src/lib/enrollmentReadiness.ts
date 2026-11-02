@@ -11,6 +11,7 @@
 // at the service boundary — date of birth, SSN last-4, and home address never
 // enter this module, only whether they exist.
 
+import { DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS } from "@/lib/caqhAttestation";
 import { canonicalLabel } from "@/lib/canonicalStatuses";
 import { CONTRACTED_LABEL } from "@/lib/statusLabels";
 import { isExpiringSoon } from "@/lib/documents";
@@ -23,8 +24,11 @@ import {
   type ContractSpecialtyIndex,
 } from "@/lib/contractSpecialty";
 
-/** The locked CAQH freshness window (PM decision 2026-07-11). */
-export const CAQH_CURRENT_DAYS = 120;
+/** The platform default of the shared CAQH attestation window
+ * (src/lib/caqhAttestation.ts, PM A26). Readers that apply the window take
+ * the resolved setting (EnrollmentReadinessInput.caqhAttestationWindowDays);
+ * this is the same number, not a second one. */
+export const CAQH_CURRENT_DAYS = DEFAULT_CAQH_ATTESTATION_WINDOW_DAYS;
 
 export type CheckOwner = "provider" | "group";
 
@@ -141,6 +145,10 @@ export interface EnrollmentReadinessInput {
    * pre-E2.0 caller is bit-for-bit unchanged; the generation preview passes
    * it. Advisory like everything else here — it never disables anything. */
   contracts?: readonly GroupContractInput[];
+  /** The shared CAQH attestation window, resolved for the org
+   * (resolveCaqhAttestationWindowDays, PM A26). Required, so no caller falls
+   * back to a number of its own. */
+  caqhAttestationWindowDays: number;
 }
 
 export interface ReadinessRow {
@@ -168,11 +176,16 @@ export function daysBetween(from: string, to: string): number {
   return Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000);
 }
 
-/** CAQH current = attested within the locked 120-day window (inclusive). */
-export function isCaqhCurrent(attestedDate: string | null, today: string): boolean {
+/** CAQH current = attested within the shared window (inclusive); a future
+ * date never counts. */
+export function isCaqhCurrent(
+  attestedDate: string | null,
+  today: string,
+  windowDays: number,
+): boolean {
   if (!attestedDate) return false;
   const age = daysBetween(attestedDate, today);
-  return age >= 0 && age <= CAQH_CURRENT_DAYS;
+  return age >= 0 && age <= windowDays;
 }
 
 // ---------- evaluators ----------
@@ -182,6 +195,7 @@ function providerChecks(
   state: string,
   licenses: readonly ReadinessLicenseInput[],
   today: string,
+  caqhWindowDays: number,
 ): ReadinessCheck[] {
   // The license for the target state: prefer a verified row, then the latest
   // expiration, so one stale duplicate never hides a good license.
@@ -233,8 +247,8 @@ function providerChecks(
     {
       key: "caqh_current",
       owner: "provider",
-      label: `CAQH attested within ${CAQH_CURRENT_DAYS} days`,
-      pass: isCaqhCurrent(facts.caqhLastAttestedDate, today),
+      label: `CAQH attested within ${caqhWindowDays} days`,
+      pass: isCaqhCurrent(facts.caqhLastAttestedDate, today, caqhWindowDays),
       detail: facts.caqhLastAttestedDate
         ? `Attested ${facts.caqhLastAttestedDate}`
         : "Never attested",
@@ -420,7 +434,13 @@ export function evaluateEnrollmentReadiness(input: EnrollmentReadinessInput): Re
       const provKey = `${facts.providerId}|${target.state}`;
       let own = providerCheckCache.get(provKey);
       if (!own) {
-        own = providerChecks(facts, target.state, input.licenses, input.today);
+        own = providerChecks(
+          facts,
+          target.state,
+          input.licenses,
+          input.today,
+          input.caqhAttestationWindowDays,
+        );
         providerCheckCache.set(provKey, own);
       }
       const contractCheck = contractCheckFor(facts);
