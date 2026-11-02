@@ -656,7 +656,7 @@ creates no persistent artifact or asynchronous work.
 
 ## MINT-107 notification sequences (repository-only, operator apply pending)
 
-Migration `20261031051500_notification_sequences.sql`. Reminder and digest
+Migration `20261101100000_notification_sequences.sql`. Reminder and digest
 cadence, in two layers: Minted's platform default per purpose, and an org's
 own row that overrides it field by field. The digest's schedule is the
 exception: it has no default (G2) and exists only on an org row, once Minted

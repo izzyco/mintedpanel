@@ -76,7 +76,7 @@ function fixtures(role: "admin" | "specialist"): Rows {
     ],
     notification_sequences: [],
     notification_sequence_steps: [],
-    // Minted's seeded defaults (migration 20261031051500). The digest's has
+    // Minted's seeded defaults (migration 20261101100000). The digest's has
     // no schedule (G2): how often and when exist only on an org row.
     notification_sequence_defaults: [
       {
@@ -285,7 +285,7 @@ function makeHandler(rows: Rows, options: { missingTables?: boolean } = {}) {
 
     const table = url.pathname.split("/rest/v1/")[1] ?? "";
     if (options.missingTables && table.startsWith("notification_sequence")) {
-      // What PostgREST says before migration 20261031051500 is applied.
+      // What PostgREST says before migration 20261101100000 is applied.
       return json(
         {
           code: "PGRST205",

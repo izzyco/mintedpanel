@@ -18,7 +18,7 @@ import {
   type StepDraft,
 } from "@/lib/notificationSequences";
 
-/** Minted's seeded defaults (migration 20261031051500). */
+/** Minted's seeded defaults (migration 20261101100000). */
 const INTAKE_DEFAULT: NotificationSequenceDefaultConfig = {
   purpose: "intake_reminder",
   stopConditions: ["submitted", "paused", "withdrawn", "provider_replied"],
