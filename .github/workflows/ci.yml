@@ -619,6 +619,9 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Run MINT-107 notification sequences SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint107-notification-sequences.sql
+
       # MINT-134 workflow advisories: append-only ledger, context refusals,
       # caller and org checks, job dedupe, grants. Rollback-only; any failed
       # check raises.
