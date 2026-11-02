@@ -36,8 +36,9 @@ export interface CaseViewRow {
   lastTouchLabel: string;
   /** Days since the last touch; null = never touched (sorts last). */
   lastTouchDays: number | null;
-  /** Whole days the case has been open (0 for a never-worked case). */
-  daysOpen: number;
+  /** "Days open" (`caseDaysOpenFor`); null for a Not Pursuing case, or when a
+   * closed case's stop could not be read (sorts last). */
+  daysOpen: number | null;
   createdAt: string;
 }
 
@@ -173,9 +174,16 @@ export function sortFlatRows(
         else c = av - bv;
         break;
       }
-      case "daysOpen":
-        c = a.daysOpen - b.daysOpen;
+      case "daysOpen": {
+        // Unknown sorts last regardless of direction, like never-touched.
+        const av = a.daysOpen;
+        const bv = b.daysOpen;
+        if (av === null && bv === null) c = 0;
+        else if (av === null) return 1;
+        else if (bv === null) return -1;
+        else c = av - bv;
         break;
+      }
     }
     return c !== 0 ? c * mul : tiebreak(a, b);
   });

@@ -23,6 +23,17 @@ export interface ApiMeta {
   // failure so the extension can show a loud empty-state instead of treating
   // the tab as an unrecognized page.
   registry_empty?: boolean;
+  // GET /api/cases?q= only, always sent there: true when more cases matched
+  // than `data` holds (the first `limit` in provider/payer/state order);
+  // `total` counts every match. A client says the list is partial ("Showing
+  // first N — refine your search", N = `limit`) rather than presenting it as
+  // every match.
+  truncated?: boolean;
+  // GET /api/cases?q= only, always sent there: the limit applied, the most
+  // rows `data` can hold. The request's &limit= when it sent one (1 to 50),
+  // else the default of 5 (src/server/caseSearchLimit.ts); clients take it
+  // from here rather than keeping a constant of their own.
+  limit?: number;
   /**
    * Exact-key active mapping/readiness metadata. Rows are emitted only for
    * configurations visible to the requested legacy/API scope.

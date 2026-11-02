@@ -23,7 +23,8 @@
 //   caseprofile cross-org case-bound profile served instead of 404 (6b)
 //   fillevents  cross-org fill-event accepted and stored             (7, 7b)
 //   cases       cross-org provider's case list served instead of 404 (8b)
-//   casesearch  cross-org case rows leak into ?q= search results      (15b)
+//   casesearch  cross-org case rows leak into ?q= search results (15b, 15c)
+//   casesearchcap ?q= honours any &limit=, past the cap of 50          (15d)
 //   touches     cross-org submission touch accepted and stored       (9, 9b)
 //   tasks       cross-org task_id closed by a submission touch        (13)
 //   casecontext cross-org case context served instead of 404         (14b)
@@ -115,6 +116,7 @@ export const LEAK_MODES = [
   "fillevents",
   "cases",
   "casesearch",
+  "casesearchcap",
   "touches",
   "tasks",
   "casecontext",
@@ -135,6 +137,12 @@ export const LEAK_MODES = [
   "npiregistry",
   "npibatch",
 ];
+
+// GET /api/cases?q= result limit — mirrors CASE_SEARCH_DEFAULT_LIMIT and
+// CASE_SEARCH_MAX_LIMIT in src/server/caseSearchLimit.ts (no platform setting
+// exists before M6; a request may name &limit= from 1 to the cap of 50).
+const CASE_SEARCH_DEFAULT_LIMIT = 5;
+const CASE_SEARCH_MAX_LIMIT = 50;
 
 const USERS = {
   [FIXTURES.KANSAS_EMAIL]: {
@@ -1984,7 +1992,30 @@ export async function createMockApiServer(options = {}) {
                     (caseDigits != null && digits !== "" && digits.includes(caseDigits))
                   );
                 });
-        return envelope(res, 200, rows, null, { total: rows.length });
+        // At most meta.limit rows — the request's &limit= (a whole number from
+        // 1 to 50, else a 422), or the default 5 (CASE_SEARCH_DEFAULT_LIMIT in
+        // src/server/caseSearchLimit.ts). meta.limit is the limit applied,
+        // meta.total counts every match and meta.truncated says whether data
+        // holds all of them; all three are always sent on this mode.
+        const rawLimit = url.searchParams.get("limit");
+        const requested = rawLimit !== null && /^\d+$/.test(rawLimit) ? Number(rawLimit) : null;
+        // Leak "casesearchcap": any positive &limit= is honoured, past the cap
+        // (assertion 15d red).
+        const maxLimit = leak === "casesearchcap" ? Number.MAX_SAFE_INTEGER : CASE_SEARCH_MAX_LIMIT;
+        if (rawLimit !== null && !(requested >= 1 && requested <= maxLimit)) {
+          return envelope(
+            res,
+            422,
+            null,
+            `limit must be a whole number from 1 to ${CASE_SEARCH_MAX_LIMIT}`,
+          );
+        }
+        const limit = requested ?? CASE_SEARCH_DEFAULT_LIMIT;
+        return envelope(res, 200, rows.slice(0, limit), null, {
+          total: rows.length,
+          truncated: rows.length > limit,
+          limit,
+        });
       }
       return envelope(res, 422, null, "providerId or q query parameter is required");
     }
