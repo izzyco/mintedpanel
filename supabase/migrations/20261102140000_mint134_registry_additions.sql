@@ -48,6 +48,9 @@
 -- Re-runnable: CREATE OR REPLACE, DROP CONSTRAINT IF EXISTS, REVOKE, COMMENT.
 -- Apply as the executor that applied 20261101090000 and owns its functions
 -- and table (only the owner may replace a function or alter the table).
+-- Re-running 20261101090000 (which #568 prescribes after an ownership change)
+-- silently reverts these additions, so re-run this migration after any
+-- re-run of 20261101090000.
 -- REPO-ONLY until an operator applies it, staging first, after
 -- 20261101090000. Verify the OBJECTS, not a ledger filename:
 --   SELECT private.workflow_advisory_check_key_valid('npi_registry.license_differs'),

@@ -670,7 +670,9 @@ parallel wiring PRs never each replace the same functions: 34 check keys (adds
 `private.workflow_advisory_check_key_valid`, `_context_valid`, `_assert_args`,
 `_record_in_org`, `_context_id_in_org` and the `record_table` CHECK, adding
 only; owners, grants and `search_path` are unchanged. A later addition replaces
-them again from that file.
+them again from that file. Re-running `20261101090000` (which #568 prescribes
+after an ownership change) silently reverts these additions, so re-run
+`20261102140000` after any re-run of `20261101090000`.
 
 ### workflow_advisories
 
