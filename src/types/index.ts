@@ -2304,7 +2304,6 @@ export interface SaveRosterOverrideInput {
   rowKey: string;
   ruleCode: string;
   fieldKey: string;
-  reason: string;
 }
 
 export interface RosterOverride {
@@ -2315,7 +2314,8 @@ export interface RosterOverride {
   rowKey: string;
   ruleCode: string;
   fieldKey: string;
-  reason: string;
+  /** A typed reason from before MINT-136; null for every "Export anyway". */
+  reason: string | null;
   createdAt: string;
 }
 

@@ -330,6 +330,12 @@ jobs:
       - name: Run MINT-110 registry pulls SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint110-registry-pulls.sql
 
+      # MINT-136 roster "Export anyway": an override needs no typed reason and
+      # stores none, its other guards hold, and the advisory records the
+      # mapping and row count. Rollback-only; any failed check raises.
+      - name: Run MINT-136 roster Export anyway SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint136-roster-export-anyway.sql
+
   vault-authorization:
     name: P01 vault authorization
     runs-on: ubuntu-latest
