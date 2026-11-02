@@ -300,7 +300,7 @@ SELECT pg_temp.mint19_assert(
 );
 RESET ROLE;
 
--- MINT-75 (20261030200000): the last step of a termination task sets
+-- MINT-75 (20261101110000): the last step of a termination task sets
 -- termination_date to the task's completed_date, so the caller's local day
 -- when it is within one day of UTC's, else UTC's day. Each RPC call is its own
 -- statement: a later statement is what sees its writes.
