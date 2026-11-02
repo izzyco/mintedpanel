@@ -431,7 +431,7 @@ export async function createProviderWithDetails(
   let insertedFacilityIds: string[] = [];
   if (facilityRows.length > 0) {
     try {
-      await insertAssignmentRows(
+      const inserted = await insertAssignmentRows(
         facilityRows.map(({ facilityId, isPrimary }) => ({
           providerId: created.id,
           facilityId,
@@ -439,6 +439,9 @@ export async function createProviderWithDetails(
           isPrimary,
         })),
       );
+      // MINT-134: the assignments saved without a start date are recorded
+      // now, so a later failure (group assignments, audit) can't lose it.
+      void recordUndatedAssignments(inserted.filter((r) => !r.startDate));
       insertedFacilityIds = facilityRows.map((r) => r.facilityId);
     } catch (facErr) {
       const detail =
@@ -483,11 +486,6 @@ export async function createProviderWithDetails(
     description: `Created provider ${created.firstName} ${created.lastName}`,
   });
 
-  // MINT-134: the assignments saved without a start date are recorded.
-  if (!assignmentStart)
-    void recordUndatedAssignments(
-      insertedFacilityIds.map((facilityId) => ({ providerId: created.id, facilityId })),
-    );
   return { provider: created, warnings };
 }
 

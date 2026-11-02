@@ -48,7 +48,8 @@ beforeEach(() => {
     const single = new Headers(init?.headers).get("accept")?.includes("vnd.pgrst.object");
     const result =
       table === "providers" ? { id: createdId, ...(body as Row) } : Array.isArray(body) ? body : [];
-    return new Response(JSON.stringify(single ? result : [result]), {
+    // An array body comes back as the inserted rows (return=representation).
+    return new Response(JSON.stringify(single || Array.isArray(result) ? result : [result]), {
       status: 201,
       headers: { "content-type": "application/json" },
     });
@@ -228,5 +229,19 @@ describe("createProviderWithDetails — the assignment.start_date_missing adviso
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("is sent as soon as the assignments are written, so a later failure can't lose it", async () => {
+    transport.audit.mockRejectedValueOnce(new Error("synthetic audit failure"));
+    await expect(
+      createProviderWithDetails({
+        provider: provider(null),
+        licenses: [],
+        facilityIds: [FAC_A],
+        assignmentStartDate: null,
+      }),
+    ).rejects.toThrow("synthetic audit failure");
+    await vi.waitFor(() => expect(recorded()).toHaveLength(1));
+    expect((recorded()[0].body as Row).p_context).toEqual({ facility_ids: [FAC_A] });
   });
 });

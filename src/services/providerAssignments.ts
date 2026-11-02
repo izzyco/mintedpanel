@@ -11,7 +11,7 @@ import { camelizeRow } from "@/lib/case";
 import { readCompletePages } from "@/lib/completePages";
 import { requireActiveOrg, writeAudit } from "@/lib/audit";
 import { translateDbError } from "@/lib/dbErrors";
-import type { BrowserAdvisorySource } from "@/lib/advisoryChecks";
+import { CONTEXT_MAX_ARRAY, type BrowserAdvisorySource } from "@/lib/advisoryChecks";
 import {
   firstAssignmentIdsToPromote,
   planFacilityAssignmentSync,
@@ -24,9 +24,11 @@ import type { FacilityAssignment } from "@/types";
 /** MINT-134 — a facility assignment saved without a start date is recorded
  * as the advisory assignment.start_date_missing (Sowmya's B9; under D14 it
  * reads as billable). One row per provider, naming the facilities whose date
- * the save left blank. Call it after the save has succeeded, without waiting
- * (`void recordUndatedAssignments(...)`); it sends one provider at a time and
- * never rejects (recordAdvisory never does). The front end stays quiet. */
+ * the save left blank; a set holds at most CONTEXT_MAX_ARRAY ids, so more
+ * facilities take more rows. Call it as soon as the rows are written, before
+ * any later step that can still fail, without waiting
+ * (`void recordUndatedAssignments(...)`); it sends one row at a time and never
+ * rejects (recordAdvisory never does). The front end stays quiet. */
 export async function recordUndatedAssignments(
   undated: ReadonlyArray<{ providerId: string; facilityId: string }>,
   source: BrowserAdvisorySource = "panel",
@@ -34,13 +36,16 @@ export async function recordUndatedAssignments(
   const byProvider = new Map<string, string[]>();
   for (const { providerId, facilityId } of undated)
     byProvider.set(providerId, [...(byProvider.get(providerId) ?? []), facilityId]);
-  for (const [providerId, facilityIds] of byProvider)
-    await recordAdvisory(
-      "assignment.start_date_missing",
-      { table: "providers", id: providerId },
-      { facility_ids: facilityIds },
-      source,
-    );
+  for (const [providerId, facilityIds] of byProvider) {
+    const sorted = [...new Set(facilityIds)].sort();
+    for (let i = 0; i < sorted.length; i += CONTEXT_MAX_ARRAY)
+      await recordAdvisory(
+        "assignment.start_date_missing",
+        { table: "providers", id: providerId },
+        { facility_ids: sorted.slice(i, i + CONTEXT_MAX_ARRAY) },
+        source,
+      );
+  }
 }
 
 // Scoped projection (TE-5): ids + flags + dates only — nothing PHI lives on
@@ -68,25 +73,42 @@ export interface AssignmentRowInput {
   startDate?: string | null;
 }
 
+export interface InsertedAssignment {
+  providerId: string;
+  facilityId: string;
+  startDate: string | null;
+}
+
 /** Shared bulk insert used by the legacy callers (provider create, CSV
  * import, batch assign). Duplicate (provider, facility) pairs are ignored,
  * matching the old launch upsert semantics. Each row's start date is the
  * caller's (blankAssignmentStartDate settles a blank one); a missing date is
- * saved as missing. */
-export async function insertAssignmentRows(rows: AssignmentRowInput[]): Promise<void> {
-  if (rows.length === 0) return;
+ * saved as missing. Returns only the rows it inserted: an ignored duplicate
+ * isn't returned (ON CONFLICT DO NOTHING ... RETURNING). */
+export async function insertAssignmentRows(
+  rows: AssignmentRowInput[],
+): Promise<InsertedAssignment[]> {
+  if (rows.length === 0) return [];
   const orgId = requireActiveOrg();
-  const { error } = await supabase.from("provider_facility_assignments").upsert(
-    rows.map((r) => ({
-      org_id: orgId,
-      provider_id: r.providerId,
-      facility_id: r.facilityId,
-      is_primary: r.isPrimary ?? false,
-      start_date: r.startDate?.trim() || null,
-    })),
-    { onConflict: "provider_id,facility_id", ignoreDuplicates: true },
-  );
+  const { data, error } = await supabase
+    .from("provider_facility_assignments")
+    .upsert(
+      rows.map((r) => ({
+        org_id: orgId,
+        provider_id: r.providerId,
+        facility_id: r.facilityId,
+        is_primary: r.isPrimary ?? false,
+        start_date: r.startDate?.trim() || null,
+      })),
+      { onConflict: "provider_id,facility_id", ignoreDuplicates: true },
+    )
+    .select("provider_id, facility_id, start_date");
   if (error) throw translateDbError(error);
+  return (data ?? []).map((r) => ({
+    providerId: String(r.provider_id),
+    facilityId: String(r.facility_id),
+    startDate: r.start_date,
+  }));
 }
 
 /** After import (or any bulk insert that wrote is_primary=false), promote
@@ -139,56 +161,61 @@ export async function setAssignments(providerId: string, drafts: AssignmentDraft
   const orgId = requireActiveOrg();
   const stored = await listProviderAssignmentRows(orgId, providerId);
   const plan = planFacilityAssignmentSync(drafts, stored);
-  // The facilities this save leaves undated: a new row without a date, or a
-  // dated row cleared. A row that was already undated is not this save's.
+  // The facilities this save leaves undated, as each write lands: a dated row
+  // cleared, or a new row without a date. A row that was already undated is
+  // not this save's. They are recorded once the row writes are done, before
+  // the primary swap and the audit row, and also when a later write fails.
   const storedById = new Map(stored.map((r) => [r.id, r]));
-  const undatedFacilityIds = [
-    ...plan.inserts.filter((d) => !d.startDate.trim()).map((d) => d.facilityId),
-    ...plan.updates.flatMap((u) => {
-      const before = storedById.get(u.id);
-      return !u.startDate.trim() && before?.startDate?.trim() ? [before.facilityId] : [];
-    }),
-  ];
+  const undatedFacilityIds: string[] = [];
+  try {
+    for (const upd of plan.updates) {
+      const { error } = await supabase
+        .from("provider_facility_assignments")
+        .update({ start_date: upd.startDate.trim() || null })
+        .eq("id", upd.id)
+        .eq("org_id", orgId)
+        .eq("provider_id", providerId);
+      if (error) throw translateDbError(error);
+      const before = storedById.get(upd.id);
+      if (!upd.startDate.trim() && before?.startDate?.trim())
+        undatedFacilityIds.push(before.facilityId);
+    }
 
-  for (const upd of plan.updates) {
-    const { error } = await supabase
-      .from("provider_facility_assignments")
-      .update({ start_date: upd.startDate.trim() || null })
-      .eq("id", upd.id)
-      .eq("org_id", orgId)
-      .eq("provider_id", providerId);
-    if (error) throw translateDbError(error);
-  }
+    if (plan.deleteIds.length > 0) {
+      const { error } = await supabase
+        .from("provider_facility_assignments")
+        .delete()
+        .eq("org_id", orgId)
+        .eq("provider_id", providerId)
+        .in("id", plan.deleteIds);
+      if (error) throw translateDbError(error);
+      await writeAudit({
+        actionType: "DELETE",
+        entityType: "provider_facility_assignment",
+        entityId: providerId,
+        before: { removed: stored.filter((r) => plan.deleteIds.includes(r.id)) },
+        description: `Removed ${plan.deleteIds.length} facility assignment(s)`,
+      });
+    }
 
-  if (plan.deleteIds.length > 0) {
-    const { error } = await supabase
-      .from("provider_facility_assignments")
-      .delete()
-      .eq("org_id", orgId)
-      .eq("provider_id", providerId)
-      .in("id", plan.deleteIds);
-    if (error) throw translateDbError(error);
-    await writeAudit({
-      actionType: "DELETE",
-      entityType: "provider_facility_assignment",
-      entityId: providerId,
-      before: { removed: stored.filter((r) => plan.deleteIds.includes(r.id)) },
-      description: `Removed ${plan.deleteIds.length} facility assignment(s)`,
-    });
-  }
-
-  if (plan.inserts.length > 0) {
-    // Always inserted non-primary; the RPC promotes atomically below.
-    const { error } = await supabase.from("provider_facility_assignments").insert(
-      plan.inserts.map((d) => ({
-        org_id: orgId,
-        provider_id: providerId,
-        facility_id: d.facilityId,
-        is_primary: false,
-        start_date: d.startDate.trim() || null,
-      })),
+    if (plan.inserts.length > 0) {
+      // Always inserted non-primary; the RPC promotes atomically below.
+      const { error } = await supabase.from("provider_facility_assignments").insert(
+        plan.inserts.map((d) => ({
+          org_id: orgId,
+          provider_id: providerId,
+          facility_id: d.facilityId,
+          is_primary: false,
+          start_date: d.startDate.trim() || null,
+        })),
+      );
+      if (error) throw translateDbError(error);
+      for (const d of plan.inserts) if (!d.startDate.trim()) undatedFacilityIds.push(d.facilityId);
+    }
+  } finally {
+    void recordUndatedAssignments(
+      undatedFacilityIds.map((facilityId) => ({ providerId, facilityId })),
     );
-    if (error) throw translateDbError(error);
   }
 
   if (plan.primaryFacilityId && !plan.primaryAlreadySet) {
@@ -211,9 +238,6 @@ export async function setAssignments(providerId: string, drafts: AssignmentDraft
     after: { assignments: drafts },
     description: "Updated facility assignments",
   });
-  void recordUndatedAssignments(
-    undatedFacilityIds.map((facilityId) => ({ providerId, facilityId })),
-  );
 }
 
 /** One-click primary swap from the section list (F1.4.3) — atomic via RPC. */

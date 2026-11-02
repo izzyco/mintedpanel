@@ -90,6 +90,7 @@ function installTransport(
         return builder;
       },
       range: () => builder,
+      abortSignal: () => builder,
       upsert: (payload: unknown) => {
         writes.push({ table, payload });
         return Promise.resolve({ data: null, error: null });
@@ -172,7 +173,7 @@ beforeEach(() => {
   });
   mocks.listEnrollmentFacts.mockResolvedValue([]);
   mocks.createEnrollmentFact.mockResolvedValue({ id: "fact-1" });
-  mocks.insertAssignmentRows.mockResolvedValue(undefined);
+  mocks.insertAssignmentRows.mockResolvedValue([]);
   mocks.ensureFirstFacilityPrimary.mockResolvedValue(undefined);
 });
 
@@ -373,9 +374,15 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
   });
 });
 
+// Every (provider, facility) pair handed to recordUndatedAssignments.
+const recordedPairs = () =>
+  mocks.recordUndatedAssignments.mock.calls.flatMap(([pairs]) => pairs as unknown[]);
+
 // MINT-134 — a commit under "no default" records the facility assignments it
-// left undated, in the background, as assignment.start_date_missing (source
-// import). The default dates every one, so nothing is read or recorded.
+// left undated as assignment.start_date_missing (source import): what the
+// commit RPC wrote, read back as soon as its ids are known, and what the
+// relationship pass inserted. The default dates every one, so nothing is read
+// or recorded.
 describe("commitImportRun — the assignment.start_date_missing advisory", () => {
   const noDefault = () =>
     mocks.resolveAddProviderRules.mockReturnValueOnce({
@@ -406,7 +413,7 @@ describe("commitImportRun — the assignment.start_date_missing advisory", () =>
 
     await commitImportRun("run-1", plan);
 
-    await vi.waitFor(() => expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce());
+    expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce();
     expect(mocks.recordUndatedAssignments).toHaveBeenCalledWith(
       [
         { providerId: "provider-3", facilityId: "facility-7" },
@@ -421,14 +428,47 @@ describe("commitImportRun — the assignment.start_date_missing advisory", () =>
     ]);
   });
 
-  it("records nothing under the default, which dates every assignment", async () => {
+  it("reads back before the relationship pass, which records the rows it inserted undated", async () => {
     installTransport([relationshipRow(2, 0, "CO")]);
+    noDefault();
+    mocks.insertAssignmentRows.mockResolvedValueOnce([
+      { providerId: "provider-1", facilityId: "facility-2", startDate: null },
+    ]);
 
     await commitImportRun("run-1", updatePlan());
-    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(mocks.recordUndatedAssignments.mock.calls).toEqual([
+      [[], "import"],
+      [[{ providerId: "provider-1", facilityId: "facility-2", startDate: null }], "import"],
+    ]);
+    expect(mocks.recordUndatedAssignments.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.insertAssignmentRows.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("a later failure doesn't lose the record", async () => {
+    installTransport([]);
+    noDefault();
+    const plan = updatePlan();
+    plan.updates[0].add_facility_ids = ["facility-9"];
+    undated.rows = [{ provider_id: "provider-1", facility_id: "facility-9" }];
+    mocks.ensureFirstFacilityPrimary.mockRejectedValueOnce(new Error("synthetic failure"));
+
+    await expect(commitImportRun("run-1", plan)).rejects.toThrow("synthetic failure");
+
+    expect(recordedPairs()).toEqual([{ providerId: "provider-1", facilityId: "facility-9" }]);
+  });
+
+  it("records nothing under the default, which dates every assignment", async () => {
+    installTransport([relationshipRow(2, 0, "CO")]);
+    mocks.insertAssignmentRows.mockResolvedValueOnce([
+      { providerId: "provider-1", facilityId: "facility-2", startDate: "2026-11-01" },
+    ]);
+
+    await commitImportRun("run-1", updatePlan());
 
     expect(undated.filters).toEqual([]);
-    expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
+    expect(recordedPairs()).toEqual([]);
   });
 
   it("records nothing on a replayed commit", async () => {
@@ -441,8 +481,8 @@ describe("commitImportRun — the assignment.start_date_missing advisory", () =>
     undated.rows = [{ provider_id: "provider-1", facility_id: "facility-9" }];
 
     await commitImportRun("run-1", updatePlan());
-    await new Promise((resolve) => setTimeout(resolve, 20));
 
+    expect(undated.filters).toEqual([]);
     expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
   });
 
@@ -456,7 +496,7 @@ describe("commitImportRun — the assignment.start_date_missing advisory", () =>
 
     await expect(commitImportRun("run-1", plan)).resolves.toMatchObject({ updated: 1 });
 
-    await vi.waitFor(() => expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce());
+    expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce();
   });
 
   it("a failed read never fails the commit", async () => {
@@ -466,7 +506,7 @@ describe("commitImportRun — the assignment.start_date_missing advisory", () =>
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await expect(commitImportRun("run-1", updatePlan())).resolves.toMatchObject({ updated: 1 });
-      await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+      expect(warn).toHaveBeenCalledOnce();
       expect(JSON.parse(String(warn.mock.calls[0][0]))).toEqual({
         event: "advisory_record_failed",
         check_key: "assignment.start_date_missing",
@@ -480,8 +520,8 @@ describe("commitImportRun — the assignment.start_date_missing advisory", () =>
 });
 
 // MINT-134 — the batch-assign panel saves a blank start date as none; that
-// batch records each provider's new facilities (the plan only fills providers
-// with no facility yet), once, after the save.
+// batch records the rows it actually inserted (not the plan), as soon as they
+// are written.
 describe("applyBatchAssignment — the assignment.start_date_missing advisory", () => {
   const plan = {
     groupInserts: [{ providerId: "provider-1", groupId: "group-1", isPrimary: true }],
@@ -499,27 +539,55 @@ describe("applyBatchAssignment — the assignment.start_date_missing advisory", 
     startDate,
     plan,
   });
+  // provider-1 at facility-3 was already assigned, so the insert skipped it.
+  const INSERTED = [
+    { providerId: "provider-1", facilityId: "facility-2", startDate: null },
+    { providerId: "provider-2", facilityId: "facility-2", startDate: null },
+  ];
 
-  it("a batch without a start date records its facility assignments once (source import)", async () => {
+  it("a batch without a start date records the rows it inserted, once (source import)", async () => {
     installTransport([]);
+    mocks.insertAssignmentRows.mockResolvedValueOnce(INSERTED);
 
     await applyBatchAssignment(batch(null));
 
-    expect(mocks.insertAssignmentRows).toHaveBeenCalledOnce();
     expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce();
-    expect(mocks.recordUndatedAssignments).toHaveBeenCalledWith(plan.facilityInserts, "import");
+    expect(mocks.recordUndatedAssignments).toHaveBeenCalledWith(INSERTED, "import");
+  });
+
+  it("a repeat click, which inserts nothing, records nothing", async () => {
+    installTransport([]);
+    mocks.insertAssignmentRows.mockResolvedValueOnce([]);
+
+    await applyBatchAssignment(batch(null));
+
+    expect(recordedPairs()).toEqual([]);
   });
 
   it("a dated batch records nothing", async () => {
     installTransport([]);
+    mocks.insertAssignmentRows.mockResolvedValueOnce(
+      INSERTED.map((r) => ({ ...r, startDate: "2026-11-01" })),
+    );
 
     await applyBatchAssignment(batch("2026-11-01"));
 
-    expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
+    expect(recordedPairs()).toEqual([]);
+  });
+
+  it("a later failure doesn't lose the record", async () => {
+    installTransport([]);
+    mocks.insertAssignmentRows.mockResolvedValueOnce(INSERTED);
+    mocks.ensureFirstFacilityPrimary.mockRejectedValueOnce(new Error("synthetic failure"));
+
+    await expect(applyBatchAssignment(batch(null))).rejects.toThrow("synthetic failure");
+
+    expect(mocks.recordUndatedAssignments).toHaveBeenCalledWith(INSERTED, "import");
   });
 
   it("the batch never waits for the record", async () => {
     installTransport([]);
+    mocks.insertAssignmentRows.mockResolvedValueOnce(INSERTED);
     mocks.recordUndatedAssignments.mockReturnValue(new Promise(() => undefined));
 
     await expect(applyBatchAssignment(batch(null))).resolves.toEqual({

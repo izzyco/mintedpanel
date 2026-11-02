@@ -18,11 +18,16 @@ vi.mock("@/lib/audit", () => ({
   writeAudit: (...args: unknown[]) => transport.audit(...args),
 }));
 
-import { recordUndatedAssignments, setAssignments } from "./providerAssignments";
+import {
+  insertAssignmentRows,
+  recordUndatedAssignments,
+  setAssignments,
+} from "./providerAssignments";
 
 type Row = Record<string, unknown>;
 let writes: Array<{ method: string; table: string; body: unknown }> = [];
-// What the assignment read returns, and a table (or RPC) whose request fails.
+// What the assignment read returns, and a table (or RPC) whose writes fail,
+// or one "METHOD table" pair.
 let storedRows: Row[] = [];
 let failing: string | null = null;
 
@@ -50,7 +55,7 @@ beforeEach(() => {
     const table = new URL(String(input)).pathname.split("/").at(-1)!;
     const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : null;
     if (method !== "GET") writes.push({ method, table, body });
-    if (method !== "GET" && table === failing)
+    if (method !== "GET" && (table === failing || `${method} ${table}` === failing))
       return new Response(JSON.stringify({ code: "XX000", message: "synthetic failure" }), {
         status: 500,
         headers: { "content-type": "application/json" },
@@ -186,6 +191,34 @@ describe("setAssignments — the assignment.start_date_missing advisory", () => 
     expect(recorded()).toEqual([]);
   });
 
+  it("is sent as soon as the rows are written, so a later failure can't lose it", async () => {
+    transport.audit.mockRejectedValueOnce(new Error("synthetic audit failure"));
+    await expect(
+      setAssignments(PROVIDER, [
+        ...AS_STORED,
+        { facilityId: FAC_D, startDate: "", isPrimary: false },
+      ]),
+    ).rejects.toThrow("synthetic audit failure");
+    await vi.waitFor(() => expect(recorded()).toHaveLength(1));
+    expect(recorded()[0].p_context).toEqual({ facility_ids: [FAC_D] });
+  });
+
+  it("a row write that fails still records the dates cleared before it", async () => {
+    failing = "POST provider_facility_assignments";
+    await expect(
+      setAssignments(PROVIDER, [
+        { facilityId: FAC_A, startDate: "2026-10-01", isPrimary: true },
+        { facilityId: FAC_B, startDate: "", isPrimary: false },
+        { facilityId: FAC_C, startDate: "", isPrimary: false },
+        { facilityId: FAC_D, startDate: "", isPrimary: false },
+      ]),
+    ).rejects.toThrow();
+    await vi.waitFor(() => expect(recorded()).toHaveLength(1));
+    expect(recorded()[0].p_context).toEqual({ facility_ids: [FAC_C] });
+    await settle();
+    expect(recorded()).toHaveLength(1);
+  });
+
   it("a failed record never fails the save", async () => {
     failing = "record_workflow_advisory";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -233,6 +266,20 @@ describe("recordUndatedAssignments — one row per provider", () => {
     ]);
   });
 
+  it("splits more than 20 facilities into rows of at most 20, sorted", async () => {
+    const facilities = Array.from(
+      { length: 25 },
+      (_, i) => `ffffffff-0000-4000-8000-${String(100 + i).padStart(12, "0")}`,
+    );
+    await recordUndatedAssignments(
+      [...facilities].reverse().map((facilityId) => ({ providerId: P1, facilityId })),
+    );
+    expect(recorded().map((r) => [r.p_record_id, r.p_context])).toEqual([
+      [P1, { facility_ids: facilities.slice(0, 20) }],
+      [P1, { facility_ids: facilities.slice(20) }],
+    ]);
+  });
+
   it("sends nothing for nothing, and resolves when every send fails", async () => {
     await recordUndatedAssignments([]);
     expect(recorded()).toEqual([]);
@@ -250,5 +297,37 @@ describe("recordUndatedAssignments — one row per provider", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// MINT-134 — the shared insert returns only the rows it inserted, so a caller
+// records what was written, never an ignored duplicate.
+describe("insertAssignmentRows — returns the inserted rows", () => {
+  it("asks for the inserted rows on the ignore-duplicates upsert and maps them", async () => {
+    let request: { url: string; prefer: string | null } | null = null;
+    transport.fetch.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = { url: String(input), prefer: new Headers(init?.headers).get("prefer") };
+      // fac-2 was already assigned, so ON CONFLICT DO NOTHING returns only fac-1.
+      return new Response(
+        JSON.stringify([{ provider_id: "prov-1", facility_id: "fac-1", start_date: null }]),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const inserted = await insertAssignmentRows([
+      { providerId: "prov-1", facilityId: "fac-1", startDate: null },
+      { providerId: "prov-1", facilityId: "fac-2", startDate: null },
+    ]);
+
+    expect(inserted).toEqual([{ providerId: "prov-1", facilityId: "fac-1", startDate: null }]);
+    const sent = request as unknown as { url: string; prefer: string | null };
+    expect(new URL(sent.url).searchParams.get("select")).toBe("provider_id,facility_id,start_date");
+    expect(sent.prefer).toContain("resolution=ignore-duplicates");
+    expect(sent.prefer).toContain("return=representation");
+  });
+
+  it("returns nothing for nothing, without a request", async () => {
+    await expect(insertAssignmentRows([])).resolves.toEqual([]);
+    expect(transport.fetch).not.toHaveBeenCalled();
   });
 });
