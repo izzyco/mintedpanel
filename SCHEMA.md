@@ -663,6 +663,17 @@ the helpers in `src/services/advisories.ts` (browser) and
 `src/server/advisories.ts` (`/api`, extension routes, jobs). The check registry
 is code: `src/lib/advisoryChecks.ts`.
 
+`20261102140000_mint134_registry_additions.sql` extends it in one place, so
+parallel wiring PRs never each replace the same functions: 34 check keys (adds
+`npi_registry.credentials_differ`, `.taxonomy_differs`, `.license_differs` and
+`contact.phone_missing`), 13 record tables and 20 context keys. It replaces
+`private.workflow_advisory_check_key_valid`, `_context_valid`, `_assert_args`,
+`_record_in_org`, `_context_id_in_org` and the `record_table` CHECK, adding
+only; owners, grants and `search_path` are unchanged. A later addition replaces
+them again from that file. Re-running `20261101090000` (which #568 prescribes
+after an ownership change) silently reverts these additions, so re-run
+`20261102140000` after any re-run of `20261101090000`.
+
 ### workflow_advisories
 
 `id`, `org_id` (FK, cascades), `check_key` (one of the registered keys in
@@ -670,8 +681,9 @@ is code: `src/lib/advisoryChecks.ts`.
 refused, so a new check key is a migration), `severity_at_time` (`advisory` = the action proceeded, `block` =
 a critical check stopped it), `record_table` (closed: `providers`,
 `provider_groups`, `facilities`, `credential_cases`, `tasks`, `touches`,
-`import_runs`, `roster_mappings`, `sop_templates`) and `record_id` (checked to
-belong to `org_id`), `actor_id` and `actor_role` (the verified user and their
+`import_runs`, `roster_mappings`, `sop_templates`, `parties`, `memberships`,
+`organizations` (the org's own row) and `notification_sequences` (refused until
+#561 creates that table)) and `record_id` (checked to belong to `org_id`), `actor_id` and `actor_role` (the verified user and their
 `memberships.role`; both NULL exactly for a job row), `source` (`panel |
 extension | api | import | job`), `job` (set exactly when `source = 'job'`),
 `context` (see below), `bypassed_at`, `resolved_at`, `resolved_by`. No record
@@ -681,7 +693,8 @@ index `workflow_advisories_one_open_job_row` keeps one open job row per
 `(org_id, check_key, record_table, record_id)`. RLS on with no policies;
 service_role has SELECT and nothing else.
 
-`context` holds declared facts only. Its 16 keys are a closed list, kept in
+`context` holds declared facts only. Its 20 keys are a closed list (one context
+holds at most 16), kept in
 `private.workflow_advisory_context_valid` and mirrored by `CONTEXT_KEYS` in
 `src/lib/advisoryChecks.ts`; any other key is refused. Each key has one kind:
 
@@ -690,12 +703,16 @@ service_role has SELECT and nothing else.
   `step_position` 10. The bounds of the count keys in one context multiply to
   under 10,000,000.
 - **id / ids:** a lowercase UUID, or a set of up to 20 (`import_run_id`,
-  `payer_id`, `recipient_id`, `facility_ids`, `template_ids`). The record RPCs
-  check that each one names an existing record of the org; a payer or SOP
-  template may be a global catalog row.
+  `payer_id`, `recipient_id`, `sequence_id`, `facility_ids`, `template_ids`).
+  The record RPCs check that each one names an existing record of the org; a
+  payer or SOP template may be a global catalog row, and `sequence_id` is
+  refused until #561's `notification_sequences` exists.
 - **token / tokens:** a value, or a set of up to 20, from the key's closed
-  vocabulary (`attributes`, `case_type`, `column`, `layer`, `surface`). There
-  are no open tokens.
+  vocabulary (`attributes`, `case_type`, `column`, `layer`, `surface`,
+  `problem`: #563's digest step problem codes, `rule_code`: the roster
+  validator's overrideable rules, `field_key`: the seeded roster templates'
+  columns and the row checks' source fields with "." written "_"). There are no
+  open tokens.
 
 A set is sorted in byte order with no repeats, so its order carries nothing.
 No field, check key included, accepts text, an arbitrary number or an

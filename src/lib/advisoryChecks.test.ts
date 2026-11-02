@@ -16,6 +16,7 @@ import {
   CONTEXT_MAX_COUNT_CAPACITY,
   CONTEXT_MAX_KEYS,
   CONTEXT_TOKEN_PATTERN,
+  DIGEST_STEP_PROBLEMS,
   IMPORT_ADVISORY_COLUMNS,
   NONCRITICAL_PROTECTS,
   advisoryRpcFields,
@@ -25,6 +26,8 @@ import {
   isBoundaryProtection,
   isCheckKey,
   pickDeclared,
+  ROSTER_OVERRIDE_FIELDS,
+  ROSTER_OVERRIDE_RULES,
   reportAdvisoryFailure,
   severityFor,
   type CheckDefinition,
@@ -45,11 +48,12 @@ afterEach(() => {
 });
 
 describe("check registry contract", () => {
-  it("seeds exactly the check keys of the inventory's section 4", () => {
+  it("seeds the inventory's section 4 keys, plus the registry additions", () => {
     expect(Object.keys(CHECKS).sort()).toEqual(
       [
         "assignment.start_date_missing",
         "config.override_ignored",
+        "contact.phone_missing",
         "digest.org_failed",
         "digest.recipient_no_email",
         "digest.rules_fallback",
@@ -69,10 +73,13 @@ describe("check registry contract", () => {
         "notification.template_unavailable",
         "npi.missing",
         "npi.stored_check_digit_invalid",
+        "npi_registry.credentials_differ",
         "npi_registry.inactive",
+        "npi_registry.license_differs",
         "npi_registry.name_mismatch",
         "npi_registry.not_found",
         "npi_registry.organization_number",
+        "npi_registry.taxonomy_differs",
         "npi_registry.unchecked",
         "roster_export.override",
         "task.completed_out_of_order",
@@ -141,35 +148,54 @@ describe("check registry contract", () => {
     expect(def.help).not.toMatch(/[_`{}<>]|TODO|TBD/);
   });
 
-  it("keeps a check with no recordable table yet deliberate", () => {
-    const pending = DEFINITIONS.filter(([, def]) => def.recordTables.length === 0).map(
-      ([key]) => key,
-    );
-    // Their records are organizations, profiles or notification_sequences,
-    // none of which is in the SQL record_table set yet. Each conversion PR
-    // adds its table in a migration first; the helpers' types refuse a call
-    // until then.
-    expect(pending.sort()).toEqual(
-      [
-        "config.override_ignored",
-        "digest.org_failed",
-        "digest.recipient_no_email",
-        "digest.rules_fallback",
-        "digest.send_time_fallback",
-        "digest.step_unusable",
-        "digest.unassigned_follow_ups",
-        "notification.cc_member_lapsed",
-        "notification.schedule_invalid",
-      ].sort(),
-    );
+  // #568's Question 1, answered Nov 1: the org for org-level checks, the
+  // sequence for a sequence's, the membership for a digest recipient.
+  it("gives every check a record table, as Question 1 decided", () => {
+    expect(DEFINITIONS.filter(([, def]) => def.recordTables.length === 0)).toEqual([]);
+    const tablesOf = (key: keyof typeof CHECKS) => [...CHECKS[key].recordTables];
+    for (const key of [
+      "config.override_ignored",
+      "digest.org_failed",
+      "digest.rules_fallback",
+      "digest.send_time_fallback",
+      "digest.step_unusable",
+      "digest.unassigned_follow_ups",
+    ] as const) {
+      expect(tablesOf(key), key).toEqual(["organizations"]);
+    }
+    expect(tablesOf("notification.cc_member_lapsed")).toEqual(["notification_sequences"]);
+    expect(tablesOf("notification.schedule_invalid")).toEqual(["notification_sequences"]);
+    expect(tablesOf("digest.recipient_no_email")).toEqual(["memberships"]);
+    expect(tablesOf("contact.phone_missing")).toEqual(["parties"]);
+    // The registry's three difference checks read like the other registry
+    // answers: on the provider, with the NPI save context.
+    for (const key of [
+      "npi_registry.credentials_differ",
+      "npi_registry.taxonomy_differs",
+      "npi_registry.license_differs",
+    ] as const) {
+      const def: CheckDefinition = CHECKS[key];
+      expect(def).toMatchObject({
+        domain: "npi_registry",
+        protects: "completeness",
+        critical: false,
+      });
+      expect(def.recordTables).toEqual(["providers"]);
+      expect(def.contextKeys).toEqual(CHECKS["npi_registry.not_found"].contextKeys);
+    }
   });
 });
 
 describe("context key vocabulary", () => {
   const entries = Object.entries(CONTEXT_KEYS) as [string, ContextKeyKind][];
 
-  it("declares at most as many keys as one context may hold", () => {
-    expect(entries.length).toBeLessThanOrEqual(CONTEXT_MAX_KEYS);
+  // The registry additions took the declared set past one context's 16 keys.
+  // What binds is each check's own list, which pickDeclared never exceeds.
+  it("declares no check with more keys than one context may hold", () => {
+    expect(entries.length).toBeGreaterThan(CONTEXT_MAX_KEYS);
+    expect(Math.max(...DEFINITIONS.map(([, def]) => def.contextKeys.length))).toBeLessThanOrEqual(
+      CONTEXT_MAX_KEYS,
+    );
   });
 
   it.each(entries)("%s: name and kind agree", (key, def) => {
@@ -280,6 +306,8 @@ describe("pickDeclared, the second wall", () => {
       { surface: "jane_at_example_dot_com" },
       { step_order: 123456, earlier_open_count: 7893 },
       { rule: "jane_smith", field: "n1_2_3_4_5_6_7_8_9_3" },
+      { rule_code: "jane_smith", field_key: "n1_2_3_4_5_6_7_8_9_3" },
+      { problem: "jane_smith" },
     ]) {
       expect(isAdvisoryContextValid(context)).toBe(false);
     }
@@ -287,6 +315,8 @@ describe("pickDeclared, the second wall", () => {
       pickDeclared(CHECKS["roster_export.override"], {
         rule: "jane_smith",
         field: "n1_2_3_4_5_6_7_8_9_3",
+        rule_code: "jane_smith",
+        field_key: "n1_2_3_4_5_6_7_8_9_3",
       }),
     ).toEqual({});
     expect(
@@ -371,12 +401,16 @@ describe("pickDeclared, the second wall", () => {
       count: 3,
       earlier_open_count: 1,
       facility_ids: [UUID_A],
+      field_key: "provider_npi",
       import_run_id: UUID_B,
       layer: "org",
       line: 12,
       payer_id: UUID_A,
+      problem: "no_step",
       recipient_id: UUID_A,
       removed_count: 1,
+      rule_code: "provider_npi_invalid",
+      sequence_id: UUID_B,
       step_order: 2,
       step_position: 2,
       surface: "record_edit",
@@ -384,8 +418,8 @@ describe("pickDeclared, the second wall", () => {
       // Never declared anywhere:
       provider_name: "jane",
       dob: "1961-04-12",
-      problem: "n1_2_3_4_5_6_7_8_9_3",
       rule: "jane_smith",
+      reason: "payer confirmed by phone",
     };
     const picked = pickDeclared(def, everything);
     expect(Object.keys(picked).sort()).toEqual([...def.contextKeys].sort());
@@ -419,9 +453,11 @@ describe("advisoryRpcFields", () => {
     expect(advisoryRpcFields(def, null, {})).toBeNull();
   });
 
-  it("refuses every record for a check with no recordable table yet", () => {
+  it("refuses every record table a check doesn't declare", () => {
     for (const table of ADVISORY_RECORD_TABLES) {
-      expect(advisoryRpcFields(CHECKS["digest.org_failed"], { table, id: UUID_A }, {})).toBeNull();
+      const fields = advisoryRpcFields(CHECKS["digest.org_failed"], { table, id: UUID_A }, {});
+      if (table === "organizations") expect(fields?.p_record_table).toBe("organizations");
+      else expect(fields, table).toBeNull();
     }
   });
 });
