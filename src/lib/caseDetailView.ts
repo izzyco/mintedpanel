@@ -43,10 +43,9 @@ export function currentStepPointer(tasks: readonly Task[]): CurrentStepPointer |
 }
 
 /** How many tasks before `index` are still open. MINT-135: completing a task
- * while earlier ones are open is allowed; the count rides the
- * task.completed_out_of_order advisory, and a task with any earlier open task
- * gets no Work-in-portal launch (the typed submission accepts only the
- * case's current task). */
+ * while earlier ones are open is allowed (the save records the advisory), but
+ * a task with any earlier open task gets no Work-in-portal launch: the typed
+ * submission accepts only the case's current task. */
 export function earlierOpenTaskCount(tasks: readonly Task[], index: number): number {
   return tasks.slice(0, index).filter((previous) => previous.status !== "completed").length;
 }

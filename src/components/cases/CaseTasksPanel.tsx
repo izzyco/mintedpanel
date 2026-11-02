@@ -1,7 +1,7 @@
 // Tasks card on the case detail page. Row click opens the TaskDrawer. Any
 // open task can be completed (MINT-135): completing one while earlier tasks
-// are open is recorded as a task.completed_out_of_order advisory, quietly,
-// and the earlier tasks stay open.
+// are open is recorded as a task.completed_out_of_order advisory, quietly, by
+// the service that saves it, and the earlier tasks stay open.
 //
 // Slice E (payer-and-cases screen 6): ONE list — the step-at-a-time wizard is
 // retired. Each task shows its execution type and due date, and its ordered
@@ -186,12 +186,12 @@ export function CaseTasksPanel({
     );
   };
 
-  const completeWithUndo = (task: Task, earlierOpenCount: number) => {
+  const completeWithUndo = (task: Task) => {
     if (!canEdit) return;
     if (task.status === "completed") return;
     const previous: TaskStatus = task.status;
     updateStatusM.mutate(
-      { id: task.id, status: "completed", earlierOpenCount },
+      { id: task.id, status: "completed" },
       {
         onSuccess: () => {
           toast.success(`Completed "${task.title}"`, {
@@ -297,7 +297,7 @@ export function CaseTasksPanel({
                       onClick={(e) => {
                         e.stopPropagation();
                         if (canComplete) {
-                          completeWithUndo(t, earlierOpen);
+                          completeWithUndo(t);
                           return;
                         }
                         if (canReopen) {

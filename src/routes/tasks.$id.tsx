@@ -1,7 +1,8 @@
 // Task detail at /tasks/$id. SOP step runner that coordinators use side-by-side
 // with a payer portal: ordered steps, copy buttons for data fields, notes.
 // Order is advisory (MINT-135): any open step can be ticked and the task can
-// be completed while earlier tasks are open; each bypass is recorded quietly.
+// be completed while earlier tasks are open; each bypass is recorded quietly
+// by the save (the step RPC, or updateTaskStatus).
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { fmtDate, fmtDateTime } from "@/lib/format";
@@ -27,7 +28,6 @@ import { useTask, useCompleteSOPStep, useUpdateTaskStatus } from "@/hooks/useTas
 import { useCase } from "@/hooks/useCases";
 import { useLogNote, useTaskTouchlog } from "@/hooks/useTouches";
 import { useCanWrite } from "@/lib/permissions";
-import { earlierOpenTaskCount } from "@/lib/caseDetailView";
 import type { SOPStep, TaskStatus } from "@/types";
 
 export const Route = createFileRoute("/tasks/$id")({
@@ -161,15 +161,6 @@ function TaskDetailPage() {
     ? [providerName, payerName, stateCode].filter(Boolean).join(" · ") || "Case"
     : "Case";
 
-  // Earlier tasks in the same case not yet completed: recorded with an
-  // out-of-order completion (MINT-135).
-  const earlierOpenCount = (() => {
-    if (!c?.tasks) return 0;
-    const ordered = c.tasks.slice().sort((a, b) => a.sortOrder - b.sortOrder);
-    const idx = ordered.findIndex((t) => t.id === task.id);
-    return idx <= 0 ? 0 : earlierOpenTaskCount(ordered, idx);
-  })();
-
   const handleToggleStep = (stepIndex: number, checked: boolean) => {
     if (!checked) return; // no uncheck
     const step = steps[stepIndex];
@@ -183,11 +174,11 @@ function TaskDetailPage() {
     );
   };
 
-  const handleStatusChange = (next: string, earlierOpen = 0) => {
+  const handleStatusChange = (next: string) => {
     if (!canEdit) return;
     if (next === task.status) return;
     updateStatusM.mutate(
-      { id: task.id, status: next as TaskStatus, earlierOpenCount: earlierOpen },
+      { id: task.id, status: next as TaskStatus },
       {
         onSuccess: () => toast.success("Status updated"),
         onError: (err: unknown) =>
@@ -282,14 +273,14 @@ function TaskDetailPage() {
                   size="sm"
                   className="h-8 bg-[#1B4D3E] hover:bg-[#1B4D3E]/90 text-white"
                   disabled={!canEdit || updateStatusM.isPending}
-                  onClick={() => handleStatusChange("completed", earlierOpenCount)}
+                  onClick={() => handleStatusChange("completed")}
                 >
                   Mark complete
                 </Button>
               ) : null}
               <Select
                 value={task.status === "completed" ? "completed" : task.status}
-                onValueChange={(v) => handleStatusChange(v)}
+                onValueChange={handleStatusChange}
                 disabled={!canEdit || updateStatusM.isPending || task.status === "completed"}
               >
                 <SelectTrigger className="w-[150px] h-8 text-[13px] shadow-none">

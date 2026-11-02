@@ -1,24 +1,33 @@
 -- MINT-135: an SOP step may be ticked while earlier-ordered steps are still
--- open (Sowmya, Addendum 9, U5). Before this, complete_sop_task_step refused
--- with a 409 "Complete "X" first". Now the tick goes through, the earlier
--- steps stay open, and the bypass is recorded as one task.step_out_of_order
--- row in MINT-134's workflow_advisories ledger, in the same transaction.
--- This covers the Panel task drawer and the extension's
+-- open, and a task completed while earlier tasks are (Sowmya, Addendum 9,
+-- U5). Before this, complete_sop_task_step refused the first with a 409
+-- "Complete "X" first". Now the tick goes through, the earlier steps and
+-- tasks stay open, and the bypass is recorded as one row in MINT-134's
+-- workflow_advisories ledger, in the same transaction. This covers the Panel
+-- task drawer, the /tasks/$id page and the extension's
 -- PATCH /api/tasks/:id/steps.
 --
 -- complete_sop_task_step is replaced with 20261101110000's definition copied
 -- exactly (SECURITY INVOKER, search_path, row locks, the MINT-75 completion
 -- and termination days, audit, grants, comment). The only change: the
 -- out-of-order refusal becomes a count of the earlier-ordered open steps,
--- and when that count is above zero the function calls
--- public.record_workflow_advisory (20261101090000) before the audit insert:
---   check_key  task.step_out_of_order, severity advisory
---   record     tasks, p_task_id
+-- and the function calls public.record_workflow_advisory (20261101090000)
+-- before the audit insert, in one guarded call, for at most one of:
+--   task.step_out_of_order       earlier-ordered steps are open. Context:
+--                                step_order (the ticked step's order) and
+--                                earlier_open_count (those steps).
+--   task.completed_out_of_order  the tick moves the task to completed while
+--                                earlier tasks of its case are open: lower
+--                                sort_order, not completed, not a removed
+--                                payer form (record_typed_enrollment_
+--                                submission's rule). Context:
+--                                earlier_open_count (those tasks).
+-- Both use severity advisory and record (tasks, p_task_id). They never meet:
+-- a tick with earlier steps open cannot complete the task.
 --   source     panel for an authenticated caller, extension for service_role
 --              (the ledger binds the source to the caller)
---   context    step_order (the ticked step's order) and earlier_open_count,
---              each left out when it is not an integer from 0 to 99, as
---              pickDeclared() drops it in code
+--   context    a count is left out when it is not an integer from 0 to 99,
+--              as pickDeclared() drops it in code
 --   actor      p_actor_id, already bound to auth.uid() for authenticated and
 --              membership-checked for service_role above; the ledger checks
 --              both again and reads the role from memberships.
@@ -92,6 +101,10 @@ DECLARE
   v_target jsonb;
   v_target_order numeric;
   v_earlier_open integer;
+  v_earlier_open_tasks integer;
+  v_was_open boolean;
+  v_check_key text;
+  v_context jsonb;
   v_next_steps jsonb;
   v_all_done boolean;
   v_next_status text;
@@ -276,6 +289,10 @@ BEGIN
     ELSE v_task.completed_date
   END;
 
+  -- MINT-135: only a tick that moves the task to completed can complete it
+  -- out of order.
+  v_was_open := v_task.status IS DISTINCT FROM 'completed';
+
   UPDATE public.tasks AS t
      SET sop_content = v_next_steps,
          status = v_next_status,
@@ -295,32 +312,66 @@ BEGIN
        AND c.termination_date IS NULL;
   END IF;
 
-  -- MINT-135: record the out-of-order tick in this transaction. The ledger
-  -- checks the caller, actor, record and context itself; a refusal or failure
-  -- is one WARNING and never blocks the tick.
+  -- MINT-135: record the out-of-order tick in this transaction. A tick with
+  -- earlier steps open is task.step_out_of_order. A tick that completes the
+  -- task while earlier tasks of its case are open is
+  -- task.completed_out_of_order: lower sort_order, not completed, and not a
+  -- removed payer form (record_typed_enrollment_submission's rule). The two
+  -- never meet, since a tick with earlier steps open cannot complete the task.
+  -- The ledger checks the caller, actor, record and context itself; a refusal
+  -- or failure is one WARNING and never blocks the tick.
   IF v_earlier_open > 0 THEN
+    v_check_key := 'task.step_out_of_order';
+    v_context := pg_catalog.jsonb_strip_nulls(pg_catalog.jsonb_build_object(
+      'step_order', CASE
+        WHEN v_target_order BETWEEN 0 AND 99
+         AND v_target_order = pg_catalog.trunc(v_target_order)
+          THEN v_target_order::integer
+      END,
+      'earlier_open_count', CASE WHEN v_earlier_open <= 99 THEN v_earlier_open END
+    ));
+  ELSIF v_was_open AND v_all_done AND v_task.case_id IS NOT NULL THEN
+    SELECT pg_catalog.count(*)::integer
+      INTO v_earlier_open_tasks
+      FROM public.tasks AS prior_task
+     WHERE prior_task.org_id = p_org_id
+       AND prior_task.case_id = v_task.case_id
+       AND prior_task.status <> 'completed'
+       AND prior_task.sort_order < v_task.sort_order
+       AND NOT EXISTS (
+         SELECT 1
+           FROM pg_catalog.jsonb_array_elements(
+             CASE WHEN pg_catalog.jsonb_typeof(prior_task.sop_content) = 'array'
+                  THEN prior_task.sop_content ELSE '[]'::jsonb END
+           ) AS prior_step(step)
+          WHERE prior_step.step->>'stepType' = 'pdf'
+            AND nullif(pg_catalog.btrim(prior_step.step->'payerForm'->>'familyId'), '') IS NOT NULL
+            AND nullif(pg_catalog.btrim(prior_step.step->'payerForm'->>'removedAt'), '') IS NOT NULL
+       );
+    IF v_earlier_open_tasks > 0 THEN
+      v_check_key := 'task.completed_out_of_order';
+      v_context := pg_catalog.jsonb_strip_nulls(pg_catalog.jsonb_build_object(
+        'earlier_open_count', CASE WHEN v_earlier_open_tasks <= 99 THEN v_earlier_open_tasks END
+      ));
+    END IF;
+  END IF;
+
+  IF v_check_key IS NOT NULL THEN
     BEGIN
       PERFORM public.record_workflow_advisory(
         p_org_id,
-        'task.step_out_of_order',
+        v_check_key,
         'advisory',
         'tasks',
         p_task_id,
         CASE WHEN current_user = 'authenticated' THEN 'panel' ELSE 'extension' END,
-        pg_catalog.jsonb_strip_nulls(pg_catalog.jsonb_build_object(
-          'step_order', CASE
-            WHEN v_target_order BETWEEN 0 AND 99
-             AND v_target_order = pg_catalog.trunc(v_target_order)
-              THEN v_target_order::integer
-          END,
-          'earlier_open_count', CASE WHEN v_earlier_open <= 99 THEN v_earlier_open END
-        )),
+        v_context,
         p_actor_id
       );
     EXCEPTION WHEN OTHERS THEN
       RAISE WARNING '%', pg_catalog.json_build_object(
         'event', 'advisory_record_failed',
-        'check_key', 'task.step_out_of_order',
+        'check_key', v_check_key,
         'sqlstate', SQLSTATE
       );
     END;

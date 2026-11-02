@@ -36,8 +36,8 @@ import type { SOPStep, Task, TaskStatus } from "@/types";
 interface TaskDrawerProps {
   taskId: string | null;
   fallbackTask: Task | null;
-  /** Earlier tasks on the case still open: recorded with an out-of-order
-   * completion, and they keep Work in portal off this task. */
+  /** Earlier tasks on the case still open: they keep Work in portal off this
+   * task. (An out-of-order completion is recorded by the save itself.) */
   earlierOpenCount: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -133,11 +133,11 @@ export function TaskDrawer({
     task.dueDate &&
     differenceInDays(new Date(), parseISO(task.dueDate)) > 0;
 
-  const handleSetStatus = (next: TaskStatus, successMsg = "Status updated", earlierOpen = 0) => {
+  const handleSetStatus = (next: TaskStatus, successMsg = "Status updated") => {
     if (!canEdit) return;
     if (next === task.status) return;
     updateStatusM.mutate(
-      { id: task.id, status: next, earlierOpenCount: earlierOpen },
+      { id: task.id, status: next },
       {
         onSuccess: () => toast.success(successMsg),
         onError: (err: unknown) =>
@@ -148,7 +148,7 @@ export function TaskDrawer({
 
   const handleMarkComplete = () => {
     if (task.status === "completed") return;
-    handleSetStatus("completed", "Task completed", earlierOpenCount);
+    handleSetStatus("completed", "Task completed");
   };
 
   const handleStep = (index: number, checked: boolean) => {

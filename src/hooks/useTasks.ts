@@ -72,16 +72,13 @@ export function useTask(id: string | undefined) {
 export interface UpdateTaskStatusVars {
   id: string;
   status: TaskStatus;
-  /** Earlier tasks on the case still open (MINT-135 advisory); 0 when omitted. */
-  earlierOpenCount?: number;
 }
 
 export function useUpdateTaskStatus() {
   const qc = useQueryClient();
   const orgId = useActiveOrgId() ?? "no-org";
   return useMutation({
-    mutationFn: (vars: UpdateTaskStatusVars) =>
-      updateTaskStatus(vars.id, vars.status, vars.earlierOpenCount),
+    mutationFn: (vars: UpdateTaskStatusVars) => updateTaskStatus(vars.id, vars.status),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ["tasks", orgId] });
       qc.invalidateQueries({ queryKey: queryKeys.task(orgId, vars.id) });

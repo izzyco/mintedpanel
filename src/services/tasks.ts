@@ -1,8 +1,10 @@
 // Tasks and SOP step completion. Order is advisory (MINT-135): a task may be
 // completed, and a step ticked, while earlier ones are still open. Each such
-// completion is recorded as a workflow advisory once it has succeeded
-// (task.completed_out_of_order here, task.step_out_of_order inside the
-// complete_sop_task_step RPC); the earlier items stay open.
+// completion is recorded as a workflow advisory once it has succeeded: a
+// status change to completed here (task.completed_out_of_order), a step tick
+// inside the complete_sop_task_step RPC (task.step_out_of_order, or
+// task.completed_out_of_order when the tick completes the task). The earlier
+// items stay open.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
@@ -12,7 +14,8 @@ import {
   stepAttachmentPatch,
 } from "@/lib/sopStepAttachments";
 import { translateDbError } from "@/lib/dbErrors";
-import { markPayerFormRemoved } from "@/lib/payerForms";
+import { isPayerFormRemoved, markPayerFormRemoved } from "@/lib/payerForms";
+import { ADVISORY_RECORD_FAILED, reportAdvisoryFailure } from "@/lib/advisoryChecks";
 import { logNote } from "@/services/touches";
 import { completeTaskStep } from "@/services/taskSteps";
 import { recordAdvisory } from "@/services/advisories";
@@ -215,14 +218,39 @@ async function updateTaskSopContentWithRevision(
   return camelizeRow<Task>(data);
 }
 
-/** `earlierOpenCount`: how many earlier tasks on the case are still open. A
- * completion with any open records task.completed_out_of_order after the save,
- * fire-and-forget; the front end stays quiet. */
-export async function updateTaskStatus(
-  id: string,
-  status: TaskStatus,
-  earlierOpenCount = 0,
-): Promise<Task> {
+/** MINT-135: after a save that moved `task` to completed, record
+ * task.completed_out_of_order when earlier tasks of its case are still open:
+ * a lower sort_order, not completed, and not a removed payer form (the RPC's
+ * and record_typed_enrollment_submission's rule). Fire-and-forget: it never
+ * throws or rejects, and a failed read is one advisory_record_failed line. */
+async function recordCompletedOutOfOrder(orgId: string, task: Task): Promise<void> {
+  try {
+    if (!task.caseId || typeof task.sortOrder !== "number") return;
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("status, sort_order, sop_content")
+      .eq("org_id", orgId)
+      .eq("case_id", task.caseId);
+    if (error) throw error;
+    const earlierOpenCount = (data ?? []).filter(
+      (row) =>
+        typeof row.sort_order === "number" &&
+        row.sort_order < task.sortOrder &&
+        row.status !== "completed" &&
+        !isPayerFormRemoved(row.sop_content),
+    ).length;
+    if (earlierOpenCount === 0) return;
+    await recordAdvisory(
+      "task.completed_out_of_order",
+      { table: "tasks", id: task.id },
+      { earlier_open_count: earlierOpenCount },
+    );
+  } catch (error) {
+    reportAdvisoryFailure(ADVISORY_RECORD_FAILED, "task.completed_out_of_order", error);
+  }
+}
+
+export async function updateTaskStatus(id: string, status: TaskStatus): Promise<Task> {
   const orgId = requireActiveOrg();
   const before = await getTask(id);
   const patch: Record<string, unknown> = { status };
@@ -248,12 +276,9 @@ export async function updateTaskStatus(
     after: { status: after.status },
     description: `Task status set to ${after.status}`,
   });
-  if (status === "completed" && earlierOpenCount > 0) {
-    void recordAdvisory(
-      "task.completed_out_of_order",
-      { table: "tasks", id },
-      { earlier_open_count: earlierOpenCount },
-    );
+  // Only when this call is what completed the task: a repeat records nothing.
+  if (status === "completed" && before && before.status !== "completed") {
+    void recordCompletedOutOfOrder(orgId, before);
   }
   return after;
 }
