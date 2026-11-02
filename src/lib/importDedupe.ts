@@ -1,4 +1,10 @@
 import { matchGroupLocator } from "@/lib/groupLocator";
+import {
+  DEFAULT_IDENTITY_VALIDATION_RULES,
+  NPI_CHECK_DIGIT_MESSAGE,
+  isValidNpi,
+  type IdentityValidationRules,
+} from "@/lib/providerIdentity";
 
 // E3.1 — the pure five-part dedupe / conflict-review / commit-plan core
 // (TE-3/TE-4). NO I/O: the service layer batch-reads the org's existing data
@@ -15,8 +21,10 @@ import { matchGroupLocator } from "@/lib/groupLocator";
 //   - name+NPI match under a different group/facility → an UPDATE on the
 //     existing provider proposing the new assignment(s) — never a second
 //     providers row;
-//   - a row missing NPI → exact-name matched and flagged for MANUAL REVIEW
-//     (the blocked bucket) — never silently merged;
+//   - a row missing NPI (it is optional, Nov 1 B3) → a NEW provider with no
+//     NPI, folded by exact name; when that name matches an existing provider
+//     or a row with an NPI in the same file, it is flagged for MANUAL REVIEW
+//     as a possible duplicate (the blocked bucket) — never silently merged;
 //   - an NPI with no NPI match is a NEW provider even when the name matches an
 //     existing provider with a DIFFERENT NPI (NPI is the authoritative
 //     identity; a note flags the same-name neighbor).
@@ -87,6 +95,9 @@ export interface DedupeInputs {
   groupAssignments: GroupAssignmentPair[];
   facilityAssignments: FacilityAssignmentPair[];
   licenses: DedupeLicenseRecord[];
+  /** The identity validation rules in force (MINT-129). Omitted means the
+   * defaults: only a new identity is checked against the NPI check digit. */
+  identityRules?: IdentityValidationRules;
 }
 
 export interface LicenseDraft {
@@ -126,7 +137,8 @@ export interface CreateDisposition {
     gender: string | null;
     email: string | null;
     phone: string | null;
-    npi: string;
+    /** null: the row has no NPI (B3). */
+    npi: string | null;
     caqhId: string | null;
     caqhLastAttestedDate: string | null;
     isNewGrad: boolean;
@@ -182,8 +194,13 @@ export type ImportRowDisposition =
 
 export const ALREADY_EXISTS_REASON = "already exists";
 export const MISSING_NPI_MATCH_REASON =
-  "Missing NPI — matches an existing provider by name; review manually (never merged automatically)";
+  "Missing NPI — matches an existing provider, or a row with an NPI, by name; review manually (never merged automatically)";
+/** A row with neither an NPI nor a name: nothing to identify it by. */
 export const MISSING_NPI_REASON = "Missing NPI — flagged for manual review";
+/** Only under IdentityValidationRules.recheckStoredOnEdit: the row matches an
+ * existing provider whose stored NPI fails the CMS check digit. */
+export const STORED_NPI_CHECK_DIGIT_REASON =
+  "NPI check digit is invalid — it is this provider's stored NPI, so correct it on their record and in the file";
 
 const norm = (v: string | null | undefined): string =>
   (v ?? "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -199,6 +216,11 @@ function personName(first: string | null, last: string | null): string {
   return [first, last].filter(Boolean).join(" ");
 }
 
+/** The exact-name key the dedupe matches on (trimmed, case- and space-folded). */
+export function providerNameKey(first: string | null, last: string | null): string {
+  return norm(personName(first, last));
+}
+
 function createProviderDraft(row: StagedImportRow): CreateDisposition["provider"] {
   const isNewGrad = field(row, "is_new_grad") === "true";
   return {
@@ -209,7 +231,7 @@ function createProviderDraft(row: StagedImportRow): CreateDisposition["provider"
     gender: field(row, "gender"),
     email: field(row, "email"),
     phone: field(row, "phone"),
-    npi: field(row, "npi") ?? "",
+    npi: field(row, "npi"),
     caqhId: isNewGrad ? null : field(row, "caqh_id"),
     caqhLastAttestedDate: isNewGrad ? null : field(row, "caqh_last_attested_date"),
     isNewGrad,
@@ -247,7 +269,7 @@ function noteCreateScalarDisagreements(create: CreateDisposition, row: StagedImp
   if (labels.length === 0) return;
   pushNote(
     create.notes,
-    `Row ${row.line} lists different ${labels.join(", ")} for NPI ${create.npi} — the first row's values are used`,
+    `Row ${row.line} lists different ${labels.join(", ")} for ${create.npi ? `NPI ${create.npi}` : create.displayName} — the first row's values are used`,
   );
 }
 
@@ -336,6 +358,7 @@ function pushNote(notes: string[], note: string | null): void {
  * per-provider dispositions. Identity is resolved across the whole batch
  * before folding; row order decides only the valid fold anchors. */
 export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
+  const rules = inputs.identityRules ?? DEFAULT_IDENTITY_VALIDATION_RULES;
   const byNpi = new Map<string, DedupeProviderRecord[]>();
   for (const p of inputs.providers) {
     const npi = p.npi?.trim();
@@ -367,6 +390,7 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
     );
     namesByIncomingNpi.set(npi, names);
   }
+  const namesWithIncomingNpi = new Set([...namesByIncomingNpi.values()].flatMap((n) => [...n]));
   const providerByIncomingNpi = new Map<string, DedupeProviderRecord>();
   const identityBlocks = new Map<string, string>();
   const fallbackClaims = new Map<string, Set<string>>();
@@ -475,20 +499,25 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
     const first = field(row, "provider_first_name");
     const last = field(row, "provider_last_name");
     const displayName = personName(first, last) || "—";
-    const npi = field(row, "npi");
+    // "" when the row has no NPI.
+    const npi = field(row, "npi") ?? "";
     const nameKey = norm(personName(first, last));
 
-    // Missing NPI → exact-name fallback, always manual review (never merged).
+    // Missing NPI (optional, B3) → a new provider with no NPI, folded by name
+    // below. A name that matches an existing provider, or a row with an NPI
+    // in this file, cannot be told apart from it: manual review, never merged.
     if (!npi) {
       const nameMatches = nameKey ? (byName.get(nameKey) ?? []) : [];
-      ordered.push({
-        kind: "blocked",
-        line: row.line,
-        column: "npi",
-        displayName,
-        reason: nameMatches.length > 0 ? MISSING_NPI_MATCH_REASON : MISSING_NPI_REASON,
-      });
-      continue;
+      if (!nameKey || nameMatches.length > 0 || namesWithIncomingNpi.has(nameKey)) {
+        ordered.push({
+          kind: "blocked",
+          line: row.line,
+          column: "npi",
+          displayName,
+          reason: nameKey ? MISSING_NPI_MATCH_REASON : MISSING_NPI_REASON,
+        });
+        continue;
+      }
     }
 
     const identityBlock = identityBlocks.get(npi);
@@ -509,6 +538,17 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
 
     const existing = providerByIncomingNpi.get(npi);
     if (existing?.npi?.trim()) {
+      // Off by default: a row matched by NPI is not re-checked (MINT-129).
+      if (rules.recheckStoredOnEdit && !isValidNpi(npi)) {
+        ordered.push({
+          kind: "blocked",
+          line: row.line,
+          column: "npi",
+          displayName,
+          reason: STORED_NPI_CHECK_DIGIT_REASON,
+        });
+        continue;
+      }
       // ---- Existing provider (matched by NPI): fold into ONE entry. ----
       let entry = matchedByProvider.get(existing.id);
       if (!entry) {
@@ -608,8 +648,25 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
       continue;
     }
 
-    // ---- No NPI match: a NEW provider, folded per NPI. ----
-    const existingCreate = createByNpi.get(npi);
+    // MINT-7: the CMS check digit binds a NEW identity — a new provider, or
+    // an NPI filled onto an existing provider with none — under every rule.
+    // By default a row matched by NPI (above) keeps today's behavior, so
+    // re-importing a provider whose stored NPI predates the check never newly
+    // blocks. A row with no NPI has nothing to check.
+    if (npi && !isValidNpi(npi)) {
+      ordered.push({
+        kind: "blocked",
+        line: row.line,
+        column: "npi",
+        displayName,
+        reason: NPI_CHECK_DIGIT_MESSAGE,
+      });
+      continue;
+    }
+
+    // ---- No NPI match: a NEW provider, folded per NPI (by name without one). ----
+    const createKey = npi || `name:${nameKey}`;
+    const existingCreate = createByNpi.get(createKey);
     if (existingCreate) {
       existingCreate.lines.push(row.line);
       if (nameKey && nameKey !== norm(existingCreate.displayName)) {
@@ -716,7 +773,7 @@ export function dedupeImportRows(inputs: DedupeInputs): ImportRowDisposition[] {
       licenses: license ? [license] : [],
       notes,
     };
-    createByNpi.set(npi, create);
+    createByNpi.set(createKey, create);
     ordered.push(create);
   }
 
@@ -818,7 +875,7 @@ export interface CommitPlanCreate {
     first_name: string;
     middle_initial: string | null;
     last_name: string;
-    npi: string;
+    npi: string | null;
     caqh_id: string | null;
     caqh_last_attested_date: string | null;
     is_new_grad: boolean;
