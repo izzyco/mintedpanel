@@ -60,6 +60,7 @@ function eventAssessment(
     data.snapshot,
     { providerId: event.providerId, facilityId: event.facilityId, payerId: event.payerId },
     data.asOf,
+    data.rules,
   );
   if (
     !assessment?.case ||
@@ -147,7 +148,7 @@ export function BillingChangeFeed({ readiness }: { readiness: BillingReadinessDa
         return;
       }
       const currentFeed = filterBillingFeed(fresh.feed, requestedFilters, fresh.asOf);
-      const csv = buildNewlyBillableDigestCsv(fresh.snapshot, currentFeed, fresh.asOf);
+      const csv = buildNewlyBillableDigestCsv(fresh.snapshot, currentFeed, fresh.asOf, fresh.rules);
       if (!isCurrentBillingReadinessDate(fresh.asOf)) {
         setDownloadError(
           "A complete current read was not available. Retry after the source data loads.",
