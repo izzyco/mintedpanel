@@ -1,17 +1,8 @@
 name: Playwright Full E2E
 
 on:
+  # Manual dispatch only — run on-demand for batch release testing to avoid unexpected auto-runs
   workflow_dispatch:
-  schedule:
-    # 03:00 UTC daily (nightly regression run)
-    - cron: "0 3 * * *"
-  push:
-    branches: [main, staging]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "review-artifacts/**"
-      - "release-artifacts/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
