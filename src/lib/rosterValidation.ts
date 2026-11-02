@@ -147,7 +147,7 @@ export function evaluateRosterSource(
     rowKey: string;
     ruleCode: string;
     fieldKey: string;
-    reason: string;
+    reason: string | null;
   }> = [],
 ): RosterEvaluationResult {
   const assignmentByColumn = fieldMappings(input.mapping.columnAssignments);

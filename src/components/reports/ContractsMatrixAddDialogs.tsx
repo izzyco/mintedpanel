@@ -1,6 +1,9 @@
 // "+ Add payer" (GCM-6) and "+ Add state" (GCM-33) for the Group Contracts
-// Matrix. Both are session-local: they add an empty row or column to the view,
-// and the row or column stays once a contract record is saved in it.
+// Matrix. "+ Add payer" is session-local: it adds an empty row, which stays
+// once a contract record is saved in it. "+ Add state" adds a column and saves
+// a Not started record for each payer of the specialty's table with an open
+// cell in it (MINT-143), so the column stays for everyone. Its button shows
+// the count first.
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import { EmptyState } from "@/components/EmptyState";
 import { StateSelect } from "@/components/StateSelect";
+import { countLabel } from "./contractsMatrixView";
 
 export function AddPayerDialog({
   payers,
@@ -107,19 +111,41 @@ export function AddPayerDialog({
   );
 }
 
+/** The save button's label: how many Not started records "Add column" will
+ * save, so the count shows before the click (contract records cannot be
+ * deleted). Null before a group and state are chosen, or while the
+ * contracts are being refetched. */
+function addStateButtonLabel(count: number | null): string {
+  if (count === null) return "Add column";
+  if (count === 0) return "Add column for this visit";
+  return `Add column · ${countLabel(count, "Not started record")}`;
+}
+
 export function AddStateDialog({
   specialtyLabel,
   groups,
+  countFor,
+  counting = false,
   onAdd,
   onClose,
 }: {
   specialtyLabel: string;
   groups: readonly { id: string; name: string }[];
+  /** How many Not started records adding this group and state saves (the
+   * same rule as the save, notStartedRecordsForAddedState). */
+  countFor: (groupId: string, state: string) => number;
+  /** The contracts are being refetched (opening the dialog starts it): the
+   * button shows no count, and waits, until they are fresh. */
+  counting?: boolean;
   onAdd: (groupId: string, state: string) => void;
   onClose: () => void;
 }) {
   const [groupId, setGroupId] = useState(groups.length === 1 ? groups[0].id : "");
   const [state, setState] = useState("");
+  const count = useMemo(
+    () => (!counting && groupId && state ? countFor(groupId, state) : null),
+    [countFor, counting, groupId, state],
+  );
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -128,8 +154,10 @@ export function AddStateDialog({
           <DialogTitle>Add a {specialtyLabel} state</DialogTitle>
           <DialogDescription>
             Adds a {specialtyLabel} column for a group and state before any {specialtyLabel}{" "}
-            provider works there, so contracting can start early. The column stays once you save a
-            contract in it.
+            provider works there, so contracting can start early. Every payer in the{" "}
+            {specialtyLabel} table, across all groups and whatever the filters show, that serves the
+            state and has no record there gets a Not started record, so the column stays for
+            everyone.
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -166,14 +194,14 @@ export function AddStateDialog({
           </Button>
           <Button
             size="sm"
-            disabled={!groupId || !state}
+            disabled={!groupId || !state || counting}
             onClick={() => {
               onAdd(groupId, state);
               onClose();
             }}
             className="bg-[var(--mp-primary)] text-white hover:bg-[var(--mp-primary-hover)]"
           >
-            Add column
+            {addStateButtonLabel(count)}
           </Button>
         </DialogFooter>
       </DialogContent>

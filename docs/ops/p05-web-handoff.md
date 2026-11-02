@@ -60,6 +60,10 @@ reads `runtime.lastError` inside the callback.
 | H9 same-case return       | P05 sends exact IDs and performs no write. Minimal same-environment return link is P06-owned if receiver changes are needed.                                                                                            | Static/data-flow review               |
 | H10 installed journey     | Prepare deterministic mounted-browser coverage and record local evidence. Installed guarded-staging Chrome proof requires environment readiness and remains blocked until executed.                                     | Partial until installed evidence      |
 
+Superseded in part by MINT-135 (Nov 1 2026): the sequential task lock is gone, so "unlocked" in
+H5 and in the `caseDetailView` and `TaskDrawer` rows below now means "no earlier open task".
+Work in portal still mounts only on the case's current task and step.
+
 ## Callers and data trace
 
 | Surface         | Reads                                                                                            | Writes                                                               |

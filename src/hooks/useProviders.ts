@@ -1,4 +1,5 @@
 // Providers query hooks: filter by active org; invalidate on mutations.
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { queryKeys } from "@/hooks/queryKeys";
@@ -28,6 +29,7 @@ import {
 } from "@/services/providerAssignments";
 import type { AssignmentDraft } from "@/lib/assignmentScope";
 import { invalidateProviderRosterCaches } from "@/lib/providerRosterCaches";
+import { resolveAddProviderRules, type AddProviderRules } from "@/lib/addProviderRules";
 
 const THIRTY_SECONDS = 30_000;
 
@@ -225,4 +227,14 @@ export function useVerifyProviders() {
       qc.invalidateQueries({ queryKey: queryKeys.providerReadinessFacts(orgId) });
     },
   });
+}
+
+/** The Add Provider start-date rule for the active organization. Nothing
+ * stores a platform or organization override yet (the Mission Control
+ * setting is MINT-116), so this resolves to the decided default; when the
+ * setting lands, its read replaces the two nulls here and in the CSV
+ * import's commit (commitImportRun) and batch assignment (BatchAssignPanel),
+ * which resolve the same rule. */
+export function useAddProviderRules(): AddProviderRules {
+  return useMemo(() => resolveAddProviderRules(null, null), []);
 }

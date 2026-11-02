@@ -19,6 +19,7 @@ import {
 import { evaluateRosterSource } from "@/lib/rosterValidation";
 import { isRosterSourceCompatibleWithTarget } from "@/lib/rosterTransforms";
 import { serializeRosterFile } from "@/lib/rosterSpreadsheet";
+import { recordServerAdvisory } from "./advisories";
 import { fail, ok } from "./envelope";
 import { isWriter, type AuthContext } from "./guard";
 import type {
@@ -112,11 +113,7 @@ function safeError(error: unknown): Response {
     return noStore(fail(413, "Roster exceeds the 5,000 row or 3 MiB artifact limit"));
   if (/roster_location_scope_required/.test(message))
     return noStore(fail(422, "Select at least one location for this roster grain"));
-  if (
-    /reason_too_short|mapping_invalid|location_scope_required|provider_grain_group_ambiguous/.test(
-      message,
-    )
-  ) {
+  if (/mapping_invalid|location_scope_required|provider_grain_group_ambiguous/.test(message)) {
     return noStore(fail(422, "Roster request is incomplete or invalid"));
   }
   return noStore(fail(500, "Roster operation could not be completed"));
@@ -389,6 +386,13 @@ export function handleRosterValidation(id: string, ctx: AuthContext): Promise<Re
   );
 }
 
+// MINT-136 "Export anyway": one click, no typed reason. A reason an older
+// client still sends is ignored, so no free text reaches the ledger. The
+// override (with its rule code and field key) is recorded, then the bypass
+// goes to the workflow advisories (roster_export.override: the mapping and
+// the row count; rule_code and field_key join it once the shared #568
+// registry PR declares them). The advisory helper never throws, so the
+// override stands either way.
 export function handleSaveRosterOverride(
   id: string,
   body: unknown,
@@ -404,8 +408,7 @@ export function handleSaveRosterOverride(
     !HEX_SHA_RE.test(body.inputFingerprint) ||
     !string(body.rowKey) ||
     !string(body.ruleCode) ||
-    !string(body.fieldKey) ||
-    !string(body.reason)
+    !string(body.fieldKey)
   ) {
     return Promise.resolve(noStore(fail(422, "Roster override request is invalid")));
   }
@@ -415,12 +418,7 @@ export function handleSaveRosterOverride(
     rowKey: body.rowKey,
     ruleCode: body.ruleCode,
     fieldKey: body.fieldKey,
-    reason: body.reason,
   };
-  if (input.reason.trim().length < 20)
-    return Promise.resolve(
-      noStore(fail(422, "Override reason must contain at least 20 characters")),
-    );
   return run(
     async () => {
       const { service, snapshot, result } = await evaluateCurrent(ctx, id);
@@ -438,7 +436,17 @@ export function handleSaveRosterOverride(
       );
       if (!issue || issue.severity !== "hard_error" || !issue.overrideable)
         throw new Error("roster_mapping_invalid");
-      return recordRosterOverride(service, id, input);
+      const override = await recordRosterOverride(service, id, input);
+      // UUID_RE takes any case; the advisory helpers take only a lowercase
+      // UUID, so an uppercase path id would drop the advisory silently.
+      await recordServerAdvisory(
+        ctx,
+        "api",
+        "roster_export.override",
+        { table: "roster_mappings", id: id.toLowerCase() },
+        { count: result.validation.rowCount },
+      );
+      return override;
     },
     (override) => ok(override, null, 201),
   );

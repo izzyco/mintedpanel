@@ -354,8 +354,11 @@ const PULLED_LABEL = "From NPI Registry, Oct 31, 2026";
 // The browser half of /api/npi-registry/*: records every call and answers
 // from the two fixture records. `down` makes every lookup of that NPI a 502;
 // `hold(npi)` keeps its lookup running until the returned release is called.
+// MINT-110 PR 3: what a save records as the provider's registry source data
+// (POST /pulls) is kept apart, in `pulls`, and answered 201.
 async function mockRegistry(context: BrowserContext) {
   const calls: RegistryCall[] = [];
+  const pulls: unknown[] = [];
   const gates = new Map<string, Promise<void>>();
   const state = {
     down: new Set<string>(),
@@ -382,6 +385,18 @@ async function mockRegistry(context: BrowserContext) {
         contentType: "application/json",
         body: JSON.stringify({ data, error, meta: null }),
       });
+    if (path === "pulls") {
+      calls.pop();
+      pulls.push(body);
+      return reply(201, {
+        pull: {
+          id: "pull-1",
+          pulledAt: PULLED_AT,
+          sourced: body.sourced,
+          confirmed: body.confirmed,
+        },
+      });
+    }
     if (path === "search") {
       if (state.searchDown) return reply(502, null, "NPI Registry is unavailable");
       return reply(200, {
@@ -399,7 +414,7 @@ async function mockRegistry(context: BrowserContext) {
       pulledAt: PULLED_AT,
     });
   });
-  return { calls, state };
+  return { calls, pulls, state };
 }
 
 test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank fields, keeps typed ones and offers other licenses", async ({
@@ -626,6 +641,29 @@ test("MINT-110: Add Provider verifies a typed NPI; a keyboard pick fills blank f
     expect.objectContaining({ state: "WY", license_number: "WY-0099", expiration_date: null }),
     expect.objectContaining({ state: "CO", license_number: "CO-2002", expiration_date: null }),
   ]);
+  // MINT-110 PR 3: after the save, one pull records the registry answer it
+  // used, naming the values that still hold what the pick gave (not the
+  // credentials staff typed), and the Review step's submit confirms them. No
+  // registry data leaves the browser: the server fetches the reply itself.
+  await expect
+    .poll(() => registry.pulls)
+    .toEqual([
+      {
+        providerId: expect.any(String),
+        npi: "1902833742",
+        sourced: {
+          taxonomyCode: "2251X0800X",
+          gender: "female",
+          phone: "303-555-0199",
+          licenses: [
+            { state: "CO", number: "PT-4471" },
+            { state: "WY", number: "WY-0099" },
+            { state: "CO", number: "CO-2002" },
+          ],
+        },
+        confirmed: true,
+      },
+    ]);
 });
 
 test("MINT-110: roster form saves through a mismatch and an outage; pick A then pick B leaves nothing of A", async ({
@@ -787,6 +825,26 @@ test("MINT-110: roster form saves through a mismatch and an outage; pick A then 
       verified_status: "unverified",
     }),
   ]);
+  // MINT-110 PR 3: one pull, for pick B's NPI, naming what still holds B's
+  // values (never A's, the taxonomy staff chose or the phone they typed). A
+  // roster save confirms nothing (A30c).
+  await expect
+    .poll(() => registry.pulls)
+    .toEqual([
+      {
+        providerId: fixtures.providers[0].id,
+        npi: "1902833742",
+        sourced: {
+          credentials: "DPT",
+          gender: "female",
+          licenses: [
+            { state: "CO", number: "PT-4471" },
+            { state: "WY", number: "WY-0099" },
+          ],
+        },
+        confirmed: false,
+      },
+    ]);
 });
 
 test("MINT-110: Add Provider's Review step says Checking…, then Not found in place, and the provider is created", async ({
@@ -839,6 +897,11 @@ test("MINT-110: Add Provider's Review step says Checking…, then Not found in p
   const creates = requests.filter((r) => r.method === "POST" && r.table === "providers");
   expect(creates).toHaveLength(1);
   expect(creates[0].body).toMatchObject({ npi: "1234567810" });
+  // The check of a typed NPI is a pull too, with nothing sourced: the server
+  // keeps what the registry said (here, no record) as the source data.
+  await expect
+    .poll(() => registry.pulls)
+    .toEqual([{ providerId: expect.any(String), npi: "1234567810", sourced: {}, confirmed: true }]);
 });
 
 test("MINT-110: the roster form's note updates a running check in place, and Save saves through a name mismatch", async ({
@@ -1033,6 +1096,9 @@ test("MINT-110: the roster form saves a provider with no NPI and asks the regist
   expect(fixtures.providers).toHaveLength(1);
   expect(fixtures.providers[0]).toMatchObject({ npi: null });
   expect(registry.calls).toEqual([]);
+  // No NPI, no registry answer: nothing to record as source data.
+  await page.waitForTimeout(500);
+  expect(registry.pulls).toEqual([]);
 });
 
 // Add Provider, from the Credentials step to the Review step and back.

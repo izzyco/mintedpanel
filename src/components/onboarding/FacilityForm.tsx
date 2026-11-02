@@ -39,6 +39,8 @@ import {
   type HoursDraft,
 } from "@/lib/facilityHours";
 import { groupDefaultContact, hasReachableContact } from "@/lib/facilityContact";
+import { usPhoneError } from "@/lib/phone";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import { US_STATES } from "@/lib/usStates";
 import type { FacilityInput } from "@/services/orgSettings";
 import type { Facility, ProviderGroup } from "@/types";
@@ -50,6 +52,8 @@ interface FacilityFormErrors {
   city?: string;
   state?: string;
   zip?: string;
+  phone?: string;
+  appointmentPhone?: string;
   contact?: string;
 }
 
@@ -110,6 +114,7 @@ export function FacilityForm({
 
   const createMut = useCreateFacility();
   const updateMut = useUpdateFacility(facility?.id ?? "");
+  const phoneRules = usePhoneValidationRules();
   const pending = createMut.isPending || updateMut.isPending;
 
   const activeGroups = groups.filter((g) => g.isActive);
@@ -132,6 +137,16 @@ export function FacilityForm({
       next.contact =
         "Add a contact channel (phone, email, fax, or contact name) — this group has no default contact to inherit.";
     }
+    // MINT-91: by default only an entered or changed phone is checked on an
+    // edit (recheckStoredOnEdit).
+    const phoneError = usPhoneError(phone, facility?.phone, phoneRules);
+    if (phoneError) next.phone = phoneError;
+    const appointmentPhoneError = usPhoneError(
+      appointmentPhone,
+      facility?.appointmentPhone,
+      phoneRules,
+    );
+    if (appointmentPhoneError) next.appointmentPhone = appointmentPhoneError;
     const hErrs = validateHoursDraft(hoursDraft);
     setErrors(next);
     setHoursErrors(hErrs);
@@ -366,6 +381,7 @@ export function FacilityForm({
                   onChange={(e) => setPhone(e.target.value)}
                   className="h-9"
                 />
+                <FieldError message={errors.phone} />
               </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
@@ -401,6 +417,7 @@ export function FacilityForm({
                   onChange={(e) => setAppointmentPhone(e.target.value)}
                   className="h-9"
                 />
+                <FieldError message={errors.appointmentPhone} />
               </div>
             </div>
             <FieldError message={errors.contact} />

@@ -50,6 +50,8 @@ import {
 } from "@/lib/importSections";
 import type { ParsedCsv } from "@/lib/csvImport";
 import type { ImportRunErrorEntry, ImportRunSource } from "@/types";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
+import { applyProviderImportPhoneRule, applySectionImportPhoneRule } from "@/lib/importPhoneRule";
 
 const SCAN_POLL_MS = 1200;
 
@@ -288,11 +290,22 @@ export function useImportPreview(runId: string | null) {
     identityRules,
   ]);
 
+  // MINT-91 (A5): a new provider row whose phone fails is created without it
+  // and warned about, or blocked (PhoneValidationRules.importInvalidPhone).
+  const phoneRules = usePhoneValidationRules();
+  const reviewed = useMemo(
+    () =>
+      dispositions && rowsQ.data
+        ? applyProviderImportPhoneRule(dispositions, rowsQ.data, phoneRules)
+        : null,
+    [dispositions, rowsQ.data, phoneRules],
+  );
+
   // The staged rows too, for checks that read a row's own cells (MINT-110).
   return {
     run: runQ.data ?? null,
     rows: rowsQ.data ?? null,
-    dispositions,
+    dispositions: reviewed,
     isLoading,
     isError,
     settled,
@@ -306,8 +319,8 @@ export function useCommitImportRun() {
   const qc = useQueryClient();
   const orgId = useActiveOrgId() ?? "no-org";
   return useMutation({
-    mutationFn: (input: { runId: string; plan: CommitPlan }) =>
-      commitImportRun(input.runId, input.plan),
+    mutationFn: (input: { runId: string; plan: CommitPlan; warnings?: ImportRunErrorEntry[] }) =>
+      commitImportRun(input.runId, input.plan, input.warnings),
     onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: queryKeys.importRuns(orgId) });
       qc.invalidateQueries({ queryKey: queryKeys.importRun(orgId, input.runId) });
@@ -334,6 +347,7 @@ export function useSectionImportPreview(
   const rowsQ = useStagedImportRows(runId);
   const groupsQ = useProviderGroups();
   const facilitiesQ = useFacilities();
+  const phoneRules = usePhoneValidationRules();
 
   const queries =
     entityKind === "facility" ? [runQ, rowsQ, groupsQ, facilitiesQ] : [runQ, rowsQ, groupsQ];
@@ -348,7 +362,14 @@ export function useSectionImportPreview(
       tin: g.tin,
       npiType2: g.npiType2,
     }));
-    if (entityKind === "provider_group") return dedupeGroupRows(rowsQ.data, groups);
+    if (entityKind === "provider_group") {
+      return applySectionImportPhoneRule(
+        dedupeGroupRows(rowsQ.data, groups),
+        entityKind,
+        rowsQ.data,
+        phoneRules,
+      );
+    }
     const facilities = (facilitiesQ.data ?? []).map((f) => ({
       id: f.id,
       name: f.name,
@@ -358,8 +379,13 @@ export function useSectionImportPreview(
       state: f.state,
       zip: f.zip,
     }));
-    return dedupeFacilityRows(rowsQ.data, groups, facilities);
-  }, [rowsQ.data, groupsQ.data, facilitiesQ.data, entityKind]);
+    return applySectionImportPhoneRule(
+      dedupeFacilityRows(rowsQ.data, groups, facilities),
+      entityKind,
+      rowsQ.data,
+      phoneRules,
+    );
+  }, [rowsQ.data, groupsQ.data, facilitiesQ.data, entityKind, phoneRules]);
 
   return { run: runQ.data ?? null, result, isLoading, isError };
 }
@@ -444,7 +470,7 @@ export function useApplyBatchAssignment() {
       runId: string;
       groupId: string | null;
       facilityIds: string[];
-      startDate: string;
+      startDate: string | null;
       plan: BatchAssignmentPlan;
     }) => applyBatchAssignment(input),
     onSuccess: () => {

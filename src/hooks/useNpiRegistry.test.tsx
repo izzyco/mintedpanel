@@ -1,8 +1,9 @@
 // MINT-110 — useNpiRegistryCheck and recordNpiAdvisoriesAfterSave against a
 // real TanStack Query cache. No registry answer blocks or delays a save (A30):
 // the check only reports, and after the save the advisories go, facts only,
-// to the capture seam — joining a check still running. The registry service
-// and the seam are mocked: nothing is fetched or recorded.
+// to the capture seam — joining a check still running — and a blank NPI is
+// recorded as npi.missing (B3). The registry service, the seam and the
+// ledger helper are mocked: nothing is fetched or recorded.
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -17,11 +18,9 @@ vi.mock("@/services/npiRegistry", () => ({
 vi.mock("@/services/advisoryCapture", async (importActual) => ({
   // The real safe logger; the seam itself is mocked.
   ...(await importActual<typeof import("@/services/advisoryCapture")>()),
-  recordAdvisories: vi.fn(async () => ({
-    recorded: false,
-    reason: "advisory_store_not_built",
-  })),
+  recordAdvisories: vi.fn(async () => undefined),
 }));
+vi.mock("@/services/advisories", () => ({ recordAdvisory: vi.fn(async () => undefined) }));
 
 import { queryKeys } from "@/hooks/queryKeys";
 import * as hooks from "./useNpiRegistry";
@@ -41,6 +40,7 @@ import {
 } from "@/lib/npiRegistryPolicy";
 import { lookupNpiRegistry } from "@/services/npiRegistry";
 import { recordAdvisories } from "@/services/advisoryCapture";
+import { recordAdvisory } from "@/services/advisories";
 
 const NPI = "1234567893";
 const JANE = { firstName: "Jane", lastName: "Doe" };
@@ -68,6 +68,7 @@ beforeEach(() => {
   vi.mocked(lookupNpiRegistry).mockReset();
   vi.mocked(lookupNpiRegistry).mockImplementation(() => new Promise(() => undefined));
   vi.mocked(recordAdvisories).mockClear();
+  vi.mocked(recordAdvisory).mockClear();
 });
 
 function Probe({
@@ -168,6 +169,7 @@ describe("recordNpiAdvisoriesAfterSave", () => {
     recordId: "prov-1",
     npi: NPI,
     verify: true,
+    surface: "add_provider",
     typed: JANE,
     entered: { credentials: "PT", taxonomyCode: "225100000X", licenses: [] },
     confirmed: new Set(),
@@ -175,20 +177,16 @@ describe("recordNpiAdvisoriesAfterSave", () => {
     ...over,
   });
 
-  it("hands the saved record's advisories to the seam, facts only; nothing is recorded yet", async () => {
+  it("hands the saved record's advisories to the seam, facts only, with the form's surface", async () => {
     cache(jane);
     const { id } = buildNpiRegistryReview({
       ...input(),
       state: { status: "done", record: jane },
     }).advisories[0];
-    const result = await recordNpiAdvisoriesAfterSave(
-      client,
-      "org-1",
-      input({ confirmed: new Set([id]) }),
-    );
-    expect(result).toEqual({ recorded: false, reason: "advisory_store_not_built" });
+    await recordNpiAdvisoriesAfterSave(client, "org-1", input({ confirmed: new Set([id]) }));
     expect(recordAdvisories).toHaveBeenCalledTimes(1);
-    const sent = vi.mocked(recordAdvisories).mock.calls[0][0];
+    const [sent, origin] = vi.mocked(recordAdvisories).mock.calls[0];
+    expect(origin).toEqual({ surface: "add_provider" });
     expect(sent).toEqual([
       {
         check: "npi_registry.credentials_differ",
@@ -244,12 +242,30 @@ describe("recordNpiAdvisoriesAfterSave", () => {
 
   it("hands nothing over for a full match, an unchecked save or no organization", async () => {
     cache({ ...jane, credential: "PT" });
-    expect(await recordNpiAdvisoriesAfterSave(client, "org-1", input())).toBeNull();
-    expect(
-      await recordNpiAdvisoriesAfterSave(client, "org-1", input({ verify: false })),
-    ).toBeNull();
-    expect(await recordNpiAdvisoriesAfterSave(client, null, input())).toBeNull();
+    await recordNpiAdvisoriesAfterSave(client, "org-1", input());
+    await recordNpiAdvisoriesAfterSave(client, "org-1", input({ verify: false }));
+    await recordNpiAdvisoriesAfterSave(client, null, input());
     expect(recordAdvisories).not.toHaveBeenCalled();
+    expect(recordAdvisory).not.toHaveBeenCalled();
+  });
+
+  it("records a provider saved with no NPI as npi.missing, from the form that saved it (B3)", async () => {
+    await recordNpiAdvisoriesAfterSave(client, "org-1", input({ npi: "", surface: "record_edit" }));
+    expect(recordAdvisory).toHaveBeenCalledTimes(1);
+    expect(recordAdvisory).toHaveBeenCalledWith(
+      "npi.missing",
+      { table: "providers", id: "prov-1" },
+      { surface: "record_edit" },
+    );
+    // No registry check for a blank NPI, and nothing else handed over.
+    expect(lookupNpiRegistry).not.toHaveBeenCalled();
+    expect(recordAdvisories).not.toHaveBeenCalled();
+  });
+
+  it("does not record npi.missing for an untouched blank NPI or with no organization", async () => {
+    await recordNpiAdvisoriesAfterSave(client, "org-1", input({ npi: "", verify: false }));
+    await recordNpiAdvisoriesAfterSave(client, null, input({ npi: "" }));
+    expect(recordAdvisory).not.toHaveBeenCalled();
   });
 });
 
@@ -258,6 +274,7 @@ describe("a capture that fails", () => {
     recordId: "prov-1",
     npi: NPI,
     verify: true,
+    surface: "add_provider",
     typed: JANE,
     entered: { credentials: "PT", taxonomyCode: "225100000X", licenses: [] },
     confirmed: new Set(),
@@ -273,7 +290,7 @@ describe("a capture that fails", () => {
         details: "Key (credential)=(DPT) already exists.",
       }),
     );
-    await expect(recordNpiAdvisoriesAfterSave(client, "org-1", input())).resolves.toBeNull();
+    await expect(recordNpiAdvisoriesAfterSave(client, "org-1", input())).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith("advisory_capture_failed", {
       event: "advisory_capture_failed",
       checks: ["npi_registry.credentials_differ"],

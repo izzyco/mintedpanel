@@ -1,5 +1,7 @@
-// Tasks card on the case detail page. Sequential lock: a task is locked
-// until previous tasks are completed. Row click opens the TaskDrawer.
+// Tasks card on the case detail page. Row click opens the TaskDrawer. Any
+// open task can be completed (MINT-135): completing one while earlier tasks
+// are open is recorded as a task.completed_out_of_order advisory, quietly, by
+// the service that saves it, and the earlier tasks stay open.
 //
 // Slice E (payer-and-cases screen 6): ONE list — the step-at-a-time wizard is
 // retired. Each task shows its execution type and due date, and its ordered
@@ -42,6 +44,7 @@ import { PayerFormActionRow } from "@/components/cases/PayerFormActionRow";
 import { isPayerFormRemoved, taskPayerFormPointer } from "@/lib/payerForms";
 import {
   currentStepPointer,
+  earlierOpenTaskCount,
   orderedSteps,
   resolveOpenTaskDrawer,
   summarizeTasks,
@@ -94,8 +97,7 @@ function ExecutionTypeLabel({ executionType }: { executionType: Task["executionT
   );
 }
 
-function taskStatusIcon(status: Task["status"], locked: boolean) {
-  if (locked) return <Lock className="w-4 h-4 text-muted-foreground" />;
+function taskStatusIcon(status: Task["status"]) {
   if (status === "completed") return <CheckCircle2 className="w-4 h-4 text-[#059669]" />;
   if (status === "in_progress") return <Circle className="w-4 h-4 text-[#D97706] fill-[#FEF3C7]" />;
   if (status === "blocked") return <Lock className="w-4 h-4 text-[#DC2626]" />;
@@ -155,8 +157,8 @@ export function CaseTasksPanel({
     ),
   );
   // Payer PDF — a removed payer form is off this case for good, so it drops out
-  // BEFORE anything derives from the list: the summary counts, the sequential
-  // lock, and the current-step pointer must all behave as though it was never
+  // BEFORE anything derives from the list: the summary counts, the earlier-open
+  // counts, and the current-step pointer must all behave as though it was never
   // attached. The row itself is untouched (status blocked + a removal marker on
   // its own sop_content), which is where the "who removed it, when, and why"
   // record lives.
@@ -262,31 +264,20 @@ export function CaseTasksPanel({
           ) : (
             <div className="divide-y divide-border">
               {tasks.map((t, idx) => {
-                const previousIncomplete = tasks
-                  .slice(0, idx)
-                  .some((p) => p.status !== "completed");
-                const locked = previousIncomplete && t.status !== "completed";
+                const earlierOpen = earlierOpenTaskCount(tasks, idx);
                 const overdue =
                   t.status !== "completed" &&
                   t.dueDate &&
                   differenceInDays(new Date(), parseISO(t.dueDate)) > 0;
 
-                const canComplete = canEdit && !locked && t.status !== "completed";
+                const canComplete = canEdit && t.status !== "completed";
                 const canReopen = canEdit && t.status === "completed";
                 const circleInteractive = canComplete || canReopen;
 
                 const row = (
                   <div
-                    className={`p-3 flex items-center gap-3 text-[13px] ${
-                      locked ? "opacity-60 cursor-not-allowed" : "hover:bg-muted/30 cursor-pointer"
-                    }`}
-                    onClick={() => {
-                      if (locked) {
-                        openDrawer(t);
-                        return;
-                      }
-                      openDrawer(t);
-                    }}
+                    className="p-3 flex items-center gap-3 text-[13px] hover:bg-muted/30 cursor-pointer"
+                    onClick={() => openDrawer(t)}
                   >
                     <button
                       type="button"
@@ -314,7 +305,7 @@ export function CaseTasksPanel({
                         }
                       }}
                     >
-                      {taskStatusIcon(t.status, locked)}
+                      {taskStatusIcon(t.status)}
                     </button>
                     <div
                       className={`flex-1 min-w-0 ${
@@ -360,7 +351,7 @@ export function CaseTasksPanel({
                 const body = (
                   <div>
                     {row}
-                    {payerFormPointer && !locked ? (
+                    {payerFormPointer ? (
                       <PayerFormActionRow
                         task={t}
                         pointer={payerFormPointer}
@@ -370,7 +361,7 @@ export function CaseTasksPanel({
                         pdfContextKey={pdfContextKey ?? ""}
                       />
                     ) : null}
-                    {!payerFormPointer && steps.length > 0 && !locked ? (
+                    {!payerFormPointer && steps.length > 0 ? (
                       <ul className="space-y-1.5 px-3 pb-3 pl-11">
                         {steps.map((s, stepIndex) => {
                           const isCurrent =
@@ -406,7 +397,7 @@ export function CaseTasksPanel({
                                     t,
                                     steps,
                                     stepIndex,
-                                    locked,
+                                    earlierOpen > 0,
                                   )}
                                   presentation="inline"
                                   onOpenTask={() => openDrawer(t)}
@@ -420,16 +411,7 @@ export function CaseTasksPanel({
                   </div>
                 );
 
-                return locked ? (
-                  <Tooltip key={t.id}>
-                    <TooltipTrigger asChild>
-                      <div>{body}</div>
-                    </TooltipTrigger>
-                    <TooltipContent>Complete previous task first</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <div key={t.id}>{body}</div>
-                );
+                return <div key={t.id}>{body}</div>;
               })}
             </div>
           )}
@@ -439,7 +421,7 @@ export function CaseTasksPanel({
       <TaskDrawer
         taskId={drawerTask?.task.id ?? null}
         fallbackTask={drawerTask?.task ?? null}
-        locked={drawerTask?.locked ?? false}
+        earlierOpenCount={drawerTask?.earlierOpenCount ?? 0}
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         tokenValues={tokenValues}

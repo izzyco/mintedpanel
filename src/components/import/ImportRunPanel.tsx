@@ -79,6 +79,9 @@ export function ImportRunPanel({
   const scanning = run.state === "uploading" || run.state === "scanning";
   const interrupted = run.state === "scanning" && !isScanDrivenHere(run.id);
   const errors = run.errorReport ?? [];
+  // MINT-91: a warning names a value left out of a created record, not a row
+  // that failed to stage.
+  const unstaged = errors.filter((e) => e.severity !== "warning");
 
   const cancel = () =>
     cancelMut.mutate(run.id, {
@@ -157,10 +160,10 @@ export function ImportRunPanel({
         </div>
       ) : null}
 
-      {run.state === "ready_for_review" && errors.length > 0 ? (
+      {run.state === "ready_for_review" && unstaged.length > 0 ? (
         <div className="flex items-center gap-2 text-[12px] text-[#92400E]">
           <FileWarning className="h-4 w-4" />
-          {errors.length} row{errors.length === 1 ? "" : "s"} could not be staged.
+          {unstaged.length} row{unstaged.length === 1 ? "" : "s"} could not be staged.
         </div>
       ) : null}
 

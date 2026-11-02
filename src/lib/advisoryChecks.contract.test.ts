@@ -1,7 +1,9 @@
 // The registry's vocabularies are a copy of the migration's CHECKs and
 // validator. This suite reads the SQL text and fails when the two drift, so a
 // key, table, source, role or context rule can never be accepted in code and
-// refused by the database (or the reverse).
+// refused by the database (or the reverse). The registry additions migration
+// replaces some of #568's functions and its record_table CHECK; the live one
+// is the latest definition, and a replacement may only add.
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -28,6 +30,7 @@ import {
 
 const MIGRATIONS = join(process.cwd(), "supabase/migrations");
 const MIGRATION_FILE = "20261101090000_mint134_workflow_advisories.sql";
+const ADDITIONS_FILE = "20261102140000_mint134_registry_additions.sql";
 
 function read(file: string): string {
   return readFileSync(join(MIGRATIONS, file), "utf8");
@@ -54,14 +57,85 @@ function sorted(values: readonly string[]): string[] {
   return [...values].sort();
 }
 
-/** One function's definition, from its CREATE to its closing $function$. */
+/** Every definition of a function across the migrations, oldest first, each
+ *  from its CREATE to its closing $function$. */
+function definitions(name: string): { file: string; body: string }[] {
+  return ALL_MIGRATIONS.flatMap((file) => {
+    const source = executable(read(file));
+    const start = source.indexOf(`CREATE OR REPLACE FUNCTION ${name}(`);
+    if (start < 0) return [];
+    const open = source.indexOf("$function$", start);
+    const close = source.indexOf("$function$;", open + "$function$".length);
+    if (open < 0 || close < 0) throw new Error(`${name} has no $function$ body in ${file}`);
+    return [{ file, body: source.slice(start, close) }];
+  });
+}
+
+/** A function's live definition: its latest. */
 function functionBody(name: string): string {
-  const start = sql.indexOf(`CREATE OR REPLACE FUNCTION ${name}(`);
-  if (start < 0) throw new Error(`${name} not found in the migration`);
-  const open = sql.indexOf("$function$", start);
-  const close = sql.indexOf("$function$;", open + "$function$".length);
-  if (open < 0 || close < 0) throw new Error(`${name} has no $function$ body`);
-  return sql.slice(start, close);
+  const body = definitions(name).at(-1)?.body;
+  if (!body) throw new Error(`${name} not found in any migration`);
+  return body;
+}
+
+/** The live record_table CHECK's list: the latest migration that defines it. */
+function recordTableCheck(): { file: string; tables: string[] } {
+  const found = ALL_MIGRATIONS.flatMap((file) => {
+    const match =
+      /CONSTRAINT workflow_advisories_record_table_check CHECK \(\s*record_table IN \(([^)]*)\)/.exec(
+        executable(read(file)),
+      );
+    return match ? [{ file, tables: quotedList(match[1]) }] : [];
+  });
+  const latest = found.at(-1);
+  if (!latest) throw new Error("workflow_advisories_record_table_check not found");
+  return latest;
+}
+
+/** A body with its VALUES list taken out, whitespace squashed. */
+function outsideValues(body: string): string {
+  return body
+    .replace(/FROM \(VALUES[\s\S]*?\) AS ([a-z])\(/, "FROM (VALUES) AS $1(")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** A CASE branch `WHEN '<key>' THEN EXISTS (SELECT 1 FROM public.<table> AS
+ *  r ...)`, up to its closing parenthesis (one nested pair allowed). */
+const CASE_BRANCH =
+  /WHEN '([a-z_]+)' THEN EXISTS \(\s*SELECT 1 FROM public\.([a-z_]+) AS r(?:[^()]|\([^()]*\))*\)/g;
+
+/** The CASE branches of a body, with their full text. */
+function caseBranches(body: string): { key: string; table: string; text: string }[] {
+  return [...body.matchAll(CASE_BRANCH)].map((m) => ({
+    key: m[1],
+    table: m[2],
+    text: m[0].replace(/\s+/g, " "),
+  }));
+}
+
+/** The guarded branch for a table that may not exist yet. */
+function guardPattern(variable: string, key: string, table: string): RegExp {
+  return new RegExp(
+    `IF ${variable} = '${key}' THEN\\s+IF pg_catalog\\.to_regclass\\('public\\.${table}'\\) IS NULL THEN\\s+RETURN false;\\s+END IF;\\s+RETURN EXISTS \\(\\s*SELECT 1 FROM public\\.${table} AS r WHERE r\\.id = p_[a-z_]+ AND r\\.org_id = p_org_id\\);\\s+END IF;`,
+  );
+}
+
+function guardedBranch(body: string, variable: string, key: string, table: string): boolean {
+  return guardPattern(variable, key, table).test(body);
+}
+
+/** A body with its lists and branches taken out: the guarded branches, the
+ *  CASE branches and the record-table list, whitespace squashed. What is left
+ *  is the logic around them, which a replacement must not change. */
+function skeleton(body: string): string {
+  return body
+    .replace(guardPattern("p_record_table", "notification_sequences", "notification_sequences"), "")
+    .replace(guardPattern("p_key", "sequence_id", "notification_sequences"), "")
+    .replace(CASE_BRANCH, "")
+    .replace(/\bp_record_table\s+NOT\s+IN\s*\([^)]*\)/g, "p_record_table NOT IN ()")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function count(haystack: string, needle: string): number {
@@ -95,10 +169,17 @@ function hasColumn(body: string, column: string): boolean {
   return new RegExp(`^\\s*${column}\\s`, "m").test(body);
 }
 
+function addsColumn(table: string, column: string): boolean {
+  const pattern = new RegExp(`ALTER TABLE public\\.${table} ADD COLUMN IF NOT EXISTS ${column}\\s`);
+  return ALL_MIGRATIONS.some((file) => pattern.test(executable(read(file))));
+}
+
 describe("MINT-134 migration mirrors the registry", () => {
   it("is the only migration at its version", () => {
-    const version = MIGRATION_FILE.slice(0, 14);
-    expect(ALL_MIGRATIONS.filter((file) => file.startsWith(version))).toEqual([MIGRATION_FILE]);
+    for (const file of [MIGRATION_FILE, ADDITIONS_FILE]) {
+      const version = file.slice(0, 14);
+      expect(ALL_MIGRATIONS.filter((name) => name.startsWith(version))).toEqual([file]);
+    }
   });
 
   it("names the columns Mission Control reads, in order, with no record_label", () => {
@@ -143,34 +224,142 @@ describe("MINT-134 migration mirrors the registry", () => {
   });
 
   it("closes record_table to the registry's set, in the CHECK, the RPCs and the org check", () => {
-    const lists = [...inLists("record_table"), ...inLists("p_record_table")];
-    expect(lists).toHaveLength(2);
-    for (const list of lists) expect(sorted(list)).toEqual(sorted(ADVISORY_RECORD_TABLES));
-    const branches = [
-      ...functionBody("private.workflow_advisory_record_in_org").matchAll(
-        /WHEN '([a-z_]+)' THEN EXISTS \(\s*SELECT 1 FROM public\.([a-z_]+) AS r/g,
+    const check = recordTableCheck();
+    expect(check.file).toBe(ADDITIONS_FILE);
+    const args = [
+      ...functionBody("private.workflow_advisory_assert_args").matchAll(
+        /\bp_record_table\s+NOT\s+IN\s*\(([^)]*)\)/g,
       ),
-    ];
-    expect(sorted(branches.map((m) => m[1]))).toEqual(sorted(ADVISORY_RECORD_TABLES));
-    for (const [, table, fromTable] of branches) expect(fromTable).toBe(table);
+    ].map((m) => quotedList(m[1]));
+    expect(args).toHaveLength(1);
+    for (const list of [check.tables, args[0]]) {
+      expect(sorted(list)).toEqual(sorted(ADVISORY_RECORD_TABLES));
+    }
+    const body = functionBody("private.workflow_advisory_record_in_org");
+    const branches = caseBranches(body);
+    // notification_sequences (#561) is refused until the table exists.
+    expect(
+      guardedBranch(body, "p_record_table", "notification_sequences", "notification_sequences"),
+    ).toBe(true);
+    expect(sorted([...branches.map((b) => b.key), "notification_sequences"])).toEqual(
+      sorted(ADVISORY_RECORD_TABLES),
+    );
+    for (const branch of branches) {
+      expect(branch.table).toBe(branch.key);
+      // An org-owned record by org_id; the org itself only as its own row.
+      expect(branch.text).toContain(
+        branch.key === "organizations"
+          ? "WHERE r.id = p_record_id AND r.id = p_org_id"
+          : "WHERE r.id = p_record_id AND r.org_id = p_org_id",
+      );
+    }
   });
 
-  it("takes the record tables only from tables on main that carry org_id", () => {
+  it("takes the record tables only from tables that carry org_id, or the org itself", () => {
     for (const table of ADVISORY_RECORD_TABLES) {
       const body = createdBy(table);
+      if (table === "notification_sequences") {
+        // Not on main until #561; once a migration creates it, it carries org_id.
+        if (body !== null) expect(hasColumn(body, "org_id"), table).toBe(true);
+        continue;
+      }
       expect(body, `${table} is created by a migration`).not.toBeNull();
-      expect(hasColumn(body ?? "", "org_id"), `${table} has org_id`).toBe(true);
+      if (table === "organizations") {
+        expect(hasColumn(body ?? "", "org_id")).toBe(false);
+        continue;
+      }
+      // parties gained org_id in a later migration (20260807130000).
+      expect(
+        hasColumn(body ?? "", "org_id") || addsColumn(table, "org_id"),
+        `${table} has org_id`,
+      ).toBe(true);
     }
-    // Why the design's organizations and profiles are not in the set: neither
-    // carries org_id. (notification_sequences is not on main; MINT-107 adds
-    // it, and its conversion PR adds it to the set.)
-    expect(createdBy("organizations")).not.toBeNull();
-    expect(hasColumn(createdBy("organizations") ?? "", "org_id")).toBe(false);
+    // profiles carries no org_id and isn't owned by one org: never a record.
     expect(createdBy("profiles")).not.toBeNull();
     expect(hasColumn(createdBy("profiles") ?? "", "org_id")).toBe(false);
-    for (const table of ["organizations", "profiles", "notification_sequences"]) {
-      expect(ADVISORY_RECORD_TABLES).not.toContain(table);
+    expect(ADVISORY_RECORD_TABLES).not.toContain("profiles");
+  });
+
+  // One migration extends #568, so no wiring PR's replacement can drop
+  // another's additions. Each later definition keeps everything before it.
+  it("replaces #568's functions and record_table CHECK only to add", () => {
+    const listed = (body: string) =>
+      [...body.matchAll(/\('([a-z_]+\.[a-z0-9_]+)'\)/g)].map((m) => m[1]);
+    const contextRows = (body: string) =>
+      new Map(
+        [
+          ...body.matchAll(
+            /\('([a-z_]+)', '(flag|count|id|ids|token|tokens)', (NULL|\d+), (NULL|ARRAY\[[^\]]*\])\)/g,
+          ),
+        ].map((m) => [m[1], m[0].replace(/\s+/g, " ")]),
+      );
+    for (const name of [
+      "private.workflow_advisory_check_key_valid",
+      "private.workflow_advisory_context_valid",
+      "private.workflow_advisory_assert_args",
+      "private.workflow_advisory_record_in_org",
+      "private.workflow_advisory_context_id_in_org",
+    ]) {
+      const all = definitions(name);
+      expect(
+        all.map(({ file }) => file),
+        name,
+      ).toEqual([MIGRATION_FILE, ADDITIONS_FILE]);
+      for (let index = 1; index < all.length; index += 1) {
+        const [earlier, later] = [all[index - 1].body, all[index].body];
+        // The function's header (language, volatility, security, search_path)
+        // is unchanged.
+        const header = (body: string) => body.slice(0, body.indexOf("$function$"));
+        expect(header(later), name).toBe(header(earlier));
+        for (const key of listed(earlier)) expect(listed(later), name).toContain(key);
+        const kept = contextRows(later);
+        for (const [key, row] of contextRows(earlier)) expect(kept.get(key), key).toBe(row);
+        for (const branch of caseBranches(earlier)) {
+          expect(
+            caseBranches(later).map((b) => b.text),
+            name,
+          ).toContain(branch.text);
+        }
+        const tables = (body: string) =>
+          [...body.matchAll(/\bp_record_table\s+NOT\s+IN\s*\(([^)]*)\)/g)].flatMap((m) =>
+            quotedList(m[1]),
+          );
+        for (const table of tables(earlier)) expect(tables(later)).toContain(table);
+      }
     }
+    // The validators' bodies around their lists are #568's.
+    for (const name of [
+      "private.workflow_advisory_check_key_valid",
+      "private.workflow_advisory_context_valid",
+    ]) {
+      const [first, last] = [definitions(name)[0].body, functionBody(name)];
+      expect(outsideValues(last), name).toBe(outsideValues(first));
+    }
+    // So are the argument check and the org checks around their lists and
+    // branches: no check dropped, no fallback changed.
+    for (const name of [
+      "private.workflow_advisory_assert_args",
+      "private.workflow_advisory_record_in_org",
+      "private.workflow_advisory_context_id_in_org",
+    ]) {
+      const [first, last] = [definitions(name)[0].body, functionBody(name)];
+      expect(skeleton(last), name).toBe(skeleton(first));
+    }
+    const original = createTableBody(sql, "workflow_advisories") ?? "";
+    const before = quotedList(
+      /CONSTRAINT workflow_advisories_record_table_check CHECK \(\s*record_table IN \(([^)]*)\)/.exec(
+        original,
+      )?.[1] ?? "",
+    );
+    expect(before).toHaveLength(9);
+    for (const table of before) expect(recordTableCheck().tables).toContain(table);
+    // Only REVOKEs: it grants nothing, adds no SECURITY DEFINER, drops no
+    // function and changes no owner.
+    const additions = executable(read(ADDITIONS_FILE));
+    expect(additions).not.toMatch(/^GRANT /m);
+    expect(additions).not.toMatch(/SECURITY DEFINER/);
+    expect(additions).not.toMatch(/DROP FUNCTION/);
+    expect(additions).not.toMatch(/\bOWNER\s+TO\b/i);
   });
 
   it("closes source, severity and actor_role to the registry's sets", () => {
@@ -288,15 +477,14 @@ describe("MINT-134 migration mirrors the registry", () => {
   });
 
   it("checks every context id against the org, one branch per id key", () => {
-    const branches = [
-      ...functionBody("private.workflow_advisory_context_id_in_org").matchAll(
-        /WHEN '([a-z_]+)' THEN EXISTS \(\s*SELECT 1 FROM public\.([a-z_]+) AS r/g,
-      ),
-    ].map((m) => [m[1], m[2]] as const);
+    const body = functionBody("private.workflow_advisory_context_id_in_org");
+    const branches = caseBranches(body).map((b) => [b.key, b.table] as const);
+    // sequence_id names a notification sequence, refused until #561's table exists.
+    expect(guardedBranch(body, "p_key", "sequence_id", "notification_sequences")).toBe(true);
     const idKeys = (Object.entries(CONTEXT_KEYS) as [string, ContextKeyKind][])
       .filter(([, def]) => def.kind === "id" || def.kind === "ids")
       .map(([key]) => key);
-    expect(sorted(branches.map(([key]) => key))).toEqual(sorted(idKeys));
+    expect(sorted([...branches.map(([key]) => key), "sequence_id"])).toEqual(sorted(idKeys));
     expect(Object.fromEntries(branches)).toEqual({
       import_run_id: "import_runs",
       facility_ids: "facilities",

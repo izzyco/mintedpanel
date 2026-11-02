@@ -21,6 +21,7 @@ import {
 import { useIsAdmin } from "@/lib/permissions";
 import { downloadCsv } from "@/lib/csv";
 import { errorReportCsvRows } from "@/lib/rosterImport";
+import { phonesLeftBlank } from "@/lib/importPhoneRule";
 import type { ImportRun } from "@/types";
 
 type SectionKind = "provider_group" | "facility";
@@ -119,6 +120,8 @@ export function SectionImportPreview({
   }
 
   const blockedRows = result.blocked.length + (run.errorRows ?? 0);
+  // MINT-91: phones a commit leaves blank, named in the commit confirmation.
+  const blankPhones = phonesLeftBlank(result.creates);
 
   const runCommit = () => {
     commit.mutate(
@@ -168,6 +171,11 @@ export function SectionImportPreview({
             {result.creates.map((c) => (
               <li key={`c-${c.line}`} className="text-foreground">
                 {c.displayName}
+                {c.warnings?.map((w) => (
+                  <p key={w.column} className="text-[11px] text-[#92400E]">
+                    {w.review}
+                  </p>
+                ))}
               </li>
             ))}
           </ul>
@@ -224,7 +232,11 @@ export function SectionImportPreview({
             confirmCommit ? (
               <>
                 <span className="text-[13px] font-medium text-[#B91C1C]">
-                  Commit is final and cannot be undone. Continue?
+                  Commit is final and cannot be undone.{" "}
+                  {blankPhones > 0
+                    ? `${blankPhones} phone${blankPhones === 1 ? "" : "s"} will be left blank. `
+                    : null}
+                  Continue?
                 </span>
                 <Button
                   className="h-9 bg-[#1B4D3E] text-white hover:bg-[#163F33]"

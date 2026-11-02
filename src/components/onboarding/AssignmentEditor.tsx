@@ -1,10 +1,11 @@
 // Group-scoped assignment editor (E1.4 F1.4.2/F1.4.3). Offers ONLY the
 // facilities owned by the provider's group(s) (pure facilitiesForProviderGroups
-// selector — never the whole org). Every selected location requires a start
-// date (DatePicker over the new calendar/popover primitives); the first
-// selection defaults to primary and exactly one primary is enforced before
-// save (removing the primary forces a re-pick). Hand-picked only — no bulk
-// action. Saves through setAssignments (diff sync + atomic RPC swap).
+// selector — never the whole org). Each selected location takes a start date
+// (DatePicker over the new calendar/popover primitives); a blank one saves as
+// "Start date needed". The first selection defaults to primary and exactly
+// one primary is enforced before save (removing the primary forces a
+// re-pick). Hand-picked only — no bulk action. Saves through setAssignments
+// (diff sync + atomic RPC swap).
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -172,7 +173,6 @@ export function AssignmentEditor({
                           id={`start-${f.id}`}
                           value={draft.startDate}
                           ariaLabel={`Start date at ${f.name}`}
-                          invalid={Boolean(error) && !draft.startDate}
                           onChange={(startDate) =>
                             setDrafts((prev) =>
                               prev.map((d) => (d.facilityId === f.id ? { ...d, startDate } : d)),

@@ -4,7 +4,6 @@ import { ArrowRight, CheckCircle2, RefreshCw, ShieldAlert, TriangleAlert } from 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
   TableBody,
@@ -48,7 +47,6 @@ export function RosterValidationWorkspace({ detail }: { detail: RosterMappingDet
   const saveOverride = useSaveRosterOverride(detail.mapping.id);
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [reason, setReason] = useState("");
   const validation = validationQ.data;
   const preview = previewQ.data;
   const current = Boolean(
@@ -70,7 +68,9 @@ export function RosterValidationWorkspace({ detail }: { detail: RosterMappingDet
     () => new Map((preview?.rows ?? []).map((row) => [row.rowKey, row])),
     [preview?.rows],
   );
-  const reasonLength = reason.trim().length;
+  // MINT-136: one click, "Export anyway", with no typed reason. The server
+  // records the override (its rule and field) and the bypassed check. A
+  // non-overrideable error has no button and keeps export blocked.
   const canOverride = Boolean(
     canWrite &&
     current &&
@@ -78,7 +78,6 @@ export function RosterValidationWorkspace({ detail }: { detail: RosterMappingDet
     selectedIssue.severity === "hard_error" &&
     selectedIssue.overrideable &&
     !selectedIssue.overrideId &&
-    reasonLength >= 20 &&
     !saveOverride.isPending,
   );
 
@@ -100,19 +99,13 @@ export function RosterValidationWorkspace({ detail }: { detail: RosterMappingDet
 
   function recordOverride() {
     if (!canOverride || !selectedIssue || !validation) return;
-    saveOverride.mutate(
-      {
-        expectedRevision: validation.revision,
-        inputFingerprint: validation.inputFingerprint,
-        rowKey: selectedIssue.rowKey,
-        ruleCode: selectedIssue.ruleCode,
-        fieldKey: selectedIssue.fieldKey,
-        reason: reason.trim(),
-      },
-      {
-        onSuccess: () => setReason(""),
-      },
-    );
+    saveOverride.mutate({
+      expectedRevision: validation.revision,
+      inputFingerprint: validation.inputFingerprint,
+      rowKey: selectedIssue.rowKey,
+      ruleCode: selectedIssue.ruleCode,
+      fieldKey: selectedIssue.fieldKey,
+    });
   }
 
   const canExport = current && validation.exportable;
@@ -241,7 +234,7 @@ export function RosterValidationWorkspace({ detail }: { detail: RosterMappingDet
                         {issue.overrideId
                           ? "Override recorded"
                           : issue.overrideable
-                            ? "Reason required"
+                            ? "Can export anyway"
                             : "Blocked"}
                       </TableCell>
                     </TableRow>
@@ -281,33 +274,21 @@ export function RosterValidationWorkspace({ detail }: { detail: RosterMappingDet
                   <div className="flex items-center gap-1.5 font-medium text-[var(--mp-ok-ink)]">
                     <CheckCircle2 className="h-4 w-4" /> Override recorded
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
-                    {selectedIssue.overrideReason}
-                  </p>
+                  {selectedIssue.overrideReason ? (
+                    <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
+                      {selectedIssue.overrideReason}
+                    </p>
+                  ) : null}
                 </div>
               ) : selectedIssue.severity === "hard_error" && selectedIssue.overrideable ? (
                 <div className="mt-3 space-y-2">
-                  <Label htmlFor="override-reason" className="text-[12px] font-medium">
-                    Audited override reason
-                  </Label>
-                  <Textarea
-                    id="override-reason"
-                    value={reason}
-                    onChange={(event) => setReason(event.target.value)}
-                    placeholder="Explain why this specific hard error is accepted for this export."
-                    className="min-h-24 text-[12px]"
-                    disabled={!canWrite || !current || saveOverride.isPending}
-                  />
-                  <div className="flex items-center justify-between gap-2">
-                    <span
-                      className={`text-[11px] ${reasonLength < 20 ? "text-muted-foreground" : "text-[var(--mp-ok-ink)]"}`}
-                    >
-                      {reasonLength}/20 characters minimum
-                    </span>
-                    <Button size="sm" onClick={recordOverride} disabled={!canOverride}>
-                      {saveOverride.isPending ? "Recording…" : "Record override"}
-                    </Button>
-                  </div>
+                  <p className="text-[12px] text-muted-foreground">
+                    The payer may reject this value. Export anyway keeps it in this export and
+                    records the rule and field.
+                  </p>
+                  <Button size="sm" onClick={recordOverride} disabled={!canOverride}>
+                    {saveOverride.isPending ? "Recording…" : "Export anyway"}
+                  </Button>
                   {!canWrite ? (
                     <p className="text-[11px] text-muted-foreground">
                       Billing members cannot record overrides.

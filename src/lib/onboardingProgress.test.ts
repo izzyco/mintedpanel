@@ -114,13 +114,12 @@ describe("resolveOrgDetailsStatus", () => {
 
   it("requires every E0.8 required contact field on the customer contact", () => {
     // Each required field knocked out one at a time flips complete → in_progress
-    // (reusing contactErrors semantics — name, valid email, office phone,
-    // street, city, state, postal code).
+    // (reusing contactErrors semantics — name, valid email, street, city, state,
+    // postal code; the office phone is optional since MINT-91 U8).
     const knockouts: Partial<Party>[] = [
       { name: "" },
       { email: null },
       { email: "bad-email" },
-      { phoneOffice: null },
       { addressLine1: null },
       { city: null },
       { state: null },
@@ -145,6 +144,28 @@ describe("resolveOrgDetailsStatus", () => {
         customer: party({ ...validCustomer, city: "   " }),
       }),
     ).toBe("in_progress");
+  });
+
+  it("completes with no customer phone: the phone is optional (MINT-91 U8)", () => {
+    for (const phoneOffice of [null, "", "   "]) {
+      expect(
+        resolveOrgDetailsStatus({
+          orgName: "Rose City Rehab Collective",
+          owner: validOwner,
+          customer: party({ ...validCustomer, phoneOffice }),
+        }),
+      ).toBe("complete");
+    }
+  });
+
+  it("never re-checks a stored customer phone's format (MINT-91 existing-data rule)", () => {
+    expect(
+      resolveOrgDetailsStatus({
+        orgName: "Rose City Rehab Collective",
+        owner: validOwner,
+        customer: party({ ...validCustomer, phoneOffice: "abc-def-ghij" }),
+      }),
+    ).toBe("complete");
   });
 });
 

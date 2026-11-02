@@ -40,6 +40,7 @@ import { ok, fail, type ApiMeta } from "./envelope";
 import { isWriter, type AuthContext, type UserContext } from "./guard";
 import { resolveUserTokens } from "./userTokens";
 import { CASE_SEARCH_DEFAULT_LIMIT, parseRequestedCaseSearchLimit } from "./caseSearchLimit";
+import { recordServerCompletedOutOfOrder } from "./taskOrderAdvisory";
 import { resolveOrgContactProfileTokens } from "@/services/orgContacts";
 import { proposeSharedFieldMap, type SharedProposeBody } from "@/services/sharedFieldMaps";
 import {
@@ -929,6 +930,8 @@ export async function handleCreateCaseTouch(
       orgId: ctx.orgId,
       userId: ctx.userId,
       writeAudit: ctx.writeAudit,
+      // MINT-135: a task the touch closes is checked for open earlier tasks.
+      onTaskCompleted: (task) => void recordServerCompletedOutOfOrder(ctx, task),
     },
     caseId,
     body as SubmissionTouchInput,
@@ -951,9 +954,10 @@ export async function handleCreateCaseTouch(
 // extension's Progress tab). The ONE /api write that touches task state.
 //
 // Body: { stepId }. Writer roles only. The service calls the same row-locking
-// SQL transaction as the Panel, which applies the ordering rule, status rollup,
-// optional termination-case update, and audit event atomically. A blocked step
-// is a 409 naming the blocker; a re-tick is an idempotent success. Cross-org
+// SQL transaction as the Panel, which applies the status rollup, optional
+// termination-case update, out-of-order advisory (MINT-135: a step may be
+// ticked while earlier steps are open) and audit event atomically. A task
+// whose case is in another org is a 409; a re-tick is an idempotent success. Cross-org
 // task ids remain a 404, and the RPC rechecks the verified actor's membership.
 export async function handleCompleteTaskStep(
   taskId: string,
@@ -987,7 +991,14 @@ export async function handleCreateFillEvent(body: unknown, ctx: AuthContext): Pr
     return fail(422, "Request body must be a JSON object");
   }
   const result = await recordFillEvent(
-    { db: ctx.db, orgId: ctx.orgId, userId: ctx.userId, writeAudit: ctx.writeAudit },
+    {
+      db: ctx.db,
+      orgId: ctx.orgId,
+      userId: ctx.userId,
+      writeAudit: ctx.writeAudit,
+      // MINT-135: a task the fill completes is checked for open earlier tasks.
+      onTaskCompleted: (task) => void recordServerCompletedOutOfOrder(ctx, task),
+    },
     body as FillEventInput,
   );
   if (result.kind === "rejected") return fail(result.status, result.message);

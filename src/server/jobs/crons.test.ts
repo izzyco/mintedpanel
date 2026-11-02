@@ -90,9 +90,8 @@ function runBlocks(yaml: string): string[] {
 describe("the follow-up digest's hourly GitHub Actions tick", () => {
   const script = runBlocks(tick).join("\n");
 
-  it("runs hourly off the top of the hour, and on manual dispatch", () => {
-    expect([...tick.matchAll(/^\s*- cron: "([^"]+)"$/gm)].map((m) => m[1])).toEqual(["7 * * * *"]);
-    expect(tick).toMatch(/^on:\n {2}schedule:\n/m);
+  it("runs on manual dispatch while hourly cron schedule is paused for CI budget conservation", () => {
+    // Hourly schedule was paused to save ~744 runner mins/mo. Verify manual dispatch is intact and no auto-triggers.
     expect(tick).toMatch(/^ {2}workflow_dispatch:\s*$/m);
     expect(tick).not.toMatch(/pull_request|push:|workflow_run|repository_dispatch/);
   });

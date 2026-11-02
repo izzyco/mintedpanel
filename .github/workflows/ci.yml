@@ -307,8 +307,37 @@ jobs:
       - name: Verify portal field-map flywheel RPC on disposable PostgreSQL
         run: node scripts/security/verify-portal-field-map-learning.mjs
 
-      - name: Run MINT-19 / MINT-75 SOP step completion SQL packet
+      # MINT-19 + MINT-75 + MINT-135 SOP step completion: authorization,
+      # completion and termination days, out-of-order ticks and their
+      # advisory, rollback. Rollback-only; any failed check raises.
+      - name: Run MINT-19 / MINT-75 / MINT-135 SOP step completion SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint19-atomic-sop.sql
+      # MINT-91 U8: a contact saves with a blank office phone (create org,
+      # capture link, /contact lead), and every other required field is still
+      # refused. Rollback-only; any failed check raises.
+      - name: Run MINT-91 contact phone SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint91-contact-phone-optional.sql
+
+      - name: Verify facility assignments save without a start date on disposable PostgreSQL
+        run: psql -X -v ON_ERROR_STOP=1 -f supabase/tests/pfa-start-date-optional.sql
+
+      # MINT-134 registry additions: the added check keys, record tables and
+      # context keys accepted, unknown ones refused, owners and grants kept.
+      # Rollback-only; any failed check raises.
+      - name: Run MINT-134 registry additions SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-registry-additions.sql
+
+      # MINT-110 PR 3 registry pulls: service_role selects and inserts only,
+      # anon and authenticated have nothing, no API role updates or deletes,
+      # the constraints and cascades. Rollback-only; any failed check raises.
+      - name: Run MINT-110 registry pulls SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint110-registry-pulls.sql
+
+      # MINT-136 roster "Export anyway": an override needs no typed reason and
+      # stores none, its other guards hold, and the advisory records the
+      # mapping and row count. Rollback-only; any failed check raises.
+      - name: Run MINT-136 roster Export anyway SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint136-roster-export-anyway.sql
 
   vault-authorization:
     name: P01 vault authorization

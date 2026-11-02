@@ -7,6 +7,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/format";
 import { maskSsn } from "@/lib/ssnMask";
+import { localCalendarDate } from "@/lib/systemTokens";
+import {
+  DEFAULT_ADD_PROVIDER_RULES,
+  addProviderStartDates,
+  type AddProviderRules,
+} from "@/lib/addProviderRules";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
 import { useTaxonomyPreset } from "@/hooks/useTaxonomyPreset";
@@ -18,6 +24,7 @@ import {
   PersonalSection,
 } from "@/components/providers/ProviderFormSections";
 import {
+  isBlankLicenseRow,
   validateAll,
   validateCredentials,
   validatePersonal,
@@ -33,7 +40,9 @@ import {
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
 import type { NpiReviewAdvisory, NpiReviewFixTarget } from "@/lib/npiRegistryReview";
+import { npiRegistryPullForSave, npiRegistryPullSourced } from "@/lib/npiRegistryPulls";
 import { taxonomyAfterPresetChange } from "@/lib/providerTaxonomyPreset";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 
 export {
   emptyProviderFormState,
@@ -72,6 +81,9 @@ export interface ProviderFormProps {
   /** Resolves to the saved provider's id (void when the save failed). */
   onSubmit: (form: ProviderFormState) => Promise<string | void>;
   onCancel?: () => void;
+  /** What a blank Start date gives the facility assignments (MINT-116); the
+   * default when omitted. */
+  addProviderRules?: AddProviderRules;
 }
 
 export function ProviderForm({
@@ -81,6 +93,7 @@ export function ProviderForm({
   isPending,
   onSubmit,
   onCancel,
+  addProviderRules = DEFAULT_ADD_PROVIDER_RULES,
 }: ProviderFormProps) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -189,7 +202,13 @@ export function ProviderForm({
     if (Object.keys(allErrors).length > 0) {
       setErrors(allErrors);
       // Jump back to the first step with an error so the user sees it.
-      if (allErrors.firstName || allErrors.lastName || allErrors.ssnLast4 || allErrors.email) {
+      if (
+        allErrors.firstName ||
+        allErrors.lastName ||
+        allErrors.ssnLast4 ||
+        allErrors.email ||
+        allErrors.phone
+      ) {
         setStep(1);
       } else if (allErrors.npi || allErrors.caqhId) {
         setStep(2);
@@ -199,17 +218,31 @@ export function ProviderForm({
     try {
       const savedId = await onSubmit(form);
       // The registry check may still be running: its advisories go to the
-      // capture once it ends (A30), with what staff confirmed.
+      // capture once it ends (A30). A blank NPI is recorded as missing (B3).
       if (typeof savedId === "string") {
         recordNpiAdvisories({
           recordId: savedId,
           npi: form.npi,
           verify: true,
+          surface: "add_provider",
           typed: { firstName: form.firstName, lastName: form.lastName },
           entered: reviewEntered,
           confirmed: npiConfirmed,
           policy: npiPolicy,
         });
+        // MINT-110 PR 3, last: the registry answer this save used becomes the
+        // provider's source data, in the background. Submitting the Review
+        // step confirms the registry-sourced values (A35).
+        recordNpiRegistryPullAfterSave(() =>
+          npiRegistryPullForSave({
+            providerId: savedId,
+            npi: form.npi,
+            checked: true,
+            pickedNpi: npiPick?.npi ?? null,
+            sourced: npiRegistryPullSourced(npiSourced, form),
+            confirmed: true,
+          }),
+        );
       }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to save provider");
@@ -296,8 +329,17 @@ export function ProviderForm({
             />
           ) : null}
           {step === 3 ? <LicensesSection form={form} errors={errors} update={update} /> : null}
-          {step === 4 ? <EmploymentSection form={form} errors={errors} update={update} /> : null}
-          {step === 5 ? <ReviewStep form={form} jumpTo={jumpTo} /> : null}
+          {step === 4 ? (
+            <EmploymentSection
+              form={form}
+              errors={errors}
+              update={update}
+              addProviderRules={addProviderRules}
+            />
+          ) : null}
+          {step === 5 ? (
+            <ReviewStep form={form} jumpTo={jumpTo} addProviderRules={addProviderRules} />
+          ) : null}
 
           {submitError ? <p className="mt-4 text-sm text-destructive">{submitError}</p> : null}
           {step === 5 ? (
@@ -380,19 +422,43 @@ function Stepper({ current }: { current: number }) {
   );
 }
 
-function ReviewStep({ form, jumpTo }: { form: ProviderFormState; jumpTo: (s: number) => void }) {
+function ReviewStep({
+  form,
+  jumpTo,
+  addProviderRules,
+}: {
+  form: ProviderFormState;
+  jumpTo: (s: number) => void;
+  addProviderRules: AddProviderRules;
+}) {
   const groups = useProviderGroups();
   const facilities = useFacilities(form.groupId || null);
   const groupName = useMemo(
     () => groups.data?.find((g) => g.id === form.groupId)?.name ?? "—",
     [groups.data, form.groupId],
   );
+  // MINT-96: name the dates a save writes, from the same function the save
+  // uses (addProviderStartDates). A blank Start date always stays null on the
+  // provider; by default the assignments start local today, read on every
+  // render so it never goes stale. Under "none" they are saved without one.
+  const { providerStartDate, assignmentStartDate } = addProviderStartDates(
+    addProviderRules,
+    form.startDate,
+    localCalendarDate(new Date()),
+  );
   const facilityNames = useMemo(() => {
     const selected = (facilities.data ?? []).filter((f) => form.facilityIds.includes(f.id));
     if (selected.length === 0) return "—";
     const primaryId = form.facilityIds[0];
-    return selected.map((f) => (f.id === primaryId ? `${f.name} (primary)` : f.name)).join(", ");
-  }, [facilities.data, form.facilityIds]);
+    const names = selected
+      .map((f) => (f.id === primaryId ? `${f.name} (primary)` : f.name))
+      .join(", ");
+    const starts = assignmentStartDate
+      ? `assignments start ${fmtDate(assignmentStartDate)}`
+      : "Start date needed";
+    return `${names} · ${starts}`;
+  }, [facilities.data, form.facilityIds, assignmentStartDate]);
+  const licenses = form.licenses.filter((l) => !isBlankLicenseRow(l));
 
   const Section = ({
     title,
@@ -454,19 +520,23 @@ function ReviewStep({ form, jumpTo }: { form: ProviderFormState; jumpTo: (s: num
       </Section>
       <Section title="Licenses" step={3}>
         <div className="md:col-span-2 space-y-1">
-          {form.licenses.map((l, i) => (
-            <div key={i} className="text-sm text-foreground">
-              {l.state || "—"} · {l.number || "—"} · {l.type || "—"} · {fmtDate(l.issueDate)} →{" "}
-              {fmtDate(l.expirationDate)}
-            </div>
-          ))}
+          {licenses.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No licenses added</p>
+          ) : (
+            licenses.map((l, i) => (
+              <div key={i} className="text-sm text-foreground">
+                {l.state || "—"} · {l.number || "—"} · {l.type || "—"} · {fmtDate(l.issueDate)} →{" "}
+                {fmtDate(l.expirationDate)}
+              </div>
+            ))
+          )}
         </div>
       </Section>
       <Section title="Employment" step={4}>
         <Row label="Group" value={groupName} />
         <Row label="Facilities" value={facilityNames} />
         <Row label="Specialty" value={form.specialty} />
-        <Row label="Start date" value={form.startDate ? fmtDate(form.startDate) : ""} />
+        <Row label="Start date" value={providerStartDate ? fmtDate(providerStartDate) : ""} />
         <Row label="Degree" value={form.degree} />
         <Row label="School" value={form.schoolName} />
         <Row label="Graduation" value={form.graduationDate} />

@@ -1,12 +1,13 @@
 // NPI Registry (NPPES) lookups — MINT-110. Sanctioned /api surface: the
 // registry API has no CORS, so the browser asks our server, which calls it.
-import { authedApiFetch } from "@/services/authedApi";
+import { ApiRequestError, authedApiFetch } from "@/services/authedApi";
 import type {
   NpiRegistryLookupResult,
   NpiRegistrySearchInput,
   NpiRegistrySearchResult,
 } from "@/lib/npiRegistry";
 import type { NpiRegistryBatchResult } from "@/lib/npiRegistryBatch";
+import type { NpiRegistryPullInput, NpiRegistryPullResult } from "@/lib/npiRegistryPulls";
 
 /** Individuals (NPI-1) matching a first and last name, optionally in a state. */
 export function searchNpiRegistry(input: NpiRegistrySearchInput): Promise<NpiRegistrySearchResult> {
@@ -40,4 +41,43 @@ export function verifyNpiRegistryBatch(
     body: JSON.stringify({ npis }),
     signal,
   });
+}
+
+/** MINT-110 PR 3: store the registry answer a save used as the provider's
+ * source data. Only the provider, its NPI, what the save took from the pick
+ * and whether it was confirmed are sent; the server fetches the reply. */
+export function recordNpiRegistryPull(input: NpiRegistryPullInput): Promise<NpiRegistryPullResult> {
+  return authedApiFetch<NpiRegistryPullResult>("/api/npi-registry/pulls", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** What a failed pull logs: the event and the HTTP status, when there is
+ * one. Never an NPI, a provider or a value. */
+export function npiRegistryPullFailureLog(error: unknown): {
+  event: "npi_registry_pull_failed";
+  status: number | null;
+} {
+  return {
+    event: "npi_registry_pull_failed",
+    status: error instanceof ApiRequestError ? error.status : null,
+  };
+}
+
+/** After a provider form's save: build its pull (npiRegistryPullForSave) and
+ * send it, in the background. Forms call it last, after the save's own side
+ * effects. Building runs here, inside the same try as the request, so nothing
+ * it throws reaches the save. A failure, the rate limit's 429 included, is
+ * logged without values and dropped: no retry. */
+export function recordNpiRegistryPullAfterSave(build: () => NpiRegistryPullInput | null): void {
+  void (async () => {
+    try {
+      const pull = build();
+      if (pull) await recordNpiRegistryPull(pull);
+    } catch (error) {
+      const entry = npiRegistryPullFailureLog(error);
+      console.warn(entry.event, entry);
+    }
+  })();
 }

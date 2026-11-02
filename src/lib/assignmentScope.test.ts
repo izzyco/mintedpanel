@@ -1,9 +1,8 @@
-// E1.4 TE-8 — group-scoped selector, editor invariants (start date required,
-// exactly one primary, remove-primary forces re-pick), and the sync plan.
+// E1.4 TE-8 — group-scoped selector, editor invariants (exactly one primary,
+// remove-primary forces re-pick; a blank start date saves), and the sync plan.
 import { describe, expect, it } from "vitest";
 import {
   ONE_PRIMARY_ASSIGNMENT_MESSAGE,
-  START_DATE_REQUIRED_MESSAGE,
   facilitiesForProviderGroups,
   firstAssignmentIdsToPromote,
   markFirstFacilityPrimary,
@@ -58,10 +57,10 @@ describe("facilitiesForProviderGroups (group-scoped picker)", () => {
 });
 
 describe("validateAssignmentDrafts", () => {
-  it("requires a start date on every assignment", () => {
-    expect(validateAssignmentDrafts([{ facilityId: "f-a", startDate: "", isPrimary: true }])).toBe(
-      START_DATE_REQUIRED_MESSAGE,
-    );
+  it("never refuses a blank start date (MINT-96: saved as missing)", () => {
+    expect(
+      validateAssignmentDrafts([{ facilityId: "f-a", startDate: "", isPrimary: true }]),
+    ).toBeNull();
   });
 
   it("requires exactly one primary when any assignments exist", () => {

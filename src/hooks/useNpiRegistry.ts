@@ -1,7 +1,8 @@
 // NPI Registry (NPPES) reads — MINT-110. Both are reads with no side effects,
 // cached for ten minutes (the server caches for ten too), never retried on
 // their own: a failure is shown once and saving never waits for them. After a
-// save, the NPI's advisories go to the capture seam (advisoryCapture).
+// save, the NPI's advisories go to the capture seam (advisoryCapture), and a
+// provider saved with no NPI is recorded as npi.missing (B3).
 import { useCallback } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
@@ -12,8 +13,9 @@ import { buildNpiRegistryReview, type NpiReviewInput } from "@/lib/npiRegistryRe
 import {
   logAdvisoryCaptureFailure,
   recordAdvisories,
-  type AdvisoryCaptureResult,
+  type AdvisoryFormSurface,
 } from "@/services/advisoryCapture";
+import { recordAdvisory } from "@/services/advisories";
 import {
   npiLookupStateOf,
   npiRegistryErrorMessage,
@@ -120,10 +122,13 @@ export function useNpiRegistryCheck(
 export interface NpiAdvisoriesAfterSave {
   /** The saved provider's id. */
   recordId: string;
-  /** The NPI, separators stripped. */
+  /** The NPI, separators stripped; "" when the provider has none. */
   npi: string;
-  /** Whether this save checks the NPI at all (see NpiReviewInput.verify). */
+  /** Whether this save checks the NPI at all (see NpiReviewInput.verify):
+   * a new provider, or an NPI entered, changed or cleared. */
   verify: boolean;
+  /** The form that saved it. */
+  surface: AdvisoryFormSurface;
   typed: NpiReviewInput["typed"];
   entered: NpiReviewInput["entered"];
   /** Advisory ids staff confirmed on the review step. */
@@ -133,16 +138,26 @@ export interface NpiAdvisoriesAfterSave {
 
 /** After a save: wait for the NPI's registry check (it may still be running —
  * the save never waits for it), build its advisories, and hand them, facts
- * only, to the capture seam. It runs outside the form, so it finishes after
- * the dialog closes or the page moves on. Resolves to what the seam said, or
- * null when there was nothing to hand over. */
+ * only, to the capture seam. A save that leaves the provider with no NPI is
+ * recorded as npi.missing instead (B3: a missing NPI is an advisory). It runs
+ * outside the form, so it finishes after the dialog closes or the page moves
+ * on. Resolves, never rejects. */
 export async function recordNpiAdvisoriesAfterSave(
   client: QueryClient,
   orgId: string | null,
   input: NpiAdvisoriesAfterSave,
-): Promise<AdvisoryCaptureResult | null> {
+): Promise<void> {
+  if (!orgId || !input.verify) return;
+  if (!input.npi.trim()) {
+    await recordAdvisory(
+      "npi.missing",
+      { table: "providers", id: input.recordId },
+      { surface: input.surface },
+    );
+    return;
+  }
   const checkable = npiToCheck(input.npi, input.verify);
-  if (checkable === null || !orgId) return null;
+  if (checkable === null) return;
   let state: NpiLookupState;
   try {
     const data = await client.fetchQuery({
@@ -157,16 +172,15 @@ export async function recordNpiAdvisoriesAfterSave(
     state = { status: "error", message: npiRegistryErrorMessage(error) };
   }
   const review = buildNpiRegistryReview({ ...input, npi: checkable, state });
-  if (review.advisories.length === 0) return null;
+  if (review.advisories.length === 0) return;
   const advisories = advisoriesForRecord(review.advisories, input.recordId);
   try {
-    return await recordAdvisories(advisories);
+    await recordAdvisories(advisories, { surface: input.surface });
   } catch (error) {
     logAdvisoryCaptureFailure(
       error,
       advisories.map((advisory) => advisory.check),
     );
-    return null;
   }
 }
 

@@ -88,9 +88,13 @@ import {
   NpiRegistryQuietNote,
 } from "@/components/providers/NpiRegistryAssist";
 import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
+import { npiRegistryPullForSave } from "@/lib/npiRegistryPulls";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 import { hasValidLicenseDateOrder, LICENSE_DATE_ORDER_ERROR } from "@/lib/licenseDates";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { usPhoneError } from "@/lib/phone";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import {
   PROVIDER_GENDER_UNSET_VALUE,
   providerGenderLabel,
@@ -396,6 +400,7 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  const phoneRules = usePhoneValidationRules();
 
   // MINT-110: the third NPI write path follows the same rule as Add Provider
   // and the roster form — separators stripped, ten digits, the check digit
@@ -531,6 +536,10 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
 
   const save = async () => {
     const errors: Record<string, string> = {};
+    // MINT-91: the phone check. An unchanged stored phone is re-checked only
+    // under PhoneValidationRules.recheckStoredOnEdit (off by default).
+    const phoneError = usPhoneError(draft.phone ?? "", provider.phone ?? null, phoneRules);
+    if (phoneError) errors.phone = `${phoneError}.`;
     for (const f of fields) {
       const v = draftOf(f);
       // Validate only fields the user actually changed — a legacy invalid
@@ -563,13 +572,15 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       await update.mutateAsync(patch);
       toast.success("Saved.");
       setEditing(false);
-      if (typeof patch.npi === "string") {
-        // The registry check of the new NPI goes on after the save.
-        setSavedNpi({ npi: patch.npi, ...npiNames });
+      if (patch.npi !== undefined) {
+        // The registry check of a new NPI goes on after the save; a cleared
+        // NPI is recorded as missing (B3).
+        if (patch.npi !== null) setSavedNpi({ npi: patch.npi, ...npiNames });
         recordNpiAdvisories({
           recordId: provider.id,
-          npi: patch.npi,
+          npi: patch.npi ?? "",
           verify: true,
+          surface: "record_edit",
           typed: npiNames,
           entered: {
             credentials: (draft.credentials ?? "").trim(),
@@ -579,6 +590,18 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           confirmed: new Set(),
           policy: npiPolicy,
         });
+        // MINT-110 PR 3, last: the check of the new NPI is a later pull, its
+        // own row of source data, which never changes a saved value.
+        recordNpiRegistryPullAfterSave(() =>
+          npiRegistryPullForSave({
+            providerId: provider.id,
+            npi: patch.npi ?? "",
+            checked: true,
+            pickedNpi: null,
+            sourced: {},
+            confirmed: false,
+          }),
+        );
       }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : "Could not save.");

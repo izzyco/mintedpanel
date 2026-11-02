@@ -470,8 +470,7 @@ export async function recordRosterOverride(
   mappingId: string,
   input: SaveRosterOverrideInput,
 ): Promise<RosterOverride> {
-  const reason = input.reason.trim();
-  if (reason.length < 20) throw new Error("Override reason must contain at least 20 characters");
+  // MINT-136: no typed reason ("Export anyway"); the RPC stores none.
   const { data, error } = await ctx.db.rpc("roster_engine_record_override", {
     p_org_id: ctx.orgId,
     p_actor_id: ctx.actorId,
@@ -481,7 +480,6 @@ export async function recordRosterOverride(
     p_row_key: input.rowKey,
     p_rule_code: input.ruleCode,
     p_field_key: input.fieldKey,
-    p_reason: reason,
   });
   failIf(error);
   const row = jsonObject(data);
@@ -493,7 +491,7 @@ export async function recordRosterOverride(
     rowKey: str(row.row_key),
     ruleCode: str(row.rule_code),
     fieldKey: str(row.field_key),
-    reason: str(row.reason),
+    reason: strOrNull(row.reason),
     createdAt: str(row.created_at),
   };
 }

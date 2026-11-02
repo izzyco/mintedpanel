@@ -27,6 +27,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { addProviderStartDateHint, addProviderStartDatePrefill } from "@/lib/addProviderRules";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { GroupAssignmentPicker } from "@/components/onboarding/GroupAssignmentPicker";
 import { LicenseListEditor } from "@/components/onboarding/LicenseListEditor";
 import {
@@ -36,7 +38,11 @@ import {
   licenseDraftsEqual,
   type LicenseDraft,
 } from "@/components/onboarding/licenseDraft";
-import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
+import {
+  useAddProviderRules,
+  useProvider,
+  useProviderGroupAssignments,
+} from "@/hooks/useProviders";
 import { useStateLicensesByProvider } from "@/hooks/useLookups";
 import { useCreateProviderWithDetails, useUpdateProviderWithLicenses } from "@/hooks/useProviders";
 import { useCreateEnrollmentFact } from "@/hooks/useEnrollmentFacts";
@@ -62,7 +68,11 @@ import {
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
+import { npiRegistryPullForSave, npiRegistryPullSourced } from "@/lib/npiRegistryPulls";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
+import { usPhoneError } from "@/lib/phone";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import {
   ProviderSaveError,
   type LicenseCommand,
@@ -77,6 +87,7 @@ interface RosterFormErrors {
   lastName?: string;
   npi?: string;
   ssnLast4?: string;
+  phone?: string;
   assignments?: string;
 }
 
@@ -219,7 +230,18 @@ function FormBody({
 
   const createMut = useCreateProviderWithDetails();
   const updateMut = useUpdateProviderWithLicenses(provider?.id ?? "");
+  // Adding a provider: a prefilled Start date says so while it is still in the
+  // field (AddProviderRules, MINT-116). Editing shows the stored value as is.
+  const addProviderRules = useAddProviderRules();
+  const startDateHint = provider
+    ? undefined
+    : addProviderStartDateHint(addProviderRules, {
+        startDate: form.startDate,
+        facilityCount: 0,
+        today: localCalendarDate(new Date()),
+      });
   const pending = createMut.isPending || updateMut.isPending;
+  const phoneRules = usePhoneValidationRules();
 
   const set = (patch: Partial<RosterFormState>) => setForm((f) => ({ ...f, ...patch }));
   const npiNoticeId = useId();
@@ -301,6 +323,7 @@ function FormBody({
       recordId,
       npi: npiDigits,
       verify: npiChanged,
+      surface: "roster_form",
       typed: { firstName: form.firstName, lastName: form.lastName },
       entered: {
         credentials: form.credentials,
@@ -310,6 +333,27 @@ function FormBody({
       confirmed: new Set(),
       policy: npiPolicy,
     });
+
+  // MINT-110 PR 3: the registry answer this save used (a pick of the saved
+  // NPI, or the check of a new or changed one) becomes the provider's source
+  // data, in the background. Called last in each save's onSuccess. A roster
+  // save confirms nothing (A30c).
+  const recordPullAfterSave = (recordId: string) =>
+    recordNpiRegistryPullAfterSave(() =>
+      npiRegistryPullForSave({
+        providerId: recordId,
+        npi: npiDigits,
+        checked: npiChanged,
+        pickedNpi: npiPick?.npi ?? null,
+        sourced: npiRegistryPullSourced(npiSourced, {
+          credentials: form.credentials,
+          taxonomyCode: form.taxonomyCode,
+          gender: form.gender === "__none__" ? "" : form.gender,
+          phone: form.phone,
+        }),
+        confirmed: false,
+      }),
+    );
 
   const reload = async () => {
     if (!onReload) return;
@@ -346,6 +390,14 @@ function FormBody({
       next.ssnLast4 = "Enter the LAST 4 digits only";
     const assignmentError = validateGroupAssignments(assignments);
     if (assignmentError) next.assignments = assignmentError;
+    // MINT-91: an entered or changed phone must be a US number. By default an
+    // untouched stored phone never blocks an edit (recheckStoredOnEdit).
+    const phoneError = usPhoneError(
+      form.phone,
+      provider ? initialForm.phone : undefined,
+      phoneRules,
+    );
+    if (phoneError) next.phone = phoneError;
 
     const licErrs: Record<number, string> = {};
     licenses.forEach((l, i) => {
@@ -406,6 +458,7 @@ function FormBody({
             toast.success("Provider updated");
             recordAfterSave(provider.id);
             onClose();
+            recordPullAfterSave(provider.id);
           },
           onError,
         },
@@ -448,6 +501,7 @@ function FormBody({
               );
             }
             onClose();
+            recordPullAfterSave(result.provider.id);
           },
           onError,
         },
@@ -600,6 +654,7 @@ function FormBody({
               {npiSourced.phone && npiSourceLabel ? (
                 <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
               ) : null}
+              <FieldError message={errors.phone} />
             </div>
           </div>
         </div>
@@ -671,6 +726,9 @@ function FormBody({
                 onChange={(e) => set({ startDate: e.target.value })}
                 className="h-9"
               />
+              {startDateHint ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{startDateHint}</p>
+              ) : null}
             </div>
           </div>
           <NpiRegistryAssist
@@ -1037,6 +1095,13 @@ export function ProviderRosterForm({
   groups: ProviderGroup[];
   onClose: () => void;
 }) {
+  // Create mode opens the Start date blank by default; a prefill (MINT-116)
+  // is shown and editable, and saving writes what the field shows.
+  const addProviderRules = useAddProviderRules();
+  const createForm = useMemo(() => {
+    const startDate = addProviderStartDatePrefill(addProviderRules, localCalendarDate(new Date()));
+    return startDate ? { ...EMPTY_FORM, startDate } : EMPTY_FORM;
+  }, [addProviderRules]);
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto border-[#E8E5E0] shadow-none">
@@ -1049,7 +1114,7 @@ export function ProviderRosterForm({
           <FormBody
             provider={null}
             groups={groups}
-            initialForm={EMPTY_FORM}
+            initialForm={createForm}
             initialLicenses={[{ ...EMPTY_LICENSE_DRAFT }]}
             initialLicenseRows={[]}
             initialAssignments={[]}

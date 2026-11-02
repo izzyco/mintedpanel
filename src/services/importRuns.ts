@@ -10,7 +10,19 @@ import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
 import { translateDbError } from "@/lib/dbErrors";
-import { ensureFirstFacilityPrimary, insertAssignmentRows } from "@/services/providerAssignments";
+import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
+import {
+  ADVISORY_RECORD_FAILED,
+  ADVISORY_RPC_TIMEOUT_MS,
+  reportAdvisoryFailure,
+} from "@/lib/advisoryChecks";
+import { readCompletePages } from "@/lib/completePages";
+import { localCalendarDate } from "@/lib/systemTokens";
+import {
+  ensureFirstFacilityPrimary,
+  insertAssignmentRows,
+  recordUndatedAssignments,
+} from "@/services/providerAssignments";
 import { createEnrollmentFact, listEnrollmentFacts } from "@/services/enrollmentFacts";
 import {
   createFacility,
@@ -23,6 +35,7 @@ import { decodeDelimited } from "@/lib/importSections";
 import { providerNameKey } from "@/lib/importDedupe";
 import { DAY_KEYS, emptyHoursDraft, encodeHours } from "@/lib/facilityHours";
 import { normalizeWebsiteUrl } from "@/lib/providerGroup";
+import { importWarningEntries, withReportEntries } from "@/lib/importPhoneRule";
 import { attachGroupPayer, listPayerNetworkTargets } from "@/services/payerNetworkTargets";
 import type { ScannedRow } from "@/lib/rosterImport";
 import type {
@@ -264,6 +277,7 @@ export interface ProviderRelationshipSummary {
 async function applyProviderRelationships(
   stagedRows: { mapped: Record<string, string | null> | null }[],
   providerIds: string[],
+  assignmentStartDate: string | null,
 ): Promise<ProviderRelationshipSummary> {
   const summary: ProviderRelationshipSummary = {
     facilityAssignments: 0,
@@ -287,12 +301,15 @@ async function applyProviderRelationships(
 
   const { data: providerRows, error: pErr } = await supabase
     .from("providers")
-    .select("id, npi, first_name, last_name")
+    .select("id, npi, first_name, last_name, start_date")
     .eq("org_id", orgId)
     .in("id", providerIds);
   if (pErr) throw pErr;
   const providerByNpi = new Map(
     (providerRows ?? []).filter((r) => r.npi).map((r) => [String(r.npi), r.id as string]),
+  );
+  const providerStartDate = new Map(
+    (providerRows ?? []).map((r) => [r.id as string, (r.start_date as string | null) ?? null]),
   );
   // A row without an NPI (B3) joins its provider by name: the dedupe creates
   // one NPI-less provider per name and blocks a name it cannot tell apart. A
@@ -390,15 +407,20 @@ async function applyProviderRelationships(
   }
 
   if (facilityInserts.length > 0) {
-    // The pfa start_date CHECK rejects dateless inserts — relationship rows
-    // from the CSV default to today (the batch-assign precedent).
-    const today = new Date().toISOString().slice(0, 10);
-    await insertAssignmentRows(
+    // As in the commit RPC: the assignment starts on the provider's start
+    // date, else the Add Provider rule's (blankAssignmentStartDate).
+    const inserted = await insertAssignmentRows(
       facilityInserts.map((f) => ({
         providerId: f.providerId,
         facilityId: f.facilityId,
-        startDate: today,
+        startDate: providerStartDate.get(f.providerId) ?? assignmentStartDate,
       })),
+    );
+    // MINT-134: a row this pass inserted undated ("no default") is recorded
+    // now, before the steps below that can still fail.
+    void recordUndatedAssignments(
+      inserted.filter((r) => !r.startDate),
+      "import",
     );
     summary.facilityAssignments = facilityInserts.length;
   }
@@ -429,6 +451,7 @@ async function applyProviderRelationships(
 export async function commitImportRun(
   runId: string,
   plan: CommitPlan,
+  warnings: ImportRunErrorEntry[] = [],
 ): Promise<CommitImportRunResult> {
   requireActiveOrg();
   // Snapshot the staged rows BEFORE the RPC — commit purges import_rows
@@ -439,9 +462,16 @@ export async function commitImportRun(
     fn: string,
     args: Record<string, unknown>,
   ) => Promise<{ data: unknown; error: { message: string } | null }>;
+  // A facility assignment the CSV gives no start date (the provider has none)
+  // gets the Add Provider rule's: the local today by default, or none
+  // (MINT-116; the resolution useAddProviderRules makes).
+  const assignmentStartDate = blankAssignmentStartDate(
+    resolveAddProviderRules(),
+    localCalendarDate(new Date()),
+  );
   const { data, error } = await rpc("commit_import_run", {
     p_run_id: runId,
-    p_plan: plan as unknown as Record<string, unknown>,
+    p_plan: { ...plan, assignment_start_date: assignmentStartDate },
   });
   if (error) throw new Error(error.message);
   const raw = (data ?? {}) as {
@@ -467,16 +497,98 @@ export async function commitImportRun(
     enrollmentFacts: 0,
   };
   if (!result.alreadyCommitted) {
+    // MINT-134: what the commit RPC left undated is recorded now, before the
+    // relationship pass and the primary step, which can still fail. Only "no
+    // default" can leave one undated (the default dates it today).
+    if (assignmentStartDate === null)
+      await recordImportUndatedAssignments(plan, result.createdProviderIds);
     // A blocked source row must not attach relationships through another
     // committed row with the same NPI. Preserve the reviewed row boundary.
     const blockedLines = new Set(plan.blocked_entries.map((entry) => entry.line));
     relationships = await applyProviderRelationships(
       stagedSnapshot.filter((row) => !blockedLines.has(row.line)),
       [...result.createdProviderIds, ...result.updatedProviderIds],
+      assignmentStartDate,
     );
     await ensureFirstFacilityPrimary([...result.createdProviderIds, ...result.updatedProviderIds]);
   }
+  // MINT-91: the review's warnings (a phone replaced or left blank on a new
+  // provider) join the committed run's durable report, after the commit, so a
+  // failed commit leaves the run's report as it was. A replayed commit
+  // (alreadyCommitted) adds any that are missing and never repeats one.
+  try {
+    if (warnings.length > 0) await recordRunReportWarnings(runId, warnings, "committed");
+  } catch {
+    throw new Error(
+      "The import committed, but its phone warnings weren't added to the run's report. Commit again now to add them. If this page reloads first, they can't be added: the run's staged rows are already gone.",
+    );
+  }
   return { ...result, relationships };
+}
+
+/** Append warnings to the run's error report while it is in `state`, skipping
+ * any it already holds, so a retried commit never writes one twice. Returns
+ * the report as it now stands. */
+async function recordRunReportWarnings(
+  runId: string,
+  warnings: ImportRunErrorEntry[],
+  state: ImportRun["state"],
+): Promise<ImportRunErrorEntry[] | null> {
+  const orgId = requireActiveOrg();
+  const run = await getImportRun(runId);
+  if (!run || run.state !== state) return null;
+  const current = run.errorReport ?? [];
+  const next = withReportEntries(current, warnings);
+  if (next.length === current.length) return current;
+  const { error } = await supabase
+    .from("import_runs")
+    .update({ error_report: next as never, updated_at: new Date().toISOString() })
+    .eq("org_id", orgId)
+    .eq("id", runId)
+    .eq("state", state);
+  if (error) throw error;
+  return next;
+}
+
+/** The facility assignments the commit RPC left without a start date,
+ * recorded as assignment.start_date_missing (source import): every undated
+ * one of a provider it created, and the undated ones among the facilities it
+ * added to a provider it updated (add_facility_ids; an assignment the provider
+ * already had is not the import's). Read before the relationship pass, which
+ * records its own inserts, so the two never overlap. The read is held at most
+ * ADVISORY_RPC_TIMEOUT_MS and the sends aren't awaited. Never rejects: a
+ * failed read is one advisory_record_failed line. */
+async function recordImportUndatedAssignments(
+  plan: CommitPlan,
+  createdProviderIds: readonly string[],
+): Promise<void> {
+  try {
+    const created = new Set(createdProviderIds);
+    const added = new Map(plan.updates.map((u) => [u.provider_id, new Set(u.add_facility_ids)]));
+    const providerIds = [...created, ...added.keys()];
+    if (providerIds.length === 0) return;
+    const query = supabase
+      .from("provider_facility_assignments")
+      .select("provider_id, facility_id", { count: "exact" })
+      .eq("org_id", requireActiveOrg())
+      .in("provider_id", providerIds)
+      .is("start_date", null)
+      .order("id", { ascending: true })
+      .abortSignal(AbortSignal.timeout(ADVISORY_RPC_TIMEOUT_MS));
+    const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+      label: "Undated facility assignment list",
+    });
+    void recordUndatedAssignments(
+      rows
+        .map((r) => ({ providerId: String(r.provider_id), facilityId: String(r.facility_id) }))
+        .filter(
+          (r) => created.has(r.providerId) || added.get(r.providerId)?.has(r.facilityId) === true,
+        ),
+      "import",
+    );
+  } catch (error) {
+    reportAdvisoryFailure(ADVISORY_RECORD_FAILED, "assignment.start_date_missing", error);
+  }
 }
 
 export interface BatchAssignmentResult {
@@ -489,13 +601,12 @@ export interface BatchAssignmentResult {
  * The plan comes from the pure planBatchAssignment (explicit row data wins —
  * only assignment GAPS are filled); both insert paths are idempotent under
  * the DB uniques (TE-7), so running it twice adds nothing. New facility
- * assignments carry the caller's start date (the pfa start_date CHECK
- * rejects dateless inserts). */
+ * assignments carry the caller's start date, or none. */
 export async function applyBatchAssignment(input: {
   runId: string;
   groupId: string | null;
   facilityIds: string[];
-  startDate: string;
+  startDate: string | null;
   plan: BatchAssignmentPlan;
 }): Promise<BatchAssignmentResult> {
   const orgId = requireActiveOrg();
@@ -512,13 +623,20 @@ export async function applyBatchAssignment(input: {
     if (error) throw translateDbError(error);
   }
   if (input.plan.facilityInserts.length > 0) {
-    await insertAssignmentRows(
+    const inserted = await insertAssignmentRows(
       input.plan.facilityInserts.map((f, i, all) => ({
         providerId: f.providerId,
         facilityId: f.facilityId,
         startDate: input.startDate,
         isPrimary: all.findIndex((x) => x.providerId === f.providerId) === i,
       })),
+    );
+    // MINT-134: a batch without a start date records the rows it actually
+    // inserted (a repeat click or a stale plan inserts nothing new), now,
+    // before the primary step and the audit row, which can still fail.
+    void recordUndatedAssignments(
+      inserted.filter((r) => !r.startDate),
+      "import",
     );
   }
   const touchedProviderIds = [
@@ -673,6 +791,17 @@ export async function commitSectionImportRun(input: {
     throw new Error(`Import run is not ready to commit (state ${run.state})`);
   }
 
+  // MINT-91: the creates' warnings join the durable report BEFORE the creates,
+  // so a create that lands before a later one fails keeps its warning; a retry
+  // re-reads the report and never writes one twice.
+  const warnings = importWarningEntries(input.creates);
+  const reportBefore =
+    (warnings.length > 0
+      ? await recordRunReportWarnings(input.runId, warnings, "ready_for_review")
+      : null) ??
+    run.errorReport ??
+    [];
+
   let created = 0;
   for (const entry of input.creates) {
     if (input.entityKind === "provider_group") {
@@ -691,7 +820,7 @@ export async function commitSectionImportRun(input: {
     column: b.column,
     reason: b.reason,
   }));
-  const nextReport = [...(run.errorReport ?? []), ...blockedEntries];
+  const nextReport = [...reportBefore, ...blockedEntries];
   const { error } = await supabase
     .from("import_runs")
     .update({

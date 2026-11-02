@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   currentStepPointer,
+  earlierOpenTaskCount,
   evidencedTransitionsByTouch,
   facilityAddressLine,
   orderedSteps,
@@ -88,19 +89,33 @@ describe("currentStepPointer", () => {
   });
 });
 
+describe("earlierOpenTaskCount", () => {
+  it("counts the open tasks before the index, blocked ones included", () => {
+    const tasks = [
+      task({ id: "t1", status: "in_progress" }),
+      task({ id: "t2", status: "completed" }),
+      task({ id: "t3", status: "blocked" }),
+      task({ id: "t4", status: "not_started" }),
+    ];
+    expect(earlierOpenTaskCount(tasks, 0)).toBe(0);
+    expect(earlierOpenTaskCount(tasks, 2)).toBe(1);
+    expect(earlierOpenTaskCount(tasks, 3)).toBe(2);
+  });
+});
+
 describe("resolveOpenTaskDrawer", () => {
-  it("re-derives the open task lock when an earlier task is reopened after the drawer opened", () => {
+  it("re-derives the earlier open count when an earlier task is reopened after the drawer opened", () => {
     const selected = task({ id: "t2", status: "in_progress", sortOrder: 2 });
     const initiallyCurrent = [task({ id: "t1", status: "completed", sortOrder: 1 }), selected];
     expect(resolveOpenTaskDrawer(initiallyCurrent, selected.id)).toEqual({
       task: selected,
-      locked: false,
+      earlierOpenCount: 0,
     });
 
     const afterRefetch = [task({ id: "t1", status: "in_progress", sortOrder: 1 }), selected];
     expect(resolveOpenTaskDrawer(afterRefetch, selected.id)).toEqual({
       task: selected,
-      locked: true,
+      earlierOpenCount: 1,
     });
   });
 

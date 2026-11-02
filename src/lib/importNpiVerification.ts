@@ -13,8 +13,8 @@
 // advisory shows (`display`): "review_step" lists it on its row here as a
 // quiet one-line note — no confirm, nothing typed — and "backend_only" shows
 // nothing. After commit, the registry's answers for the committed rows go to
-// the capture seam as facts only. "Found" never shows unless the registry
-// fully matched.
+// the capture seam as facts only, with the run's NPI-less creates
+// (importNpiRowChecks). "Found" never shows unless the registry fully matched.
 // Hard rules stay hard: the 10-digit rule and the check digit (the dedupe's,
 // not this module's). Results live in memory only; nothing is stored per row
 // and nothing from the registry reaches the run's error report.
@@ -284,6 +284,12 @@ export function importCommitProviderIds(
   return byLine;
 }
 
+/** One committed row's registry advisories, by its anchor line. */
+export interface ImportRowAdvisories {
+  line: number;
+  advisories: Advisory[];
+}
+
 /** The advisories captured after commit: for each committed row (a create or
  * an update; a skip writes nothing) whose provider is known and whose NPI the
  * registry answered, every advisory that answer produced — shown on the row
@@ -295,16 +301,51 @@ export function importNpiCaptureAdvisories(input: {
   snapshot: ImportNpiSnapshot;
   policy: NpiRegistryPolicy;
   providerIdByLine: ReadonlyMap<number, string>;
-}): Advisory[] {
-  const captured: Advisory[] = [];
+}): ImportRowAdvisories[] {
+  const captured: ImportRowAdvisories[] = [];
   for (const item of input.items) {
     const providerId = input.providerIdByLine.get(item.line);
     const outcome = input.snapshot.results.get(item.npi);
     if (item.disposition === "skip" || !providerId || outcome?.status !== "checked") continue;
     const review = reviewFor(item, outcome.record, input.policy);
-    captured.push(...advisoriesForRecord(review.advisories, providerId));
+    if (review.advisories.length === 0) continue;
+    captured.push({
+      line: item.line,
+      advisories: advisoriesForRecord(review.advisories, providerId),
+    });
   }
   return captured;
+}
+
+/** An import NPI check the advisory ledger records at commit:
+ * import.npi_missing on the provider a blank-NPI create became (B3: a blank
+ * NPI imports). A row held back for a malformed or check-digit-failing NPI
+ * did not proceed (a hard block), so it is no bypassed check and records
+ * nothing. */
+export interface ImportNpiRowCheck {
+  check: "import.npi_missing";
+  record: { table: "providers"; id: string };
+  line: number;
+}
+
+/** The run's import NPI checks at commit: every create with no NPI whose
+ * provider is known (importCommitProviderIds), by its anchor line. */
+export function importNpiRowChecks(input: {
+  plan: Pick<CommitPlan, "creates">;
+  providerIdByLine: ReadonlyMap<number, string>;
+}): ImportNpiRowCheck[] {
+  const checks: ImportNpiRowCheck[] = [];
+  for (const create of input.plan.creates) {
+    const providerId = input.providerIdByLine.get(create.line);
+    if (providerId && !create.provider.npi?.trim()) {
+      checks.push({
+        check: "import.npi_missing",
+        record: { table: "providers", id: providerId },
+        line: create.line,
+      });
+    }
+  }
+  return checks;
 }
 
 /** No estimate until this many rows are done (two requests): a rate from a

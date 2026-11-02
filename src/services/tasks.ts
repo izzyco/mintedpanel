@@ -1,5 +1,10 @@
-// Tasks and SOP step completion. completeSOPStep enforces ordered completion:
-// a step can only be marked complete when every lower-order step is done.
+// Tasks and SOP step completion. Order is advisory (MINT-135): a task may be
+// completed, and a step ticked, while earlier ones are still open. Each such
+// completion is recorded as a workflow advisory once it has succeeded: a
+// status change to completed here (task.completed_out_of_order), a step tick
+// inside the complete_sop_task_step RPC (task.step_out_of_order, or
+// task.completed_out_of_order when the tick completes the task). The earlier
+// items stay open.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
@@ -11,8 +16,11 @@ import {
 } from "@/lib/sopStepAttachments";
 import { translateDbError } from "@/lib/dbErrors";
 import { markPayerFormRemoved } from "@/lib/payerForms";
+import { ADVISORY_RECORD_FAILED, reportAdvisoryFailure } from "@/lib/advisoryChecks";
 import { logNote } from "@/services/touches";
 import { completeTaskStep } from "@/services/taskSteps";
+import { recordAdvisory } from "@/services/advisories";
+import { countEarlierOpenCaseTasks } from "@/services/taskOrderAdvisory";
 import type { SOPStep, SOPStepAttachment, Task, TaskStatus } from "@/types";
 
 export interface CaseTaskInput {
@@ -212,6 +220,24 @@ async function updateTaskSopContentWithRevision(
   return camelizeRow<Task>(data);
 }
 
+/** MINT-135: after a save that moved `task` to completed, record
+ * task.completed_out_of_order when earlier tasks of its case are still open
+ * (the shared rule in taskOrderAdvisory.ts). Fire-and-forget: it never throws
+ * or rejects, and a failed read is one advisory_record_failed line. */
+async function recordCompletedOutOfOrder(orgId: string, task: Task): Promise<void> {
+  try {
+    const earlierOpenCount = await countEarlierOpenCaseTasks(supabase, orgId, task);
+    if (earlierOpenCount === 0) return;
+    await recordAdvisory(
+      "task.completed_out_of_order",
+      { table: "tasks", id: task.id },
+      { earlier_open_count: earlierOpenCount },
+    );
+  } catch (error) {
+    reportAdvisoryFailure(ADVISORY_RECORD_FAILED, "task.completed_out_of_order", error);
+  }
+}
+
 export async function updateTaskStatus(id: string, status: TaskStatus): Promise<Task> {
   const orgId = requireActiveOrg();
   const before = await getTask(id);
@@ -240,6 +266,10 @@ export async function updateTaskStatus(id: string, status: TaskStatus): Promise<
     after: { status: after.status },
     description: `Task status set to ${after.status}`,
   });
+  // Only when this call is what completed the task: a repeat records nothing.
+  if (status === "completed" && before && before.status !== "completed") {
+    void recordCompletedOutOfOrder(orgId, before);
+  }
   return after;
 }
 

@@ -13,6 +13,7 @@ import { ContactFields } from "@/components/org/ContactFields";
 import { validateCaptureToken, submitCapture } from "@/services/captureLinks";
 import { EMPTY_CONTACT } from "@/lib/contacts";
 import { contactErrors, hasContactErrors } from "@/lib/contactValidation";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import { fmtDateTime } from "@/lib/format";
 import type { CaptureTokenState, ContactInput } from "@/types";
 
@@ -104,6 +105,7 @@ function CapturePage() {
   const [done, setDone] = useState(false);
   // A submit can reveal the link was used/expired concurrently — override state.
   const [overrideState, setOverrideState] = useState<CaptureTokenState | null>(null);
+  const phoneRules = usePhoneValidationRules();
 
   useEffect(() => {
     if (data?.state === "active" && data.current && !seeded) {
@@ -112,12 +114,18 @@ function CapturePage() {
     }
   }, [data, seeded]);
 
-  const errors = useMemo(() => (showErrors ? contactErrors(form) : {}), [showErrors, form]);
+  // By default a prefilled phone the contact leaves alone is never re-checked
+  // (MINT-91, recheckStoredOnEdit).
+  const storedPhone = data?.current?.phoneOffice;
+  const errors = useMemo(
+    () => (showErrors ? contactErrors(form, storedPhone, phoneRules) : {}),
+    [showErrors, form, storedPhone, phoneRules],
+  );
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitError(null);
-    const found = contactErrors(form);
+    const found = contactErrors(form, storedPhone, phoneRules);
     if (hasContactErrors(found)) {
       setShowErrors(true);
       return;

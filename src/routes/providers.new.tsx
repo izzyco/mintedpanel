@@ -13,13 +13,16 @@ import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useAuthStore, useRole } from "@/lib/auth-store";
-import { useCreateProviderWithDetails } from "@/hooks/useProviders";
+import { useAddProviderRules, useCreateProviderWithDetails } from "@/hooks/useProviders";
 import { useLaunchLocation } from "@/hooks/useLaunches";
 import {
   ProviderForm,
   emptyProviderFormState,
   type ProviderFormState,
 } from "@/components/providers/ProviderForm";
+import { isBlankLicenseRow } from "@/components/providers/providerFormShared";
+import { addProviderStartDatePrefill, addProviderStartDates } from "@/lib/addProviderRules";
+import { localCalendarDate } from "@/lib/systemTokens";
 import type {
   CreateProviderWithDetailsResult,
   LicenseInput,
@@ -59,6 +62,8 @@ function toProviderInput(form: ProviderFormState): ProviderInput {
     // overwrites group_id from the primary assignment when one is passed.
     groupId: form.groupId || null,
     specialty: form.specialty.trim() || null,
+    // Exactly what the field shows; a blank is never filled in (it fills the
+    // provider.startDate payer-form token).
     startDate: form.startDate || null,
     degree: form.degree.trim() || null,
     schoolName: form.schoolName.trim() || null,
@@ -72,7 +77,7 @@ function toProviderInput(form: ProviderFormState): ProviderInput {
 
 function toLicenseInputs(form: ProviderFormState): LicenseInput[] {
   return form.licenses
-    .filter((l) => l.state || l.number || l.type || l.issueDate || l.expirationDate)
+    .filter((l) => !isBlankLicenseRow(l))
     .map((l) => ({
       state: l.state,
       licenseNumber: l.number.trim() || null,
@@ -95,29 +100,36 @@ function Page() {
   const locationQ = useLaunchLocation(locationId);
   const launchLocation = locationId ? (locationQ.data ?? null) : null;
   const create = useCreateProviderWithDetails();
+  // The Start date prefill and what a blank Start date gives the facility
+  // assignments are configuration (MINT-116).
+  const addProviderRules = useAddProviderRules();
 
-  const initial = useMemo(
-    () =>
-      launchLocation
-        ? {
-            ...emptyProviderFormState,
-            groupId: launchLocation.groupId ?? "",
-            facilityIds: [launchLocation.id],
-          }
-        : emptyProviderFormState,
-    [launchLocation],
-  );
+  const initial = useMemo(() => {
+    // The field opens blank by default; a prefill is shown and editable.
+    const startDate = addProviderStartDatePrefill(addProviderRules, localCalendarDate(new Date()));
+    const base = startDate ? { ...emptyProviderFormState, startDate } : emptyProviderFormState;
+    return launchLocation
+      ? { ...base, groupId: launchLocation.groupId ?? "", facilityIds: [launchLocation.id] }
+      : base;
+  }, [launchLocation, addProviderRules]);
 
   const onSubmit = async (form: ProviderFormState) => {
     try {
       const groupAssignments = form.groupId
         ? [{ groupId: form.groupId, isPrimary: true as const }]
         : undefined;
+      // The same dates the Review step showed (addProviderStartDates).
+      const { assignmentStartDate } = addProviderStartDates(
+        addProviderRules,
+        form.startDate,
+        localCalendarDate(new Date()),
+      );
       const result: CreateProviderWithDetailsResult = await create.mutateAsync({
         provider: toProviderInput(form),
         licenses: toLicenseInputs(form),
         facilityIds: form.facilityIds,
         groupAssignments,
+        assignmentStartDate,
       });
       if (result.warnings.length > 0) {
         for (const w of result.warnings) toast.error(w);
@@ -160,6 +172,7 @@ function Page() {
         pendingLabel="Creating…"
         isPending={create.isPending}
         onSubmit={onSubmit}
+        addProviderRules={addProviderRules}
       />
     </div>
   );

@@ -546,6 +546,48 @@ test("TS-112: A→Z roster with ambient gaps; inline edit writes ONLY its field;
   await expect(page.getByText(/Previously denied — Panel closed, Jul 5, 2026/)).toBeVisible();
 });
 
+test("MINT-96: + Add facility with no start date saves the assignment undated and the record reads 'Start date needed'", async ({
+  context,
+  page,
+}) => {
+  const fixtures = baseFixtures();
+  const { handler, requests } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+
+  await page.goto("/providers/pr-brooke");
+  await page.getByRole("tab", { name: "Groups & facilities" }).click({ timeout: 30000 });
+  await page.getByRole("button", { name: "+ Add facility" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add facility" });
+  await dialog.getByLabel("Facility to add").click();
+  await page.getByRole("option", { name: "Nags Head Clinic" }).click();
+  // Start date left blank: nothing refuses the save.
+  await dialog.getByRole("button", { name: "Add facility", exact: true }).click();
+
+  await expect
+    .poll(() => fixtures.provider_facility_assignments.length, { timeout: 15000 })
+    .toBe(2);
+  const insert = requests.find(
+    (r) => r.method === "POST" && r.path === "provider_facility_assignments",
+  );
+  expect(insert?.body).toEqual([
+    expect.objectContaining({ facility_id: "f-2", is_primary: false, start_date: null }),
+  ]);
+  // The existing dated row is untouched.
+  expect(
+    requests.filter((r) => r.method === "PATCH" && r.path === "provider_facility_assignments"),
+  ).toEqual([]);
+  await expect(
+    page.locator("li").filter({ hasText: "Nags Head Clinic" }).getByText("Start date needed"),
+  ).toBeVisible({ timeout: 15000 });
+  await expect(
+    page
+      .locator("li")
+      .filter({ hasText: "Kill Devil Hills Clinic" })
+      .getByText("starts Jun 1, 2026"),
+  ).toBeVisible();
+});
+
 test("TS-113: enrollment-fact capture on the record; APPROVED cases derive read-only rows beside facts; standard Active pill, no Expire — zero case writes anywhere", async ({
   context,
   page,
@@ -1240,9 +1282,19 @@ test("MINT-110: record inline NPI edit saves at once; the check finishes after a
   // The registry, mocked at the browser: it lists only Brooke Ostrander. A
   // lookup of a held NPI waits until the spec releases it.
   const lookups: unknown[] = [];
+  // MINT-110 PR 3: what a save records as registry source data, kept apart.
+  const pulls: unknown[] = [];
   const held = new Map<string, Promise<void>>();
   await context.route(/\/api\/npi-registry\//, async (route) => {
     const body = route.request().postDataJSON() as { npi?: string };
+    if (new URL(route.request().url()).pathname.endsWith("/pulls")) {
+      pulls.push(body);
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { pull: { id: "pull-1" } }, error: null, meta: null }),
+      });
+    }
     lookups.push(body);
     const gate = held.get(String(body.npi));
     if (gate) await gate;
@@ -1334,4 +1386,17 @@ test("MINT-110: record inline NPI edit saves at once; the check finishes after a
   ]);
   await expect(page.getByText(/in the NPI Registry/)).toHaveCount(0);
   expect(lookups).toEqual([{ npi: "1234567810" }, { npi: "1234567893" }]);
+  // MINT-110 PR 3: each saved NPI's check is a later pull, its own row of
+  // source data: nothing sourced, nothing confirmed, and no provider value
+  // changed by it.
+  await expect
+    .poll(() => pulls)
+    .toEqual([
+      { providerId: "pr-brooke", npi: "1234567810", sourced: {}, confirmed: false },
+      { providerId: "pr-brooke", npi: "1234567893", sourced: {}, confirmed: false },
+    ]);
+  expect(providerPatches().map((request) => request.body)).toEqual([
+    { npi: "1234567810" },
+    { npi: "1234567893" },
+  ]);
 });

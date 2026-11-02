@@ -33,7 +33,12 @@ const ADA = "33333333-3333-4333-8333-333333333333";
 const FORMER = "99999999-9999-4999-8999-999999999999";
 
 function member(userId: string, first: string): DigestMember {
-  return { userId, firstName: first, email: `${first.toLowerCase()}@example.test` };
+  return {
+    userId,
+    membershipId: `m-${userId}`,
+    firstName: first,
+    email: `${first.toLowerCase()}@example.test`,
+  };
 }
 
 const MEMBERS: DigestMember[] = [member(JANE, "Jane"), member(OMAR, "Omar"), member(ADA, "Ada")];

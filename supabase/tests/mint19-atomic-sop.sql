@@ -1,5 +1,6 @@
 -- MINT-19 authorization, idempotency, termination, and rollback checks, with
--- MINT-75's completion and termination days.
+-- MINT-75's completion and termination days and MINT-135's out-of-order
+-- ticks (allowed, recorded as one task.step_out_of_order advisory).
 -- Run only after the disposable migration runner has applied the full schema.
 \set ON_ERROR_STOP on
 \pset format unaligned
@@ -14,7 +15,9 @@ BEGIN;
 -- grant: anon appears only in privilege checks, and the RPC's service_role
 -- branch skips auth.uid(); the triggers it fires reach auth.uid() only through
 -- SECURITY DEFINER functions, which run as their owner. auth.role() and
--- auth.jwt() are not called anywhere on this path.
+-- auth.jwt() are not called anywhere on this path. (Only the three MINT-135
+-- record_typed_enrollment_submission checks grant service_role auth access,
+-- for themselves, and revoke it right after.)
 GRANT USAGE ON SCHEMA auth TO authenticated;
 SET LOCAL client_min_messages = warning;
 
@@ -38,7 +41,8 @@ $function$;
 CREATE FUNCTION pg_temp.mint19_try_audit_failure(
   p_org_id uuid,
   p_task_id uuid,
-  p_actor_id uuid
+  p_actor_id uuid,
+  p_step_id text DEFAULT 'only-step'
 )
 RETURNS text
 LANGUAGE plpgsql
@@ -50,7 +54,7 @@ DECLARE
   v_message text;
 BEGIN
   PERFORM public.complete_sop_task_step(
-    p_org_id, p_task_id, 'only-step', p_actor_id, 'panel'
+    p_org_id, p_task_id, p_step_id, p_actor_id, 'panel'
   );
   RETURN 'unexpected_success';
 EXCEPTION WHEN OTHERS THEN
@@ -499,16 +503,6 @@ RESET ROLE;
 SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000001';
 SET LOCAL ROLE authenticated;
 SELECT pg_temp.mint19_assert(
-  'out-of-order step returns conflict',
-  (public.complete_sop_task_step(
-    '19000000-0000-4000-8000-000000000001',
-    '69000000-0000-4000-8000-000000000001',
-    'last',
-    '29000000-0000-4000-8000-000000000001',
-    'panel'
-  ) ->> 'status')::integer = 409
-);
-SELECT pg_temp.mint19_assert(
   'first step completes through authenticated role',
   (public.complete_sop_task_step(
     '19000000-0000-4000-8000-000000000001',
@@ -583,6 +577,347 @@ BEGIN
   );
 END;
 $function$;
+
+-- MINT-135 (20261101160000): a step may be ticked while earlier-ordered steps
+-- are still open. The tick completes, the earlier steps stay open, and one
+-- task.step_out_of_order advisory is written in the same transaction, before
+-- the audit row. An in-order tick, and a repeat of a completed step, write
+-- none. A ledger refusal never blocks the tick.
+INSERT INTO public.tasks (id, org_id, case_id, title, status, sop_content) VALUES
+  ('69000000-0000-4000-8000-000000000017', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000002', 'MINT-135 three steps', 'not_started',
+   '[{"id":"a","order":1,"label":"A","isCompleted":false},{"id":"b","order":2,"label":"B","isCompleted":false},{"id":"c","order":3,"label":"C","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000018', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000002', 'MINT-135 extension tick', 'not_started',
+   '[{"id":"a","order":1,"label":"A","isCompleted":false},{"id":"b","order":2,"label":"B","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000019', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000002', 'MINT-135 ledger refuses', 'not_started',
+   '[{"id":"a","order":1,"label":"A","isCompleted":false},{"id":"b","order":2,"label":"B","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000020', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000002', 'MINT-135 audit failure', 'not_started',
+   '[{"id":"a","order":1,"label":"A","isCompleted":false},{"id":"b","order":2,"label":"B","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000021', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000002', 'MINT-135 step order past the bound', 'not_started',
+   '[{"id":"a","order":1,"label":"A","isCompleted":false},{"id":"b","order":150,"label":"B","isCompleted":false}]'::jsonb);
+
+-- MINT-135 task order: one case whose tasks run by sort_order. An open first
+-- task, a removed payer form and a completed task before the later task, so
+-- exactly one earlier task counts as open; then an already completed task
+-- that still has an open step.
+INSERT INTO public.credential_cases (id, org_id, provider_id, payer_id, state) VALUES
+  ('59000000-0000-4000-8000-000000000009', '19000000-0000-4000-8000-000000000001', '39000000-0000-4000-8000-000000000001', '49000000-0000-4000-8000-000000000001', 'ID');
+INSERT INTO public.tasks (id, org_id, case_id, title, status, sort_order, sop_content) VALUES
+  ('69000000-0000-4000-8000-000000000022', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000009', 'MINT-135 earlier open task', 'in_progress', 0,
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000023', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000009', 'MINT-135 removed payer form', 'blocked', 1,
+   '[{"id":"form","order":1,"label":"Send payer form","isCompleted":false,"stepType":"pdf","payerForm":{"familyId":"family-1","removedAt":"2026-11-01T00:00:00Z"}}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000024', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000009', 'MINT-135 earlier completed task', 'completed', 2,
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":true}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000025', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000009', 'MINT-135 later task', 'not_started', 3,
+   '[{"id":"a","order":1,"label":"A","isCompleted":false},{"id":"b","order":2,"label":"B","isCompleted":false}]'::jsonb),
+  ('69000000-0000-4000-8000-000000000026', '19000000-0000-4000-8000-000000000001',
+   '59000000-0000-4000-8000-000000000009', 'MINT-135 already completed task', 'completed', 4,
+   '[{"id":"only-step","order":1,"label":"Only step","isCompleted":false}]'::jsonb);
+
+-- MINT-135 typed submission: with the RPC's 409 gone, its own earlier-step
+-- check is what keeps the extension's Work-in-portal submission on the
+-- current step. An enrollment case with one two-form Auto-fill task.
+INSERT INTO public.sop_templates (
+  id, org_id, name, payer_id, state, states, task_definitions,
+  archived, current_version, required_profile_attributes, case_type
+) VALUES (
+  '79000000-0000-4000-8000-000000000001',
+  '19000000-0000-4000-8000-000000000001', 'MINT-135 enrollment SOP',
+  '49000000-0000-4000-8000-000000000001', 'WA', ARRAY['WA']::text[], '[]'::jsonb,
+  false, 1, '[]'::jsonb, 'enrollment'
+);
+INSERT INTO public.credential_cases (id, org_id, provider_id, payer_id, state, case_type, case_status) VALUES
+  ('59000000-0000-4000-8000-000000000010', '19000000-0000-4000-8000-000000000001', '39000000-0000-4000-8000-000000000001', '49000000-0000-4000-8000-000000000001', 'WA', 'enrollment', 'in_progress');
+INSERT INTO public.tasks (
+  id, org_id, case_id, provider_id, title, status, sort_order, sop_content,
+  sop_template_id, sop_version, execution_type
+) VALUES (
+  '69000000-0000-4000-8000-000000000030', '19000000-0000-4000-8000-000000000001',
+  '59000000-0000-4000-8000-000000000010', '39000000-0000-4000-8000-000000000001',
+  'MINT-135 typed submission', 'in_progress', 1,
+  '[{"id":"form-1","order":1,"label":"First form","stepType":"online_form","portalKey":"mint135_portal","isCompleted":false},{"id":"form-2","order":2,"label":"Second form","stepType":"online_form","portalKey":"mint135_portal","isCompleted":false}]'::jsonb,
+  '79000000-0000-4000-8000-000000000001', 1, 'extension_fill'
+);
+
+-- The typed submission's work context for one step of that task, at the
+-- case's current context version. No portal row exists, so a submission that
+-- passes the step check stops at the portal check.
+CREATE FUNCTION pg_temp.mint135_typed_submission(p_step_id text, p_touch_id uuid)
+RETURNS jsonb
+LANGUAGE sql
+SECURITY INVOKER
+SET search_path = pg_temp
+AS $function$
+  SELECT public.record_typed_enrollment_submission(
+    '19000000-0000-4000-8000-000000000001',
+    '29000000-0000-4000-8000-000000000002',
+    '59000000-0000-4000-8000-000000000010',
+    p_touch_id,
+    NULL,
+    pg_catalog.jsonb_build_object(
+      'launchReceiptId', '89000000-0000-4000-8000-000000000001',
+      'orgId', '19000000-0000-4000-8000-000000000001',
+      'ownerKind', 'case',
+      'ownerId', '59000000-0000-4000-8000-000000000010',
+      'contextVersion', (SELECT c.context_version FROM public.credential_cases AS c
+                          WHERE c.id = '59000000-0000-4000-8000-000000000010'),
+      'sopTemplateId', '79000000-0000-4000-8000-000000000001',
+      'sopVersion', 1,
+      'portalId', '89000000-0000-4000-8000-000000000002',
+      'portalKey', 'mint135_portal',
+      'mappingGeneration', 1,
+      'effectiveMappingFingerprint', 'sha256:' || pg_catalog.repeat('a', 64),
+      'providerId', '39000000-0000-4000-8000-000000000001',
+      'facilityId', NULL,
+      'stepIdentity', '59000000-0000-4000-8000-000000000010:69000000-0000-4000-8000-000000000030:79000000-0000-4000-8000-000000000001:1:' || p_step_id,
+      'taskId', '69000000-0000-4000-8000-000000000030',
+      'stepId', p_step_id
+    ),
+    '{"note":null,"payerReferenceId":null,"wipNote":null,"pdfFilename":null}'::jsonb
+  );
+$function$;
+
+-- The ledger refuses every row for the "ledger refuses" task.
+CREATE FUNCTION public.mint135_fail_test_advisory()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = ''
+AS $function$
+BEGIN
+  IF NEW.record_id = '69000000-0000-4000-8000-000000000019'::uuid THEN
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'mint135_ledger_failure';
+  END IF;
+  RETURN NEW;
+END;
+$function$;
+CREATE TRIGGER zz_mint135_ledger_failure
+  BEFORE INSERT ON public.workflow_advisories
+  FOR EACH ROW EXECUTE FUNCTION public.mint135_fail_test_advisory();
+
+SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000001';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 an out-of-order step completes instead of returning a conflict',
+  (SELECT r ->> 'kind' = 'ok' AND (r ->> 'allDone')::boolean = false
+     FROM (SELECT public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000017',
+    'c',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) AS r) AS x)
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 repeating the out-of-order step is a no-op',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000017',
+    'c',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 a step order past the context bound completes',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000021',
+    'b',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 a ledger refusal does not block the tick',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000019',
+    'b',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'kind') = 'ok'
+);
+RESET ROLE;
+
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the earlier steps stay open and the task is in progress',
+  (SELECT t.status = 'in_progress'
+          AND t.completed_date IS NULL
+          AND t.sop_content -> 0 ->> 'isCompleted' = 'false'
+          AND t.sop_content -> 1 ->> 'isCompleted' = 'false'
+          AND t.sop_content -> 2 ->> 'isCompleted' = 'true'
+     FROM public.tasks AS t
+    WHERE t.id = '69000000-0000-4000-8000-000000000017')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the out-of-order tick writes one advisory in its own transaction',
+  (SELECT pg_catalog.count(*) = 1
+          AND pg_catalog.bool_and(w.bypassed_at = pg_catalog.now())
+     FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000017')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the advisory names the check, the task, the panel and the verified actor',
+  (SELECT w.org_id = '19000000-0000-4000-8000-000000000001'
+          AND w.check_key = 'task.step_out_of_order'
+          AND w.severity_at_time = 'advisory'
+          AND w.record_table = 'tasks'
+          AND w.source = 'panel'
+          AND w.job IS NULL
+          AND w.actor_id = '29000000-0000-4000-8000-000000000001'
+          AND w.actor_role = 'specialist'
+          AND w.resolved_at IS NULL
+     FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000017')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the advisory context is the step order and the earlier open count',
+  (SELECT w.context = '{"step_order": 3, "earlier_open_count": 2}'::jsonb
+     FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000017')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 a step order past the context bound is left out of the context',
+  (SELECT pg_catalog.count(*) = 1
+          AND pg_catalog.bool_and(w.context = '{"earlier_open_count": 1}'::jsonb)
+     FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000021')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 a ledger refusal leaves the step ticked and no advisory',
+  (SELECT t.sop_content -> 1 ->> 'isCompleted' = 'true'
+          AND t.sop_content -> 0 ->> 'isCompleted' = 'false'
+     FROM public.tasks AS t
+    WHERE t.id = '69000000-0000-4000-8000-000000000019')
+  AND (SELECT pg_catalog.count(*) = 0 FROM public.workflow_advisories AS w
+        WHERE w.record_id = '69000000-0000-4000-8000-000000000019')
+  AND (SELECT pg_catalog.count(*) = 1 FROM public.audit_log AS a
+        WHERE a.entity_id = '69000000-0000-4000-8000-000000000019')
+);
+DROP TRIGGER zz_mint135_ledger_failure ON public.workflow_advisories;
+
+SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000001';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the earlier step still completes in order afterwards',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000017',
+    'a',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the last open step completes the task',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000017',
+    'b',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'allDone')::boolean
+);
+RESET ROLE;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 in-order ticks and repeats write no advisory',
+  (SELECT pg_catalog.count(*) = 1 FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000017')
+  AND (SELECT pg_catalog.count(*) = 0 FROM public.workflow_advisories AS w
+        WHERE w.org_id = '19000000-0000-4000-8000-000000000001'
+          AND w.record_id NOT IN ('69000000-0000-4000-8000-000000000017',
+                                  '69000000-0000-4000-8000-000000000021'))
+);
+
+-- MINT-135: a tick that completes a later task while an earlier task of its
+-- case is open records task.completed_out_of_order; the earlier task stays
+-- open. A removed payer form and a completed task don't count, and a task
+-- that was already completed, or completes in order, records nothing.
+SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000001';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 a later task''s first step ticks in order',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000025',
+    'a',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'kind') = 'ok'
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 a later task''s last step completes it while an earlier task is open',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000025',
+    'b',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'allDone')::boolean
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the last open step of an already completed task ticks',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000026',
+    'only-step',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'kind') = 'ok'
+);
+RESET ROLE;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the earlier task stays open',
+  (SELECT t.status = 'in_progress' FROM public.tasks AS t
+    WHERE t.id = '69000000-0000-4000-8000-000000000022')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 completing the later task records task.completed_out_of_order once',
+  (SELECT pg_catalog.count(*) = 1
+          AND pg_catalog.bool_and(
+                w.check_key = 'task.completed_out_of_order'
+                AND w.record_table = 'tasks'
+                AND w.source = 'panel'
+                AND w.actor_id = '29000000-0000-4000-8000-000000000001'
+                AND w.bypassed_at = pg_catalog.now())
+     FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000025')
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the earlier open count skips a removed payer form and a completed task',
+  (SELECT w.context = '{"earlier_open_count": 1}'::jsonb
+     FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000025')
+);
+SET LOCAL request.jwt.claim.sub = '29000000-0000-4000-8000-000000000001';
+SET LOCAL ROLE authenticated;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the earlier task still completes afterwards',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000022',
+    'only-step',
+    '29000000-0000-4000-8000-000000000001',
+    'panel'
+  ) ->> 'allDone')::boolean
+);
+RESET ROLE;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 an already completed task and an in-order completion record nothing',
+  (SELECT pg_catalog.count(*) = 0 FROM public.workflow_advisories AS w
+    WHERE w.record_id IN ('69000000-0000-4000-8000-000000000022',
+                          '69000000-0000-4000-8000-000000000026'))
+);
 
 -- CI creates a minimally privileged service_role. Emulate the real Supabase
 -- BYPASSRLS attribute only inside this rollback-only verification transaction.
@@ -665,20 +1000,90 @@ SELECT pg_temp.mint19_assert(
     'extension'
   ) ->> 'status')::integer = 404
 );
+-- MINT-135: record_typed_enrollment_submission reads auth.uid() and locks
+-- its portal row under service_role. Mirror those hosted grants (the mint58
+-- packet's) for these three checks only, then revoke them, so every other
+-- service_role check still runs without auth access: a complete_sop_task_step
+-- that read auth.uid() on its service_role branch fails here as in CI.
+-- CI's service_role holds neither grant, so the revoke restores it exactly.
+RESET ROLE;
+GRANT USAGE ON SCHEMA auth TO service_role;
+GRANT SELECT, UPDATE ON public.portals TO service_role;
+SET LOCAL ROLE service_role;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the typed submission still refuses a step while an earlier step is open',
+  (SELECT r ->> 'kind' = 'rejected'
+          AND (r ->> 'status')::integer = 409
+          AND r ->> 'message' = 'Enrollment SOP step is stale or already complete'
+     FROM (SELECT pg_temp.mint135_typed_submission(
+             'form-2', '89000000-0000-4000-8000-000000000003') AS r) AS x)
+);
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the earlier step ticks through the RPC',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000030',
+    'form-1',
+    '29000000-0000-4000-8000-000000000002',
+    'extension'
+  ) ->> 'kind') = 'ok'
+);
+-- The control: the same submission now passes the step check and stops at
+-- the next one, so the refusal above was the earlier-step check.
+SELECT pg_temp.mint19_assert(
+  'MINT-135 with the earlier step done the submission gets past the step check',
+  (pg_temp.mint135_typed_submission('form-2', '89000000-0000-4000-8000-000000000004')
+     ->> 'message') = 'Enrollment portal configuration is stale'
+);
+RESET ROLE;
+REVOKE USAGE ON SCHEMA auth FROM service_role;
+REVOKE SELECT, UPDATE ON public.portals FROM service_role;
+SET LOCAL ROLE service_role;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 an out-of-order extension tick completes',
+  (public.complete_sop_task_step(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000018',
+    'b',
+    '29000000-0000-4000-8000-000000000002',
+    'extension'
+  ) ->> 'kind') = 'ok'
+);
 RESET ROLE;
 ALTER ROLE service_role NOBYPASSRLS;
+SELECT pg_temp.mint19_assert(
+  'MINT-135 the extension advisory names the extension and the verified actor',
+  (SELECT pg_catalog.count(*) = 1
+          AND pg_catalog.bool_and(
+                w.source = 'extension'
+                AND w.actor_id = '29000000-0000-4000-8000-000000000002'
+                AND w.actor_role = 'admin'
+                AND w.context = '{"step_order": 2, "earlier_open_count": 1}'::jsonb)
+     FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000018')
+);
 
 -- Force the audit INSERT to fail after task/case changes have been attempted.
 -- The RPC's transaction boundary must roll all of them back together.
+-- MINT-135: the message carries how many advisories the task already had in
+-- this transaction when the audit row failed, so a check can tell an
+-- advisory that was written and rolled back from one never written. SECURITY
+-- DEFINER, so the count reads the ledger whatever role the RPC runs as.
 CREATE FUNCTION public.mint19_fail_test_audit()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = ''
 AS $function$
 BEGIN
-  IF NEW.entity_id = '69000000-0000-4000-8000-000000000003'::uuid THEN
-    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'mint19_atomic_audit_failure';
+  IF NEW.entity_id IN ('69000000-0000-4000-8000-000000000003'::uuid,
+                       '69000000-0000-4000-8000-000000000020'::uuid) THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'P0001',
+      MESSAGE = 'mint19_atomic_audit_failure|advisories=' || (
+        SELECT pg_catalog.count(*) FROM public.workflow_advisories AS w
+         WHERE w.record_id = NEW.entity_id
+      )::text;
   END IF;
   RETURN NEW;
 END;
@@ -695,7 +1100,7 @@ SELECT pg_temp.mint19_assert(
     '19000000-0000-4000-8000-000000000001',
     '69000000-0000-4000-8000-000000000003',
     '29000000-0000-4000-8000-000000000001'
-  ) = 'P0001|mint19_atomic_audit_failure'
+  ) = 'P0001|mint19_atomic_audit_failure|advisories=0'
   AND (SELECT t.status = 'not_started'
               AND (t.sop_content -> 0 ->> 'isCompleted') = 'false'
               AND c.termination_date IS NULL
@@ -704,7 +1109,28 @@ SELECT pg_temp.mint19_assert(
        JOIN public.credential_cases AS c ON c.id = t.case_id AND c.org_id = t.org_id
        WHERE t.id = '69000000-0000-4000-8000-000000000003')
 );
+SELECT pg_temp.mint19_assert(
+  'MINT-135 an audit failure on an out-of-order tick, after its advisory was written, rolls back the step',
+  pg_temp.mint19_try_audit_failure(
+    '19000000-0000-4000-8000-000000000001',
+    '69000000-0000-4000-8000-000000000020',
+    '29000000-0000-4000-8000-000000000001',
+    'b'
+  ) = 'P0001|mint19_atomic_audit_failure|advisories=1'
+  AND (SELECT t.status = 'not_started'
+              AND t.sop_content -> 1 ->> 'isCompleted' = 'false'
+         FROM public.tasks AS t
+        WHERE t.id = '69000000-0000-4000-8000-000000000020')
+);
 RESET ROLE;
+-- The failing audit row saw the advisory (advisories=1 above), so the failed
+-- audit insert is what rolled it back: one transaction for step, case,
+-- advisory and audit.
+SELECT pg_temp.mint19_assert(
+  'MINT-135 an audit failure rolls the advisory back with the step',
+  (SELECT pg_catalog.count(*) = 0 FROM public.workflow_advisories AS w
+    WHERE w.record_id = '69000000-0000-4000-8000-000000000020')
+);
 
 DO $function$
 DECLARE

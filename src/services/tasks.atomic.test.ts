@@ -42,15 +42,15 @@ describe("Panel SOP step completion", () => {
     );
   });
 
-  it("surfaces the RPC's ordering conflict without attempting direct writes", async () => {
+  it("surfaces the RPC's conflict without attempting direct writes", async () => {
     completeTaskStepMock.mockResolvedValue({
       kind: "rejected",
       status: 409,
-      message: 'Complete "Upload W-9" first',
+      message: "Task case organization does not match",
     });
 
     await expect(completeSOPStep("task-1", "step-2")).rejects.toThrow(
-      'Complete "Upload W-9" first',
+      "Task case organization does not match",
     );
     expect(completeTaskStepMock).toHaveBeenCalledTimes(1);
   });

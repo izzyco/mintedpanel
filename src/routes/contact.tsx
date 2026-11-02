@@ -1,14 +1,15 @@
 // Public "contact us" route (redesign E0.5 / F0.5.5 / TE-7). No token, no session
 // — a stranger submits interest and it becomes a triaged lead (never a live org).
 // Rendered outside the app shell by __root. Baseline anti-abuse: required fields
-// + a hidden honeypot field (a bot fills it; a human never sees it).
+// + a hidden honeypot field (a bot fills it; a human never sees it). The field
+// rules are leadErrors (phone optional, MINT-91 U8).
 import { useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, ArrowRight, CheckCircle2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { submitInboundLead } from "@/services/inboundLeads";
-import { isValidEmail } from "@/lib/contactValidation";
+import { leadErrors } from "@/lib/contactValidation";
 import type { InboundLeadInput } from "@/types";
 import logoAsset from "@/assets/minted-mark.png.asset.json";
 import "./landing.css";
@@ -24,23 +25,6 @@ const EMPTY: InboundLeadInput = {
   contactPhone: "",
   companyWebsite: "",
 };
-
-interface LeadErrors {
-  orgName?: string;
-  contactName?: string;
-  contactEmail?: string;
-  contactPhone?: string;
-}
-
-function leadErrors(v: InboundLeadInput): LeadErrors {
-  const e: LeadErrors = {};
-  if (!v.orgName.trim()) e.orgName = "Organization name is required";
-  if (!v.contactName.trim()) e.contactName = "Your name is required";
-  if (!v.contactEmail.trim()) e.contactEmail = "Email is required";
-  else if (!isValidEmail(v.contactEmail)) e.contactEmail = "Enter a valid email address";
-  if (!v.contactPhone.trim()) e.contactPhone = "Phone is required";
-  return e;
-}
 
 const errClass = "mt-1 text-[12px] text-[#B91C1C]";
 

@@ -37,6 +37,12 @@ import {
 import { stripNpiSeparators } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { PROVIDER_GENDER_OPTIONS, PROVIDER_GENDER_UNSET_VALUE } from "@/lib/providerGender";
+import { localCalendarDate } from "@/lib/systemTokens";
+import {
+  DEFAULT_ADD_PROVIDER_RULES,
+  addProviderStartDateHint,
+  type AddProviderRules,
+} from "@/lib/addProviderRules";
 
 interface SectionProps {
   form: ProviderFormState;
@@ -137,7 +143,11 @@ export function PersonalSection({
       <Field label="Email" error={errors.email}>
         <Input type="email" value={form.email} onChange={(e) => update("email", e.target.value)} />
       </Field>
-      <Field label="Phone" helper={registrySource?.phone ? registrySource.label : undefined}>
+      <Field
+        label="Phone"
+        error={errors.phone}
+        helper={registrySource?.phone ? registrySource.label : undefined}
+      >
         <Input value={form.phone} onChange={(e) => update("phone", e.target.value)} />
       </Field>
     </div>
@@ -414,7 +424,12 @@ export function LicensesSection({ form, errors, update }: SectionProps) {
   );
 }
 
-export function EmploymentSection({ form, errors, update }: SectionProps) {
+export function EmploymentSection({
+  form,
+  errors,
+  update,
+  addProviderRules = DEFAULT_ADD_PROVIDER_RULES,
+}: SectionProps & { addProviderRules?: AddProviderRules }) {
   const groups = useProviderGroups();
   const facilities = useFacilities(form.groupId || null);
 
@@ -426,6 +441,15 @@ export function EmploymentSection({ form, errors, update }: SectionProps) {
   };
 
   const facilityList = facilities.data ?? [];
+  // MINT-96: say what a blank Start date saves before save, from the rule
+  // the save reads (AddProviderRules, MINT-116), instead of letting a date
+  // appear on the record after. The provider's stays null; by default the
+  // facility assignments start local today.
+  const startDateHint = addProviderStartDateHint(addProviderRules, {
+    startDate: form.startDate,
+    facilityCount: form.facilityIds.length,
+    today: localCalendarDate(new Date()),
+  });
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -482,7 +506,7 @@ export function EmploymentSection({ form, errors, update }: SectionProps) {
           </div>
         )}
       </div>
-      <Field label="Start date" error={errors.startDate}>
+      <Field label="Start date" error={errors.startDate} helper={startDateHint}>
         <Input
           type="date"
           value={form.startDate}
