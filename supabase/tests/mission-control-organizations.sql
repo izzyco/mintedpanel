@@ -649,6 +649,7 @@ DECLARE
   v_bad_slug text;
   v_taken text;
   v_dup jsonb;
+  v_ref uuid;
   v_legacy_dup text;
   v_missing_owner text;
   v_rename text;
@@ -687,6 +688,8 @@ BEGIN
   PERFORM pg_temp.mo_claims(v_admin_a);
   SET LOCAL ROLE authenticated;
   v_legacy_dup := pg_temp.mo_try($q$SELECT public.create_organization('MO Synthetic Org B', 'Lee Owner', 'lee@example.invalid')$q$);
+  -- A reference organization from the existing overload, for the seed check.
+  v_ref := public.create_organization('MO Seed Reference', 'Ref Owner', 'ref@example.invalid');
   RESET ROLE;
   PERFORM pg_temp.mo_no_claims();
   PERFORM pg_temp.mo_assert('create.existing_overload_still_refuses_duplicate',
@@ -698,21 +701,28 @@ BEGIN
     v_org.name = 'MO New Org' AND v_org.slug = 'mo-new-org' AND v_org.plan_tier = 'pilot'
     AND v_org.lifecycle_state = 'prospect'
     AND v_result->>'slug' = 'mo-new-org');
-  PERFORM pg_temp.mo_assert('create.owner_party_and_creator_membership',
+  PERFORM pg_temp.mo_assert('create.owner_party_and_status_seed',
     EXISTS (SELECT 1 FROM public.party_role_assignments a JOIN public.parties p ON p.id = a.party_id
-             WHERE a.org_id = v_org.id AND a.role_key = 'owner' AND p.name = 'Pat Owner'
-               AND p.email = 'pat@example.invalid')
-    AND (SELECT role FROM public.memberships WHERE org_id = v_org.id AND user_id = v_pa) = 'admin'
+             WHERE a.org_id = v_org.id AND a.role_key = 'owner' AND a.is_default
+               AND p.name = 'Pat Owner' AND p.email = 'pat@example.invalid')
     AND (SELECT count(*) FROM public.status_configs WHERE org_id = v_org.id) = 22
-    AND (SELECT count(*) FROM public.audit_log
-          WHERE org_id = v_org.id AND action_type = 'CREATE' AND entity_type = 'organization') = 1);
+    -- The same 22 rows create_organization seeds, row for row.
+    AND NOT EXISTS (
+      (SELECT track, label, color, sort_order, action_bucket FROM public.status_configs
+        WHERE org_id = v_ref)
+      EXCEPT
+      (SELECT track, label, color, sort_order, action_bucket FROM public.status_configs
+        WHERE org_id = v_org.id)));
+  -- Sowmya, Nov 2 2026: creating an organization does not make the operator a
+  -- member; Grant myself admin membership is the one click that opens it.
+  PERFORM pg_temp.mo_assert('create.creator_has_no_membership',
+    NOT EXISTS (SELECT 1 FROM public.memberships WHERE org_id = v_org.id)
+    AND NOT EXISTS (SELECT 1 FROM public.memberships WHERE org_id = (v_dup->>'orgId')::uuid));
   SELECT * INTO v_row FROM public.admin_audit_log WHERE id = (v_result->>'auditId')::uuid;
   PERFORM pg_temp.mo_assert('create.one_ledger_row',
     (SELECT count(*) FROM public.admin_audit_log) = v_ledger + 2
     AND v_row.action = 'org.create' AND v_row.actor_user_id = v_pa AND v_row.org_id = v_org.id
     AND v_row.after->>'slug' = 'mo-new-org' AND v_row.after->'owner'->>'email' = 'pat@example.invalid');
-  PERFORM pg_temp.mo_assert('create.setting_cleared',
-    coalesce(current_setting('minted.new_org_slug', true), '') = '');
 
   v_rename := pg_temp.mo_try(format($q$UPDATE public.organizations SET slug = 'mo-new-org-2' WHERE id = %L$q$, v_org.id));
   PERFORM pg_temp.mo_assert('create.slug_fixed_after_creation', v_rename = '23514:slug_immutable');

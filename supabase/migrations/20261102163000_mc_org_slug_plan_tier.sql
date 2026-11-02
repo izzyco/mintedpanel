@@ -9,9 +9,7 @@
 -- created order (a collision gets -2, -3, ...), and a row inserted without a
 -- slug gets one the same way (BEFORE INSERT), so every creation path keeps
 -- working unchanged. Mission Control's platform_create_organization (a later
--- migration in this set) passes the operator's chosen slug through the
--- transaction-local setting minted.new_org_slug, read here at insert time
--- only; it can never change an existing slug.
+-- migration in this set) inserts the operator's chosen slug directly.
 --
 -- plan_tier is informational, nullable text with no CHECK: the small list of
 -- tiers lives in the UI (src/lib/orgProfile.ts), so a new tier is not a
@@ -106,11 +104,9 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path TO 'public'
 AS $$
-DECLARE
-  v_chosen text := nullif(current_setting('minted.new_org_slug', true), '');
 BEGIN
   IF NEW.slug IS NULL THEN
-    NEW.slug := coalesce(v_chosen, public.org_slug_first_free(public.org_slug_from_name(NEW.name)));
+    NEW.slug := public.org_slug_first_free(public.org_slug_from_name(NEW.name));
   END IF;
   RETURN NEW;
 END;

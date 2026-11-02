@@ -468,10 +468,11 @@ All are repo migrations unless noted.
   document whose keys are a pinned contract (SCHEMA.md › Mission Control).
   Raises `42501` for anyone but a platform admin.
 - **Mission Control M3** (SCHEMA.md › Mission Control M3):
-  `platform_create_organization` (reuses the 1-arg `create_organization`, so
-  the creator is the first admin member; slug via `minted.new_org_slug`; a
-  duplicate normalized name is allowed and Mission Control shows a notice,
-  while the other overloads keep their refusal),
+  `platform_create_organization` (its own path: org row, the canonical
+  `status_configs` seed pinned to `canonicalStatuses.ts`, owner party,
+  ledger row; **no membership**, the operator opens the org with Grant myself
+  admin membership; a duplicate normalized name is allowed with a notice,
+  while the `create_organization` overloads keep their refusal),
   `platform_set_org_lifecycle` (validated against
   `lifecycle_stages.allowed_next`), `platform_grant_membership` (the caller,
   as admin), `platform_org_summary` (counts, never provider rows),

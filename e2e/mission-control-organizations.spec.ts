@@ -340,12 +340,7 @@ async function installMocks(context: BrowserContext, state: State, activeOrgId: 
           plan_tier: (args.p_plan_tier as string | null) ?? null,
           created_at: "2026-11-01T09:00:00Z",
         });
-        state.memberships.push({
-          org_id: NEW_ORG,
-          user_id: USER_ID,
-          role: "admin",
-          created_at: "2026-11-01T09:00:00Z",
-        });
+        // No membership: the operator opens it with Grant myself admin membership.
         return json({ orgId: NEW_ORG, slug, name: args.p_name, auditId: "a1" });
       }
       if (fn === "platform_set_org_lifecycle") {
@@ -593,10 +588,15 @@ test("(b) creating an organization takes one form and one click, and the slug ru
       p_plan_tier: "pilot",
     },
   ]);
-  // New organizations start as prospects; the creator is its first admin.
+  // New organizations start as prospects, and the creator is not a member
+  // (Sowmya, Nov 2): Grant myself admin membership is the one click that opens it.
   const lifecycle = page.getByRole("region", { name: "Lifecycle" });
   await expect(lifecycle).toContainText("Prospect");
+  expect(state.memberships.some((m) => m.org_id === NEW_ORG)).toBe(false);
+  await expect(page.getByRole("button", { name: "Open in workspace" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Grant myself admin membership" }).click();
   await expect(page.getByRole("button", { name: "Open in workspace" })).toBeVisible();
+  expect(rpcArgs(state, "platform_grant_membership")).toEqual([{ p_org_id: NEW_ORG }]);
 });
 
 test("(b) a duplicate name is allowed: the notice links the other organization before and after Save", async ({

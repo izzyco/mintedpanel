@@ -1,7 +1,8 @@
 // Mission Control › Organizations › New organization (M3). One form, one
 // click: name, slug (prefilled from the name, editable until created, fixed
 // afterwards), owner name and email, optional plan tier. A new organization
-// starts in the prospect stage; the operator lands on its detail page.
+// starts in the prospect stage with no members; the operator lands on its
+// detail page, where Grant myself admin membership opens it.
 // Stock shadcn Dialog + inputs styled by tokens (logged in DESIGN-DEBT.md).
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -46,7 +47,8 @@ export function CreateOrganizationDialog({ onClose }: { onClose: () => void }) {
         <DialogHeader>
           <DialogTitle>New organization</DialogTitle>
           <DialogDescription>
-            It starts as a prospect. Contacts and the sales rep can be added on its page later.
+            It starts as a prospect, and you are not added as a member: open it from its page with
+            Grant myself admin membership. Contacts and the sales rep come later.
           </DialogDescription>
         </DialogHeader>
         <form

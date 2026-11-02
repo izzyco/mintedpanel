@@ -1,18 +1,19 @@
 -- Mission Control M3: the organization RPCs behind /mission-control/organizations.
 --
 --   platform_create_organization(name, slug, owner_name, owner_email, plan_tier)
---     One form, one click. Reuses create_organization(name), the existing
---     overload with no duplicate-name refusal (organization row, the caller as
---     its first admin member, the canonical status_configs, the audit_log
---     row), with the operator's slug passed to the insert through the
---     transaction-local setting minted.new_org_slug (20261102163000); then
---     the prospect stage, plan_tier and the owner party (the same owner checks
---     and party rows as the 3-arg overload). A name that matches an existing
---     organization's normalized name is allowed (Sowmya, Nov 1 2026: business
---     policy, not a boundary); Mission Control shows a notice linking the
---     other organization. The existing create_organization overloads are
---     unchanged and keep their own refusal for their callers. The escalation
---     contact and sales rep are added later on the organization's page.
+--     One form, one click, its own additive path: the organization row (the
+--     operator's slug, the prospect stage, plan_tier), the 22 canonical
+--     status_configs (the create_organization seed, mirrored by
+--     src/lib/canonicalStatuses.ts and pinned by a vitest), the owner party
+--     (the 3-arg overload's owner checks and party rows), and the org.create
+--     ledger row. The operator does NOT become a member (Sowmya, Nov 2 2026):
+--     "Grant myself admin membership" on the organization's page is the one
+--     click that opens it. A name that matches an existing organization's
+--     normalized name is allowed (Sowmya, Nov 1 2026); Mission Control shows
+--     a notice linking the other organization. Every create_organization
+--     overload is unchanged (each still makes its caller the first admin and
+--     keeps its own duplicate refusal). The escalation contact and sales rep
+--     are added later on the organization's page.
 --   platform_grant_membership(org_id)
 --     "Grant myself admin membership": the caller, as admin, one click. A
 --     platform admin never opens an organization's data without a membership.
@@ -47,12 +48,12 @@ SET search_path TO 'public'
 AS $$
 DECLARE
   v_actor uuid := auth.uid();
+  v_name text := btrim(coalesce(p_name, ''));
   v_slug text := lower(btrim(coalesce(p_slug, '')));
   v_tier text := nullif(btrim(coalesce(p_plan_tier, '')), '');
   v_owner_name text := btrim(coalesce(p_owner_name, ''));
   v_owner_email text := btrim(coalesce(p_owner_email, ''));
   v_email_re constant text := '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$';
-  v_org_id uuid;
   v_party_id uuid;
   v_org public.organizations%ROWTYPE;
   v_audit_id uuid;
@@ -60,7 +61,7 @@ BEGIN
   IF NOT public.is_platform_admin() THEN
     RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'platform_admin_required';
   END IF;
-  IF btrim(coalesce(p_name, '')) = '' THEN RAISE EXCEPTION 'Organization name is required'; END IF;
+  IF v_name = '' THEN RAISE EXCEPTION 'Organization name is required'; END IF;
   IF v_owner_name = '' THEN RAISE EXCEPTION 'Owner name is required'; END IF;
   IF v_owner_email = '' THEN RAISE EXCEPTION 'Owner email is required'; END IF;
   IF v_owner_email !~ v_email_re THEN RAISE EXCEPTION 'Owner email is not valid'; END IF;
@@ -71,14 +72,36 @@ BEGIN
     RAISE EXCEPTION USING ERRCODE = '23505', MESSAGE = 'slug_taken';
   END IF;
 
-  PERFORM set_config('minted.new_org_slug', v_slug, true);
-  v_org_id := public.create_organization(p_name);
-  PERFORM set_config('minted.new_org_slug', '', true);
-
-  UPDATE public.organizations
-     SET lifecycle_state = 'prospect', plan_tier = v_tier
-   WHERE id = v_org_id
+  INSERT INTO public.organizations (name, slug, lifecycle_state, plan_tier)
+  VALUES (v_name, v_slug, 'prospect', v_tier)
   RETURNING * INTO v_org;
+
+  -- The canonical 22 (create_organization's seed; CANONICAL_STATUSES in
+  -- src/lib/canonicalStatuses.ts mirrors it, pinned by
+  -- src/lib/platformCreateSeed.test.ts).
+  INSERT INTO public.status_configs (org_id, track, label, color, sort_order, action_bucket) VALUES
+    (v_org.id, 'credentialing', 'Not Started',          '#9CA3AF',  5, 'ours'),
+    (v_org.id, 'credentialing', 'In-Network',           '#059669', 10, 'complete'),
+    (v_org.id, 'credentialing', 'OON',                  '#DC2626', 20, 'complete'),
+    (v_org.id, 'credentialing', 'In Progress',          '#2563EB', 30, 'ours'),
+    (v_org.id, 'credentialing', 'Waiting on Provider',  '#D97706', 31, 'waiting_provider'),
+    (v_org.id, 'credentialing', 'Submitted',            '#0891B2', 32, 'waiting_payer'),
+    (v_org.id, 'credentialing', 'Approved',             '#059669', 35, 'complete'),
+    (v_org.id, 'credentialing', 'Denied',               '#DC2626', 40, 'ours'),
+    (v_org.id, 'credentialing', 'Not Required',         '#9CA3AF', 45, 'complete'),
+    (v_org.id, 'contracting',   'Not Started',          '#9CA3AF', 10, 'ours'),
+    (v_org.id, 'contracting',   'In Progress',          '#2563EB', 20, 'ours'),
+    (v_org.id, 'contracting',   'Denied',               '#DC2626', 30, 'ours'),
+    (v_org.id, 'contracting',   'Contracted',           '#0891B2', 40, 'waiting_payer'),
+    (v_org.id, 'contracting',   'In-Network',           '#059669', 50, 'complete'),
+    (v_org.id, 'contracting',   'OON',                  '#DC2626', 60, 'complete'),
+    (v_org.id, 'location',      'Prospect',             '#9CA3AF', 10, 'ours'),
+    (v_org.id, 'location',      'Planned',              '#2563EB', 20, 'ours'),
+    (v_org.id, 'location',      'Interviewing',         '#0891B2', 30, 'ours'),
+    (v_org.id, 'location',      'Pending Fulfillment',  '#D97706', 40, 'ours'),
+    (v_org.id, 'location',      'Ready for Launch',     '#059669', 50, 'ours'),
+    (v_org.id, 'location',      'Live',                 '#059669', 60, 'complete'),
+    (v_org.id, 'location',      'Inactive',             '#9CA3AF', 70, 'complete');
 
   INSERT INTO public.parties (org_id, party_type, name, first_name, last_name, email, created_by)
   VALUES (v_org.id, 'person', v_owner_name,
@@ -104,8 +127,7 @@ BEGIN
       'slug', v_org.slug,
       'planTier', v_org.plan_tier,
       'lifecycleState', v_org.lifecycle_state,
-      'owner', jsonb_build_object('name', v_owner_name, 'email', v_owner_email),
-      'creatorRole', 'admin'),
+      'owner', jsonb_build_object('name', v_owner_name, 'email', v_owner_email)),
     'Created organization ' || v_org.name
   )
   RETURNING id INTO v_audit_id;

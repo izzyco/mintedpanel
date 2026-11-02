@@ -870,10 +870,8 @@ at six.
   (`org_slug_from_name()`: lowercase, runs of anything but `a-z0-9` become one
   hyphen, no edge hyphens, at most 63, `org` when empty;
   `org_slug_first_free()` appends `-2`, `-3`, ... on a collision), so every
-  creation path keeps working. `platform_create_organization` passes the
-  operator's chosen slug to that insert through the transaction-local setting
-  `minted.new_org_slug`; the setting is read at insert time only and can never
-  change an existing slug.
+  creation path keeps working. `platform_create_organization` inserts the
+  operator's chosen slug directly.
 - `plan_tier text NULL`, no CHECK: informational (the UI offers pilot,
   standard, enterprise from `src/lib/orgProfile.ts`), so a new tier is not a
   migration. Only a platform admin changes it.
@@ -951,16 +949,18 @@ same transaction; a call that changes nothing writes nothing.
   `before/after = {lifecycleState}`. No reason or note.
 - `platform_create_organization(p_name, p_slug, p_owner_name, p_owner_email,
 p_plan_tier)` — platform admin; `22023 slug_invalid`, `23505 slug_taken`;
-  the owner name and email checks of the 3-arg overload; then the existing
-  `create_organization(p_name)` (the organization row, the caller as first
-  admin member, the 22 status_configs, its `audit_log` row), then the
-  prospect stage, `plan_tier` and the owner party. A name matching an existing
-  organization's normalized name is **allowed** (Sowmya, Nov 1 2026; Mission
-  Control shows a notice linking the other organization); the existing
-  `create_organization` overloads keep their own refusal for their callers.
-  Ledger `org.create` (after: name, slug, planTier, lifecycleState, owner,
-  creatorRole). Returns `{ orgId, name, slug, planTier, lifecycleState,
-auditId }`.
+  the owner name and email checks of the 3-arg overload. Its own additive
+  path: the organization row (slug, `prospect`, `plan_tier`), the 22
+  canonical `status_configs` (the `create_organization` seed, pinned to
+  `CANONICAL_STATUSES` by `src/lib/platformCreateSeed.test.ts`), the owner
+  party, and the ledger row `org.create` (after: name, slug, planTier,
+  lifecycleState, owner). **No membership** (Sowmya, Nov 2 2026): the operator
+  opens the organization with `platform_grant_membership`. A name matching an
+  existing organization's normalized name is **allowed** (Sowmya, Nov 1 2026;
+  Mission Control shows a notice linking the other organization). Every
+  `create_organization` overload is unchanged (each still adds its caller as
+  admin and keeps its duplicate refusal). Returns `{ orgId, name, slug,
+planTier, lifecycleState, auditId }`.
 - `platform_grant_membership(p_org_id uuid)` — "Grant myself admin
   membership": the caller as `admin` (insert, or a role raise). Ledger
   `membership.grant`, target `user` = the caller, `before` = the previous role

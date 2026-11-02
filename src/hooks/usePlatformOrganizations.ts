@@ -1,8 +1,9 @@
 // Mission Control › Organizations (M3) hooks. Every query runs only for a
 // known platform admin; the database authorizes each read and write itself.
-// Writes invalidate the "platform" prefix (list, detail, Home tiles) and
-// reload the caller's memberships, because creating an organization and
-// granting yourself admin membership both add one to the switcher.
+// Writes invalidate the "platform" prefix (list, detail, Home tiles). Granting
+// yourself admin membership, a lifecycle move and a profile edit also reload
+// the caller's memberships (the switcher, the write gate). Creating an
+// organization adds no membership, so it reloads nothing.
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/hooks/queryKeys";
 import { useLifecycleStages } from "@/hooks/useLifecycleStages";
@@ -113,7 +114,7 @@ function usePlatformWrite<TVariables, TResult>(
 export function useCreatePlatformOrganization() {
   return usePlatformWrite(
     (input: CreatePlatformOrganizationInput) => createPlatformOrganization(input),
-    { reloadMemberships: true },
+    { reloadMemberships: false },
   );
 }
 
