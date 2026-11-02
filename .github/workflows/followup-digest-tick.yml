@@ -45,10 +45,10 @@ name: Follow-up digest hourly tick
 #     repository. Each run also shows as a deployment of "Production Jobs".
 
 on:
-  schedule:
-    # Seven past each hour, off the top of the hour when GitHub's scheduler is
-    # busiest. A late tick still catches up ("at or after" the send hour).
-    - cron: "7 * * * *"
+  # Hourly schedule disabled to conserve runner minutes (was consuming ~744 mins/mo).
+  # Can be triggered on-demand via workflow_dispatch or re-enabled when needed.
+  # schedule:
+  #   - cron: "7 * * * *"
   workflow_dispatch:
 
 permissions: {}
