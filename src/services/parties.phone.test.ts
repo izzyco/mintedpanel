@@ -11,6 +11,8 @@ const { fromMock, writes } = vi.hoisted(() => {
     single: async () => ({ data: { id: "party-1", ...row }, error: null }),
   });
   const fromMock = vi.fn(() => ({
+    // updateParty's pre-read (the name halves and the stored phone).
+    select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
     insert: (row: Record<string, unknown>) => {
       writes.push({ op: "insert", row });
       return chain(row);
@@ -32,6 +34,10 @@ vi.mock("@/lib/audit", () => ({
   currentUserId: () => "user-1",
   writeAudit: vi.fn(),
 }));
+
+// The MINT-134 advisory a blank phone records has its own suite
+// (parties.phoneAdvisory.test.ts).
+vi.mock("@/services/advisories", () => ({ recordAdvisory: vi.fn(async () => {}) }));
 
 import { createParty, updateParty } from "./parties";
 import { EMPTY_CONTACT } from "@/lib/contacts";

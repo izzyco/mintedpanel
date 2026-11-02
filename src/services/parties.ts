@@ -4,9 +4,15 @@
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow, snakeizeRow } from "@/lib/case";
 import { requireActiveOrg, writeAudit, currentUserId } from "@/lib/audit";
+import { ADVISORY_RECORD_FAILED, reportAdvisoryFailure } from "@/lib/advisoryChecks";
 import { translateDbError } from "@/lib/dbErrors";
 import { groupOrgParties } from "@/lib/parties";
 import { composeFullName } from "@/lib/personName";
+import {
+  CONTACT_PHONE_MISSING,
+  isPhoneBlank,
+  recordContactPhoneMissing,
+} from "@/services/contactPhoneAdvisory";
 import type {
   ContactInput,
   OrgContact,
@@ -106,21 +112,37 @@ export async function updateParty(partyId: string, input: UpdatePartyInput): Pro
   // The office phone is optional (MINT-91 U8). A cleared one is stored as NULL,
   // the way createParty, create_organization and submit_capture store "no
   // phone", never as an empty string.
-  if (input.phoneOffice !== undefined && !input.phoneOffice.trim()) patch.phone_office = null;
+  const sendsBlankPhone = input.phoneOffice !== undefined && isPhoneBlank(input.phoneOffice);
+  if (sendsBlankPhone) patch.phone_office = null;
   // `name` is the retained display column and is never edited directly — it is
   // recomposed whenever either half of the split name is patched, so the two can
   // never disagree (D6).
-  if (input.firstName !== undefined || input.lastName !== undefined) {
+  const renames = input.firstName !== undefined || input.lastName !== undefined;
+  // MINT-134: only the save that blanks a stored phone records
+  // contact.phone_missing, so a blank phone is checked against the stored one,
+  // in the same read as the name halves. An unrelated edit of a contact that
+  // already had no phone records nothing.
+  let blanksStoredPhone = false;
+  if (renames || sendsBlankPhone) {
     const current = await supabase
       .from("parties")
-      .select("first_name, last_name")
+      .select("first_name, last_name, phone_office")
       .eq("id", partyId)
       .maybeSingle();
-    if (current.error) throw current.error;
-    patch.name = composeFullName({
-      firstName: input.firstName ?? current.data?.first_name ?? "",
-      lastName: input.lastName ?? current.data?.last_name ?? "",
-    });
+    if (current.error) {
+      if (renames) throw current.error;
+      // Read for the advisory alone: the save goes on, unrecorded, and the
+      // failure is one safe log line.
+      reportAdvisoryFailure(ADVISORY_RECORD_FAILED, CONTACT_PHONE_MISSING, current.error);
+    } else {
+      blanksStoredPhone = sendsBlankPhone && !isPhoneBlank(current.data?.phone_office);
+    }
+    if (renames) {
+      patch.name = composeFullName({
+        firstName: input.firstName ?? current.data?.first_name ?? "",
+        lastName: input.lastName ?? current.data?.last_name ?? "",
+      });
+    }
   }
   const { data, error } = await supabase
     .from("parties")
@@ -130,6 +152,8 @@ export async function updateParty(partyId: string, input: UpdatePartyInput): Pro
     .single();
   if (error) throw error;
   const party = camelizeRow<Party>(data);
+  // Fire and forget, before the audit write, so a failed audit can't drop it.
+  if (blanksStoredPhone) void recordContactPhoneMissing(partyId);
   await writeAudit({ actionType: "UPDATE", entityType: "party", entityId: partyId, after: party });
   return party;
 }
@@ -159,6 +183,9 @@ export async function createParty(input: ContactInput): Promise<Party> {
     .single();
   if (error) throw error;
   const party = camelizeRow<Party>(data);
+  // MINT-134: saved with no office phone. Fire and forget, before the audit
+  // write, so a failed audit can't drop it.
+  if (isPhoneBlank(party.phoneOffice)) void recordContactPhoneMissing(party.id);
   await writeAudit({ actionType: "CREATE", entityType: "party", entityId: party.id, after: party });
   return party;
 }
