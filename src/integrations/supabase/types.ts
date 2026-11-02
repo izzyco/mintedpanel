@@ -3490,6 +3490,60 @@ export type Database = {
           },
         ];
       };
+      provider_registry_pulls: {
+        Row: {
+          confirmed: boolean;
+          created_at: string;
+          id: string;
+          npi: string;
+          org_id: string;
+          provider_id: string;
+          pulled_at: string;
+          pulled_by: string;
+          reply: Json | null;
+          sourced: Json;
+        };
+        Insert: {
+          confirmed?: boolean;
+          created_at?: string;
+          id?: string;
+          npi: string;
+          org_id: string;
+          provider_id: string;
+          pulled_at: string;
+          pulled_by: string;
+          reply?: Json | null;
+          sourced?: Json;
+        };
+        Update: {
+          confirmed?: boolean;
+          created_at?: string;
+          id?: string;
+          npi?: string;
+          org_id?: string;
+          provider_id?: string;
+          pulled_at?: string;
+          pulled_by?: string;
+          reply?: Json | null;
+          sourced?: Json;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_registry_pulls_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_registry_pulls_provider_fkey";
+            columns: ["org_id", "provider_id"];
+            isOneToOne: false;
+            referencedRelation: "providers";
+            referencedColumns: ["org_id", "id"];
+          },
+        ];
+      };
       provider_ssn_intake_links: {
         Row: {
           created_at: string;

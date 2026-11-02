@@ -112,6 +112,8 @@ const PROVIDER_INVITE_RESEND_ROUTE = /^\/api\/provider-invites\/([^/]+)\/resend\
 const NPI_REGISTRY_ROUTE = /^\/api\/npi-registry\/(search|lookup)\/?$/;
 // MINT-110 PR 2: the import review checks new providers' NPIs a batch at a time.
 const NPI_REGISTRY_BATCH_ROUTE = /^\/api\/npi-registry\/verify-batch\/?$/;
+// MINT-110 PR 3: a save that used a registry answer stores it as source data.
+const NPI_REGISTRY_PULLS_ROUTE = /^\/api\/npi-registry\/pulls\/?$/;
 
 // Keep verified user context request-scoped. Legacy routes retain one auth
 // call while the additive context-revision header reuses that actor after
@@ -498,6 +500,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
   const providerInviteResendMatch = pathname.match(PROVIDER_INVITE_RESEND_ROUTE);
   const npiRegistryMatch = pathname.match(NPI_REGISTRY_ROUTE);
   const isNpiRegistryBatch = NPI_REGISTRY_BATCH_ROUTE.test(pathname);
+  const isNpiRegistryPulls = NPI_REGISTRY_PULLS_ROUTE.test(pathname);
   if (
     !profileMatch &&
     !ssnReleaseMatch &&
@@ -536,7 +539,8 @@ async function routeApiRequest(request: Request): Promise<Response> {
     !isProviderInvites &&
     !providerInviteResendMatch &&
     !npiRegistryMatch &&
-    !isNpiRegistryBatch
+    !isNpiRegistryBatch &&
+    !isNpiRegistryPulls
   ) {
     return fail(404, "Not found");
   }
@@ -866,6 +870,12 @@ async function routeApiRequest(request: Request): Promise<Response> {
       const body = await readBoundedJsonBody(request, 2048);
       // Once the caller has gone, no more registry calls start.
       return await routes.handleNpiRegistryVerifyBatch(body, ctx, {}, request.signal);
+    }
+    if (isNpiRegistryPulls) {
+      if (method !== "POST") return fail(405, "Method not allowed");
+      const routes = await loadNpiRegistryRoutes();
+      const body = await readBoundedJsonBody(request, 4096);
+      return await routes.handleNpiRegistryPull(body, ctx);
     }
     if (isDocumentFinalize) {
       if (method !== "POST") return fail(405, "Method not allowed");

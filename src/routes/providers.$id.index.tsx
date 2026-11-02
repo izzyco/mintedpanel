@@ -88,6 +88,8 @@ import {
   NpiRegistryQuietNote,
 } from "@/components/providers/NpiRegistryAssist";
 import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
+import { npiRegistryPullForSave } from "@/lib/npiRegistryPulls";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 import { hasValidLicenseDateOrder, LICENSE_DATE_ORDER_ERROR } from "@/lib/licenseDates";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -588,6 +590,18 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           confirmed: new Set(),
           policy: npiPolicy,
         });
+        // MINT-110 PR 3, last: the check of the new NPI is a later pull, its
+        // own row of source data, which never changes a saved value.
+        recordNpiRegistryPullAfterSave(() =>
+          npiRegistryPullForSave({
+            providerId: provider.id,
+            npi: patch.npi ?? "",
+            checked: true,
+            pickedNpi: null,
+            sourced: {},
+            confirmed: false,
+          }),
+        );
       }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : "Could not save.");

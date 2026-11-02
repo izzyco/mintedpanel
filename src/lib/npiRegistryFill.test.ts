@@ -1160,6 +1160,8 @@ describe("registry-sourced values (A35)", () => {
         values: ["Credentials DPT", "Taxonomy code 2251X0800X", "CO license PT-4471"],
       },
     ]);
+    // MINT-110 PR 3: the rows a save names as the pull's, for its pull row.
+    expect(sourced.licenses).toEqual([{ state: "CO", number: "PT-4471" }]);
   });
 
   it("drops a value staff touched, or one that no longer holds what the pick wrote", () => {
@@ -1200,6 +1202,7 @@ describe("registry-sourced values (A35)", () => {
       taxonomyCode: false,
       gender: false,
       phone: false,
+      licenses: [],
       lines: [],
     });
   });

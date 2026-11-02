@@ -40,7 +40,9 @@ import {
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
 import type { NpiReviewAdvisory, NpiReviewFixTarget } from "@/lib/npiRegistryReview";
+import { npiRegistryPullForSave, npiRegistryPullSourced } from "@/lib/npiRegistryPulls";
 import { taxonomyAfterPresetChange } from "@/lib/providerTaxonomyPreset";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 
 export {
   emptyProviderFormState,
@@ -228,6 +230,19 @@ export function ProviderForm({
           confirmed: npiConfirmed,
           policy: npiPolicy,
         });
+        // MINT-110 PR 3, last: the registry answer this save used becomes the
+        // provider's source data, in the background. Submitting the Review
+        // step confirms the registry-sourced values (A35).
+        recordNpiRegistryPullAfterSave(() =>
+          npiRegistryPullForSave({
+            providerId: savedId,
+            npi: form.npi,
+            checked: true,
+            pickedNpi: npiPick?.npi ?? null,
+            sourced: npiRegistryPullSourced(npiSourced, form),
+            confirmed: true,
+          }),
+        );
       }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to save provider");

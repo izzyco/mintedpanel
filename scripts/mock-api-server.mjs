@@ -51,6 +51,13 @@
 //   providerinvites a provider invite is created in another org's group, and
 //               a resend reaches another org's provider              (35b, 35c)
 //   intakesession a provider intake session reads another org's provider (35d)
+//   npiregistry the NPI Registry proxy serves an anonymous caller and a billing
+//               member                                      (36b, 36c, 37b, 38c)
+//   npibatch    the batch NPI check serves an anonymous caller and a billing
+//               member, and its answers can be cached           (37b, 37c, 37d)
+//   registrypulls a registry pull crosses the org wall: the route records one
+//               for another org's provider, and PostgREST takes direct writes
+//                                                                  (38b, 38e)
 import { createServer } from "node:http";
 
 // Same fixture ids as the workflow env block, so the gate script needs no
@@ -136,6 +143,7 @@ export const LEAK_MODES = [
   "intakesession",
   "npiregistry",
   "npibatch",
+  "registrypulls",
 ];
 
 // GET /api/cases?q= result limit — mirrors CASE_SEARCH_DEFAULT_LIMIT and
@@ -723,6 +731,32 @@ export async function createMockApiServer(options = {}) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ access_token: user.token, token_type: "bearer" }));
       return;
+    }
+
+    // --- mock PostgREST: provider_registry_pulls writes only (MINT-110 PR 3) ---
+    // The real table grants nothing to anon or authenticated (no reader yet),
+    // so every direct write is 42501 (401 anonymous, 403 signed in). Leak
+    // "registrypulls" takes direct writes.
+    if (/^\/rest\/v1\/provider_registry_pulls\/?$/.test(url.pathname)) {
+      const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+      const caller = Object.values(USERS).find((u) => u.token === bearer) ?? null;
+      const open = leak === "registrypulls";
+      const json = (status, body) => {
+        res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+        res.end(body === undefined ? "" : JSON.stringify(body));
+      };
+      const denied = () =>
+        json(caller ? 403 : 401, {
+          code: "42501",
+          message: "permission denied for table provider_registry_pulls",
+        });
+      if (req.headers.apikey !== "mock-anon-key") return json(401, { message: "No API key" });
+      if (method === "POST" || method === "PATCH" || method === "DELETE") {
+        await readBody(req);
+        if (open && caller) return json(method === "POST" ? 201 : 204);
+        return denied();
+      }
+      return json(405, { message: "Method not allowed" });
     }
 
     if (!url.pathname.startsWith("/api")) return envelope(res, 404, null, "Not found");
@@ -1713,6 +1747,50 @@ export async function createMockApiServer(options = {}) {
           status: "checked",
           record: null,
         })),
+      });
+    }
+
+    // --- /api/npi-registry/pulls (MINT-110 PR 3) ---
+    // Writer-only, then validated (a provider id, a 10-digit NPI, confirmed),
+    // then the provider must be the caller's org's: another org's is a 404 with
+    // nothing written. Never calls out. Leak "registrypulls", part 2: another
+    // org's provider is honored.
+    if (/^\/api\/npi-registry\/pulls\/?$/.test(url.pathname)) {
+      if (method !== "POST") return envelope(res, 405, null, "Method not allowed");
+      if (user.role === "billing") {
+        return envelope(
+          res,
+          403,
+          null,
+          "Only admins and specialists can record NPI Registry pulls",
+        );
+      }
+      const body = (await readBody(req)) ?? {};
+      res.setHeader("cache-control", "private, no-store, max-age=0");
+      const npi = typeof body.npi === "string" ? body.npi.replace(/[-\s]/g, "") : "";
+      if (
+        typeof body.providerId !== "string" ||
+        !/^\d{10}$/.test(npi) ||
+        typeof body.confirmed !== "boolean"
+      ) {
+        return envelope(
+          res,
+          422,
+          null,
+          "Send the provider, its NPI, the fields the save took from the NPI Registry, and whether it was confirmed",
+        );
+      }
+      const target = PROVIDERS.find(
+        (p) => p.id === body.providerId && (p.orgId === user.orgId || leak === "registrypulls"),
+      );
+      if (!target) return envelope(res, 404, null, "Provider not found");
+      return envelope(res, 201, {
+        pull: {
+          id: "b7a90000-0000-4000-a000-000000000402",
+          pulledAt: new Date().toISOString(),
+          sourced: {},
+          confirmed: body.confirmed,
+        },
       });
     }
 

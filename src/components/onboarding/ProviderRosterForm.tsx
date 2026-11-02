@@ -68,6 +68,8 @@ import {
   type NpiPickState,
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
+import { npiRegistryPullForSave, npiRegistryPullSourced } from "@/lib/npiRegistryPulls";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import { usPhoneError } from "@/lib/phone";
 import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
@@ -332,6 +334,27 @@ function FormBody({
       policy: npiPolicy,
     });
 
+  // MINT-110 PR 3: the registry answer this save used (a pick of the saved
+  // NPI, or the check of a new or changed one) becomes the provider's source
+  // data, in the background. Called last in each save's onSuccess. A roster
+  // save confirms nothing (A30c).
+  const recordPullAfterSave = (recordId: string) =>
+    recordNpiRegistryPullAfterSave(() =>
+      npiRegistryPullForSave({
+        providerId: recordId,
+        npi: npiDigits,
+        checked: npiChanged,
+        pickedNpi: npiPick?.npi ?? null,
+        sourced: npiRegistryPullSourced(npiSourced, {
+          credentials: form.credentials,
+          taxonomyCode: form.taxonomyCode,
+          gender: form.gender === "__none__" ? "" : form.gender,
+          phone: form.phone,
+        }),
+        confirmed: false,
+      }),
+    );
+
   const reload = async () => {
     if (!onReload) return;
     setReloading(true);
@@ -435,6 +458,7 @@ function FormBody({
             toast.success("Provider updated");
             recordAfterSave(provider.id);
             onClose();
+            recordPullAfterSave(provider.id);
           },
           onError,
         },
@@ -477,6 +501,7 @@ function FormBody({
               );
             }
             onClose();
+            recordPullAfterSave(result.provider.id);
           },
           onError,
         },
