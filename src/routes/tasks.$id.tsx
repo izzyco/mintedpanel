@@ -1,9 +1,11 @@
 // Task detail at /tasks/$id. SOP step runner that coordinators use side-by-side
-// with a payer portal: ordered step lock, copy buttons for data fields, notes.
+// with a payer portal: ordered steps, copy buttons for data fields, notes.
+// Order is advisory (MINT-135): any open step can be ticked and the task can
+// be completed while earlier tasks are open; each bypass is recorded quietly.
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { fmtDate, fmtDateTime } from "@/lib/format";
-import { Calendar, CheckCircle2, ExternalLink, Loader2, Lock, MessageSquare } from "lucide-react";
+import { Calendar, CheckCircle2, ExternalLink, Loader2, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { CopyButton } from "@/components/CopyButton";
 import { PortalStepLink } from "@/components/portals/PortalStepLink";
@@ -25,6 +27,7 @@ import { useTask, useCompleteSOPStep, useUpdateTaskStatus } from "@/hooks/useTas
 import { useCase } from "@/hooks/useCases";
 import { useLogNote, useTaskTouchlog } from "@/hooks/useTouches";
 import { useCanWrite } from "@/lib/permissions";
+import { earlierOpenTaskCount } from "@/lib/caseDetailView";
 import type { SOPStep, TaskStatus } from "@/types";
 
 export const Route = createFileRoute("/tasks/$id")({
@@ -158,18 +161,17 @@ function TaskDetailPage() {
     ? [providerName, payerName, stateCode].filter(Boolean).join(" · ") || "Case"
     : "Case";
 
-  // Locked when any earlier task in the same case is not yet completed.
-  const isLocked = (() => {
-    if (!c?.tasks || task.status === "completed") return false;
+  // Earlier tasks in the same case not yet completed: recorded with an
+  // out-of-order completion (MINT-135).
+  const earlierOpenCount = (() => {
+    if (!c?.tasks) return 0;
     const ordered = c.tasks.slice().sort((a, b) => a.sortOrder - b.sortOrder);
     const idx = ordered.findIndex((t) => t.id === task.id);
-    if (idx <= 0) return false;
-    return ordered.slice(0, idx).some((t) => t.status !== "completed");
+    return idx <= 0 ? 0 : earlierOpenTaskCount(ordered, idx);
   })();
 
   const handleToggleStep = (stepIndex: number, checked: boolean) => {
-    if (!checked) return; // ordered, no uncheck
-    if (stepIndex !== firstIncompleteIndex) return;
+    if (!checked) return; // no uncheck
     const step = steps[stepIndex];
     if (!step) return;
     completeStepM.mutate(
@@ -181,11 +183,11 @@ function TaskDetailPage() {
     );
   };
 
-  const handleStatusChange = (next: string) => {
+  const handleStatusChange = (next: string, earlierOpen = 0) => {
     if (!canEdit) return;
     if (next === task.status) return;
     updateStatusM.mutate(
-      { id: task.id, status: next as TaskStatus },
+      { id: task.id, status: next as TaskStatus, earlierOpenCount: earlierOpen },
       {
         onSuccess: () => toast.success("Status updated"),
         onError: (err: unknown) =>
@@ -276,35 +278,18 @@ function TaskDetailPage() {
                 <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
               ) : null}
               {task.status !== "completed" ? (
-                isLocked ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="inline-flex">
-                        <Button
-                          size="sm"
-                          className="h-8 bg-[#1B4D3E] hover:bg-[#1B4D3E]/90 text-white"
-                          disabled
-                        >
-                          Mark complete
-                        </Button>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>Complete earlier tasks first</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <Button
-                    size="sm"
-                    className="h-8 bg-[#1B4D3E] hover:bg-[#1B4D3E]/90 text-white"
-                    disabled={!canEdit || updateStatusM.isPending}
-                    onClick={() => handleStatusChange("completed")}
-                  >
-                    Mark complete
-                  </Button>
-                )
+                <Button
+                  size="sm"
+                  className="h-8 bg-[#1B4D3E] hover:bg-[#1B4D3E]/90 text-white"
+                  disabled={!canEdit || updateStatusM.isPending}
+                  onClick={() => handleStatusChange("completed", earlierOpenCount)}
+                >
+                  Mark complete
+                </Button>
               ) : null}
               <Select
                 value={task.status === "completed" ? "completed" : task.status}
-                onValueChange={handleStatusChange}
+                onValueChange={(v) => handleStatusChange(v)}
                 disabled={!canEdit || updateStatusM.isPending || task.status === "completed"}
               >
                 <SelectTrigger className="w-[150px] h-8 text-[13px] shadow-none">
@@ -363,17 +348,13 @@ function TaskDetailPage() {
               steps.map((step, index) => {
                 const isChecked = step.isCompleted;
                 const isActive = !isChecked && index === firstIncompleteIndex;
-                const isLocked = !isChecked && !isActive;
                 const fields = readDataFields(step);
                 const stepNumber = index + 1;
-                const blockingStep = firstIncompleteIndex + 1;
 
                 return (
                   <div
                     key={step.id}
-                    className={`p-4 flex gap-4 ${isLocked ? "opacity-60" : ""} ${
-                      isActive ? "bg-[#1B4D3E]/[0.03]" : ""
-                    }`}
+                    className={`p-4 flex gap-4 ${isActive ? "bg-[#1B4D3E]/[0.03]" : ""}`}
                   >
                     <div className="flex flex-col items-center gap-2 flex-shrink-0 pt-0.5">
                       <span
@@ -388,27 +369,12 @@ function TaskDetailPage() {
                         {isChecked ? <CheckCircle2 className="h-4 w-4" /> : stepNumber}
                       </span>
 
-                      {isLocked ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="inline-flex">
-                              <Checkbox
-                                checked={false}
-                                disabled
-                                aria-label={`Locked — complete step ${blockingStep} first`}
-                              />
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>Complete step {blockingStep} first</TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        <Checkbox
-                          checked={isChecked}
-                          disabled={isChecked || !isActive || !canEdit || completeStepM.isPending}
-                          onCheckedChange={(v) => handleToggleStep(index, Boolean(v))}
-                          aria-label={`Mark step ${stepNumber} complete`}
-                        />
-                      )}
+                      <Checkbox
+                        checked={isChecked}
+                        disabled={isChecked || !canEdit || completeStepM.isPending}
+                        onCheckedChange={(v) => handleToggleStep(index, Boolean(v))}
+                        aria-label={`Mark step ${stepNumber} complete`}
+                      />
                     </div>
 
                     <div className="flex-1 min-w-0 space-y-3">
@@ -420,9 +386,6 @@ function TaskDetailPage() {
                         >
                           {readInstruction(step)}
                         </p>
-                        {isLocked ? (
-                          <Lock className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0 mt-1" />
-                        ) : null}
                       </div>
 
                       {step.portalKey ? <PortalStepLink portalKey={step.portalKey} /> : null}

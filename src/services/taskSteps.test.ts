@@ -67,7 +67,7 @@ describe("completeTaskStep", () => {
   it.each([
     [403, "Your role cannot complete task steps"],
     [404, "Task not found"],
-    [409, 'Complete "Upload W-9" first'],
+    [409, "Task case organization does not match"],
     [422, "stepId is required"],
   ] as const)("preserves SQL rejection %s", async (status, message) => {
     rpc.mockResolvedValue({

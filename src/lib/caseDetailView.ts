@@ -42,14 +42,23 @@ export function currentStepPointer(tasks: readonly Task[]): CurrentStepPointer |
   return null;
 }
 
-export interface OpenTaskDrawerResolution {
-  task: Task;
-  locked: boolean;
+/** How many tasks before `index` are still open. MINT-135: completing a task
+ * while earlier ones are open is allowed; the count rides the
+ * task.completed_out_of_order advisory, and a task with any earlier open task
+ * gets no Work-in-portal launch (the typed submission accepts only the
+ * case's current task). */
+export function earlierOpenTaskCount(tasks: readonly Task[], index: number): number {
+  return tasks.slice(0, index).filter((previous) => previous.status !== "completed").length;
 }
 
-/** Resolve the open drawer from the current visible task set on every render.
- * This prevents a stored unlocked snapshot from surviving when an earlier task
- * is reopened or refetched as incomplete. */
+export interface OpenTaskDrawerResolution {
+  task: Task;
+  earlierOpenCount: number;
+}
+
+/** Resolve the open drawer from the current visible task set on every render,
+ * so the earlier-open count follows an earlier task that is reopened or
+ * refetched as incomplete after the drawer opened. */
 export function resolveOpenTaskDrawer(
   tasks: readonly Task[],
   openTaskId: string | null,
@@ -57,11 +66,7 @@ export function resolveOpenTaskDrawer(
   if (openTaskId === null) return null;
   const index = tasks.findIndex((task) => task.id === openTaskId);
   if (index < 0) return null;
-  const task = tasks[index];
-  const locked =
-    task.status !== "completed" &&
-    tasks.slice(0, index).some((previous) => previous.status !== "completed");
-  return { task, locked };
+  return { task: tasks[index], earlierOpenCount: earlierOpenTaskCount(tasks, index) };
 }
 
 /** Ordered steps for display — the stored order wins; ties keep array order. */

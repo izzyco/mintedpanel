@@ -941,9 +941,10 @@ export async function handleCreateCaseTouch(
 // extension's Progress tab). The ONE /api write that touches task state.
 //
 // Body: { stepId }. Writer roles only. The service calls the same row-locking
-// SQL transaction as the Panel, which applies the ordering rule, status rollup,
-// optional termination-case update, and audit event atomically. A blocked step
-// is a 409 naming the blocker; a re-tick is an idempotent success. Cross-org
+// SQL transaction as the Panel, which applies the status rollup, optional
+// termination-case update, out-of-order advisory (MINT-135: a step may be
+// ticked while earlier steps are open) and audit event atomically. A task
+// whose case is in another org is a 409; a re-tick is an idempotent success. Cross-org
 // task ids remain a 404, and the RPC rechecks the verified actor's membership.
 export async function handleCompleteTaskStep(
   taskId: string,

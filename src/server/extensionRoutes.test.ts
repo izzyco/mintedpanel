@@ -1175,15 +1175,15 @@ describe("task step handler (S4.3 — the one /api task-state write)", () => {
     );
   });
 
-  it("surfaces a blocked step as 409 with the blocker named", async () => {
+  it("surfaces the RPC's 409 with its message", async () => {
     completeStepMock.mockResolvedValue({
       kind: "rejected",
       status: 409,
-      message: 'Complete "Upload W-9" first',
+      message: "Task case organization does not match",
     });
     const res = await handleCompleteTaskStep(TASK, { stepId: "s2" }, ctx());
     expect(res.status).toBe(409);
-    expect((await body(res)).error).toBe('Complete "Upload W-9" first');
+    expect((await body(res)).error).toBe("Task case organization does not match");
   });
 
   it("404s a non-UUID task id before touching the service", async () => {

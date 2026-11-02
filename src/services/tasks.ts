@@ -1,5 +1,8 @@
-// Tasks and SOP step completion. completeSOPStep enforces ordered completion:
-// a step can only be marked complete when every lower-order step is done.
+// Tasks and SOP step completion. Order is advisory (MINT-135): a task may be
+// completed, and a step ticked, while earlier ones are still open. Each such
+// completion is recorded as a workflow advisory once it has succeeded
+// (task.completed_out_of_order here, task.step_out_of_order inside the
+// complete_sop_task_step RPC); the earlier items stay open.
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
@@ -12,6 +15,7 @@ import { translateDbError } from "@/lib/dbErrors";
 import { markPayerFormRemoved } from "@/lib/payerForms";
 import { logNote } from "@/services/touches";
 import { completeTaskStep } from "@/services/taskSteps";
+import { recordAdvisory } from "@/services/advisories";
 import type { SOPStep, SOPStepAttachment, Task, TaskStatus } from "@/types";
 
 export interface CaseTaskInput {
@@ -211,7 +215,14 @@ async function updateTaskSopContentWithRevision(
   return camelizeRow<Task>(data);
 }
 
-export async function updateTaskStatus(id: string, status: TaskStatus): Promise<Task> {
+/** `earlierOpenCount`: how many earlier tasks on the case are still open. A
+ * completion with any open records task.completed_out_of_order after the save,
+ * fire-and-forget; the front end stays quiet. */
+export async function updateTaskStatus(
+  id: string,
+  status: TaskStatus,
+  earlierOpenCount = 0,
+): Promise<Task> {
   const orgId = requireActiveOrg();
   const before = await getTask(id);
   const patch: Record<string, unknown> = { status };
@@ -237,6 +248,13 @@ export async function updateTaskStatus(id: string, status: TaskStatus): Promise<
     after: { status: after.status },
     description: `Task status set to ${after.status}`,
   });
+  if (status === "completed" && earlierOpenCount > 0) {
+    void recordAdvisory(
+      "task.completed_out_of_order",
+      { table: "tasks", id },
+      { earlier_open_count: earlierOpenCount },
+    );
+  }
   return after;
 }
 

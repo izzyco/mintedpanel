@@ -953,7 +953,9 @@ test("CASE-UX-4: the current Auto-fill step launches inline with the same handof
   });
 });
 
-test("P05: a task-level lock keeps the ordinary portal link but does not mount Work in portal", async ({
+// MINT-135 dropped the task lock, but Work in portal stays on the case's
+// current task: the typed submission it ends in refuses any other.
+test("P05: an earlier open task keeps the ordinary portal link but does not mount Work in portal", async ({
   context,
   page,
 }) => {
@@ -989,6 +991,101 @@ test("P05: a task-level lock keeps the ordinary portal link but does not mount W
     "https://portal.example/enroll",
   );
   await expect(drawer.getByRole("button", { name: "Work in portal" })).toHaveCount(0);
+});
+
+// MINT-135 (Sowmya, Addendum 9, U5): a task can be completed, and a step
+// ticked, while earlier ones are open. The earlier item stays open, the
+// current-step dot stays where it is, and the bypass is recorded quietly.
+const OUT_OF_ORDER_TASK_ID = "13500000-0000-4000-8000-000000000002";
+
+function outOfOrderFixtures() {
+  const fixtures = makeFixtures();
+  fixtures.tasks[0].status = "in_progress";
+  fixtures.tasks[0].completed_date = null;
+  fixtures.tasks[0].sop_content[0].isCompleted = false;
+  fixtures.tasks[1].id = OUT_OF_ORDER_TASK_ID;
+  return fixtures;
+}
+
+test("MINT-135: a later task completes while an earlier one is open, recorded as task.completed_out_of_order", async ({
+  context,
+  page,
+}) => {
+  const fixtures = outOfOrderFixtures();
+  const { handler, writes } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  const advisories: Record<string, unknown>[] = [];
+  await page.route("**/rest/v1/rpc/record_workflow_advisory", (route) => {
+    advisories.push(route.request().postDataJSON() as Record<string, unknown>);
+    return route.fulfill(json("13500000-0000-4000-8000-0000000000a1"));
+  });
+  await seedAuth(context);
+
+  await page.goto(`/cases/${CASE_ID}`);
+  const later = page.getByRole("button", {
+    name: "Complete Complete the enrollment form in the portal",
+  });
+  await expect(later).toBeEnabled({ timeout: 30000 });
+  await expect(page.getByText("Complete previous task first")).toHaveCount(0);
+  // The current step is still the earlier task's open step.
+  await expect(
+    page.locator("li", { hasText: "Check the roster record" }).locator('[class*="D97706"]'),
+  ).toHaveCount(1);
+
+  await later.click();
+  await expect
+    .poll(() =>
+      writes.find(
+        (w) => w.table === "tasks" && w.method === "PATCH" && w.body?.status === "completed",
+      ),
+    )
+    .toBeTruthy();
+  await expect
+    .poll(() => advisories[0] ?? null)
+    .toEqual({
+      p_org_id: ORG_ID,
+      p_check_key: "task.completed_out_of_order",
+      p_severity: "advisory",
+      p_record_table: "tasks",
+      p_record_id: OUT_OF_ORDER_TASK_ID,
+      p_source: "panel",
+      p_context: { earlier_open_count: 1 },
+    });
+  // The earlier task stays open and completable.
+  await expect(
+    page.getByRole("button", { name: "Complete Confirm the provider is enrollment-ready" }),
+  ).toBeEnabled();
+});
+
+test("MINT-135: the drawer ticks a later SOP step while an earlier one is open", async ({
+  context,
+  page,
+}) => {
+  const fixtures = outOfOrderFixtures();
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  const rpcBodies: Record<string, unknown>[] = [];
+  await page.route("**/rest/v1/rpc/complete_sop_task_step", (route) => {
+    rpcBodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    const task = fixtures.tasks[1];
+    task.sop_content[1].isCompleted = true;
+    return route.fulfill(json({ kind: "ok", allDone: false, task }));
+  });
+  await seedAuth(context);
+
+  await page.goto(`/cases/${CASE_ID}`);
+  const taskTitle = page.getByText("Complete the enrollment form in the portal", { exact: true });
+  await expect(taskTitle).toBeVisible({ timeout: 30000 });
+  await taskTitle.click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer.getByRole("button", { name: "Mark complete" })).toBeEnabled();
+  const checkboxes = drawer.getByRole("checkbox", { checked: false });
+  await expect(checkboxes).toHaveCount(2);
+  await expect(checkboxes.nth(1)).toBeEnabled();
+  await checkboxes.nth(1).click();
+  await expect
+    .poll(() => rpcBodies[0] ?? null)
+    .toMatchObject({ p_task_id: OUT_OF_ORDER_TASK_ID, p_step_id: "s3", p_source: "panel" });
 });
 
 test("Slice E: an approved case shows the payer-issued IDs under the payer's own wording — a captured value and the Slice D Awaiting-ID wait", async ({
