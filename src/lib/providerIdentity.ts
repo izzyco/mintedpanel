@@ -15,6 +15,9 @@ const NPI_DIGITS_RE = /^\d{10}$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const NPI_CHECK_DIGIT_MESSAGE = "NPI check digit is invalid — re-check the number";
+/** Every form that takes a typed NPI says this when it is not ten digits once
+ * separators are stripped (Add Provider, the roster form, the record page). */
+export const NPI_FORMAT_MESSAGE = "NPI must be 10 digits";
 
 /** The NPI check digit for its first nine digits: Luhn over the CMS `80840`
  * card-issuer prefix. Null when `first9` is not exactly nine digits. */
@@ -36,8 +39,23 @@ export function npiCheckDigit(first9: string): number | null {
   return (10 - (sum % 10)) % 10;
 }
 
+// MINT-110: the separators staff paste from documents and spreadsheets — any
+// whitespace, the ASCII hyphen, the Unicode hyphens and dashes (U+2010–U+2015),
+// the minus sign (U+2212), the small and fullwidth hyphen-minus (U+FE63,
+// U+FF0D), the soft hyphen (U+00AD), and the invisible zero-width characters
+// and word joiner (U+200B–U+200D, U+2060, U+FEFF). Nothing else is removed.
+const NPI_SEPARATORS_RE = /[-\s\u00AD\u2010-\u2015\u2212\uFE63\uFF0D\u200B-\u200D\u2060\uFEFF]/g;
+
+/** A typed or imported NPI with its dashes and spaces removed, so
+ * "123-456-7890" and "123 456 7890" both become "1234567890". Letters, dots and
+ * any other junk stay in place, so isValidNpi still rejects them. */
+export function stripNpiSeparators(value: string): string {
+  return value.replace(NPI_SEPARATORS_RE, "");
+}
+
 /** Exactly 10 digits (surrounding whitespace ignored) whose last digit is the
- * CMS check digit. Dashes or spaces inside the number fail; strip them first. */
+ * CMS check digit. Dashes or spaces inside the number fail; strip them first
+ * with stripNpiSeparators. */
 export function isValidNpi(value: unknown): boolean {
   if (typeof value !== "string" && typeof value !== "number") return false;
   const digits = String(value).trim();

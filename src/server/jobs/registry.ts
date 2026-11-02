@@ -3,6 +3,7 @@
 // vercel.json. The route takes the registry as a dependency, so tests run
 // their own.
 import { JOB_COUNT_KEY_RE, MAX_JOB_COUNT_KEYS } from "./counts";
+import { followupDigestJob } from "./followupDigest";
 import type { JobDefinition, JobRegistry } from "./types";
 
 export const JOB_NAME_RE = /^[a-z][a-z0-9-]{0,47}$/;
@@ -25,5 +26,6 @@ export function createJobRegistry(jobs: readonly JobDefinition[]): JobRegistry {
   return registry;
 }
 
-/** The jobs /api/jobs/<name> serves. Empty until the first job ships. */
-export const JOB_REGISTRY: JobRegistry = createJobRegistry([]);
+/** The jobs /api/jobs/<name> serves. Each has a vercel.json cron
+ *  (src/server/jobs/crons.test.ts pins both directions). */
+export const JOB_REGISTRY: JobRegistry = createJobRegistry([followupDigestJob]);

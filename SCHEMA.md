@@ -654,6 +654,164 @@ view token; internal digests remain server-side. CSV uses an explicit client-saf
 snapshot/authority check after serialization and before direct delivery. It
 creates no persistent artifact or asynchronous work.
 
+## MINT-107 notification sequences (repository-only, operator apply pending)
+
+Migration `20261101110100_notification_sequences.sql`. Reminder and digest
+cadence, in two layers: Minted's platform default per purpose, and an org's
+own row that overrides it field by field. The digest's schedule is the
+exception: it has no default (G2) and exists only on an org row, once Minted
+sets the digest up for that org. Nothing sends from it yet. Until it
+is applied PostgREST reports the tables missing (PGRST205 / 42P01) and the
+Org Detail card says notification settings are not switched on yet
+(`isMissingNotificationSequenceTablesError`, `src/lib/dbErrors.ts`). The
+effective sequence is `resolveNotificationSequence()` in
+`src/lib/notificationSequences.ts`; consumers call it, never re-derive it.
+
+- **`notification_sequence_defaults`**: Minted's default, one row per
+  `purpose` (PK) ∈ `followup_digest | intake_reminder`. No `org_id`, no PHI,
+  and no `enabled` column, so a default can never switch an org on. Intake:
+  `stop_conditions` (at least one, A11), `target_days_to_ready`,
+  `bounce_escalation_step` (0 to 10; 0 = no bounce escalates) all set;
+  digest: `digest_cc_allowed` set; each purpose's other columns NULL
+  (CHECK). **No digest schedule** (G2, Nov 1): the table has no frequency,
+  weekday, send hour, zone or second hour, so there is no default digest and
+  nothing sends until Minted sets an org's schedule. Compression was removed
+  (A13, supersedes D56). Seeded: intake = all four stop conditions, 14 days,
+  bounce escalation on step 1 (Oct 30); digest = `digest_cc_allowed` false
+  (D59: coordinators only) and its one step. The policy settings are
+  configuration (`resolveNotificationPolicyRules`; Mission Control edits
+  them, MINT-113): an org row overrides each. `bounce_escalation_step` is
+  org-owned; `digest_cc_allowed` is platform-managed (only Minted writes the
+  default or an org's override). The save RPC and the deferred step check
+  read the org's effective value; turning it on only lets an org store a
+  digest cc list, nothing sends a cc copy yet. Never deleted, by anyone (BEFORE DELETE trigger
+  `notification_sequence_defaults_no_delete`): Minted changes it instead.
+  Any member of any org reads it; only service_role writes it
+  (Mission Control M6 adds the platform-admin write policy).
+- **`notification_sequence_default_steps`**: the default's steps,
+  `(purpose, position)` unique, FK `purpose → notification_sequence_defaults`
+  ON DELETE CASCADE, the same position/offset/channel/key bounds as an org's
+  steps, `template_key` prefixed by `purpose` (row CHECK). No `cc_recipients`:
+  a default names no one. Deferred constraint triggers on both default
+  tables keep each default complete: at least one step, exactly one for the
+  digest, offsets strictly increasing. Seeded: intake 1/2/3
+  (`intake_reminder_first|second|final`), digest one step at 0
+  (`followup_digest_daily`), all email.
+- **`notification_sequences`**: one org row per `(org_id, purpose)`. No row
+  means off; `enabled` defaults to false, is never inherited, and is
+  **platform-managed** (A9: off until Minted switches notifications on at
+  kickoff; an org admin can neither switch it on nor off). Every other
+  setting is nullable and NULL means "use Minted's default":
+  `stop_conditions text[]` (intake; validated subset, at least one, A11),
+  `target_days_to_ready` (intake, 1 to 90), `bounce_escalation_step` (intake,
+  org-owned, 0 to 10, 0 = none), and the **platform-managed** digest
+  `digest_cc_allowed` and **digest schedule**: `digest_frequency` (daily |
+  weekly | twice_daily, A8; Minted picks it per org, Addendum 10),
+  `digest_weekday` (ISO 1 = Monday), `send_hour` (0 to 23), `send_time_zone`
+  (IANA) and `second_send_hour` (later than `send_hour`). The schedule has no
+  default (G2) and is one group (A10; CHECK
+  `notification_sequences_digest_schedule_check`): all five set means Minted
+  set the digest up; all NULL means it is not set up and not due. The zone
+  is checked when it is written, by the
+  `notification_sequences_send_time_zone_check` trigger
+  (`private.notification_time_zone_valid`: Area/Location shape and listed in
+  `pg_timezone_names`), not by a CHECK: a later tzdata release could drop a
+  stored name, and a CHECK would then fail a restore and every update of the
+  row. A reader that cannot use a stored zone reads the digest as not set up
+  (`digestScheduleOf`): there is no default to fall back to. Each purpose's
+  row carries only its own columns (CHECK). authenticated has column grants
+  only: INSERT `(org_id, purpose, stop_conditions, target_days_to_ready,
+bounce_escalation_step)`, UPDATE `(stop_conditions, target_days_to_ready,
+bounce_escalation_step, updated_at)`; the platform-managed
+  columns are service_role's (Mission Control later), and the stamp trigger
+  is a second wall, an allow-list: only `service_role`, `postgres` and
+  `supabase_admin` may change them (42501 `notification_platform_setting`
+  for anyone else). Mission Control M6 writes through a SECURITY DEFINER RPC
+  owned by `postgres`, so it passes. `revision`, `updated_at` and
+  `updated_by` describe the org's own settings: `revision` starts at 1,
+  every update bumps it except one that changes only platform-managed
+  columns, and so does a direct write to its steps (once per transaction).
+  `updated_by` is the org admin (`auth.uid()`) or NULL when the writer is
+  not an org member; Minted's writers keep their own audit trail.
+- **`notification_sequence_steps`**: an org's own steps; none means it uses
+  Minted's default steps. `(sequence_id, position)` unique, `position` 1 to
+  10, `offset_days` 0 to 90 (intake from day 1: nothing on the invite day,
+  A12), `channel` email | sms, `template_key`
+  (`^[a-z][a-z0-9_]{2,63}$`, from the catalog in
+  `src/lib/notificationTemplates.ts`; the database checks only the format and
+  the purpose prefix, so senders check the key against the catalog),
+  `cc_recipients jsonb` (ordered `{kind:'user',user_id}` | `{kind:'role',role}`,
+  at most 20, distinct; CHECK `private.notification_cc_recipients_valid`). The
+  composite FK `(org_id, sequence_id) → notification_sequences(org_id, id)`
+  ties a step to its sequence's org. A BEFORE trigger refuses a cc'd user who
+  is not a member of the org. A deferred constraint trigger (SECURITY
+  DEFINER, so it sees every row whoever commits) enforces offsets strictly
+  increasing by position, at most one digest step, **no cc written onto a
+  digest step** while the org's effective `digest_cc_allowed` is false
+  (`notification_digest_has_no_cc`: the digest goes to coordinators only; a
+  list stored while it was on is inert, and the next save clears it), and a
+  `template_key` prefixed by the sequence's purpose.
+- **`sms_consents`**: `(org_id, provider_id) → providers(org_id, id)` ON
+  DELETE SET NULL (`provider_id`): deleting a provider (the staging UAT reseed
+  hard-deletes its synthetic ones; no app path does) keeps the consent and
+  revocation evidence with `provider_id` NULL; `provider_id` is required on
+  insert (`sms_consents_guard_insert`); the org FK still cascades, and the
+  `sms_consents_archive_before_delete` trigger copies each row to
+  `sms_consent_archive` first (D5).
+  `phone_e164`, `consented_at`, `source` ∈
+  intake_form | staff_recorded | sms_keyword (`staff_recorded` requires
+  `recorded_by`), `consent_text_version`, `recorded_by`, `revoked_at` +
+  `revoked_source` (both or neither). One live consent per (org, provider,
+  number). Evidence: the only updates allowed stamp a revocation on a live
+  row, and null `provider_id` once its provider row is gone; no DELETE grant.
+- **`sms_consent_archive`** (D5, Nov 1: consent evidence survives an org
+  delete, a compliance floor): every deleted `sms_consents` row, copied by
+  the BEFORE DELETE trigger `sms_consents_archive_before_delete` (SECURITY
+  DEFINER) whatever deletes it; the org FK's cascade is the only path today.
+  The consent's own columns as they were (`id` PK, `org_id` a plain uuid with
+  **no foreign key**, `provider_id` usually NULL by then: an org's providers
+  are deleted before it, which detaches the consent) plus `archived_at`. No
+  CHECKs (the row was checked in `sms_consents`). RLS **forced** with no
+  policies; `service_role` holds SELECT and nothing else; no other role has
+  a grant. Forced RLS binds the owner too, so only roles with BYPASSRLS get
+  in: service_role reads it, and the owner reads and writes it through
+  BYPASSRLS. The trigger's insert relies on that (hosted Supabase's
+  `postgres` has BYPASSRLS; without it an org delete would be refused, and
+  nothing lost). Nothing deletes from it.
+- **Access**: RLS on all six. Members read their org's rows and nobody
+  reads another org's; members of any org read the defaults. Only
+  `user_role(org_id) = 'admin'` writes sequences and steps; `sms_consents` and
+  the defaults have no authenticated write grant, and `sms_consent_archive`
+  no authenticated grant at all.
+  `save_notification_sequence(p_org_id, p_purpose, p_payload)` is the save
+  path: SECURITY INVOKER, admin-checked, replaces the sequence and its own
+  steps in one transaction (`steps: null` = use Minted's default steps; a
+  null or absent setting = use Minted's default), refuses `enabled`,
+  `digest_frequency`, `send_hour`, `send_time_zone`, `second_send_hour`,
+  `digest_weekday` and `digest_cc_allowed` (42501
+  `notification_platform_setting`), any unknown key (22023), an empty stop
+  list (`notification_stop_condition_required`), an intake step before day 1
+  (`notification_intake_starts_day_1`), and a digest cc list while the org's
+  effective
+  `digest_cc_allowed` is false, raises SQLSTATE PT409 (HTTP 409)
+  `notification_sequence_conflict` on a stale `expected_revision`, and
+  writes one `audit_log` row (`entity_type = notification_sequence`). Never
+  call it with the service key. Direct admin writes to the tables pass the
+  same grants, CHECKs and triggers but are not audited.
+- **Rules kept in code, not columns**: the resolution (org row over default,
+  field by field; `resolveNotificationSequence`); applying the bounce
+  escalation step (`bounceEscalationRecipients`: a bounce on that step reaches
+  that step's cc list); the digest schedule, the org's only (`digestScheduleOf`,
+  `validateDigestSchedule`, A10, G2: null means not set up); the intake send
+  dates (`scheduleSequenceSends`,
+  no compression); the digest offset fixed at 0 (validation only). Intake
+  offsets from day 1 are also a database rule (A12). All in
+  `src/lib/notificationSequences.ts`.
+- The CHECK validators live in `private` (not exposed as `/rpc/`), with
+  EXECUTE for authenticated and service_role.
+- Regression packet: `supabase/tests/mint107-notification-sequences.sql`, run
+  by CI's Migration dry-run job.
+
 ## MINT-134 workflow advisories (repository-only)
 
 `20261101090000_mint134_workflow_advisories.sql` adds the ledger behind the
@@ -756,3 +914,47 @@ the handoff block refuses otherwise.
 
 The read RPC (`list_workflow_advisories`) and the platform-admin SELECT policy
 follow #540's `is_platform_admin()`.
+
+## MINT-108 notification sends (repository-only, operator apply pending)
+
+Migration `20261101110200_notification_sends.sql`, applied after
+`20261101110100`. The per-recipient send record behind scheduled
+notification jobs. There is no run ledger (MINT-106): every call to a job
+runs it, so a job that emails people claims each send here before sending
+it, and sends only what it claimed. The first user is the follow-up digest
+(`GET /api/jobs/followup-digest`, `src/server/jobs/followupDigestRun.ts`),
+called hourly (a GitHub Actions schedule, plus a daily Vercel cron as a
+backup; they may overlap). Its slot is each scheduled send's: the org's
+**local date**, or `YYYY-MM-DD:2` for a twice-a-day digest's second send
+(A8). Until the migration is applied the digest cannot claim a send, so it
+sends nothing.
+
+### notification_sends
+
+`org_id` (FK to `organizations`, ON DELETE CASCADE), `job` (the registered
+job name, `^[a-z][a-z0-9-]{0,47}$`), `slot` (what the send is once-only for;
+CHECK `^[0-9A-Za-z:_-]{1,64}$`), `recipient_user_id` (the member it went to;
+an actor id, not a foreign key), `outcome` (`claimed | sent | failed`),
+`claimed_at`. The primary key `(org_id, job, slot, recipient_user_id)` is the
+once-per-slot guarantee: one row per send, so no rerun, later hourly run,
+overlapping run, changed send hour, time zone or frequency repeats a
+scheduled send. It leads with `org_id`, so it also serves the org FK. A send
+that may have been delivered (a network error or timeout, a SendGrid 5xx or
+408, an unexplained error, a function that died mid-send) stays `claimed` and
+is never resent: SendGrid has no idempotency key. Only a definite rejection
+(a 4xx other than 408, invalid input, misconfiguration) is `failed`, and a
+later call claims that same row again. No other index. No PHI: no address,
+name, subject or body. RLS on with no policies; service_role has SELECT and
+nothing else.
+
+### RPCs (service_role only, SECURITY DEFINER, `search_path = ''`)
+
+- `claim_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id)
+→ boolean` — true when the caller now holds the send (a new key, or a
+  `failed` row taken again, `claimed_at` reset); false when it is already
+  `claimed` or `sent`, so the caller skips it.
+- `finish_notification_send(p_job, p_slot, p_org_id, p_recipient_user_id,
+p_outcome) → boolean` — records `sent` or `failed` on a `claimed` row;
+  false when the row is not claimed. Refuses any other outcome (22023).
+- Regression packet: `supabase/tests/mint108-notification-sends.sql`, run by
+  CI's Migration dry-run job after the MINT-107 packet.

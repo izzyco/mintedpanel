@@ -1168,9 +1168,51 @@ test("MINT-129: under recheckStoredOnEdit, the roster form passes a valid stored
   await dialog.locator("#prov-phone").fill("252-555-0142");
   await dialog.getByRole("button", { name: "Save changes" }).click();
   await expect(dialog).toHaveCount(0);
-  // The roster form has always saved the NPI's digits; the re-check adds
-  // nothing to the patch.
+  // An unchanged stored NPI goes back exactly as stored (MINT-110: an
+  // unrelated edit never rewrites it), so the re-check adds nothing to the
+  // patch.
   expect(providerPatches).toEqual([
-    expect.objectContaining({ phone: "252-555-0142", npi: "1093817462" }),
+    expect.objectContaining({ phone: "252-555-0142", npi: "109-381-7462" }),
   ]);
+});
+
+test("MINT-110: a name-only roster edit does not check the stored NPI against the NPI Registry", async ({
+  context,
+  page,
+}) => {
+  const fixtures = p03Fixtures();
+  (fixtures.providers as Record<string, unknown>[])[0].npi = "1093817462";
+  const handler = makeHandler(fixtures);
+  const providerPatches: Record<string, unknown>[] = [];
+  await context.route(/\/(rest|auth)\/v1\//, (route) => {
+    const req = route.request();
+    if (req.method() === "PATCH" && new URL(req.url()).pathname.endsWith("/rest/v1/providers"))
+      providerPatches.push(JSON.parse(req.postData() ?? "{}") as Record<string, unknown>);
+    return handler(route);
+  });
+  const registryCalls: unknown[] = [];
+  await context.route(/\/api\/npi-registry\//, async (route) => {
+    registryCalls.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { record: null }, error: null, meta: null }),
+    });
+  });
+  const dialog = await openP03Roster(context, page);
+  await expect(dialog.locator("#prov-npi")).toHaveValue("1093817462");
+
+  // Addendum 10: only an NPI that is new or changed is checked; a new name
+  // alone leaves the stored NPI unchecked, on the form and after the save.
+  await dialog.locator("#prov-first").fill("Renamed");
+  await expect(
+    dialog.getByText(/in the NPI Registry|Checking the NPI Registry|NPI Registry is unavailable/),
+  ).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(providerPatches).toEqual([
+    expect.objectContaining({ first_name: "Renamed", npi: "1093817462" }),
+  ]);
+  await page.waitForTimeout(500);
+  expect(registryCalls).toEqual([]);
 });
