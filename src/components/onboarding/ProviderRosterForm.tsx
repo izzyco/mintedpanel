@@ -1,6 +1,6 @@
 // Provider form dialog (E1.3 F1.3.1) — the CAQH-anchored baseline over the
 // EXISTING providers columns. Group assignment is step one (required, M:N,
-// one primary). Required to save: name, Type 1 NPI (10-digit format-only),
+// one primary). Required to save: name, Type 1 NPI (10 digits + CMS check digit),
 // ≥1 group assignment; every other CAQH field is optional (readiness — E1.8
 // — is the gate, not entry). SSN is captured as LAST-4 ONLY (hard rule; the
 // full-SSN vault is R6/R7). No status picker — new providers default to
@@ -36,12 +36,18 @@ import {
 } from "@/components/onboarding/licenseDraft";
 import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
 import { useStateLicensesByProvider } from "@/hooks/useLookups";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import { useCreateProviderWithDetails, useUpdateProviderWithLicenses } from "@/hooks/useProviders";
 import { useCreateEnrollmentFact } from "@/hooks/useEnrollmentFacts";
 import { usePayers } from "@/hooks/useAdmin";
 import { StateSelect } from "@/components/StateSelect";
 import { ENROLLMENT_GUARD_TEXT } from "@/components/providers/EnrollmentsPanel";
-import { isValidNpi } from "@/lib/providerGroup";
+import { normalizeNpi } from "@/lib/providerGroup";
+import {
+  NPI_CHECK_DIGIT_MESSAGE,
+  identityFieldNeedsCheck,
+  isValidNpi,
+} from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import { usPhoneError } from "@/lib/phone";
@@ -195,6 +201,7 @@ function FormBody({
   >([]);
   const payersQ = usePayers();
   const createFact = useCreateEnrollmentFact();
+  const identityRules = useIdentityValidationRules();
 
   const createMut = useCreateProviderWithDetails();
   const updateMut = useUpdateProviderWithLicenses(provider?.id ?? "");
@@ -221,8 +228,19 @@ function FormBody({
     const next: RosterFormErrors = {};
     if (!form.firstName.trim()) next.firstName = "First name is required";
     if (!form.lastName.trim()) next.lastName = "Last name is required";
+    // MINT-7: an entered or changed NPI must pass the CMS check digit. By
+    // default an unchanged stored NPI is not re-checked, so legacy data never
+    // blocks an unrelated edit (recheckStoredOnEdit, MINT-129).
+    const npiDigits = normalizeNpi(form.npi);
+    const npiChecked = identityFieldNeedsCheck(
+      form.npi,
+      provider ? initialForm.npi : undefined,
+      identityRules,
+      normalizeNpi,
+    );
     if (!form.npi.trim()) next.npi = "Type 1 NPI is required";
-    else if (!isValidNpi(form.npi)) next.npi = "NPI must be 10 digits";
+    else if (npiChecked && npiDigits.length !== 10) next.npi = "NPI must be 10 digits";
+    else if (npiChecked && !isValidNpi(npiDigits)) next.npi = NPI_CHECK_DIGIT_MESSAGE;
     if (form.ssnLast4.trim() && !/^\d{4}$/.test(form.ssnLast4.trim()))
       next.ssnLast4 = "Enter the LAST 4 digits only";
     const assignmentError = validateGroupAssignments(assignments);

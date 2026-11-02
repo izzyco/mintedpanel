@@ -66,7 +66,7 @@ export function BillingClearanceLookup({ data }: { data: BillingReadinessQueryDa
     [data?.snapshot.payers],
   );
   const assessment = useMemo(
-    () => (data ? evaluateBillingReadiness(data.snapshot, selection, data.asOf) : null),
+    () => (data ? evaluateBillingReadiness(data.snapshot, selection, data.asOf, data.rules) : null),
     [data, selection],
   );
 
