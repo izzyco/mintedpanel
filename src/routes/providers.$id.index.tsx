@@ -74,9 +74,11 @@ import { useCases, useCaseDenialEntries, useDenialReasonCodes } from "@/hooks/us
 import { useEnrollmentReadiness } from "@/hooks/useEnrollmentReadiness";
 import { AddTouchDialog, type TouchCaseCandidate } from "@/components/cases/AddTouchDialog";
 import { usePayers } from "@/hooks/useAdmin";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
+import { normalizeNpi } from "@/lib/providerGroup";
 import { useCanWrite } from "@/lib/permissions";
 import { isValidEmail } from "@/lib/contactValidation";
-import { isValidNpi } from "@/lib/providerGroup";
+import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
 import { hasValidLicenseDateOrder, LICENSE_DATE_ORDER_ERROR } from "@/lib/licenseDates";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -369,6 +371,10 @@ interface FieldDef {
   masked?: boolean;
   mono?: boolean;
   display?: (value: string | null) => string;
+  /** Set only under IdentityValidationRules.recheckStoredOnEdit (MINT-129):
+   * an unchanged stored value is validated on save too, after this
+   * normalization. It never reaches the save patch. */
+  recheckStoredAs?: (stored: string) => string;
 }
 type Cell = FieldDef | { ssn: true };
 
@@ -376,6 +382,7 @@ const CELL_LABEL = "text-[12px] font-semibold uppercase tracking-[0.05em] text-[
 
 function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite: boolean }) {
   const update = useUpdateProvider(provider.id);
+  const identityRules = useIdentityValidationRules();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -422,7 +429,15 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
           key: "npi",
           value: provider.npi ?? null,
           mono: true,
-          validate: (v) => (isValidNpi(v) ? null : "NPI is 10 digits."),
+          // Runs only when the NPI changed (see save) — MINT-7 check digit.
+          validate: (v) => {
+            if (!/^\d{10}$/.test(v)) return "NPI is 10 digits.";
+            return isValidNpi(v) ? null : NPI_CHECK_DIGIT_MESSAGE;
+          },
+          // Off by default; under recheckStoredOnEdit (MINT-129) an unchanged
+          // stored NPI is checked on save too, separators stripped as the
+          // roster form strips them.
+          recheckStoredAs: identityRules.recheckStoredOnEdit ? normalizeNpi : undefined,
         },
         { label: "CAQH ID", key: "caqhId", value: provider.caqhId ?? null, mono: true },
         { label: "Specialty", key: "specialty", value: provider.specialty ?? null },
@@ -486,6 +501,9 @@ function IdentitySection({ provider, canWrite }: { provider: Provider; canWrite:
       const changed = (v === "" ? null : v) !== (f.value ?? null);
       if (changed && v !== "" && f.validate) {
         const message = f.validate(v);
+        if (message) errors[f.key] = message;
+      } else if (!changed && v !== "" && f.validate && f.recheckStoredAs) {
+        const message = f.validate(f.recheckStoredAs(v));
         if (message) errors[f.key] = message;
       }
     }

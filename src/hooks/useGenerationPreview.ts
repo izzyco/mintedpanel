@@ -28,6 +28,7 @@ import {
   type ReadinessRow,
 } from "@/lib/enrollmentReadiness";
 import { archivedPayerIds } from "@/lib/payerSetup";
+import { resolveGenerationRules, type GenerationRules } from "@/lib/generationGrid";
 import { hydratePayerFormTasks, payerFormsByFamily } from "@/lib/payerForms";
 import { listPayerFormsForTemplates } from "@/services/payerForms";
 import {
@@ -509,4 +510,12 @@ export function useConfirmGeneration() {
   });
 
   return { ...mutation, ready };
+}
+
+/** The generation grid's rules for the active organization. Nothing stores a
+ * platform or organization override yet (the Mission Control setting is
+ * MINT-116), so this resolves to the decided defaults; when the setting
+ * lands, its read replaces the two nulls. */
+export function useGenerationRules(): GenerationRules {
+  return useMemo(() => resolveGenerationRules(null, null), []);
 }
