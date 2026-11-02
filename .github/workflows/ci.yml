@@ -309,6 +309,11 @@ jobs:
 
       - name: Run MINT-19 / MINT-75 SOP step completion SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint19-atomic-sop.sql
+      # MINT-91 U8: a contact saves with a blank office phone (create org,
+      # capture link, /contact lead), and every other required field is still
+      # refused. Rollback-only; any failed check raises.
+      - name: Run MINT-91 contact phone SQL packet
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint91-contact-phone-optional.sql
 
   vault-authorization:
     name: P01 vault authorization

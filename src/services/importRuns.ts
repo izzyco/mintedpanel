@@ -23,6 +23,7 @@ import { decodeDelimited } from "@/lib/importSections";
 import { providerNameKey } from "@/lib/importDedupe";
 import { DAY_KEYS, emptyHoursDraft, encodeHours } from "@/lib/facilityHours";
 import { normalizeWebsiteUrl } from "@/lib/providerGroup";
+import { importWarningEntries, withReportEntries } from "@/lib/importPhoneRule";
 import { attachGroupPayer, listPayerNetworkTargets } from "@/services/payerNetworkTargets";
 import type { ScannedRow } from "@/lib/rosterImport";
 import type {
@@ -429,6 +430,7 @@ async function applyProviderRelationships(
 export async function commitImportRun(
   runId: string,
   plan: CommitPlan,
+  warnings: ImportRunErrorEntry[] = [],
 ): Promise<CommitImportRunResult> {
   requireActiveOrg();
   // Snapshot the staged rows BEFORE the RPC — commit purges import_rows
@@ -476,7 +478,42 @@ export async function commitImportRun(
     );
     await ensureFirstFacilityPrimary([...result.createdProviderIds, ...result.updatedProviderIds]);
   }
+  // MINT-91: the review's warnings (a phone replaced or left blank on a new
+  // provider) join the committed run's durable report, after the commit, so a
+  // failed commit leaves the run's report as it was. A replayed commit
+  // (alreadyCommitted) adds any that are missing and never repeats one.
+  try {
+    if (warnings.length > 0) await recordRunReportWarnings(runId, warnings, "committed");
+  } catch {
+    throw new Error(
+      "The import committed, but its phone warnings weren't added to the run's report. Commit again now to add them. If this page reloads first, they can't be added: the run's staged rows are already gone.",
+    );
+  }
   return { ...result, relationships };
+}
+
+/** Append warnings to the run's error report while it is in `state`, skipping
+ * any it already holds, so a retried commit never writes one twice. Returns
+ * the report as it now stands. */
+async function recordRunReportWarnings(
+  runId: string,
+  warnings: ImportRunErrorEntry[],
+  state: ImportRun["state"],
+): Promise<ImportRunErrorEntry[] | null> {
+  const orgId = requireActiveOrg();
+  const run = await getImportRun(runId);
+  if (!run || run.state !== state) return null;
+  const current = run.errorReport ?? [];
+  const next = withReportEntries(current, warnings);
+  if (next.length === current.length) return current;
+  const { error } = await supabase
+    .from("import_runs")
+    .update({ error_report: next as never, updated_at: new Date().toISOString() })
+    .eq("org_id", orgId)
+    .eq("id", runId)
+    .eq("state", state);
+  if (error) throw error;
+  return next;
 }
 
 export interface BatchAssignmentResult {
@@ -673,6 +710,17 @@ export async function commitSectionImportRun(input: {
     throw new Error(`Import run is not ready to commit (state ${run.state})`);
   }
 
+  // MINT-91: the creates' warnings join the durable report BEFORE the creates,
+  // so a create that lands before a later one fails keeps its warning; a retry
+  // re-reads the report and never writes one twice.
+  const warnings = importWarningEntries(input.creates);
+  const reportBefore =
+    (warnings.length > 0
+      ? await recordRunReportWarnings(input.runId, warnings, "ready_for_review")
+      : null) ??
+    run.errorReport ??
+    [];
+
   let created = 0;
   for (const entry of input.creates) {
     if (input.entityKind === "provider_group") {
@@ -691,7 +739,7 @@ export async function commitSectionImportRun(input: {
     column: b.column,
     reason: b.reason,
   }));
-  const nextReport = [...(run.errorReport ?? []), ...blockedEntries];
+  const nextReport = [...reportBefore, ...blockedEntries];
   const { error } = await supabase
     .from("import_runs")
     .update({

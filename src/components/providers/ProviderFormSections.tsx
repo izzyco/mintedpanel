@@ -137,7 +137,11 @@ export function PersonalSection({
       <Field label="Email" error={errors.email}>
         <Input type="email" value={form.email} onChange={(e) => update("email", e.target.value)} />
       </Field>
-      <Field label="Phone" helper={registrySource?.phone ? registrySource.label : undefined}>
+      <Field
+        label="Phone"
+        error={errors.phone}
+        helper={registrySource?.phone ? registrySource.label : undefined}
+      >
         <Input value={form.phone} onChange={(e) => update("phone", e.target.value)} />
       </Field>
     </div>

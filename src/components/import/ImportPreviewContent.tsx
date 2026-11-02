@@ -65,6 +65,7 @@ import {
   summarizeImportNpiRows,
   type ImportNpiRowResult,
 } from "@/lib/importNpiVerification";
+import { importWarningEntries, phonesLeftBlank } from "@/lib/importPhoneRule";
 import type { ImportRun } from "@/types";
 
 function MetricCard({
@@ -319,6 +320,8 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
   const updates = dispositions.filter((d): d is UpdateDisposition => d.kind === "update");
   const skips = dispositions.filter((d) => d.kind === "skip");
   const blocked = dispositions.filter((d) => d.kind === "blocked");
+  // MINT-91: phones a commit leaves blank, named in the commit confirmation.
+  const blankPhones = phonesLeftBlank(dispositions);
 
   const resolve = (providerId: string, key: string, choice: ConflictChoice) =>
     setResolutions((prev) => ({
@@ -337,7 +340,7 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
     const npiAtCommit = npiVerification.read();
     const plan = buildCommitPlan(dispositions, resolutions);
     commit.mutate(
-      { runId: run.id, plan },
+      { runId: run.id, plan, warnings: importWarningEntries(dispositions) },
       {
         onSuccess: (result) => {
           setConfirmCommit(false);
@@ -431,7 +434,14 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
                 const notes = npi.byLine.get(d.line)?.notes ?? [];
                 return (
                   <TableRow key={`c-${d.line}`}>
-                    <TableCell className="text-[13px] font-medium">{d.displayName}</TableCell>
+                    <TableCell className="text-[13px] font-medium">
+                      {d.displayName}
+                      {d.warnings?.map((w) => (
+                        <p key={w.column} className="text-[11px] font-normal text-[#92400E]">
+                          {w.review}
+                        </p>
+                      ))}
+                    </TableCell>
                     <TableCell className="text-[13px] tabular-nums">{d.npi || "—"}</TableCell>
                     <TableCell className="text-[13px]">{d.groupIds.length}</TableCell>
                     <TableCell className="text-[13px]">{d.facilityIds.length}</TableCell>
@@ -542,7 +552,11 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
             confirmCommit ? (
               <>
                 <span className="text-[13px] font-medium text-[#B91C1C]">
-                  Commit is final and cannot be undone. Continue?
+                  Commit is final and cannot be undone.{" "}
+                  {blankPhones > 0
+                    ? `${blankPhones} phone${blankPhones === 1 ? "" : "s"} will be left blank. `
+                    : null}
+                  Continue?
                 </span>
                 {commitWarning ? (
                   <span className="text-[12px] text-muted-foreground">{commitWarning}</span>

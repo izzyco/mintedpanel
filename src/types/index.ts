@@ -2011,6 +2011,9 @@ export interface ImportRunErrorEntry {
   line: number;
   column: string | null;
   reason: string;
+  /** MINT-91: set on a warning (a value left out of a created record); an
+   * entry without it is a row that was not imported. */
+  severity?: "warning";
 }
 
 export interface ImportRun {

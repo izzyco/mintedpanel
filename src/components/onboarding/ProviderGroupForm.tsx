@@ -46,6 +46,7 @@ import {
   type GroupFormErrors,
   type GroupFormValue,
 } from "@/lib/providerGroup";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import { US_STATES } from "@/lib/usStates";
 import type { ProviderGroup } from "@/types";
 
@@ -62,12 +63,14 @@ function BlockFields({
   onChange,
   mirror,
   errors,
+  phoneError,
 }: {
   idPrefix: string;
   value: GroupContactBlock;
   onChange: (next: GroupContactBlock) => void;
   mirror?: GroupContactBlock | null;
   errors?: Pick<GroupFormErrors, "billingStreet" | "billingCity" | "billingState" | "billingZip">;
+  phoneError?: string;
 }) {
   const v = mirror ?? value;
   const disabled = Boolean(mirror);
@@ -176,6 +179,7 @@ function BlockFields({
             onChange={(e) => set({ phone: e.target.value })}
             className="h-9"
           />
+          <FieldError message={phoneError} />
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -227,6 +231,7 @@ export function ProviderGroupForm({
 
   const createMut = useCreateProviderGroup();
   const updateMut = useUpdateProviderGroup(group?.id ?? "");
+  const phoneRules = usePhoneValidationRules();
   const pending = createMut.isPending || updateMut.isPending;
 
   const set = (patch: Partial<GroupFormValue>) => setValue((v) => ({ ...v, ...patch }));
@@ -237,7 +242,7 @@ export function ProviderGroupForm({
       correspondence: sameCorr ? value.billing : value.correspondence,
       credentialing: sameCred ? value.billing : value.credentialing,
     };
-    const errs = groupFormErrors(resolved);
+    const errs = groupFormErrors(resolved, group ? groupToFormValue(group) : undefined, phoneRules);
     setErrors(errs);
     if (hasGroupFormErrors(errs)) return;
     const input = formValueToInput(resolved);
@@ -398,6 +403,7 @@ export function ProviderGroupForm({
               value={value.billing}
               onChange={(billing) => set({ billing })}
               errors={errors}
+              phoneError={errors.billingPhone}
             />
           </div>
 
@@ -420,6 +426,7 @@ export function ProviderGroupForm({
               value={value.correspondence}
               onChange={(correspondence) => set({ correspondence })}
               mirror={sameCorr ? value.billing : null}
+              phoneError={errors.correspondencePhone}
             />
           </div>
 
@@ -442,6 +449,7 @@ export function ProviderGroupForm({
               value={value.credentialing}
               onChange={(credentialing) => set({ credentialing })}
               mirror={sameCred ? value.billing : null}
+              phoneError={errors.credentialingPhone}
             />
           </div>
         </div>

@@ -63,6 +63,8 @@ import {
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
+import { usPhoneError } from "@/lib/phone";
+import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
 import {
   ProviderSaveError,
   type LicenseCommand,
@@ -77,6 +79,7 @@ interface RosterFormErrors {
   lastName?: string;
   npi?: string;
   ssnLast4?: string;
+  phone?: string;
   assignments?: string;
 }
 
@@ -220,6 +223,7 @@ function FormBody({
   const createMut = useCreateProviderWithDetails();
   const updateMut = useUpdateProviderWithLicenses(provider?.id ?? "");
   const pending = createMut.isPending || updateMut.isPending;
+  const phoneRules = usePhoneValidationRules();
 
   const set = (patch: Partial<RosterFormState>) => setForm((f) => ({ ...f, ...patch }));
   const npiNoticeId = useId();
@@ -346,6 +350,14 @@ function FormBody({
       next.ssnLast4 = "Enter the LAST 4 digits only";
     const assignmentError = validateGroupAssignments(assignments);
     if (assignmentError) next.assignments = assignmentError;
+    // MINT-91: an entered or changed phone must be a US number. By default an
+    // untouched stored phone never blocks an edit (recheckStoredOnEdit).
+    const phoneError = usPhoneError(
+      form.phone,
+      provider ? initialForm.phone : undefined,
+      phoneRules,
+    );
+    if (phoneError) next.phone = phoneError;
 
     const licErrs: Record<number, string> = {};
     licenses.forEach((l, i) => {
@@ -600,6 +612,7 @@ function FormBody({
               {npiSourced.phone && npiSourceLabel ? (
                 <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
               ) : null}
+              <FieldError message={errors.phone} />
             </div>
           </div>
         </div>

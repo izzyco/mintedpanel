@@ -16,6 +16,7 @@ import {
   type GroupFormValue,
 } from "./providerGroup";
 import type { ProviderGroup } from "@/types";
+import { DEFAULT_PHONE_VALIDATION_RULES, US_PHONE_MESSAGE } from "@/lib/phone";
 
 const validForm: GroupFormValue = {
   name: "Tree Hill Sports Therapy LLC",
@@ -94,6 +95,53 @@ describe("groupFormErrors", () => {
       groupFormErrors({ ...validForm, websiteUrl: "https://bestptnc.com" }).websiteUrl,
     ).toBeUndefined();
     expect(groupFormErrors({ ...validForm, websiteUrl: "not a url" }).websiteUrl).toBeTruthy();
+  });
+
+  it("checks each block's phone on create; blank stays optional (MINT-91)", () => {
+    const withPhones = (billing: string, correspondence: string, credentialing: string) => ({
+      ...validForm,
+      billing: { ...validForm.billing, phone: billing },
+      correspondence: { ...validForm.correspondence, phone: correspondence },
+      credentialing: { ...validForm.credentialing, phone: credentialing },
+    });
+    expect(groupFormErrors(withPhones("", "", ""))).toEqual({});
+    expect(
+      groupFormErrors(withPhones("919-555-0100", "(919) 555-0101", "+1 919 555 0102")),
+    ).toEqual({});
+    expect(groupFormErrors(withPhones("abc-def-ghij", "", "555-0100"))).toEqual({
+      billingPhone: US_PHONE_MESSAGE,
+      credentialingPhone: US_PHONE_MESSAGE,
+    });
+    expect(groupFormErrors(withPhones("", "919-555-01x", "")).correspondencePhone).toBe(
+      US_PHONE_MESSAGE,
+    );
+  });
+
+  it("on an edit, an untouched stored phone never blocks; a changed one is checked", () => {
+    const stored: GroupFormValue = {
+      ...validForm,
+      billing: { ...validForm.billing, phone: "abc-def-ghij" },
+    };
+    expect(groupFormErrors(stored, stored)).toEqual({});
+    expect(
+      groupFormErrors({ ...stored, billing: { ...stored.billing, phone: "555-0100" } }, stored)
+        .billingPhone,
+    ).toBe(US_PHONE_MESSAGE);
+    expect(
+      groupFormErrors({ ...stored, billing: { ...stored.billing, phone: "919-555-0100" } }, stored),
+    ).toEqual({});
+  });
+
+  it("under recheckStoredOnEdit (MINT-129 alternative), an untouched stored phone is checked too", () => {
+    const stored: GroupFormValue = {
+      ...validForm,
+      credentialing: { ...validForm.credentialing, phone: "555-0100" },
+    };
+    const recheck = { ...DEFAULT_PHONE_VALIDATION_RULES, recheckStoredOnEdit: true };
+    expect(groupFormErrors(stored, stored, DEFAULT_PHONE_VALIDATION_RULES)).toEqual({});
+    expect(groupFormErrors(stored, stored, recheck)).toEqual({
+      credentialingPhone: US_PHONE_MESSAGE,
+    });
   });
 });
 
