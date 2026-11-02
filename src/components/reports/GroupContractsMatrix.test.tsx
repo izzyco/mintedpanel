@@ -1,8 +1,9 @@
 // "+ Add state" (GCM-33, MINT-143) on the Group Contracts Matrix: offered to
 // writers in each specialty's heading, never to a read-only (billing) user,
 // and its dialog says the column is kept with Not started records. The save
-// itself is covered by notStartedRecordsForAddedState and
-// createContractsIfMissing, and end to end by e2e/contracts-matrix.spec.ts.
+// itself is covered by notStartedRecordsForAddedState, saveAddedState (each
+// toast, contractsMatrixAddState.test.ts) and createContractsIfMissing, and
+// end to end by e2e/contracts-matrix.spec.ts.
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

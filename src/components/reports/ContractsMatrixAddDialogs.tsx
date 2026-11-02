@@ -113,7 +113,8 @@ export function AddPayerDialog({
 
 /** The save button's label: how many Not started records "Add column" will
  * save, so the count shows before the click (contract records cannot be
- * deleted). Null before a group and state are chosen. */
+ * deleted). Null before a group and state are chosen, or while the
+ * contracts are being refetched. */
 function addStateButtonLabel(count: number | null): string {
   if (count === null) return "Add column";
   if (count === 0) return "Add column for this visit";
@@ -124,6 +125,7 @@ export function AddStateDialog({
   specialtyLabel,
   groups,
   countFor,
+  counting = false,
   onAdd,
   onClose,
 }: {
@@ -132,14 +134,17 @@ export function AddStateDialog({
   /** How many Not started records adding this group and state saves (the
    * same rule as the save, notStartedRecordsForAddedState). */
   countFor: (groupId: string, state: string) => number;
+  /** The contracts are being refetched (opening the dialog starts it): the
+   * button shows no count, and waits, until they are fresh. */
+  counting?: boolean;
   onAdd: (groupId: string, state: string) => void;
   onClose: () => void;
 }) {
   const [groupId, setGroupId] = useState(groups.length === 1 ? groups[0].id : "");
   const [state, setState] = useState("");
   const count = useMemo(
-    () => (groupId && state ? countFor(groupId, state) : null),
-    [countFor, groupId, state],
+    () => (!counting && groupId && state ? countFor(groupId, state) : null),
+    [countFor, counting, groupId, state],
   );
 
   return (
@@ -189,7 +194,7 @@ export function AddStateDialog({
           </Button>
           <Button
             size="sm"
-            disabled={!groupId || !state}
+            disabled={!groupId || !state || counting}
             onClick={() => {
               onAdd(groupId, state);
               onClose();

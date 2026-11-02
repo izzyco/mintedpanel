@@ -648,9 +648,10 @@ test("Also apply into a shared state records the specialty separately", async ({
   ).toBeVisible();
 });
 
-/** "+ Add state" in the Nutrition heading for Group Name 3 / LA. The save
- * button names how many Not started records it saves; no confirm step. */
-async function addNutritionLa(page: Page, buttonLabel: string) {
+/** "+ Add state" in the Nutrition heading for Group Name 3 / LA. Opening it
+ * refetches the contracts; the save button then names how many Not started
+ * records it saves. No confirm step. `beforeSave` runs once that count shows. */
+async function addNutritionLa(page: Page, buttonLabel: string, beforeSave?: () => void) {
   await region(page, "Nutrition").getByRole("button", { name: "+ Add state" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "Add a Nutrition state" })).toBeVisible();
@@ -659,7 +660,10 @@ async function addNutritionLa(page: Page, buttonLabel: string) {
   await page.getByRole("option", { name: "Group Name 3", exact: true }).click();
   await dialog.getByRole("combobox", { name: "State" }).click();
   await page.getByRole("option", { name: "LA", exact: true }).click();
-  await dialog.getByRole("button", { name: buttonLabel, exact: true }).click();
+  const save = dialog.getByRole("button", { name: buttonLabel, exact: true });
+  await expect(save).toBeEnabled();
+  beforeSave?.();
+  await save.click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 }
 
@@ -745,30 +749,42 @@ test("+ Add state saves Not started records, so the planned column persists", as
   expect(contractPosts).toHaveLength(1);
 });
 
-test("+ Add state counts a record saved by someone else after the page loaded", async ({
+test("+ Add state counts records saved by someone else, when it opens and when it saves", async ({
   page,
 }) => {
   const { fixtures, writes } = await installMatrix(page);
   await page.goto("/reporting/contracts-matrix");
   await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "NE"]);
 
-  // Meanwhile a colleague records Payer 1's all-specialties agreement there.
+  // After the page loaded, a colleague records Payer 1's all-specialties
+  // agreement there. Opening the dialog refetches, so the button counts only
+  // Payer 2. While it is open, the colleague also starts Payer 2's Nutrition
+  // record; the save refetches again, so nothing is left to save.
   fixtures.contracts.push(
     contractRow("c-p1-la-all", GROUP_3, PAYER_1, "LA", "all", STATUS.submitted),
   );
-  // The page still shows its loaded data, so the button counts 2...
-  await addNutritionLa(page, "Add column · 2 Not started records");
+  await addNutritionLa(page, "Add column · 1 Not started record", () => {
+    fixtures.contracts.push(
+      contractRow("c-p2-la-nutrition", GROUP_3, PAYER_2, "LA", "nutrition", STATUS.submitted),
+    );
+  });
 
-  // ...but the save reads the latest records first: only Payer 2 gets one,
-  // and Payer 1's cell shows the shared agreement.
   await expect(
-    page.getByText("Added LA for Group Name 3 (Nutrition): 1 Not started record."),
+    page.getByText(
+      "Added LA for Group Name 3 (Nutrition) for this visit only. No payer in the table has an open cell there, so no records were saved.",
+    ),
   ).toBeVisible();
-  const contractWrites = writes.filter((write) => write.table === "contracts");
-  expect(contractWrites.map((write) => write.body.payer_id)).toEqual([PAYER_2]);
+  expect(writes.filter((write) => write.table === "contracts")).toHaveLength(0);
+  const nutrition = region(page, "Nutrition");
   await expect(
-    region(page, "Nutrition").getByRole("button", {
+    nutrition.getByRole("button", {
       name: "Payer 1, Nutrition, Group Name 3, LA: Application Submitted (All specialties)",
+    }),
+  ).toBeVisible();
+  await expect(
+    nutrition.getByRole("button", {
+      name: "Payer 2, Nutrition, Group Name 3, LA: Application Submitted",
+      exact: true,
     }),
   ).toBeVisible();
 });
