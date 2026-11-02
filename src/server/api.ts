@@ -16,6 +16,7 @@ import {
   type UserContext,
 } from "./guard";
 import { handlePreflight, withCors } from "./cors";
+import { logServerError, requestSite, withRequestId } from "./safeLog";
 import {
   handleClaimClientInvite,
   handleCreateClientInvite,
@@ -174,16 +175,15 @@ async function readBoundedJsonBody(request: Request, maxBytes: number): Promise<
 // Map a thrown error to a response. A GuardError carries its own status and a
 // safe, caller-facing message, so pass it through. Anything else is an internal
 // fault — e.g. a missing SUPABASE_SERVICE_ROLE_KEY making getServiceClient()
-// throw — so log the real error server-side (nitro/Vercel captures console.error)
-// and return a generic 500. This keeps a server misconfiguration from being
-// masked as a 401 and never leaks internal details in the response body.
-function toErrorResponse(error: unknown): Response {
+// throw, or an untranslated PostgREST error whose `details` holds the rejected
+// row — so log only its allowlisted identifiers (./safeLog.ts; nitro/Vercel
+// captures console.error) and return a generic 500 that carries the same
+// correlation id in `x-request-id`. This keeps a server misconfiguration from
+// being masked as a 401 and leaks no internal details to the body or the log.
+function toErrorResponse(error: unknown, request: Request): Response {
   if (error instanceof GuardError) return fail(error.status, error.message);
-  console.error(
-    "[api] internal error:",
-    error instanceof Error ? `${error.message}\n${error.stack}` : error,
-  );
-  return fail(500, "Internal server error");
+  const requestId = logServerError("[api] internal error", error, requestSite(request));
+  return withRequestId(fail(500, "Internal server error"), requestId);
 }
 
 export async function handleApiRequest(request: Request): Promise<Response> {
@@ -207,12 +207,12 @@ export async function handleApiRequest(request: Request): Promise<Response> {
         request,
       );
     } catch (error) {
-      return withCors(noStore(toErrorResponse(error)), request);
+      return withCors(noStore(toErrorResponse(error, request)), request);
     }
   }
   const operation = await resolveOperationContext(request);
   if (operation && "error" in operation) {
-    return withCors(toErrorResponse(operation.error), request);
+    return withCors(toErrorResponse(operation.error, request), request);
   }
   if (operation?.restrictedExternal && !allowsRestrictedClientRoute(request)) {
     return withCors(fail(403, "Restricted client cannot use this route"), request);
@@ -227,7 +227,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       });
     } catch (error) {
       if (isRevisionBoundRead(request)) {
-        return withCors(toErrorResponse(error), request);
+        return withCors(toErrorResponse(error, request), request);
       }
       // The mutation may already have committed. Keep its response body and
       // make the browser refresh instead of attaching a stale fingerprint.
@@ -347,7 +347,7 @@ async function handleEnrollmentExplorerApiRequest(request: Request): Promise<Res
     }
     return response;
   } catch (error) {
-    const response = toErrorResponse(error);
+    const response = toErrorResponse(error, request);
     response.headers.set("cache-control", "no-store, max-age=0");
     response.headers.set("pragma", "no-cache");
     return response;
@@ -538,7 +538,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
       const routes = await loadExtensionRoutes();
       return await routes.handleListMyOrgs(user);
     } catch (error) {
-      return toErrorResponse(error);
+      return toErrorResponse(error, request);
     }
   }
   if (isMeViewPrefs) {
@@ -550,7 +550,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
         ? await routes.handleGetViewPrefs(user)
         : await routes.handlePutViewPrefs(await readJsonBody(request), user);
     } catch (error) {
-      return toErrorResponse(error);
+      return toErrorResponse(error, request);
     }
   }
 
@@ -604,7 +604,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
         );
       }
     } catch (error) {
-      return toErrorResponse(error);
+      return toErrorResponse(error, request);
     }
   }
 
@@ -622,7 +622,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
         ? await routes.handleListSharedFieldMaps(url, user)
         : await routes.handleProposeSharedFieldMap(await readJsonBody(request), user);
     } catch (error) {
-      return toErrorResponse(error);
+      return toErrorResponse(error, request);
     }
   }
 
@@ -636,7 +636,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
       const routes = await loadExtensionRoutes();
       return await routes.handleListSharedPortals(user, url);
     } catch (error) {
-      return toErrorResponse(error);
+      return toErrorResponse(error, request);
     }
   }
 
@@ -648,7 +648,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
       const routes = await loadExtensionRoutes();
       return await routes.handleProveSharedPortal(await readJsonBody(request), user);
     } catch (error) {
-      return toErrorResponse(error);
+      return toErrorResponse(error, request);
     }
   }
 
@@ -661,7 +661,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
       const routes = await loadExtensionRoutes();
       return await routes.handleRecordSharedTestFill(await readJsonBody(request), user);
     } catch (error) {
-      return toErrorResponse(error);
+      return toErrorResponse(error, request);
     }
   }
 
@@ -670,7 +670,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
     const requestedOrgId = request.headers.get("x-org-id") ?? url.searchParams.get("orgId");
     ctx = await authenticate(request, requestedOrgId);
   } catch (error) {
-    const response = toErrorResponse(error);
+    const response = toErrorResponse(error, request);
     if (isWorkContextValidate) {
       response.headers.set("cache-control", "no-store, max-age=0");
       response.headers.set("pragma", "no-cache");
@@ -891,7 +891,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
       return await routes.handleUpdateProvider(id, await readJsonBody(request), ctx);
     return fail(405, "Method not allowed");
   } catch (error) {
-    const response = toErrorResponse(error);
+    const response = toErrorResponse(error, request);
     if (isWorkContextValidate) return noStore(response);
     return response;
   }

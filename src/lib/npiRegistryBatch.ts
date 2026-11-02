@@ -22,7 +22,7 @@ export const NPI_REGISTRY_BATCH_MAX = 10;
  * Why 60 a minute: NPPES publishes no rate limit, and every organization's
  * lookups leave from the same server addresses, so one large import must never
  * get the registry to throttle everyone else. A 100-row file takes about a
- * minute. In memory per server instance, best effort (TECH-DEBT TD-55/TD-56). */
+ * minute. In memory per server instance, best effort (TECH-DEBT TD-56/TD-57). */
 export const NPI_REGISTRY_BATCH_PER_MINUTE = 60;
 
 export const NPI_REGISTRY_BATCH_RATE_LIMIT_MESSAGE =
