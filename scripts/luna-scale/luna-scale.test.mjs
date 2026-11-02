@@ -1322,13 +1322,12 @@ test("seeded location links leave created_by null: it references auth.users", ()
 
 test("the CI job proves the seed on local Supabase, in order, and only there", async () => {
   const workflow = await readFile(
-    new URL("../../.github/workflows/ci.yml", import.meta.url),
+    new URL("../../.github/workflows/luna-scale-rehearsal.yml", import.meta.url),
     "utf8",
   );
   const start = workflow.indexOf("\n  luna-scale-seed:\n");
   assert.ok(start > 0, "the luna-scale-seed job exists");
-  const end = workflow.indexOf("\n  release-guardrails:\n", start);
-  const job = workflow.slice(start, end);
+  const job = workflow.slice(start);
   assert.match(job, /name: Luna-scale seed \(local Supabase\)/);
   const order = [
     "20260903210001_delete_org_sop_template.sql",
