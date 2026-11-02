@@ -1,6 +1,8 @@
 // E6.6 F6.6.2 — the Launches report (TS-135): locations with future or
 // recent go-live dates, grouped by provider group and date-sorted, with
-// provider counts, open-case counts, and the at-risk flag. DATE-ONLY — no
+// provider counts, open-case counts, and the at-risk flag (Overdue once the
+// date has passed); dateless locations trail in a "No go-live date" section,
+// never flagged. DATE-ONLY — no
 // location statuses anywhere; derivation is pure (src/lib/launchReport.ts)
 // over the shared facilities / assignments / providers / cases + case
 // location caches. Org-scoped inside
@@ -17,18 +19,25 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/EmptyState";
+import { statusToneClasses } from "@/components/StatusPill";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { fmtDate } from "@/lib/format";
 import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
+import { localCalendarDate } from "@/lib/systemTokens";
 import { useCases, useOrgCaseFacilityLinks } from "@/hooks/useCases";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { useProviderAssignments, useProviders } from "@/hooks/useProviders";
+import { useLaunchReportRules } from "@/hooks/useLaunches";
 import {
   buildLaunchReportRows,
+  buildNoGoLiveDateRows,
   groupLaunchRows,
-  LAUNCH_AT_RISK_RULE_TEXT,
-  openCasesByFacility,
+  launchAtRiskRuleText,
+  launchEmptyStateText,
+  launchRiskLabel,
+  openCaseCountsByFacility,
   providerCountsByFacility,
+  type LaunchNoDateRow,
   type LaunchReportRow,
 } from "@/lib/launchReport";
 
@@ -36,6 +45,19 @@ function launchTiming(row: LaunchReportRow): string {
   if (row.daysUntil > 0) return `in ${row.daysUntil} day${row.daysUntil === 1 ? "" : "s"}`;
   if (row.daysUntil === 0) return "today";
   return `${-row.daysUntil} day${row.daysUntil === -1 ? "" : "s"} ago`;
+}
+
+function LocationCell({ row }: { row: Pick<LaunchNoDateRow, "name" | "city" | "state"> }) {
+  return (
+    <TableCell>
+      <div className="text-[13px] font-medium text-foreground">{row.name}</div>
+      {row.city || row.state ? (
+        <div className="text-[12px] text-muted-foreground">
+          {[row.city, row.state].filter(Boolean).join(", ")}
+        </div>
+      ) : null}
+    </TableCell>
+  );
 }
 
 export function LaunchesReport() {
@@ -47,8 +69,10 @@ export function LaunchesReport() {
   const casesQ = useCases();
   const caseFacilitiesQ = useOrgCaseFacilityLinks();
   const today = localTodayIso();
+  // The windows are configuration (MINT-116); the defaults until it lands.
+  const rules = useLaunchReportRules();
 
-  const groups = useMemo(() => {
+  const { groups, noDate } = useMemo(() => {
     // The domain type keeps the FK columns nullable; a row missing either id
     // can't join anything, so it drops at this boundary.
     const assignments = (assignmentsQ.data ?? []).flatMap((a) =>
@@ -57,31 +81,39 @@ export function LaunchesReport() {
         : [],
     );
     const providers = providersQ.data ?? [];
-    const rows = buildLaunchReportRows(
-      (facilitiesQ.data ?? []).map((f) => ({
-        id: f.id,
-        name: f.name,
-        groupId: f.groupId,
-        effectiveDate: f.effectiveDate,
-        isActive: f.isActive,
-        referenceOnly: f.referenceOnly,
-        city: f.city,
-        state: f.state,
-      })),
-      providerCountsByFacility(assignments, providers, today),
-      openCasesByFacility(
-        (casesQ.data ?? []).map((c) => ({
-          id: c.id,
-          providerId: c.providerId,
-          facilityId: c.facilityId,
-          status: c.caseStatus,
-        })),
-        caseFacilitiesQ.data ?? [],
-        providers,
+    const facilities = (facilitiesQ.data ?? []).map((f) => ({
+      id: f.id,
+      name: f.name,
+      groupId: f.groupId,
+      effectiveDate: f.effectiveDate,
+      isActive: f.isActive,
+      referenceOnly: f.referenceOnly,
+      city: f.city,
+      state: f.state,
+    }));
+    const providerCounts = providerCountsByFacility(assignments, providers, today);
+    // A case's opening day is its created_at as the browser's local calendar
+    // day, compared date-only with the go-live date (MINT-100 A2).
+    const cases = (casesQ.data ?? []).map((c) => ({
+      id: c.id,
+      providerId: c.providerId,
+      facilityId: c.facilityId,
+      status: c.caseStatus,
+      openedOn:
+        c.createdAt && !Number.isNaN(Date.parse(c.createdAt))
+          ? localCalendarDate(new Date(c.createdAt))
+          : null,
+    }));
+    const caseFacilities = caseFacilitiesQ.data ?? [];
+    const openCases = openCaseCountsByFacility(cases, caseFacilities, providers, facilities);
+    const groupNameById = new Map((groupsQ.data ?? []).map((g) => [g.id, g.name]));
+    return {
+      groups: groupLaunchRows(
+        buildLaunchReportRows(facilities, providerCounts, openCases, today, rules),
+        groupNameById,
       ),
-      today,
-    );
-    return groupLaunchRows(rows, new Map((groupsQ.data ?? []).map((g) => [g.id, g.name])));
+      noDate: buildNoGoLiveDateRows(facilities, providerCounts, openCases.all, groupNameById),
+    };
   }, [
     facilitiesQ.data,
     groupsQ.data,
@@ -90,6 +122,7 @@ export function LaunchesReport() {
     casesQ.data,
     caseFacilitiesQ.data,
     today,
+    rules,
   ]);
 
   if (!orgId) {
@@ -106,10 +139,10 @@ export function LaunchesReport() {
 
   return (
     <div className="space-y-5">
-      {/* The at-risk rule, stated inline (F6.6.2 AC). */}
-      <p className="text-[12.5px] text-muted-foreground">{LAUNCH_AT_RISK_RULE_TEXT}</p>
-      {groups.length === 0 ? (
-        <EmptyState message="No locations with upcoming or recent go-live dates. Set a go-live date on a facility to see it here." />
+      {/* The at-risk rule, stated inline (F6.6.2 AC), from the rules applied. */}
+      <p className="text-[12.5px] text-muted-foreground">{launchAtRiskRuleText(rules)}</p>
+      {groups.length === 0 && noDate.length === 0 ? (
+        <EmptyState message={launchEmptyStateText(rules)} />
       ) : (
         groups.map((g) => (
           <section key={g.groupId ?? "no-group"} aria-label={g.groupName}>
@@ -128,14 +161,7 @@ export function LaunchesReport() {
                 <TableBody>
                   {g.rows.map((row) => (
                     <TableRow key={row.facilityId}>
-                      <TableCell>
-                        <div className="text-[13px] font-medium text-foreground">{row.name}</div>
-                        {row.city || row.state ? (
-                          <div className="text-[12px] text-muted-foreground">
-                            {[row.city, row.state].filter(Boolean).join(", ")}
-                          </div>
-                        ) : null}
-                      </TableCell>
+                      <LocationCell row={row} />
                       <TableCell className="text-[13px] whitespace-nowrap">
                         {fmtDate(row.effectiveDate)}
                         <span className="ml-1 text-[12px] text-muted-foreground">
@@ -146,9 +172,11 @@ export function LaunchesReport() {
                       <TableCell className="text-right text-[13px]">{row.openCaseCount}</TableCell>
                       <TableCell>
                         {row.atRisk ? (
-                          <span className="inline-flex items-center gap-1 rounded-[4px] bg-[var(--mp-warn-tint)] px-2 py-0.5 text-[12px] font-medium text-[var(--mp-warn-ink)]">
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-[4px] px-2 py-0.5 text-[12px] font-medium ${statusToneClasses[row.riskKind === "overdue" ? "red" : "amber"]}`}
+                          >
                             <AlertTriangle className="h-3.5 w-3.5" />
-                            At risk — {row.atRiskReasons.join("; ")}
+                            {launchRiskLabel(row)}
                           </span>
                         ) : (
                           <span className="text-[12px] text-muted-foreground">—</span>
@@ -162,6 +190,36 @@ export function LaunchesReport() {
           </section>
         ))
       )}
+      {noDate.length > 0 ? (
+        <section aria-label="No go-live date">
+          <h2 className="mb-1 text-[14px] font-semibold text-foreground">No go-live date</h2>
+          <p className="mb-2 text-[12.5px] text-muted-foreground">
+            Never flagged. Set a go-live date on the location to track its launch.
+          </p>
+          <div className="overflow-x-auto rounded-md border border-[#E8E5E0]">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Location</TableHead>
+                  <TableHead>Group</TableHead>
+                  <TableHead className="text-right">Providers</TableHead>
+                  <TableHead className="text-right">Open cases</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {noDate.map((row) => (
+                  <TableRow key={row.facilityId}>
+                    <LocationCell row={row} />
+                    <TableCell className="text-[13px]">{row.groupName}</TableCell>
+                    <TableCell className="text-right text-[13px]">{row.providerCount}</TableCell>
+                    <TableCell className="text-right text-[13px]">{row.openCaseCount}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
