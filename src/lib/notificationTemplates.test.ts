@@ -17,7 +17,7 @@ import {
 import type { NotificationChannel } from "@/types";
 
 const MIGRATION = readFileSync(
-  "supabase/migrations/20261101100000_notification_sequences.sql",
+  "supabase/migrations/20261101110100_notification_sequences.sql",
   "utf8",
 );
 

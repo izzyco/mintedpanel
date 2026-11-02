@@ -2334,7 +2334,7 @@ export interface RosterExportSnapshot {
   downloadPath: string;
 }
 
-// MINT-107 organization notification sequences (migration 20261101100000).
+// MINT-107 organization notification sequences (migration 20261101110100).
 // Configuration only: nothing in the app sends these messages yet. Minted's
 // platform default (one per purpose) is inherited field by field by each
 // org's own row, except the digest's schedule, which only an org row has

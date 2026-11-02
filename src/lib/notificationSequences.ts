@@ -45,7 +45,7 @@
 // only the key's format and its purpose prefix, so a row written directly
 // can name a key the catalog does not have.
 //
-// The database enforces the same bounds (migration 20261101100000): offsets 0
+// The database enforces the same bounds (migration 20261101110100): offsets 0
 // to 90, intake offsets from day 1 (A12), at most 10 steps, offsets strictly
 // increasing, the digest at most one step and no cc unless Minted allows it,
 // cc lists of at most 20 users or roles, at least one stop condition (A11),
@@ -144,7 +144,7 @@ export function describeCcList(
 }
 
 /**
- * Mirrors the CHECK constraints in migration 20261101100000. Default values
+ * Mirrors the CHECK constraints in migration 20261101110100. Default values
  * (14 days, the default steps, the send time) are not here: they are Minted's
  * platform default rows, read through the service.
  */
@@ -224,7 +224,7 @@ export const PLATFORM_DEFAULT_LABEL = "Minted's default";
 
 /**
  * Two decided policies kept as settings, not code. Minted's default rows
- * carry them (migration 20261101100000 seeds these same values) and an org's
+ * carry them (migration 20261101110100 seeds these same values) and an org's
  * own row may override either; Mission Control edits them (MINT-113). The
  * bounce step is org-owned (an org admin may set it); digest_cc_allowed is
  * platform-managed (only Minted writes it, on the default or as an org
@@ -1312,7 +1312,7 @@ export function describeStep(
 
 /* ------------------------------- Send time --------------------------------- */
 
-/** Same pattern as private.notification_time_zone_valid in migration 20261101100000. */
+/** Same pattern as private.notification_time_zone_valid in migration 20261101110100. */
 export const IANA_TIME_ZONE_PATTERN = /^(UTC|[A-Z][A-Za-z_]+(\/[A-Za-z0-9_+-]+){1,2})$/;
 
 /** True for an IANA zone name ("America/Chicago") that this runtime can format in. */
