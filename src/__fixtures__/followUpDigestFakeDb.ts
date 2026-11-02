@@ -23,7 +23,8 @@
 // open rows for (org, check, record) and answers how many. Like the SQL, a
 // record must be the org's own row (organizations) or one of its memberships,
 // and a context must be valid, with its ids the org's. Each rpc() is awaitable
-// and has supabase-js's .abortSignal(). The SQL is exercised by
+// and has supabase-js's .abortSignal(); a stalled RPC answers only when that
+// signal aborts, with the error supabase-js gives. The SQL is exercised by
 // supabase/tests/mint134-*.sql.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
@@ -89,6 +90,8 @@ export interface FakeDigestDb {
   failNextRpc: Partial<Record<SendRpc, FakeError>>;
   /** Every call of this advisory RPC answers with this error. */
   failRpc: Partial<Record<AdvisoryRpc, FakeError>>;
+  /** A call of one of these advisory RPCs hangs until its abort signal fires. */
+  stallRpc: Set<AdvisoryRpc>;
   /** A claim for one of these recipients answers with a connection error. */
   failClaimFor: Set<string>;
 }
@@ -129,6 +132,7 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
     failRead: null,
     failNextRpc: {},
     failRpc: {},
+    stallRpc: new Set(),
     failClaimFor: new Set(),
   };
 
@@ -330,6 +334,20 @@ export function createFollowUpDigestFakeDb(tables: Record<string, FakeRow[]> = {
   // Answered at call time, like the SQL; awaitable, with .abortSignal().
   const rpc = (fn: string, args: Record<string, unknown>) => {
     state.rpcCalls.push({ fn, args });
+    if (state.stallRpc.has(fn as AdvisoryRpc)) {
+      let answerWith: (result: Result) => void = () => {};
+      const stalled = new Promise<Result>((resolve) => (answerWith = resolve));
+      return Object.assign(stalled, {
+        abortSignal: (signal: AbortSignal) => {
+          signal.addEventListener(
+            "abort",
+            () => answerWith({ data: null, error: { code: "", message: "AbortError" } }),
+            { once: true },
+          );
+          return stalled;
+        },
+      });
+    }
     const result = Promise.resolve(answer(fn, args));
     return Object.assign(result, { abortSignal: () => result });
   };

@@ -1519,6 +1519,13 @@ describe("followup-digest: bypassed checks (MINT-134)", () => {
   const recordCalls = () => fake.rpcCalls.filter((c) => c.fn === "record_job_advisory");
   const resolveCalls = () => fake.rpcCalls.filter((c) => c.fn === "resolve_workflow_advisories");
   const warned = () => warn.mock.calls.map((call) => JSON.parse(String(call[0])) as unknown);
+  const tally = (calls: Array<{ args: Record<string, unknown> }>) => {
+    const byKey: Record<string, number> = {};
+    for (const c of calls)
+      byKey[String(c.args.p_check_key)] = (byKey[String(c.args.p_check_key)] ?? 0) + 1;
+    return byKey;
+  };
+  const states = () => fake.advisories.map((r) => [r.check_key, r.resolved]);
 
   /** world(), but org A's unassigned follow-up is next week: nothing to record. */
   function cleanWorld(options: WorldOptions = {}): World {
@@ -1610,53 +1617,118 @@ describe("followup-digest: bypassed checks (MINT-134)", () => {
     expect(warned()).toEqual([]);
   });
 
-  it("records nothing when there is no problem, and resolves only on a send, not every hour", async () => {
+  it("records nothing when there is no problem, and resolves each check where it is checked", async () => {
     fake = createFollowUpDigestFakeDb(cleanWorld().tables);
     expect(await runFollowUpDigest(ctx(), deps())).toEqual(
       counts({ orgs_due: 2, digests_sent: 3 }),
     );
-    // One per digest sent (its coordinator) and one per org that sent (its step).
-    expect(resolveCalls()).toHaveLength(5);
+    // The step on each due org's check; the rest with a scheduled send: one
+    // per coordinator sent, and the org's reads and unassigned count.
+    expect(tally(resolveCalls())).toEqual({
+      "digest.org_failed": 2,
+      "digest.recipient_no_email": 3,
+      "digest.step_unusable": 2,
+      "digest.unassigned_follow_ups": 2,
+    });
+    // The next hour sends nothing: only the step is checked again.
     expect(await runFollowUpDigest(ctx(NEXT_HOUR), deps())).toEqual(counts({ orgs_due: 2 }));
-    expect(resolveCalls()).toHaveLength(5);
+    expect(tally(resolveCalls())).toEqual({
+      "digest.org_failed": 2,
+      "digest.recipient_no_email": 3,
+      "digest.step_unusable": 4,
+      "digest.unassigned_follow_ups": 2,
+    });
     expect(recordCalls()).toEqual([]);
     expect(fake.advisories).toEqual([]);
     expect(warned()).toEqual([]);
   });
 
-  it("resolves the step once the org sends again, a coordinator's no-email once they get a digest, and records a recurrence anew", async () => {
+  it("resolves the step on the next run that finds it usable, sent or not, and records a recurrence anew", async () => {
     fake = createFollowUpDigestFakeDb(cleanWorld(unusableStepA).tables);
     await runFollowUpDigest(ctx(), deps());
     const stepA = fake.tables.notification_sequence_steps.find(
       (s) => s.sequence_id === SEQ_A,
     ) as FakeRow;
+    // 9 am: the step is fixed, and SendGrid rejects every send.
+    stepA.channel = "email";
+    const rejectAll = mailer(() => new EmailError("provider_rejected", "rejected (400)", 400));
+    const result = await runFollowUpDigest(ctx(NEXT_HOUR), deps({ send: rejectAll }));
+    expect(result.digests_sent).toBe(0);
+    expect(states()).toEqual([["digest.step_unusable", true]]);
+    // 10 am: it breaks again.
+    stepA.channel = "sms";
+    await runFollowUpDigest(ctx(new Date("2026-10-31T15:00:00Z")), deps());
+    expect(states()).toEqual([
+      ["digest.step_unusable", true],
+      ["digest.step_unusable", false],
+    ]);
+    expect(warned()).toEqual([]);
+  });
+
+  it("resolves a coordinator's no-email once they get a digest, and records a recurrence anew", async () => {
+    const w = withoutEmail(cleanWorld(), JANE);
+    fake = createFollowUpDigestFakeDb(w.tables);
     const jane = fake.tables.memberships.find(
       (m) => m.org_id === ORG_A && m.user_id === JANE,
     ) as FakeRow;
-    const janeEmail = (jane.profiles as FakeRow).email;
-
-    // 9 am: the step is fixed, and Jane has no usable address.
-    stepA.channel = "email";
-    jane.profiles = { ...(jane.profiles as FakeRow), email: "" };
+    const setEmail = (email: string) => (jane.profiles = { ...(jane.profiles as FakeRow), email });
+    await runFollowUpDigest(ctx(), deps());
+    expect(states()).toEqual([["digest.recipient_no_email", false]]);
+    // 9 am: her address is fixed, and she gets the day's digest.
+    setEmail("jane@example.test");
     await runFollowUpDigest(ctx(NEXT_HOUR), deps());
-    expect(recipients()).toEqual(["bill@example.test", "omar@example.test"]);
-    // 10 am: Jane's address is fixed.
-    jane.profiles = { ...(jane.profiles as FakeRow), email: janeEmail };
-    await runFollowUpDigest(ctx(new Date("2026-10-31T15:00:00Z")), deps());
     expect(recipients()).toContain("jane@example.test");
-    expect(fake.advisories.map((r) => [r.check_key, r.resolved])).toEqual([
-      ["digest.step_unusable", true],
-      ["digest.recipient_no_email", true],
-    ]);
-
-    // Next day the step breaks again: a new row, since the last was resolved.
-    stepA.channel = "sms";
+    expect(states()).toEqual([["digest.recipient_no_email", true]]);
+    // Nov 1, 8 am CST: unusable again.
+    setEmail("");
     await runFollowUpDigest(ctx(new Date("2026-11-01T14:00:00Z")), deps());
-    expect(fake.advisories.map((r) => [r.check_key, r.resolved])).toEqual([
-      ["digest.step_unusable", true],
+    expect(states()).toEqual([
       ["digest.recipient_no_email", true],
-      ["digest.step_unusable", false],
+      ["digest.recipient_no_email", false],
     ]);
+    expect(warned()).toEqual([]);
+  });
+
+  it("resolves the org-failed row once the org sends again, and records a later outage anew", async () => {
+    fake = createFollowUpDigestFakeDb(cleanWorld().tables);
+    failReadsOf(ORG_A);
+    await runFollowUpDigest(ctx(), deps());
+    expect(states()).toEqual([["digest.org_failed", false]]);
+    // 9 am: the reads work and the day's digests go out.
+    fake.failRead = null;
+    expect((await runFollowUpDigest(ctx(NEXT_HOUR), deps())).digests_sent).toBe(2);
+    expect(states()).toEqual([["digest.org_failed", true]]);
+    // Nov 1, 8 am CST: another outage.
+    failReadsOf(ORG_A);
+    await runFollowUpDigest(ctx(new Date("2026-11-01T14:00:00Z")), deps());
+    expect(states()).toEqual([
+      ["digest.org_failed", true],
+      ["digest.org_failed", false],
+    ]);
+    expect(warned()).toEqual([]);
+  });
+
+  it("resolves the unassigned row at a send with nothing unassigned, and records a new count anew", async () => {
+    const w = world();
+    fake = createFollowUpDigestFakeDb(w.tables);
+    const touch = fake.tables.touches.find((t) => t.case_id === w.cases.unassigned.id) as FakeRow;
+    await runFollowUpDigest(ctx(), deps());
+    // The day's send went out with one unassigned: the row stays open.
+    expect(states()).toEqual([["digest.unassigned_follow_ups", false]]);
+    // Nov 1, 8 am CST: nothing unassigned is due.
+    touch.next_follow_up_date = "2026-11-07";
+    expect(
+      (await runFollowUpDigest(ctx(new Date("2026-11-01T14:00:00Z")), deps())).digests_sent,
+    ).toBe(3);
+    expect(states()).toEqual([["digest.unassigned_follow_ups", true]]);
+    // Nov 2: it is due again.
+    touch.next_follow_up_date = "2026-10-25";
+    await runFollowUpDigest(ctx(new Date("2026-11-02T14:00:00Z")), deps());
+    expect(states()).toEqual([
+      ["digest.unassigned_follow_ups", true],
+      ["digest.unassigned_follow_ups", false],
+    ]);
+    expect(fake.advisories[1].context).toEqual({ count: 1 });
     expect(warned()).toEqual([]);
   });
 
@@ -1673,13 +1745,18 @@ describe("followup-digest: bypassed checks (MINT-134)", () => {
     expect(recipients()).toEqual(["omar@example.test"]);
     expect(ledgerRows()).toEqual([[JOB, TODAY, ORG_A, OMAR, "sent"]]);
     const line = (event: string, key: string) => ({ event, check_key: key, sqlstate: "57014" });
-    expect(warned()).toEqual([
-      line("advisory_record_failed", "digest.unassigned_follow_ups"),
-      line("advisory_record_failed", "digest.recipient_no_email"),
-      line("advisory_resolve_failed", "digest.recipient_no_email"),
-      line("advisory_resolve_failed", "digest.step_unusable"),
-      line("advisory_record_failed", "digest.org_failed"),
-    ]);
+    const sorted = (lines: unknown[]) => lines.map((l) => JSON.stringify(l)).sort();
+    expect(sorted(warned())).toEqual(
+      sorted([
+        line("advisory_record_failed", "digest.org_failed"),
+        line("advisory_record_failed", "digest.recipient_no_email"),
+        line("advisory_record_failed", "digest.unassigned_follow_ups"),
+        line("advisory_resolve_failed", "digest.org_failed"),
+        line("advisory_resolve_failed", "digest.recipient_no_email"),
+        line("advisory_resolve_failed", "digest.step_unusable"),
+        line("advisory_resolve_failed", "digest.step_unusable"),
+      ]),
+    );
 
     // An unusable step: the org is still skipped, the other still sent.
     warn.mockClear();
@@ -1692,5 +1769,38 @@ describe("followup-digest: bypassed checks (MINT-134)", () => {
     expect(recipients()).toEqual(["jane@example.test", "omar@example.test"]);
     expect(warned()).toEqual([line("advisory_record_failed", "digest.step_unusable")]);
     expect(fake.advisories).toEqual([]);
+  });
+
+  it("waits for its advisory calls together: stalled RPCs add one timeout to the run, not one each", async () => {
+    // Each helper call's timeout signal, aborted by the test.
+    const timers: AbortController[] = [];
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const timer = new AbortController();
+      timers.push(timer);
+      return timer.signal;
+    });
+    try {
+      fake = createFollowUpDigestFakeDb(withoutEmail(world(), JANE).tables);
+      fake.stallRpc = new Set(["record_job_advisory", "resolve_workflow_advisories"]);
+      let settled = false;
+      const run = runFollowUpDigest(ctx(), deps()).then((result) => {
+        settled = true;
+        return result;
+      });
+      // Every send goes out while the calls hang, and all nine are in flight
+      // at once: org A's step, unassigned, Jane, Omar and reads; org B's step,
+      // Bill, reads and unassigned.
+      await vi.waitFor(() => expect(timers).toHaveLength(9));
+      expect(recipients()).toEqual(["bill@example.test", "omar@example.test"]);
+      expect(settled).toBe(false);
+      // One timeout: every call gives up at once.
+      for (const timer of timers) timer.abort();
+      expect(await run).toEqual(counts({ orgs_due: 2, digests_sent: 2, unassigned_follow_ups: 1 }));
+      expect(timers).toHaveLength(9);
+      expect(warned()).toHaveLength(9);
+      expect(warned().every((l) => (l as { sqlstate: string }).sqlstate === "unknown")).toBe(true);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 });
