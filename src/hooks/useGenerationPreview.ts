@@ -12,6 +12,7 @@ import { useActiveOrgId } from "@/lib/auth-store";
 import { FIVE_MINUTES, queryKeys } from "@/hooks/queryKeys";
 import { useFacilities, useOrgStateLicenses, useProviderGroups } from "@/hooks/useLookups";
 import { useProviderAssignments, useProviderGroupAssignments } from "@/hooks/useProviders";
+import { resolveCaqhAttestationWindowDays } from "@/lib/caqhAttestation";
 import { resolveCaseFacilityId } from "@/lib/caseFacility";
 import { usePayers, useStatusConfigs } from "@/hooks/useAdmin";
 import { usePayerNetworkTargets } from "@/hooks/usePayerNetworkTargets";
@@ -292,6 +293,8 @@ export function useGenerationPreview(scope?: GenerationScope): GenerationPreview
       groupDocuments: documentsQ.data ?? [],
       groupInsurancePolicies: insuranceQ.data ?? [],
       contracts,
+      // The shared CAQH window (A26); nothing stores an override yet (MINT-125).
+      caqhAttestationWindowDays: resolveCaqhAttestationWindowDays(null, null),
     });
     const readinessByKey = new Map(readinessRows.map((r) => [previewRowKey(r), r]));
     return {
@@ -503,6 +506,7 @@ export function useConfirmGeneration() {
       qc.invalidateQueries({ queryKey: ["cases", orgId] });
       qc.invalidateQueries({ queryKey: ["tasks", orgId] });
       qc.invalidateQueries({ queryKey: ["audit-log", orgId] });
+      qc.invalidateQueries({ queryKey: queryKeys.onboardingFunnel(orgId) });
       // E2.4: the fresh run + its disposition rows appear in run history.
       qc.invalidateQueries({ queryKey: ["generation-runs", orgId] });
       qc.invalidateQueries({ queryKey: ["generation-run-rows", orgId] });

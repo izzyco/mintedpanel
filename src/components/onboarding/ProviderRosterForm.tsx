@@ -1,12 +1,13 @@
 // Provider form dialog (E1.3 F1.3.1) — the CAQH-anchored baseline over the
 // EXISTING providers columns. Group assignment is step one (required, M:N,
-// one primary). Required to save: name, Type 1 NPI (10 digits + CMS check digit),
-// ≥1 group assignment; every other CAQH field is optional (readiness — E1.8
-// — is the gate, not entry). SSN is captured as LAST-4 ONLY (hard rule; the
+// one primary). Required to save: name and ≥1 group assignment. The Type 1 NPI
+// is optional (Addendum 11, B3); an entered one must be 10 digits with the CMS
+// check digit. Every other CAQH field is optional (readiness — E1.8 — is the
+// gate, not entry). SSN is captured as LAST-4 ONLY (hard rule; the
 // full-SSN vault is R6/R7). No status picker — new providers default to
 // `onboarding`. Work history / disclosures are NOT captured (CAQH
 // attestation is the proxy). Licenses + PSV ride the same save.
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -30,25 +31,37 @@ import { GroupAssignmentPicker } from "@/components/onboarding/GroupAssignmentPi
 import { LicenseListEditor } from "@/components/onboarding/LicenseListEditor";
 import {
   EMPTY_LICENSE_DRAFT,
+  addRegistryLicenseDraft,
   licenseDraftToValues,
   licenseDraftsEqual,
   type LicenseDraft,
 } from "@/components/onboarding/licenseDraft";
 import { useProvider, useProviderGroupAssignments } from "@/hooks/useProviders";
 import { useStateLicensesByProvider } from "@/hooks/useLookups";
-import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
 import { useCreateProviderWithDetails, useUpdateProviderWithLicenses } from "@/hooks/useProviders";
 import { useCreateEnrollmentFact } from "@/hooks/useEnrollmentFacts";
 import { usePayers } from "@/hooks/useAdmin";
 import { StateSelect } from "@/components/StateSelect";
 import { ENROLLMENT_GUARD_TEXT } from "@/components/providers/EnrollmentsPanel";
-import { normalizeNpi } from "@/lib/providerGroup";
+import { NpiRegistryAssist } from "@/components/providers/NpiRegistryAssist";
+import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
+import { useNpiRegistryPolicy, useRecordNpiAdvisoriesAfterSave } from "@/hooks/useNpiRegistry";
+import { applyRosterNpiPick, rosterNpiError } from "@/components/onboarding/rosterNpi";
 import {
-  NPI_CHECK_DIGIT_MESSAGE,
+  identityFieldChanged,
   identityFieldNeedsCheck,
-  isValidNpi,
+  stripNpiSeparators,
 } from "@/lib/providerIdentity";
 import { taxonomyOptionsForValue } from "@/lib/providerTaxonomy";
+import {
+  npiCandidatesOnForm,
+  npiOffersOnForm,
+  npiRegistrySourceLabel,
+  npiPickWithCandidate,
+  npiRegistrySourcedFields,
+  type NpiPickState,
+} from "@/lib/npiRegistryFill";
+import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import { usPhoneError } from "@/lib/phone";
 import { usePhoneValidationRules } from "@/hooks/usePhoneValidationRules";
@@ -70,9 +83,13 @@ interface RosterFormErrors {
   assignments?: string;
 }
 
-function FieldError({ message }: { message?: string }) {
+function FieldError({ id, message }: { id?: string; message?: string }) {
   if (!message) return null;
-  return <p className="mt-1 text-[12px] text-[#B91C1C]">{message}</p>;
+  return (
+    <p id={id} className="mt-1 text-[12px] text-[#B91C1C]">
+      {message}
+    </p>
+  );
 }
 
 interface RosterFormState {
@@ -134,7 +151,7 @@ function toProviderInput(f: RosterFormState): Omit<ProviderInput, "firstName" | 
     // dialog no longer captures it, and omitting the keys means an edit-mode
     // save never touches the columns — the provider record's inline fields
     // and the CSV import remain the address writers.
-    npi: f.npi.replace(/\D/g, "") || null,
+    npi: stripNpiSeparators(f.npi) || null,
     taxonomyCode: t(f.taxonomyCode),
     specialty: t(f.specialty),
     startDate: t(f.startDate),
@@ -209,6 +226,94 @@ function FormBody({
   const phoneRules = usePhoneValidationRules();
 
   const set = (patch: Partial<RosterFormState>) => setForm((f) => ({ ...f, ...patch }));
+  const npiNoticeId = useId();
+  const npiDigits = stripNpiSeparators(form.npi);
+  const npiChanged = identityFieldChanged(
+    form.npi,
+    provider ? initialForm.npi : undefined,
+    stripNpiSeparators,
+  );
+  const npiPolicy = useNpiRegistryPolicy();
+  const recordNpiAdvisories = useRecordNpiAdvisoriesAfterSave();
+  // MINT-110 (A30, A30c): the registry check never holds up the save, and the
+  // roster form has no review step (only Add Provider does): Save saves, and
+  // the answer is the quiet note under the NPI. Only an NPI that is new or
+  // changed is checked; a name-only edit leaves the stored NPI unchecked
+  // (Addendum 10). After the save every advisory, the credentials, taxonomy
+  // and license differences included, goes to the backend capture.
+
+  // MINT-110: the last NPI Registry pick (its summary, and what it wrote so a
+  // second pick can replace it). A pick adds a row for each registry license
+  // in a state with none (A37); staff add any other offered one from the
+  // summary.
+  const [npiPick, setNpiPick] = useState<NpiPickState | null>(null);
+  // Which fields staff edited (set from their input only); a pick's values,
+  // and a candidate staff used for Gender or Phone (A36), are the registry's
+  // until then.
+  const [npiTouched, setNpiTouched] = useState({
+    credentials: false,
+    taxonomyCode: false,
+    gender: false,
+    phone: false,
+  });
+  const npiErrorId = useId();
+  const pickFromRegistry = (record: NpiRegistryRecord, pulledAt: string) => {
+    const next = applyRosterNpiPick(
+      {
+        npi: form.npi,
+        credentials: form.credentials,
+        taxonomyCode: form.taxonomyCode,
+        gender: form.gender,
+        phone: form.phone,
+      },
+      licenses,
+      record,
+      npiPolicy.fillOnPick,
+      { touched: npiTouched, lastPick: npiPick?.trace ?? null, pulledAt },
+    );
+    set(next.patch);
+    setLicenses(next.licenses);
+    if (next.trace.credentials) setNpiTouched((touched) => ({ ...touched, credentials: false }));
+    setNpiPick({
+      seq: (npiPick?.seq ?? 0) + 1,
+      npi: record.npi,
+      trace: next.trace,
+      summary: next.summary,
+      pulledAt,
+    });
+  };
+
+  // A35: values a pick filled, untouched, say "From NPI Registry, <date>"
+  // until staff edit them. A roster save confirms nothing: there is no review
+  // step to confirm on (A30c).
+  const npiSourced = npiRegistrySourcedFields(npiPick, {
+    credentials: form.credentials,
+    credentialsTouched: npiTouched.credentials,
+    taxonomyCode: form.taxonomyCode,
+    taxonomyTouched: npiTouched.taxonomyCode,
+    licenses: licenses.map((draft) => ({
+      state: draft.state,
+      number: draft.licenseNumber,
+      origin: draft.npiOrigin,
+    })),
+    gender: { value: form.gender, touched: npiTouched.gender },
+    phone: { value: form.phone, touched: npiTouched.phone },
+  });
+  const npiSourceLabel = npiPick ? npiRegistrySourceLabel(npiPick.pulledAt) : null;
+  const recordAfterSave = (recordId: string) =>
+    recordNpiAdvisories({
+      recordId,
+      npi: npiDigits,
+      verify: npiChanged,
+      typed: { firstName: form.firstName, lastName: form.lastName },
+      entered: {
+        credentials: form.credentials,
+        taxonomyCode: form.taxonomyCode,
+        licenses: licenses.map((draft) => ({ state: draft.state, number: draft.licenseNumber })),
+      },
+      confirmed: new Set(),
+      policy: npiPolicy,
+    });
 
   const reload = async () => {
     if (!onReload) return;
@@ -228,19 +333,19 @@ function FormBody({
     const next: RosterFormErrors = {};
     if (!form.firstName.trim()) next.firstName = "First name is required";
     if (!form.lastName.trim()) next.lastName = "Last name is required";
-    // MINT-7: an entered or changed NPI must pass the CMS check digit. By
-    // default an unchanged stored NPI is not re-checked, so legacy data never
-    // blocks an unrelated edit (recheckStoredOnEdit, MINT-129).
-    const npiDigits = normalizeNpi(form.npi);
-    const npiChecked = identityFieldNeedsCheck(
+    // MINT-7 / MINT-129: an entered or changed NPI is checked; by default an
+    // unchanged stored NPI is not re-checked, so legacy data never blocks an
+    // unrelated edit (recheckStoredOnEdit). MINT-110: only separators are
+    // stripped, so other junk still fails. The NPI Registry check never
+    // refuses a save (its answer is a note, then a backend advisory).
+    const npiNeedsCheck = identityFieldNeedsCheck(
       form.npi,
       provider ? initialForm.npi : undefined,
       identityRules,
-      normalizeNpi,
+      stripNpiSeparators,
     );
-    if (!form.npi.trim()) next.npi = "Type 1 NPI is required";
-    else if (npiChecked && npiDigits.length !== 10) next.npi = "NPI must be 10 digits";
-    else if (npiChecked && !isValidNpi(npiDigits)) next.npi = NPI_CHECK_DIGIT_MESSAGE;
+    const npiError = rosterNpiError(form.npi, npiNeedsCheck);
+    if (npiError) next.npi = npiError;
     if (form.ssnLast4.trim() && !/^\d{4}$/.test(form.ssnLast4.trim()))
       next.ssnLast4 = "Enter the LAST 4 digits only";
     const assignmentError = validateGroupAssignments(assignments);
@@ -302,13 +407,16 @@ function FormBody({
       }
       updateMut.mutate(
         {
-          patch: toProviderInput(form),
+          // An unchanged stored NPI goes back exactly as stored, so a legacy
+          // value is never rewritten by an unrelated edit.
+          patch: { ...toProviderInput(form), ...(npiChanged ? {} : { npi: provider.npi ?? null }) },
           licenseCommands,
           groupAssignments: assignments,
         },
         {
           onSuccess: () => {
             toast.success("Provider updated");
+            recordAfterSave(provider.id);
             onClose();
           },
           onError,
@@ -325,6 +433,7 @@ function FormBody({
         {
           onSuccess: async (result) => {
             toast.success("Provider added to the roster");
+            recordAfterSave(result.provider.id);
             for (const warning of result.warnings) toast.warning(warning);
             // Record captured enrollment facts under the PRIMARY group's
             // contract — facts only, zero cases (F6.4.4).
@@ -409,15 +518,27 @@ function FormBody({
               <Input
                 id="prov-credentials"
                 value={form.credentials}
-                onChange={(e) => set({ credentials: e.target.value })}
+                onChange={(e) => {
+                  set({ credentials: e.target.value });
+                  setNpiTouched((touched) => ({ ...touched, credentials: true }));
+                }}
                 className="h-9"
               />
+              {npiSourced.credentials && npiSourceLabel ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
+              ) : null}
             </div>
             <div>
               <Label htmlFor="prov-gender" className="text-[12px]">
                 Gender
               </Label>
-              <Select value={form.gender} onValueChange={(v) => set({ gender: v })}>
+              <Select
+                value={form.gender}
+                onValueChange={(v) => {
+                  set({ gender: v });
+                  setNpiTouched((touched) => ({ ...touched, gender: true }));
+                }}
+              >
                 <SelectTrigger id="prov-gender" className="h-9">
                   <SelectValue />
                 </SelectTrigger>
@@ -428,6 +549,9 @@ function FormBody({
                   <SelectItem value="nonbinary">Nonbinary</SelectItem>
                 </SelectContent>
               </Select>
+              {npiSourced.gender && npiSourceLabel ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
+              ) : null}
             </div>
             <div>
               <Label htmlFor="prov-dob" className="text-[12px]">
@@ -479,9 +603,15 @@ function FormBody({
               <Input
                 id="prov-phone"
                 value={form.phone}
-                onChange={(e) => set({ phone: e.target.value })}
+                onChange={(e) => {
+                  set({ phone: e.target.value });
+                  setNpiTouched((touched) => ({ ...touched, phone: true }));
+                }}
                 className="h-9"
               />
+              {npiSourced.phone && npiSourceLabel ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
+              ) : null}
               <FieldError message={errors.phone} />
             </div>
           </div>
@@ -498,10 +628,12 @@ function FormBody({
                 id="prov-npi"
                 value={form.npi}
                 onChange={(e) => set({ npi: e.target.value })}
+                aria-describedby={errors.npi ? `${npiNoticeId} ${npiErrorId}` : npiNoticeId}
+                aria-invalid={errors.npi ? true : undefined}
                 inputMode="numeric"
                 className="h-9"
               />
-              <FieldError message={errors.npi} />
+              <FieldError id={npiErrorId} message={errors.npi} />
             </div>
             <div>
               <Label htmlFor="prov-taxonomy" className="text-[12px]">
@@ -509,7 +641,10 @@ function FormBody({
               </Label>
               <Select
                 value={form.taxonomyCode || undefined}
-                onValueChange={(v) => set({ taxonomyCode: v })}
+                onValueChange={(v) => {
+                  set({ taxonomyCode: v });
+                  setNpiTouched((touched) => ({ ...touched, taxonomyCode: true }));
+                }}
               >
                 <SelectTrigger id="prov-taxonomy" className="h-9" aria-label="Taxonomy code">
                   <SelectValue placeholder="Select taxonomy" />
@@ -523,6 +658,9 @@ function FormBody({
                   ))}
                 </SelectContent>
               </Select>
+              {npiSourced.taxonomyCode && npiSourceLabel ? (
+                <p className="mt-1 text-[12px] text-muted-foreground">{npiSourceLabel}</p>
+              ) : null}
             </div>
             <div>
               <Label htmlFor="prov-specialty" className="text-[12px]">
@@ -548,6 +686,60 @@ function FormBody({
               />
             </div>
           </div>
+          <NpiRegistryAssist
+            npi={npiDigits}
+            firstName={form.firstName}
+            lastName={form.lastName}
+            verify={npiChanged}
+            // Whether each offer is on the form is read from the rows, so a
+            // removed row can be added again.
+            pick={
+              npiPick
+                ? {
+                    ...npiPick,
+                    summary: npiCandidatesOnForm(
+                      npiOffersOnForm(
+                        npiPick.summary,
+                        licenses.map((draft) => ({
+                          state: draft.state,
+                          number: draft.licenseNumber,
+                        })),
+                      ),
+                      { gender: form.gender, phone: form.phone },
+                    ),
+                  }
+                : null
+            }
+            onPick={pickFromRegistry}
+            // One of several taxonomies (A35): staff chose it, so it is theirs.
+            onChooseTaxonomy={(code) => {
+              set({ taxonomyCode: code });
+              setNpiTouched((touched) => ({ ...touched, taxonomyCode: true }));
+            }}
+            // A registry value for Gender or Phone (A36): marked as the
+            // registry's until staff edit the field.
+            onUseCandidate={(candidate) => {
+              // The trace keeps what the field held, so the next pick can take
+              // the value back.
+              if (npiPick) {
+                setNpiPick(npiPickWithCandidate(npiPick, candidate, form[candidate.field]));
+              }
+              set({ [candidate.field]: candidate.value });
+              setNpiTouched((touched) => ({ ...touched, [candidate.field]: false }));
+            }}
+            onAddLicense={(offer) => {
+              const next = addRegistryLicenseDraft(
+                licenses,
+                offer,
+                npiPick?.pulledAt ?? new Date().toISOString(),
+              );
+              if (next.existing !== null) return "exists";
+              setLicenses(next.licenses);
+              return "added";
+            }}
+            noticeId={npiNoticeId}
+            policy={npiPolicy}
+          />
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label htmlFor="prov-degree" className="text-[12px]">

@@ -161,6 +161,14 @@ const EXPECTED_FAILS = {
   providerinvites: ["35b", "35c"],
   // A provider intake session reads another org's provider (35d).
   intakesession: ["35d"],
+  // MINT-110: the NPI Registry proxy serves an anonymous caller (36b) and a
+  // read-only billing member (36c). The anonymous leak opens the whole
+  // /api/npi-registry/ prefix, so the batch route's anonymous check (37b)
+  // reddens with it.
+  npiregistry: ["36b", "36c", "37b"],
+  // MINT-110 PR 2: the batch NPI check serves an anonymous caller (37b) and a
+  // read-only billing member (37c), and its answers can be cached (37d).
+  npibatch: ["37b", "37c", "37d"],
 };
 
 function failedAssertions(output) {

@@ -41,6 +41,7 @@ const loadDocumentRoutes = () => import("./documentRoutes");
 const loadPayerFormRoutes = () => import("./payerFormRoutes");
 const loadRosterRoutes = () => import("./rosterRoutes");
 const loadProviderIntakeRoutes = () => import("./providerIntakeRoutes");
+const loadNpiRegistryRoutes = () => import("./npiRegistryRoutes");
 const loadJobRoutes = () => import("./jobs/route");
 
 // `/api/providers/:id/profile` — must be matched before the generic :id route.
@@ -107,6 +108,10 @@ const ROSTER_ROUTE = /^\/api\/rosters(?:\/.*)?\/?$/;
 // Provider onboarding slice 1: staff create and resend provider invites.
 const PROVIDER_INVITES_ROUTE = /^\/api\/provider-invites\/?$/;
 const PROVIDER_INVITE_RESEND_ROUTE = /^\/api\/provider-invites\/([^/]+)\/resend\/?$/;
+// MINT-110: staff search and verify NPIs in the NPI Registry (NPPES).
+const NPI_REGISTRY_ROUTE = /^\/api\/npi-registry\/(search|lookup)\/?$/;
+// MINT-110 PR 2: the import review checks new providers' NPIs a batch at a time.
+const NPI_REGISTRY_BATCH_ROUTE = /^\/api\/npi-registry\/verify-batch\/?$/;
 
 // Keep verified user context request-scoped. Legacy routes retain one auth
 // call while the additive context-revision header reuses that actor after
@@ -491,6 +496,8 @@ async function routeApiRequest(request: Request): Promise<Response> {
   const isRosterRoute = ROSTER_ROUTE.test(pathname);
   const isProviderInvites = PROVIDER_INVITES_ROUTE.test(pathname);
   const providerInviteResendMatch = pathname.match(PROVIDER_INVITE_RESEND_ROUTE);
+  const npiRegistryMatch = pathname.match(NPI_REGISTRY_ROUTE);
+  const isNpiRegistryBatch = NPI_REGISTRY_BATCH_ROUTE.test(pathname);
   if (
     !profileMatch &&
     !ssnReleaseMatch &&
@@ -527,7 +534,9 @@ async function routeApiRequest(request: Request): Promise<Response> {
     !payerFormDownloadMatch &&
     !isRosterRoute &&
     !isProviderInvites &&
-    !providerInviteResendMatch
+    !providerInviteResendMatch &&
+    !npiRegistryMatch &&
+    !isNpiRegistryBatch
   ) {
     return fail(404, "Not found");
   }
@@ -842,6 +851,21 @@ async function routeApiRequest(request: Request): Promise<Response> {
       if (method !== "POST") return fail(405, "Method not allowed");
       const routes = await loadProviderIntakeRoutes();
       return await routes.handleResendProviderInvite(providerInviteResendMatch[1], ctx);
+    }
+    if (npiRegistryMatch) {
+      if (method !== "POST") return fail(405, "Method not allowed");
+      const routes = await loadNpiRegistryRoutes();
+      const body = await readBoundedJsonBody(request, 1024);
+      return npiRegistryMatch[1] === "search"
+        ? await routes.handleNpiRegistrySearch(body, ctx)
+        : await routes.handleNpiRegistryLookup(body, ctx);
+    }
+    if (isNpiRegistryBatch) {
+      if (method !== "POST") return fail(405, "Method not allowed");
+      const routes = await loadNpiRegistryRoutes();
+      const body = await readBoundedJsonBody(request, 2048);
+      // Once the caller has gone, no more registry calls start.
+      return await routes.handleNpiRegistryVerifyBatch(body, ctx, {}, request.signal);
     }
     if (isDocumentFinalize) {
       if (method !== "POST") return fail(405, "Method not allowed");

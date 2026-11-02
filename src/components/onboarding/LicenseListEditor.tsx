@@ -20,6 +20,7 @@ import { fmtDate } from "@/lib/format";
 import { US_STATES } from "@/lib/usStates";
 import type { PsvStatus } from "@/lib/licensePsv";
 import { EMPTY_LICENSE_DRAFT, type LicenseDraft } from "@/components/onboarding/licenseDraft";
+import { npiRegistrySourceLabel, touchNpiRowOrigin } from "@/lib/npiRegistryFill";
 
 const PSV_PILL: Record<PsvStatus, { color: "neutral" | "green" | "red"; label: string }> = {
   unverified: { color: "neutral", label: "Unverified" },
@@ -35,8 +36,19 @@ interface LicenseListEditorProps {
 }
 
 export function LicenseListEditor({ value, onChange, onRemove, errors }: LicenseListEditorProps) {
+  // A staff edit marks registry data on the row as theirs (MINT-110).
   const setRow = (index: number, patch: Partial<LicenseDraft>) =>
-    onChange(value.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+    onChange(
+      value.map((row, i) =>
+        i === index
+          ? {
+              ...row,
+              ...patch,
+              npiOrigin: touchNpiRowOrigin(row.npiOrigin, { number: "licenseNumber" in patch }),
+            }
+          : row,
+      ),
+    );
 
   return (
     <div className="space-y-2">
@@ -110,6 +122,13 @@ export function LicenseListEditor({ value, onChange, onRemove, errors }: License
                   onChange={(e) => setRow(i, { licenseNumber: e.target.value })}
                   className="h-9"
                 />
+                {/* MINT-110 (A35): a number or row an NPI Registry pick filled
+                    or added says so until staff edit it. */}
+                {row.npiOrigin && !row.npiOrigin.touched && row.npiOrigin.pulledAt ? (
+                  <p className="mt-1 text-[12px] text-muted-foreground">
+                    {npiRegistrySourceLabel(row.npiOrigin.pulledAt)}
+                  </p>
+                ) : null}
               </div>
               <div>
                 <Label htmlFor={`lic-${i}-type`} className="text-[12px]">

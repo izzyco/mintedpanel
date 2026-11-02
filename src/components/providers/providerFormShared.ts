@@ -1,6 +1,7 @@
 // Shared constants, types, and validation for the Add Provider stepper.
 // Record edit uses a separate inline Identity path (EditProviderForm retired).
-import { NPI_CHECK_DIGIT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
+import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
+import type { NpiRowOrigin } from "@/lib/npiRegistryFill";
 import { isKnownTaxonomyCode } from "@/lib/providerTaxonomy";
 import { usPhoneError } from "@/lib/phone";
 
@@ -9,7 +10,7 @@ import { usPhoneError } from "@/lib/phone";
 export { US_STATES } from "@/lib/usStates";
 
 export const SSN_LAST4_RE = /^\d{4}$/;
-export const NPI_RE = /^1\d{9}$/;
+export const NPI_DIGITS_RE = /^\d{10}$/;
 export const CAQH_RE = /^\d{8}$/;
 export const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
@@ -19,6 +20,9 @@ export interface LicenseRow {
   type: "full" | "compact" | "";
   issueDate: string;
   expirationDate: string;
+  /** MINT-110: set when the row (or its number) came from the NPI Registry;
+   * never saved (toLicenseInputs names its fields). */
+  npiOrigin?: NpiRowOrigin | null;
 }
 
 export interface ProviderFormState {
@@ -98,9 +102,11 @@ export function validatePersonal(f: ProviderFormState): ProviderFormErrors {
 
 export function validateCredentials(f: ProviderFormState): ProviderFormErrors {
   const e: ProviderFormErrors = {};
-  // Blank stays allowed (incomplete onboarding); an entered NPI must pass the
-  // shape AND the CMS check digit (MINT-7).
-  if (f.npi && !NPI_RE.test(f.npi)) e.npi = "NPI must be 10 digits and start with 1";
+  // Blank stays allowed (incomplete onboarding); an entered NPI must be ten
+  // digits with the CMS check digit (MINT-7), the same rule as the roster
+  // form. No first-digit rule: the leading-1 check this replaced refused
+  // valid NPIs, and the type of an NPI is the registry's to say.
+  if (f.npi && !NPI_DIGITS_RE.test(f.npi)) e.npi = NPI_FORMAT_MESSAGE;
   else if (f.npi && !isValidNpi(f.npi)) e.npi = NPI_CHECK_DIGIT_MESSAGE;
   if (!f.isNewGrad && f.caqhId && !CAQH_RE.test(f.caqhId)) e.caqhId = "CAQH must be 8 digits";
   // Soft gate: value must be one of the picker options (PT/PTA + dietitian).
