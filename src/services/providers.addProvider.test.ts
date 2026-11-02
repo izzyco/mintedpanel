@@ -25,9 +25,14 @@ import { createProviderWithDetails } from "./providers";
 
 type Row = Record<string, unknown>;
 let writes: Array<{ table: string; body: Row | Row[] }> = [];
+// The created provider's id, and a table (or RPC) whose request fails.
+let createdId = "prov-new";
+let failing: string | null = null;
 
 beforeEach(() => {
   writes = [];
+  createdId = "prov-new";
+  failing = null;
   transport.fetch.mockReset();
   transport.audit.mockReset();
   transport.audit.mockResolvedValue(undefined);
@@ -35,13 +40,14 @@ beforeEach(() => {
     const table = new URL(String(input)).pathname.split("/").at(-1)!;
     const body = JSON.parse(String(init?.body ?? "null")) as Row | Row[];
     writes.push({ table, body });
+    if (table === failing)
+      return new Response(JSON.stringify({ code: "XX000", message: "synthetic failure" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
     const single = new Headers(init?.headers).get("accept")?.includes("vnd.pgrst.object");
     const result =
-      table === "providers"
-        ? { id: "prov-new", ...(body as Row) }
-        : Array.isArray(body)
-          ? body
-          : [];
+      table === "providers" ? { id: createdId, ...(body as Row) } : Array.isArray(body) ? body : [];
     return new Response(JSON.stringify(single ? result : [result]), {
       status: 201,
       headers: { "content-type": "application/json" },
@@ -129,5 +135,98 @@ describe("createProviderWithDetails — the audit row", () => {
       "provider",
     ]);
     expect(after.facilityIds).toEqual(["fac-1"]);
+  });
+});
+
+// MINT-134 — Add Provider under "no default" records the undated assignments
+// once, after the save, through the never-throw helper.
+describe("createProviderWithDetails — the assignment.start_date_missing advisory", () => {
+  const PROVIDER = "aaaaaaaa-0000-4000-8000-000000000001";
+  const FAC_A = "ffffffff-0000-4000-8000-00000000000a";
+  const FAC_B = "ffffffff-0000-4000-8000-00000000000b";
+  const recorded = () => writes.filter((w) => w.table === "record_workflow_advisory");
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+  beforeEach(() => {
+    createdId = PROVIDER;
+  });
+
+  it("records once, on the provider, naming every facility saved without a date", async () => {
+    await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: [FAC_B, FAC_A],
+      assignmentStartDate: null,
+    });
+    await vi.waitFor(() => expect(recorded()).toHaveLength(1));
+    expect(recorded()[0].body).toEqual({
+      p_check_key: "assignment.start_date_missing",
+      p_severity: "advisory",
+      p_record_table: "providers",
+      p_record_id: PROVIDER,
+      p_context: { facility_ids: [FAC_A, FAC_B] },
+      p_org_id: "org-1",
+      p_source: "panel",
+    });
+    await settle();
+    expect(recorded()).toHaveLength(1);
+  });
+
+  it("records nothing when the assignments are dated or there are none", async () => {
+    await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: [FAC_A],
+      assignmentStartDate: "2026-11-02",
+    });
+    await createProviderWithDetails({
+      provider: provider("2026-11-15"),
+      licenses: [],
+      facilityIds: [FAC_A],
+    });
+    await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: [],
+      assignmentStartDate: null,
+    });
+    await settle();
+    expect(recorded()).toEqual([]);
+  });
+
+  it("records nothing when the facility assignments did not save", async () => {
+    failing = "provider_facility_assignments";
+    const result = await createProviderWithDetails({
+      provider: provider(null),
+      licenses: [],
+      facilityIds: [FAC_A],
+      assignmentStartDate: null,
+    });
+    expect(result.warnings).toHaveLength(1);
+    await settle();
+    expect(recorded()).toEqual([]);
+  });
+
+  it("a failed record never fails the save", async () => {
+    failing = "record_workflow_advisory";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const result = await createProviderWithDetails({
+        provider: provider(null),
+        licenses: [],
+        facilityIds: [FAC_A],
+        assignmentStartDate: null,
+      });
+      expect(result.provider.id).toBe(PROVIDER);
+      expect(result.warnings).toEqual([]);
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toEqual({
+        event: "advisory_record_failed",
+        check_key: "assignment.start_date_missing",
+        sqlstate: "XX000",
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

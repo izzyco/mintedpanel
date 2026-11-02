@@ -11,8 +11,14 @@ import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
 import { translateDbError } from "@/lib/dbErrors";
 import { blankAssignmentStartDate, resolveAddProviderRules } from "@/lib/addProviderRules";
+import { ADVISORY_RECORD_FAILED, reportAdvisoryFailure } from "@/lib/advisoryChecks";
+import { readCompletePages } from "@/lib/completePages";
 import { localCalendarDate } from "@/lib/systemTokens";
-import { ensureFirstFacilityPrimary, insertAssignmentRows } from "@/services/providerAssignments";
+import {
+  ensureFirstFacilityPrimary,
+  insertAssignmentRows,
+  recordUndatedAssignments,
+} from "@/services/providerAssignments";
 import { createEnrollmentFact, listEnrollmentFacts } from "@/services/enrollmentFacts";
 import {
   createFacility,
@@ -472,8 +478,50 @@ export async function commitImportRun(
       assignmentStartDate,
     );
     await ensureFirstFacilityPrimary([...result.createdProviderIds, ...result.updatedProviderIds]);
+    // MINT-134: only "no default" can leave a CSV assignment undated (the
+    // default dates it today). The commit doesn't wait for the record.
+    if (assignmentStartDate === null)
+      void recordImportUndatedAssignments(plan, result.createdProviderIds);
   }
   return { ...result, relationships };
+}
+
+/** The facility assignments a committed import left without a start date,
+ * recorded as assignment.start_date_missing (source import): every undated
+ * one of a provider the import created, and the undated ones among the
+ * facilities it added to a provider it updated (add_facility_ids; an
+ * assignment the provider already had is not the import's). Never rejects: a
+ * failed read is one advisory_record_failed line. */
+async function recordImportUndatedAssignments(
+  plan: CommitPlan,
+  createdProviderIds: readonly string[],
+): Promise<void> {
+  try {
+    const created = new Set(createdProviderIds);
+    const added = new Map(plan.updates.map((u) => [u.provider_id, new Set(u.add_facility_ids)]));
+    const providerIds = [...created, ...added.keys()];
+    if (providerIds.length === 0) return;
+    const query = supabase
+      .from("provider_facility_assignments")
+      .select("provider_id, facility_id", { count: "exact" })
+      .eq("org_id", requireActiveOrg())
+      .in("provider_id", providerIds)
+      .is("start_date", null)
+      .order("id", { ascending: true });
+    const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
+      label: "Undated facility assignment list",
+    });
+    await recordUndatedAssignments(
+      rows
+        .map((r) => ({ providerId: String(r.provider_id), facilityId: String(r.facility_id) }))
+        .filter(
+          (r) => created.has(r.providerId) || added.get(r.providerId)?.has(r.facilityId) === true,
+        ),
+      "import",
+    );
+  } catch (error) {
+    reportAdvisoryFailure(ADVISORY_RECORD_FAILED, "assignment.start_date_missing", error);
+  }
 }
 
 export interface BatchAssignmentResult {
@@ -541,6 +589,9 @@ export async function applyBatchAssignment(input: {
     },
     description: "Batch assignment applied to imported providers",
   });
+  // MINT-134: a batch without a start date is recorded. The plan only fills
+  // providers with no facility yet, so every planned assignment is new.
+  if (!input.startDate?.trim()) void recordUndatedAssignments(input.plan.facilityInserts, "import");
   return result;
 }
 

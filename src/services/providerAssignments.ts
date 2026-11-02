@@ -11,13 +11,37 @@ import { camelizeRow } from "@/lib/case";
 import { readCompletePages } from "@/lib/completePages";
 import { requireActiveOrg, writeAudit } from "@/lib/audit";
 import { translateDbError } from "@/lib/dbErrors";
+import type { BrowserAdvisorySource } from "@/lib/advisoryChecks";
 import {
   firstAssignmentIdsToPromote,
   planFacilityAssignmentSync,
   type AssignmentDraft,
   type StoredFacilityAssignment,
 } from "@/lib/assignmentScope";
+import { recordAdvisory } from "@/services/advisories";
 import type { FacilityAssignment } from "@/types";
+
+/** MINT-134 — a facility assignment saved without a start date is recorded
+ * as the advisory assignment.start_date_missing (Sowmya's B9; under D14 it
+ * reads as billable). One row per provider, naming the facilities whose date
+ * the save left blank. Call it after the save has succeeded, without waiting
+ * (`void recordUndatedAssignments(...)`); it sends one provider at a time and
+ * never rejects (recordAdvisory never does). The front end stays quiet. */
+export async function recordUndatedAssignments(
+  undated: ReadonlyArray<{ providerId: string; facilityId: string }>,
+  source: BrowserAdvisorySource = "panel",
+): Promise<void> {
+  const byProvider = new Map<string, string[]>();
+  for (const { providerId, facilityId } of undated)
+    byProvider.set(providerId, [...(byProvider.get(providerId) ?? []), facilityId]);
+  for (const [providerId, facilityIds] of byProvider)
+    await recordAdvisory(
+      "assignment.start_date_missing",
+      { table: "providers", id: providerId },
+      { facility_ids: facilityIds },
+      source,
+    );
+}
 
 // Scoped projection (TE-5): ids + flags + dates only — nothing PHI lives on
 // this table, but keep the read shape explicit anyway.
@@ -115,6 +139,16 @@ export async function setAssignments(providerId: string, drafts: AssignmentDraft
   const orgId = requireActiveOrg();
   const stored = await listProviderAssignmentRows(orgId, providerId);
   const plan = planFacilityAssignmentSync(drafts, stored);
+  // The facilities this save leaves undated: a new row without a date, or a
+  // dated row cleared. A row that was already undated is not this save's.
+  const storedById = new Map(stored.map((r) => [r.id, r]));
+  const undatedFacilityIds = [
+    ...plan.inserts.filter((d) => !d.startDate.trim()).map((d) => d.facilityId),
+    ...plan.updates.flatMap((u) => {
+      const before = storedById.get(u.id);
+      return !u.startDate.trim() && before?.startDate?.trim() ? [before.facilityId] : [];
+    }),
+  ];
 
   for (const upd of plan.updates) {
     const { error } = await supabase
@@ -177,6 +211,9 @@ export async function setAssignments(providerId: string, drafts: AssignmentDraft
     after: { assignments: drafts },
     description: "Updated facility assignments",
   });
+  void recordUndatedAssignments(
+    undatedFacilityIds.map((facilityId) => ({ providerId, facilityId })),
+  );
 }
 
 /** One-click primary swap from the section list (F1.4.3) — atomic via RPC. */

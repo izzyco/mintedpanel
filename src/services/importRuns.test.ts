@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   createFacility: vi.fn(),
   createProviderGroup: vi.fn(),
   resolveAddProviderRules: vi.fn(),
+  recordUndatedAssignments: vi.fn(),
 }));
 
 vi.mock("@/integrations/supabase/externalClient", () => ({
@@ -24,6 +25,7 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/services/providerAssignments", () => ({
   insertAssignmentRows: mocks.insertAssignmentRows,
   ensureFirstFacilityPrimary: mocks.ensureFirstFacilityPrimary,
+  recordUndatedAssignments: mocks.recordUndatedAssignments,
 }));
 vi.mock("@/services/enrollmentFacts", () => ({
   listEnrollmentFacts: mocks.listEnrollmentFacts,
@@ -39,7 +41,7 @@ vi.mock("@/lib/addProviderRules", async (importOriginal) => {
   return { ...actual, resolveAddProviderRules: mocks.resolveAddProviderRules };
 });
 
-import { commitImportRun, commitSectionImportRun } from "./importRuns";
+import { applyBatchAssignment, commitImportRun, commitSectionImportRun } from "./importRuns";
 import { DEFAULT_ADD_PROVIDER_RULES } from "@/lib/addProviderRules";
 import { localCalendarDate } from "@/lib/systemTokens";
 
@@ -56,6 +58,14 @@ interface CapturedWrite {
   payload: unknown;
 }
 
+// MINT-134's read of the assignments a commit left undated: the rows it
+// returns, an error to return instead, and the filters it was read with.
+const undated = {
+  rows: [] as Array<{ provider_id: string; facility_id: string }>,
+  error: null as unknown,
+  filters: [] as unknown[][],
+};
+
 // Mock only the transport and neighboring write services. The real commit
 // service snapshots staged rows, calls the RPC, and chooses relationship writes.
 function installTransport(
@@ -70,15 +80,23 @@ function installTransport(
       select: () => builder,
       eq: () => builder,
       order: () => builder,
-      in: (_column: string, values: string[]) => {
+      in: (column: string, values: string[]) => {
         ids = values;
+        if (table === "provider_facility_assignments") undated.filters.push(["in", column, values]);
         return builder;
       },
+      is: (column: string, value: unknown) => {
+        if (table === "provider_facility_assignments") undated.filters.push(["is", column, value]);
+        return builder;
+      },
+      range: () => builder,
       upsert: (payload: unknown) => {
         writes.push({ table, payload });
         return Promise.resolve({ data: null, error: null });
       },
-      then: (resolve: (value: { data: unknown; error: null }) => unknown) => {
+      then: (resolve: (value: { data: unknown; error: unknown }) => unknown) => {
+        if (table === "provider_facility_assignments" && undated.error)
+          return Promise.resolve({ data: null, error: undated.error }).then(resolve);
         const tables: Record<string, unknown> = {
           import_rows: stagedRows,
           providers: [
@@ -89,6 +107,7 @@ function installTransport(
             .filter((p) => !ids || ids.includes(p.id)),
           provider_groups: GROUPS,
           facilities: facilityIds.map((id) => ({ id })),
+          provider_facility_assignments: undated.rows,
         };
         if (!(table in tables)) throw new Error(`Unexpected table read: ${table}`);
         return Promise.resolve({ data: tables[table], error: null }).then(resolve);
@@ -143,6 +162,10 @@ function updatePlan(blockedLines: number[] = []): CommitPlan {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  undated.rows = [];
+  undated.error = null;
+  undated.filters = [];
+  mocks.recordUndatedAssignments.mockResolvedValue(undefined);
   mocks.rpc.mockResolvedValue({
     data: { updated: 1, updated_provider_ids: ["provider-1"] },
     error: null,
@@ -347,6 +370,172 @@ describe("commitImportRun — P02 reviewed source-row boundary", () => {
     expect(mocks.insertAssignmentRows).not.toHaveBeenCalled();
     expect(mocks.createEnrollmentFact).not.toHaveBeenCalled();
     expect(mocks.ensureFirstFacilityPrimary).not.toHaveBeenCalled();
+  });
+});
+
+// MINT-134 — a commit under "no default" records the facility assignments it
+// left undated, in the background, as assignment.start_date_missing (source
+// import). The default dates every one, so nothing is read or recorded.
+describe("commitImportRun — the assignment.start_date_missing advisory", () => {
+  const noDefault = () =>
+    mocks.resolveAddProviderRules.mockReturnValueOnce({
+      ...DEFAULT_ADD_PROVIDER_RULES,
+      assignmentStartDateDefault: "none",
+    });
+
+  it('under "none", records every undated assignment of a created provider and the added ones of an updated provider', async () => {
+    installTransport([]);
+    noDefault();
+    const plan = updatePlan();
+    plan.updates[0].add_facility_ids = ["facility-9"];
+    mocks.rpc.mockResolvedValue({
+      data: {
+        created: 1,
+        updated: 1,
+        created_provider_ids: ["provider-3"],
+        updated_provider_ids: ["provider-1"],
+      },
+      error: null,
+    });
+    undated.rows = [
+      { provider_id: "provider-3", facility_id: "facility-7" },
+      { provider_id: "provider-1", facility_id: "facility-6" }, // on file before the import
+      { provider_id: "provider-3", facility_id: "facility-8" },
+      { provider_id: "provider-1", facility_id: "facility-9" },
+    ];
+
+    await commitImportRun("run-1", plan);
+
+    await vi.waitFor(() => expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce());
+    expect(mocks.recordUndatedAssignments).toHaveBeenCalledWith(
+      [
+        { providerId: "provider-3", facilityId: "facility-7" },
+        { providerId: "provider-3", facilityId: "facility-8" },
+        { providerId: "provider-1", facilityId: "facility-9" },
+      ],
+      "import",
+    );
+    expect(undated.filters).toEqual([
+      ["in", "provider_id", ["provider-3", "provider-1"]],
+      ["is", "start_date", null],
+    ]);
+  });
+
+  it("records nothing under the default, which dates every assignment", async () => {
+    installTransport([relationshipRow(2, 0, "CO")]);
+
+    await commitImportRun("run-1", updatePlan());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(undated.filters).toEqual([]);
+    expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
+  });
+
+  it("records nothing on a replayed commit", async () => {
+    installTransport([]);
+    noDefault();
+    mocks.rpc.mockResolvedValue({
+      data: { already_committed: true, updated_provider_ids: ["provider-1"] },
+      error: null,
+    });
+    undated.rows = [{ provider_id: "provider-1", facility_id: "facility-9" }];
+
+    await commitImportRun("run-1", updatePlan());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
+  });
+
+  it("the commit never waits for the record", async () => {
+    installTransport([]);
+    noDefault();
+    const plan = updatePlan();
+    plan.updates[0].add_facility_ids = ["facility-9"];
+    undated.rows = [{ provider_id: "provider-1", facility_id: "facility-9" }];
+    mocks.recordUndatedAssignments.mockReturnValue(new Promise(() => undefined));
+
+    await expect(commitImportRun("run-1", plan)).resolves.toMatchObject({ updated: 1 });
+
+    await vi.waitFor(() => expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce());
+  });
+
+  it("a failed read never fails the commit", async () => {
+    installTransport([]);
+    noDefault();
+    undated.error = { code: "XX000", message: "synthetic failure" };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await expect(commitImportRun("run-1", updatePlan())).resolves.toMatchObject({ updated: 1 });
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toEqual({
+        event: "advisory_record_failed",
+        check_key: "assignment.start_date_missing",
+        sqlstate: "XX000",
+      });
+      expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// MINT-134 — the batch-assign panel saves a blank start date as none; that
+// batch records each provider's new facilities (the plan only fills providers
+// with no facility yet), once, after the save.
+describe("applyBatchAssignment — the assignment.start_date_missing advisory", () => {
+  const plan = {
+    groupInserts: [{ providerId: "provider-1", groupId: "group-1", isPrimary: true }],
+    facilityInserts: [
+      { providerId: "provider-1", facilityId: "facility-2" },
+      { providerId: "provider-1", facilityId: "facility-3" },
+      { providerId: "provider-2", facilityId: "facility-2" },
+    ],
+    skippedProviderIds: [],
+  };
+  const batch = (startDate: string | null) => ({
+    runId: "run-1",
+    groupId: "group-1",
+    facilityIds: ["facility-2", "facility-3"],
+    startDate,
+    plan,
+  });
+
+  it("a batch without a start date records its facility assignments once (source import)", async () => {
+    installTransport([]);
+
+    await applyBatchAssignment(batch(null));
+
+    expect(mocks.insertAssignmentRows).toHaveBeenCalledOnce();
+    expect(mocks.recordUndatedAssignments).toHaveBeenCalledOnce();
+    expect(mocks.recordUndatedAssignments).toHaveBeenCalledWith(plan.facilityInserts, "import");
+  });
+
+  it("a dated batch records nothing", async () => {
+    installTransport([]);
+
+    await applyBatchAssignment(batch("2026-11-01"));
+
+    expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
+  });
+
+  it("the batch never waits for the record", async () => {
+    installTransport([]);
+    mocks.recordUndatedAssignments.mockReturnValue(new Promise(() => undefined));
+
+    await expect(applyBatchAssignment(batch(null))).resolves.toEqual({
+      groupsAdded: 1,
+      facilitiesAdded: 3,
+      skippedProviders: 0,
+    });
+  });
+
+  it("records nothing when the save fails", async () => {
+    installTransport([]);
+    mocks.insertAssignmentRows.mockRejectedValueOnce(new Error("synthetic failure"));
+
+    await expect(applyBatchAssignment(batch(null))).rejects.toThrow("synthetic failure");
+
+    expect(mocks.recordUndatedAssignments).not.toHaveBeenCalled();
   });
 });
 

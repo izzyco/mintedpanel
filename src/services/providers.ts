@@ -18,7 +18,7 @@ import {
   type GroupAssignmentInput,
 } from "@/lib/groupAssignments";
 import { resolvePsvColumns, type PsvStatus, type PsvStored } from "@/lib/licensePsv";
-import { insertAssignmentRows } from "@/services/providerAssignments";
+import { insertAssignmentRows, recordUndatedAssignments } from "@/services/providerAssignments";
 import { normalizeStateCode, normalizeOptionalStateCode } from "@/lib/stateCode";
 import { translateDbError, toError } from "@/lib/dbErrors";
 import { licenseSnapshotFields, type LicenseCommand } from "@/lib/licenseCommands";
@@ -483,6 +483,11 @@ export async function createProviderWithDetails(
     description: `Created provider ${created.firstName} ${created.lastName}`,
   });
 
+  // MINT-134: the assignments saved without a start date are recorded.
+  if (!assignmentStart)
+    void recordUndatedAssignments(
+      insertedFacilityIds.map((facilityId) => ({ providerId: created.id, facilityId })),
+    );
   return { provider: created, warnings };
 }
 
