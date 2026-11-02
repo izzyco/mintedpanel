@@ -157,6 +157,8 @@ export interface DigestTouchpoint extends FollowUpTouch {
 /** A current member of the org. */
 export interface DigestMember {
   userId: string;
+  /** The memberships row: what an advisory about this member names. */
+  membershipId: string;
   firstName: string | null;
   email: string | null;
 }
@@ -193,6 +195,7 @@ export interface FollowUpDigestEmailData {
 
 export interface PlannedDigest {
   recipientUserId: string;
+  membershipId: string;
   /** From the member's profile; the sender checks it before sending. */
   email: string | null;
   data: FollowUpDigestEmailData;
@@ -498,6 +501,7 @@ export function planFollowUpDigests(input: FollowUpDigestPlanInput): FollowUpDig
     }
     digests.push({
       recipientUserId: member.userId,
+      membershipId: member.membershipId,
       email: member.email,
       data: {
         practiceName: input.practiceName,

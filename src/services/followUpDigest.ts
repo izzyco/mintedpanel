@@ -96,10 +96,18 @@ async function listMembers(ctx: FollowUpDigestReadCtx, orgId: string): Promise<D
   return rows.flatMap((raw) => {
     const row = record(raw);
     const userId = text(row?.user_id);
-    if (!row || !userId || seen.has(userId)) return [];
+    const membershipId = text(row?.id);
+    if (!row || !userId || !membershipId || seen.has(userId)) return [];
     seen.add(userId);
     const profile = record(row.profiles);
-    return [{ userId, firstName: text(profile?.first_name), email: text(profile?.email) }];
+    return [
+      {
+        userId,
+        membershipId,
+        firstName: text(profile?.first_name),
+        email: text(profile?.email),
+      },
+    ];
   });
 }
 

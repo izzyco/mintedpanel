@@ -56,6 +56,35 @@
 //
 // Logging: ctx.log.error only, with closed snake_case events. Nothing here
 // logs an address, a name, a case, a date or a count.
+//
+// Bypassed checks (MINT-134). Server-side only; nothing reaches the front
+// end. Four findings are recorded through #568's job helper
+// (recordJobAdvisory, src/server/advisories.ts), at the severity the
+// registry fixes (src/lib/advisoryChecks.ts):
+//   * digest.step_unusable (the organization; the step problem and the
+//     sequence) when the org is skipped for its step (U6);
+//   * digest.recipient_no_email (the coordinator's membership) when a
+//     coordinator with something due has no usable address;
+//   * digest.org_failed (the organization) when the org's reads fail;
+//   * digest.unassigned_follow_ups (the organization; how many) when
+//     follow-ups due went to no one.
+// The two critical ones (recipient_no_email, org_failed: factual accuracy)
+// record as `block`, a digest that was stopped; the others as `advisory`.
+// Each is recorded on every run that finds it, and record_job_advisory keeps
+// one open row per (org, check, record): a repeat while the row is open
+// writes nothing, so later hourly runs add nothing. Each is resolved here
+// (resolve_workflow_advisories), so a later recurrence records a new row:
+//   * the step row whenever a due org's step passes the check again (at most
+//     one call per due org per run);
+//   * a coordinator's no-email row once they are sent a digest;
+//   * the org-failed row, and the unassigned row when nothing is unassigned,
+//     once the org sends a digest: its reads worked and its count is current,
+//     once per scheduled send rather than every hour.
+// A record or resolve never throws and never holds a send: none is awaited
+// on its own. The run starts them all and awaits them together at the end
+// (Promise.allSettled); each gives up after ADVISORY_RPC_TIMEOUT_MS, so
+// together they add at most that to the run. A failure is one safe line
+// (advisory_record_failed or advisory_resolve_failed), and the run carries on.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import {
@@ -72,6 +101,7 @@ import {
 import { templateSendProblem, type TemplateSendProblem } from "@/lib/notificationTemplates";
 import { loadFollowUpDigestOrgData } from "@/services/followUpDigest";
 import { listEnabledNotificationSequences } from "@/services/notificationSequences";
+import { recordJobAdvisory, resolveAdvisories } from "../advisories";
 import { resolveEmailEnv } from "../email/env";
 import {
   EmailError,
@@ -233,10 +263,11 @@ async function deliver(
   return "sent";
 }
 
-/** A due org: its effective sequence, the local date of the run, and the
- *  open scheduled send's slot. */
+/** A due org: its sequence row and effective sequence, the local date of the
+ *  run, and the open scheduled send's slot. */
 interface DueOrg {
   orgId: string;
+  sequenceId: string;
   sequence: EffectiveNotificationSequence;
   localDate: string;
   slot: string;
@@ -249,14 +280,23 @@ async function runOrg(
   config: { appBaseUrl: string; fromEmail: string },
   org: DueOrg,
   counts: FollowUpDigestCounts,
+  advisories: Promise<unknown>[],
 ): Promise<void> {
+  const self = { table: "organizations", id: org.orgId } as const;
   const problem = digestStepProblem(org.sequence.steps);
   if (problem) {
-    // U6: no fallback digest. #568 will record this once per scheduled send.
+    // U6: no fallback digest.
     counts.orgs_skipped_template += 1;
     ctx.log.error(`org_skipped_${problem}`, new FollowUpDigestTemplateError());
+    advisories.push(
+      recordJobAdvisory(ctx.db, FOLLOWUP_DIGEST_JOB_NAME, org.orgId, "digest.step_unusable", self, {
+        problem,
+        sequence_id: org.sequenceId,
+      }),
+    );
     return;
   }
+  advisories.push(resolveAdvisories(ctx.db, org.orgId, "digest.step_unusable", self));
 
   const data = await loadFollowUpDigestOrgData({ db: ctx.db }, org.orgId);
   const plan = planFollowUpDigests({
@@ -269,11 +309,35 @@ async function runOrg(
   });
   counts.digests_suppressed += plan.suppressed;
   counts.unassigned_follow_ups += plan.unassignedFollowUps;
+  if (plan.unassignedFollowUps > 0) {
+    advisories.push(
+      recordJobAdvisory(
+        ctx.db,
+        FOLLOWUP_DIGEST_JOB_NAME,
+        org.orgId,
+        "digest.unassigned_follow_ups",
+        self,
+        { count: plan.unassignedFollowUps },
+      ),
+    );
+  }
 
+  let sentAny = false;
   for (const digest of plan.digests) {
+    const coordinator = { table: "memberships", id: digest.membershipId } as const;
     const to = digest.email?.trim() ?? "";
     if (!isEmailAddress(to)) {
       ctx.log.error("recipient_skipped_no_email", new FollowUpDigestRecipientError());
+      advisories.push(
+        recordJobAdvisory(
+          ctx.db,
+          FOLLOWUP_DIGEST_JOB_NAME,
+          org.orgId,
+          "digest.recipient_no_email",
+          coordinator,
+          { recipient_id: digest.recipientUserId },
+        ),
+      );
       continue;
     }
     const outcome = await deliver(
@@ -294,8 +358,21 @@ async function runOrg(
         replyTo: { email: config.fromEmail },
       },
     );
-    if (outcome === "sent") counts.digests_sent += 1;
-    else if (outcome === "failed") counts.send_failures += 1;
+    if (outcome === "sent") {
+      counts.digests_sent += 1;
+      sentAny = true;
+      advisories.push(
+        resolveAdvisories(ctx.db, org.orgId, "digest.recipient_no_email", coordinator),
+      );
+    } else if (outcome === "failed") counts.send_failures += 1;
+  }
+  // A digest went out: the org's reads worked, and its unassigned count is
+  // current. Once per scheduled send, not every hour.
+  if (sentAny) {
+    advisories.push(resolveAdvisories(ctx.db, org.orgId, "digest.org_failed", self));
+    if (plan.unassignedFollowUps === 0) {
+      advisories.push(resolveAdvisories(ctx.db, org.orgId, "digest.unassigned_follow_ups", self));
+    }
   }
 }
 
@@ -318,7 +395,13 @@ export async function runFollowUpDigest(
     // send hour, on a weekly digest's other days, or past the cut-off.
     const slot = digestSlot(sequence, ctx.now, deps.rules(row.orgId));
     if (!slot?.due) continue;
-    due.push({ orgId: row.orgId, sequence, localDate: slot.localDate, slot: slot.slot });
+    due.push({
+      orgId: row.orgId,
+      sequenceId: row.id,
+      sequence,
+      localDate: slot.localDate,
+      slot: slot.slot,
+    });
   }
   counts.orgs_due = due.length;
   if (due.length === 0) return counts;
@@ -329,13 +412,23 @@ export async function runFollowUpDigest(
   }
   const ready = { appBaseUrl: config.appBaseUrl, fromEmail: config.fromEmail };
   const ledger = deps.ledger(ctx.db);
+  // Every advisory call of the run, in flight together; none throws.
+  const advisories: Promise<unknown>[] = [];
   for (const org of due) {
     try {
-      await runOrg(ctx, deps, ledger, ready, org, counts);
+      await runOrg(ctx, deps, ledger, ready, org, counts, advisories);
     } catch (error) {
       counts.orgs_failed += 1;
       ctx.log.error("org_failed", error);
+      advisories.push(
+        recordJobAdvisory(ctx.db, FOLLOWUP_DIGEST_JOB_NAME, org.orgId, "digest.org_failed", {
+          table: "organizations",
+          id: org.orgId,
+        }),
+      );
     }
   }
+  // Each gives up after ADVISORY_RPC_TIMEOUT_MS, so this waits at most that.
+  await Promise.allSettled(advisories);
   return counts;
 }
