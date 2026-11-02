@@ -1,7 +1,7 @@
-// MINT-110 PR 3 — the browser half of /api/npi-registry/pulls: what a save
-// sends (the provider, the NPI, what it took from the pick, confirmed; never
-// registry data), one request at a time, and a failure that is logged without
-// values and never reaches the save.
+// MINT-110 PR 3 — the browser half of /api/npi-registry/pulls: what a
+// provider form's save sends (the provider, the NPI, what it took from the
+// pick, confirmed; never registry data), and a failure, the build's own
+// included, that is logged without values and never reaches the save.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getSession = vi.hoisted(() =>
@@ -12,7 +12,7 @@ vi.mock("@/integrations/supabase/externalClient", () => ({
 }));
 vi.mock("@/lib/audit", () => ({ requireActiveOrg: () => "org-1" }));
 
-import { recordNpiRegistryPulls } from "@/services/npiRegistry";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 import type { NpiRegistryPullInput } from "@/lib/npiRegistryPulls";
 
 const PULL: NpiRegistryPullInput = {
@@ -41,61 +41,53 @@ afterEach(() => {
   warn.mockRestore();
 });
 
-describe("recordNpiRegistryPulls", () => {
-  it("posts each pull with the caller's JWT and org, one at a time", async () => {
-    let inFlight = 0;
-    let most = 0;
-    fetchMock.mockImplementation(async () => {
-      inFlight += 1;
-      most = Math.max(most, inFlight);
-      await new Promise((resolve) => setTimeout(resolve, 1));
-      inFlight -= 1;
-      return reply(201, { pull: { id: "p1", pulledAt: "x", sourced: {}, confirmed: false } });
-    });
-    const second = { ...PULL, npi: "1902833742", sourced: {}, confirmed: false };
-    await recordNpiRegistryPulls([PULL, second]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(most).toBe(1);
+describe("recordNpiRegistryPullAfterSave", () => {
+  it("posts the pull with the caller's JWT and org", async () => {
+    fetchMock.mockResolvedValue(
+      reply(201, { pull: { id: "p1", pulledAt: "x", sourced: {}, confirmed: true } }),
+    );
+    recordNpiRegistryPullAfterSave(() => PULL);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(path).toBe("/api/npi-registry/pulls");
     expect(init.method).toBe("POST");
     expect(init.headers).toMatchObject({ authorization: "Bearer tok", "x-org-id": "org-1" });
     expect(JSON.parse(String(init.body))).toEqual(PULL);
-    expect(JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body))).toEqual(
-      second,
-    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("never rejects: a failure is logged with counts and the status only", async () => {
-    fetchMock
-      .mockResolvedValueOnce(reply(502, null, "NPI Registry is unavailable"))
-      .mockResolvedValueOnce(reply(201, { pull: {} }))
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    await expect(recordNpiRegistryPulls([PULL, PULL, PULL])).resolves.toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(warn).toHaveBeenCalledOnce();
+  it("builds the pull at once, so it holds the form as the save left it", () => {
+    const build = vi.fn(() => null);
+    recordNpiRegistryPullAfterSave(build);
+    expect(build).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never throws: a failed request, the rate limit included, is logged with the status only and not retried", async () => {
+    fetchMock.mockResolvedValue(
+      reply(429, null, "Too many NPI Registry checks — wait a few seconds and try again"),
+    );
+    expect(() => recordNpiRegistryPullAfterSave(() => PULL)).not.toThrow();
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+    expect(fetchMock).toHaveBeenCalledOnce();
     expect(warn.mock.calls[0]).toEqual([
       "npi_registry_pull_failed",
-      { event: "npi_registry_pull_failed", failed: 2, of: 3, status: null },
+      { event: "npi_registry_pull_failed", status: 429 },
     ]);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(PULL.npi);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(PULL.providerId);
   });
 
-  it("logs the last HTTP status", async () => {
-    fetchMock.mockResolvedValueOnce(reply(404, null, "Provider not found"));
-    await recordNpiRegistryPulls([PULL]);
-    expect(warn.mock.calls[0][1]).toEqual({
-      event: "npi_registry_pull_failed",
-      failed: 1,
-      of: 1,
-      status: 404,
-    });
-  });
-
-  it("sends nothing for no pulls", async () => {
-    await recordNpiRegistryPulls([]);
+  it("never throws when building the pull throws, and sends nothing", async () => {
+    expect(() =>
+      recordNpiRegistryPullAfterSave(() => {
+        throw new Error(`bad form state for ${PULL.npi}`);
+      }),
+    ).not.toThrow();
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+    expect(warn.mock.calls[0][1]).toEqual({ event: "npi_registry_pull_failed", status: null });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(PULL.npi);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

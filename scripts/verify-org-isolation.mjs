@@ -202,8 +202,8 @@ async function apiPatch(path, payload, { token, orgId } = {}) {
 
 // One PostgREST call against Supabase itself (not the deploy), signed the way
 // a browser can sign it: the anon key plus the user's JWT. Used only to prove
-// a table refuses direct writes and scopes direct reads (38e/38f); every write
-// sent here is a probe a correct database refuses.
+// a table refuses direct writes (38e); every write sent here is a probe a
+// correct database refuses.
 async function restCall(method, path, { token, payload } = {}) {
   const headers = { apikey: env.SUPABASE_ANON_KEY, prefer: "return=minimal" };
   if (token) headers.authorization = `Bearer ${token}`;
@@ -1974,7 +1974,7 @@ function looksLikeVercelGate(r) {
     );
   }
 
-  // 38-38f — MINT-110 PR 3: NPI Registry pulls. Unlike 36/37 this route
+  // 38-38e — MINT-110 PR 3: NPI Registry pulls. Unlike 36/37 this route
   // WRITES org data (provider_registry_pulls), so the wall is tenancy as well
   // as role: another org's provider is a 404 (38b), an anonymous caller a 401
   // (38c), a read-only member a 403 (38d). 38 is the positive control: an
@@ -2024,30 +2024,28 @@ function looksLikeVercelGate(r) {
     );
   }
 
-  // 38e/38f — the table itself, straight through PostgREST with a user's JWT.
-  // 38e: no direct INSERT, UPDATE or DELETE. The INSERT probe has no org_id
-  // and an NPI the table's CHECK refuses, and the UPDATE and DELETE probes
-  // match no row, so even a broken grant writes nothing. 38f: Kansas reads no
-  // South Park row, and the South Park billing member reads none at all
-  // (billing gets nothing, even of its own org).
-  const pullsRead = await restCall("GET", "provider_registry_pulls?select=id,org_id", {
+  // 38e — the table itself, straight through PostgREST with a user's JWT: no
+  // direct INSERT, UPDATE or DELETE. There is no reader yet, so nothing is
+  // granted to authenticated and nothing reads it this way either. The INSERT
+  // probe has no org_id and an NPI the table's CHECK refuses, and the UPDATE
+  // and DELETE probes match no row, so even a broken grant writes nothing. A
+  // 404 for the INSERT means the table is not applied (PGRST205).
+  const noRow = "id=eq.00000000-0000-0000-0000-000000000000";
+  const insertProbe = await restCall("POST", "provider_registry_pulls", {
     token: kansasTok,
+    payload: {
+      provider_id: env.KANSAS_PROVIDER_ID,
+      npi: "gate-probe",
+      pulled_at: "1970-01-01T00:00:00Z",
+      pulled_by: "00000000-0000-0000-0000-000000000000",
+      sourced: {},
+    },
   });
-  if (pullsRead.status === 404) {
-    console.log("SKIP  38e/38f. provider_registry_pulls — table not applied");
+  if (insertProbe.status === 404) {
+    console.log("SKIP  38e. provider_registry_pulls — table not applied");
   } else {
-    const noRow = "id=eq.00000000-0000-0000-0000-000000000000";
     const writes = [
-      await restCall("POST", "provider_registry_pulls", {
-        token: kansasTok,
-        payload: {
-          provider_id: env.KANSAS_PROVIDER_ID,
-          npi: "gate-probe",
-          pulled_at: "1970-01-01T00:00:00Z",
-          pulled_by: "00000000-0000-0000-0000-000000000000",
-          sourced: {},
-        },
-      }),
+      insertProbe,
       await restCall("PATCH", `provider_registry_pulls?${noRow}`, {
         token: kansasTok,
         payload: { sourced: {} },
@@ -2058,26 +2056,6 @@ function looksLikeVercelGate(r) {
       "38e. PostgREST INSERT/UPDATE/DELETE on provider_registry_pulls -> refused (401/403)",
       writes.every((w) => w.status === 401 || w.status === 403),
       `statuses=${writes.map((w) => w.status).join("/")} (expect 401 or 403 each)`,
-      { leak: true },
-    );
-    const billingRead = await restCall("GET", "provider_registry_pulls?select=id,org_id", {
-      token: spTok,
-    });
-    const kansasRows = Array.isArray(pullsRead.body) ? pullsRead.body : null;
-    const billingRows = Array.isArray(billingRead.body) ? billingRead.body : null;
-    const leaked = (kansasRows ?? []).filter((r) => r.org_id === env.SOUTHPARK_ORG).length;
-    check(
-      "38f. PostgREST SELECT on provider_registry_pulls -> the caller's org only; billing none",
-      pullsRead.status === 200 &&
-        kansasRows !== null &&
-        leaked === 0 &&
-        // The mock seeds a Kansas pull, so the read is never vacuous there.
-        (!IS_LOCAL_MOCK_API || kansasRows.length > 0) &&
-        billingRead.status === 200 &&
-        billingRows !== null &&
-        billingRows.length === 0,
-      `kansas status=${pullsRead.status} rows=${kansasRows?.length ?? "n/a"} southPark=${leaked}; ` +
-        `billing status=${billingRead.status} rows=${billingRows?.length ?? "n/a"} (expect 0)`,
       { leak: true },
     );
   }

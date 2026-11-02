@@ -168,8 +168,8 @@ const EXPECTED_FAILS = {
   npibatch: ["37b", "37c", "37d"],
   // MINT-110 PR 3: a registry pull crosses the org wall — the route records
   // one for another org's provider (38b), and PostgREST takes direct writes
-  // (38e) and reads every org's pulls, to billing too (38f).
-  registrypulls: ["38b", "38e", "38f"],
+  // (38e).
+  registrypulls: ["38b", "38e"],
 };
 
 function failedAssertions(output) {

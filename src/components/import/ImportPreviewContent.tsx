@@ -43,7 +43,6 @@ import { useCancelImportRun, useCommitImportRun, useImportPreview } from "@/hook
 import { useImportNpiVerification } from "@/hooks/useImportNpiVerification";
 import { useNpiRegistryPolicy } from "@/hooks/useNpiRegistry";
 import { captureImportNpiAdvisories } from "@/services/importNpiAdvisoryCapture";
-import { recordNpiRegistryPulls } from "@/services/npiRegistry";
 import { useIsAdmin } from "@/lib/permissions";
 import { downloadCsv } from "@/lib/csv";
 import { errorReportCsvRows } from "@/lib/rosterImport";
@@ -61,7 +60,6 @@ import {
   importCommittedLines,
   importNpiCaptureAdvisories,
   importNpiCommitWarning,
-  importNpiPulls,
   importNpiRowChecks,
   selectImportNpiChecks,
   summarizeImportNpiRows,
@@ -373,15 +371,6 @@ export function ImportPreviewContent({ runId }: { runId: string }) {
               rows: importNpiRowChecks({ plan, providerIdByLine }),
             };
           });
-          // MINT-110 PR 3: each checked row's registry answer becomes its
-          // provider's source data, one request at a time, in the background.
-          void recordNpiRegistryPulls(
-            importNpiPulls({
-              items: npiChecks,
-              snapshot: npiAtCommit,
-              providerIdByLine: importCommitProviderIds(plan, result),
-            }),
-          );
         },
         onError: (e) =>
           toast.error(e instanceof Error ? e.message : "Couldn't commit the import run."),

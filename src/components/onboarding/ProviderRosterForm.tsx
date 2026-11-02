@@ -63,7 +63,7 @@ import {
 } from "@/lib/npiRegistryFill";
 import type { NpiRegistryRecord } from "@/lib/npiRegistry";
 import { npiRegistryPullForSave, npiRegistryPullSourced } from "@/lib/npiRegistryPulls";
-import { recordNpiRegistryPulls } from "@/services/npiRegistry";
+import { recordNpiRegistryPullAfterSave } from "@/services/npiRegistry";
 import { validateGroupAssignments, type GroupAssignmentInput } from "@/lib/groupAssignments";
 import {
   ProviderSaveError,
@@ -298,24 +298,7 @@ function FormBody({
     phone: { value: form.phone, touched: npiTouched.phone },
   });
   const npiSourceLabel = npiPick ? npiRegistrySourceLabel(npiPick.pulledAt) : null;
-  const recordAfterSave = (recordId: string) => {
-    // MINT-110 PR 3: the registry answer this save used (a pick of the saved
-    // NPI, or the check of a new or changed one) becomes the provider's source
-    // data, in the background. A roster save confirms nothing (A30c).
-    const pull = npiRegistryPullForSave({
-      providerId: recordId,
-      npi: npiDigits,
-      checked: npiChanged,
-      pickedNpi: npiPick?.npi ?? null,
-      sourced: npiRegistryPullSourced(npiSourced, {
-        credentials: form.credentials,
-        taxonomyCode: form.taxonomyCode,
-        gender: form.gender === "__none__" ? "" : form.gender,
-        phone: form.phone,
-      }),
-      confirmed: false,
-    });
-    if (pull) void recordNpiRegistryPulls([pull]);
+  const recordAfterSave = (recordId: string) =>
     recordNpiAdvisories({
       recordId,
       npi: npiDigits,
@@ -330,7 +313,27 @@ function FormBody({
       confirmed: new Set(),
       policy: npiPolicy,
     });
-  };
+
+  // MINT-110 PR 3: the registry answer this save used (a pick of the saved
+  // NPI, or the check of a new or changed one) becomes the provider's source
+  // data, in the background. Called last in each save's onSuccess. A roster
+  // save confirms nothing (A30c).
+  const recordPullAfterSave = (recordId: string) =>
+    recordNpiRegistryPullAfterSave(() =>
+      npiRegistryPullForSave({
+        providerId: recordId,
+        npi: npiDigits,
+        checked: npiChanged,
+        pickedNpi: npiPick?.npi ?? null,
+        sourced: npiRegistryPullSourced(npiSourced, {
+          credentials: form.credentials,
+          taxonomyCode: form.taxonomyCode,
+          gender: form.gender === "__none__" ? "" : form.gender,
+          phone: form.phone,
+        }),
+        confirmed: false,
+      }),
+    );
 
   const reload = async () => {
     if (!onReload) return;
@@ -427,6 +430,7 @@ function FormBody({
             toast.success("Provider updated");
             recordAfterSave(provider.id);
             onClose();
+            recordPullAfterSave(provider.id);
           },
           onError,
         },
@@ -469,6 +473,7 @@ function FormBody({
               );
             }
             onClose();
+            recordPullAfterSave(result.provider.id);
           },
           onError,
         },

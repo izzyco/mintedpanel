@@ -3271,8 +3271,7 @@ export type Database = {
       };
       provider_registry_pulls: {
         Row: {
-          confirmed_at: string | null;
-          confirmed_by: string | null;
+          confirmed: boolean;
           created_at: string;
           id: string;
           npi: string;
@@ -3284,8 +3283,7 @@ export type Database = {
           sourced: Json;
         };
         Insert: {
-          confirmed_at?: string | null;
-          confirmed_by?: string | null;
+          confirmed?: boolean;
           created_at?: string;
           id?: string;
           npi: string;
@@ -3297,8 +3295,7 @@ export type Database = {
           sourced?: Json;
         };
         Update: {
-          confirmed_at?: string | null;
-          confirmed_by?: string | null;
+          confirmed?: boolean;
           created_at?: string;
           id?: string;
           npi?: string;

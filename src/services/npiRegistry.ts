@@ -53,39 +53,31 @@ export function recordNpiRegistryPull(input: NpiRegistryPullInput): Promise<NpiR
   });
 }
 
-/** What a failed pull logs: the event, how many of how many failed, and the
- * last HTTP status. Never an NPI, a provider or a value. */
-export function npiRegistryPullFailureLog(
-  failed: number,
-  of: number,
-  error: unknown,
-): { event: "npi_registry_pull_failed"; failed: number; of: number; status: number | null } {
+/** What a failed pull logs: the event and the HTTP status, when there is
+ * one. Never an NPI, a provider or a value. */
+export function npiRegistryPullFailureLog(error: unknown): {
+  event: "npi_registry_pull_failed";
+  status: number | null;
+} {
   return {
     event: "npi_registry_pull_failed",
-    failed,
-    of,
     status: error instanceof ApiRequestError ? error.status : null,
   };
 }
 
-/** After a save (or an import commit): record each pull, one request at a
- * time, in the background. Resolves, never rejects: a failure is logged
- * without values and never reaches the save. */
-export async function recordNpiRegistryPulls(
-  inputs: readonly NpiRegistryPullInput[],
-): Promise<void> {
-  let failed = 0;
-  let lastError: unknown = null;
-  for (const input of inputs) {
+/** After a provider form's save: build its pull (npiRegistryPullForSave) and
+ * send it, in the background. Forms call it last, after the save's own side
+ * effects. Building runs here, inside the same try as the request, so nothing
+ * it throws reaches the save. A failure, the rate limit's 429 included, is
+ * logged without values and dropped: no retry. */
+export function recordNpiRegistryPullAfterSave(build: () => NpiRegistryPullInput | null): void {
+  void (async () => {
     try {
-      await recordNpiRegistryPull(input);
+      const pull = build();
+      if (pull) await recordNpiRegistryPull(pull);
     } catch (error) {
-      failed += 1;
-      lastError = error;
+      const entry = npiRegistryPullFailureLog(error);
+      console.warn(entry.event, entry);
     }
-  }
-  if (failed > 0) {
-    const entry = npiRegistryPullFailureLog(failed, inputs.length, lastError);
-    console.warn(entry.event, entry);
-  }
+  })();
 }

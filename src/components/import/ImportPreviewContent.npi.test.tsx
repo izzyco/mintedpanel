@@ -48,10 +48,6 @@ vi.mock("@/hooks/useNpiRegistry", () => ({
 vi.mock("@/services/importNpiAdvisoryCapture", () => ({
   captureImportNpiAdvisories: vi.fn(),
 }));
-// MINT-110 PR 3: the commit's registry pulls (ImportPreviewContent.commit.test.tsx).
-vi.mock("@/services/npiRegistry", () => ({
-  recordNpiRegistryPulls: vi.fn(),
-}));
 vi.mock("@/hooks/useImportNpiVerification", () => ({
   useImportNpiVerification: vi.fn(() => ({
     snapshot: state.snapshot,

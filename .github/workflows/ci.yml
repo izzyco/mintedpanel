@@ -398,10 +398,9 @@ jobs:
       - name: Run MINT-134 registry additions SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint134-registry-additions.sql
 
-      # MINT-110 PR 3 registry pulls: service_role inserts only, admins and
-      # specialists read their own org's rows, billing and other orgs read
-      # none, no API role updates or deletes, the constraints and cascades.
-      # Rollback-only; any failed check raises.
+      # MINT-110 PR 3 registry pulls: service_role selects and inserts only,
+      # anon and authenticated have nothing, no API role updates or deletes,
+      # the constraints and cascades. Rollback-only; any failed check raises.
       - name: Run MINT-110 registry pulls SQL packet
         run: psql -v ON_ERROR_STOP=1 -f supabase/tests/mint110-registry-pulls.sql
 

@@ -13,9 +13,10 @@
 // All run behind the full org guard (authenticate()) and are writer-only: the
 // consumers are the provider create/edit forms and the import review. The
 // lookups read no org data and write no audit row — the registry is public,
-// and nothing they answer is stored. /pulls is the one writer: after a save
-// that used a registry answer it stores the reply as source data
-// (provider_registry_pulls), one insert, for a provider of the caller's org.
+// and nothing they answer is stored. /pulls is the one writer: after a
+// provider-form save that used a registry answer it stores the reply as
+// source data (provider_registry_pulls), one insert, for a provider of the
+// caller's org. An import commit records no pull.
 //
 // Limits are per server instance: per-user fixed windows (typed lookups, and
 // the import's batch checks counted per NPI) and a short TTL cache, all in
@@ -246,9 +247,10 @@ export async function handleNpiRegistryVerifyBatch(
  * window (NPI_REGISTRY_BATCH_PER_MINUTE), the budget for calls nobody typed.
  * `sourced` keeps only the fields whose saved value equals the reply's
  * (keepNpiRegistrySourced). One insert with the service-role client; the org
- * and the actor come from the guard. `confirmed` stamps the actor as the
- * confirmer (Add Provider's Review step). A registry failure writes nothing:
- * the save went through already, and the caller logs and moves on. */
+ * and the actor come from the guard. `confirmed` marks an Add Provider Review
+ * step submit, so the actor (pulled_by) is the confirmer. A registry failure
+ * or the batch window writes nothing: the save went through already, and the
+ * caller logs and moves on (no retry). */
 export async function handleNpiRegistryPull(
   body: unknown,
   ctx: AuthContext,
@@ -322,19 +324,17 @@ export async function handleNpiRegistryPull(
     answer.record,
   );
 
-  const now = new Date().toISOString();
   const { data: row, error: insertError } = await ctx.db
     .from("provider_registry_pulls")
     .insert({
       org_id: ctx.orgId,
       provider_id: providerId,
       npi,
-      pulled_at: answer.pulledAt ?? now,
+      pulled_at: answer.pulledAt ?? new Date().toISOString(),
       pulled_by: ctx.userId,
       reply: (answer.record ?? null) as unknown as Json,
       sourced: sourced as unknown as Json,
-      confirmed_at: confirmed ? now : null,
-      confirmed_by: confirmed ? ctx.userId : null,
+      confirmed,
     })
     .select("id, pulled_at")
     .single();

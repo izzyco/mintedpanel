@@ -35,7 +35,6 @@ import {
   type NpiRegistryPolicy,
 } from "@/lib/npiRegistryPolicy";
 import { buildNpiRegistryReview, shownAdvisories } from "@/lib/npiRegistryReview";
-import type { NpiRegistryPullInput } from "@/lib/npiRegistryPulls";
 
 export interface ImportNpiCheckItem {
   /** Separators stripped; passes the CMS check digit. */
@@ -316,27 +315,6 @@ export function importNpiCaptureAdvisories(input: {
     });
   }
   return captured;
-}
-
-/** MINT-110 PR 3: the pulls a commit records, one per committed row (a create
- * or an update) whose provider is known and whose NPI the registry answered,
- * found or not. The import fills nothing from the registry, so nothing is
- * sourced, and a commit confirms nothing. The server takes the reply from its
- * cache of the check (or the registry again), never from the browser. A row
- * nobody checked records no pull. */
-export function importNpiPulls(input: {
-  items: readonly ImportNpiCheckItem[];
-  snapshot: ImportNpiSnapshot;
-  providerIdByLine: ReadonlyMap<number, string>;
-}): NpiRegistryPullInput[] {
-  const pulls: NpiRegistryPullInput[] = [];
-  for (const item of input.items) {
-    const providerId = input.providerIdByLine.get(item.line);
-    const outcome = input.snapshot.results.get(item.npi);
-    if (item.disposition === "skip" || !providerId || outcome?.status !== "checked") continue;
-    pulls.push({ providerId, npi: item.npi, sourced: {}, confirmed: false });
-  }
-  return pulls;
 }
 
 /** An import NPI check the advisory ledger records at commit:

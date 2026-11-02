@@ -178,9 +178,8 @@ describe("POST /api/npi-registry/pulls", () => {
       pulled_at: "2026-11-01T12:00:00.000Z",
       pulled_by: USER,
       sourced: BODY.sourced,
-      confirmed_by: USER,
+      confirmed: true,
     });
-    expect(typeof row.confirmed_at).toBe("string");
     expect(row.reply).toMatchObject({ npi: NPI, lastName: "DOE", credential: "DPT", sex: "F" });
     const body = await envelope<NpiRegistryPullResult>(res);
     expect(body.data).toEqual({
@@ -209,8 +208,7 @@ describe("POST /api/npi-registry/pulls", () => {
     expect(inserts[0].row).toMatchObject({
       pulled_at: "2026-11-01T09:30:00.000Z",
       sourced: { credentials: "DPT" },
-      confirmed_at: null,
-      confirmed_by: null,
+      confirmed: false,
     });
   });
 

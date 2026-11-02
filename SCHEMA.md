@@ -668,23 +668,23 @@ server's `pulledAt`), `pulled_by`, `reply` (jsonb object: the trimmed public
 reply, `NpiRegistryRecord` in `src/lib/npiRegistry.ts`; NULL when the registry
 has no record), `sourced` (jsonb object: any of `credentials`, `taxonomyCode`,
 `gender`, `phone`, `licenses: [{state, number}]`, the fields whose saved value
-came from this pull), `confirmed_at` and `confirmed_by` (both set, or both NULL:
-an Add Provider Review step submit), `created_at`. Index
-`(org_id, provider_id, pulled_at DESC)`.
+came from this pull), `confirmed` (boolean, default false: true for an Add
+Provider Review step submit, whose confirmer is `pulled_by`), `created_at`.
+Index `(org_id, provider_id, pulled_at DESC)`.
 
-One row per save that used a registry answer: a pick, or the check of a new or
-changed NPI. Written only by `POST /api/npi-registry/pulls`: the org guard,
-writers only, the provider in the caller's org and holding that NPI, the reply
-from the server's cache or NPPES (never the client), `sourced` cut to the
-fields whose saved value equals the reply's (`keepNpiRegistrySourced` in
-`src/lib/npiRegistryPulls.ts`), one insert with the service-role client. No
-triggers. Rows are never updated: a later pull adds its own row and never
-changes a provider value.
+One row per provider-form save (Add Provider, the roster form, the record page)
+that used a registry answer: a pick, or the check of a new or changed NPI. An
+import commit records none. Written only by `POST /api/npi-registry/pulls`:
+the org guard, writers only, the provider in the caller's org and holding that
+NPI, the reply from the server's cache or NPPES (never the client), `sourced`
+cut to the fields whose saved value equals the reply's
+(`keepNpiRegistrySourced` in `src/lib/npiRegistryPulls.ts`), one insert with
+the service-role client. No triggers. Rows are never updated: a later pull
+adds its own row and never changes a provider value.
 
-RLS on. `provider_registry_pulls_select`: members of the row's org whose role
-is admin or specialist; billing reads nothing. Grants: authenticated SELECT;
-service_role SELECT and INSERT; nothing for anon. Packet:
-`supabase/tests/mint110-registry-pulls.sql`.
+RLS on with no policies. There is no reader yet: nothing is granted to anon or
+authenticated. service_role has SELECT and INSERT only, like
+`workflow_advisories`. Packet: `supabase/tests/mint110-registry-pulls.sql`.
 
 ## MINT-134 workflow advisories (repository-only)
 

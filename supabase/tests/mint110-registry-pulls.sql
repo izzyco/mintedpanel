@@ -1,11 +1,11 @@
 -- MINT-110 PR 3 registry pulls packet
 -- (supabase/migrations/20261102150000_mint110_provider_registry_pulls.sql):
--- service_role inserts and nothing else; authenticated reads its own org's
--- rows when admin or specialist, and billing, another org and a user with no
--- membership read none; no API role updates, deletes or truncates; the
--- constraints refuse another org's provider, a malformed NPI, a non-object
--- reply or sourced and half a confirmation; both foreign keys cascade; and the
--- table has no trigger and one policy.
+-- service_role selects and inserts and nothing else; anon and authenticated
+-- have nothing (there is no reader yet), so no API role but service_role
+-- inserts, and none updates, deletes or truncates; the constraints refuse
+-- another org's provider, a malformed NPI, a non-object reply or sourced and
+-- a NULL confirmed, which defaults to false; both foreign keys cascade; and
+-- the table has no trigger and no policy.
 --
 -- Run after all migrations, in a disposable PostgreSQL database, never
 -- against hosted. CI's Migration dry-run job runs it after the MINT-134
@@ -77,63 +77,42 @@ BEGIN
 END;
 $$;
 
--- What a member sees: '<rows of org A>/<rows of org B>'.
-CREATE FUNCTION pg_temp.m110p_seen(p_name text, p_role text, p_sub uuid) RETURNS text
-LANGUAGE sql AS $$
-  SELECT pg_temp.m110p_run(p_name, p_role, p_sub,
-    'SELECT count(*) FILTER (WHERE org_id = ''11010000-0000-4000-a000-00000000000a'')::text'
-    || ' || ''/'' || count(*) FILTER (WHERE org_id = ''11010000-0000-4000-a000-00000000000b'')::text'
-    || ' FROM public.provider_registry_pulls')
-$$;
-
 -- An INSERT of one pull as p_role; the values are a template's, with p_org,
--- p_provider and the jsonb/npi overrides.
+-- p_provider and the jsonb/npi overrides. p_confirmed is SQL text ('true',
+-- 'NULL'); left out, the column takes its default.
 CREATE FUNCTION pg_temp.m110p_insert(
   p_name text, p_role text, p_org uuid, p_provider uuid,
   p_npi text DEFAULT '1234567893', p_reply text DEFAULT '{"npi": "1234567893"}',
-  p_sourced text DEFAULT '{}', p_confirmed_at text DEFAULT 'NULL', p_confirmed_by text DEFAULT 'NULL'
+  p_sourced text DEFAULT '{}', p_confirmed text DEFAULT NULL
 ) RETURNS text
 LANGUAGE sql AS $$
   SELECT pg_temp.m110p_run(p_name, p_role, NULL,
     format('INSERT INTO public.provider_registry_pulls'
-           || ' (org_id, provider_id, npi, pulled_at, pulled_by, reply, sourced, confirmed_at, confirmed_by)'
-           || ' VALUES (%L::uuid, %L::uuid, %L, now(), %L::uuid, %s, %L::jsonb, %s, %s) RETURNING id::text',
+           || ' (org_id, provider_id, npi, pulled_at, pulled_by, reply, sourced%s)'
+           || ' VALUES (%L::uuid, %L::uuid, %L, now(), %L::uuid, %s, %L::jsonb%s) RETURNING id::text',
+           CASE WHEN p_confirmed IS NULL THEN '' ELSE ', confirmed' END,
            p_org, p_provider, p_npi, '11010000-0000-4000-a000-000000000001',
            CASE WHEN p_reply IS NULL THEN 'NULL' ELSE quote_literal(p_reply) || '::jsonb' END,
-           p_sourced, p_confirmed_at, p_confirmed_by))
+           p_sourced,
+           CASE WHEN p_confirmed IS NULL THEN '' ELSE ', ' || p_confirmed END))
 $$;
 
 CREATE FUNCTION pg_temp.m110p_ok(p_result text) RETURNS boolean
 LANGUAGE sql IMMUTABLE AS $$ SELECT p_result ~ '^ok:[0-9a-f-]{36}$' $$;
 
 -- ---------------------------------------------------------------------------
--- Fixtures: org A (an admin, a specialist and a billing member) and org B (an
--- admin), a provider in each, and a signed-in user with no membership.
+-- Fixtures: org A with an admin, org B, and a provider in each.
 -- ---------------------------------------------------------------------------
 INSERT INTO public.organizations (id, name) VALUES
   ('11010000-0000-4000-a000-00000000000a', 'MINT-110 Pulls Synthetic Org A'),
   ('11010000-0000-4000-a000-00000000000b', 'MINT-110 Pulls Synthetic Org B');
 INSERT INTO auth.users (id, email) VALUES
-  ('11010000-0000-4000-a000-000000000001', 'm110p-admin-a@example.invalid'),
-  ('11010000-0000-4000-a000-000000000002', 'm110p-specialist-a@example.invalid'),
-  ('11010000-0000-4000-a000-000000000003', 'm110p-billing-a@example.invalid'),
-  ('11010000-0000-4000-a000-000000000004', 'm110p-admin-b@example.invalid'),
-  ('11010000-0000-4000-a000-000000000005', 'm110p-nobody@example.invalid');
+  ('11010000-0000-4000-a000-000000000001', 'm110p-admin-a@example.invalid');
 INSERT INTO public.profiles (id, full_name, email) VALUES
-  ('11010000-0000-4000-a000-000000000001', 'MINT-110 Pulls Admin A', 'm110p-admin-a@example.invalid'),
-  ('11010000-0000-4000-a000-000000000002', 'MINT-110 Pulls Specialist A', 'm110p-specialist-a@example.invalid'),
-  ('11010000-0000-4000-a000-000000000003', 'MINT-110 Pulls Billing A', 'm110p-billing-a@example.invalid'),
-  ('11010000-0000-4000-a000-000000000004', 'MINT-110 Pulls Admin B', 'm110p-admin-b@example.invalid'),
-  ('11010000-0000-4000-a000-000000000005', 'MINT-110 Pulls Nobody', 'm110p-nobody@example.invalid');
+  ('11010000-0000-4000-a000-000000000001', 'MINT-110 Pulls Admin A', 'm110p-admin-a@example.invalid');
 INSERT INTO public.memberships (id, org_id, user_id, role) VALUES
   ('11010000-0000-4000-a000-0000000a0011', '11010000-0000-4000-a000-00000000000a',
-   '11010000-0000-4000-a000-000000000001', 'admin'),
-  ('11010000-0000-4000-a000-0000000a0012', '11010000-0000-4000-a000-00000000000a',
-   '11010000-0000-4000-a000-000000000002', 'specialist'),
-  ('11010000-0000-4000-a000-0000000a0013', '11010000-0000-4000-a000-00000000000a',
-   '11010000-0000-4000-a000-000000000003', 'billing'),
-  ('11010000-0000-4000-a000-0000000b0011', '11010000-0000-4000-a000-00000000000b',
-   '11010000-0000-4000-a000-000000000004', 'admin');
+   '11010000-0000-4000-a000-000000000001', 'admin');
 INSERT INTO public.providers (id, org_id, first_name, last_name, npi) VALUES
   ('11010000-0000-4000-a000-0000000a0001', '11010000-0000-4000-a000-00000000000a',
    'Synthetic', 'Provider A', '1234567893'),
@@ -146,25 +125,22 @@ INSERT INTO public.providers (id, org_id, first_name, last_name, npi) VALUES
 ALTER ROLE service_role BYPASSRLS;
 
 -- ---------------------------------------------------------------------------
--- The shape: RLS on, one SELECT policy, no trigger, the grants.
+-- The shape: RLS on, no policy, no trigger, the grants.
 -- ---------------------------------------------------------------------------
 SELECT pg_temp.m110p_mark('rls_is_on',
   (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.provider_registry_pulls'::regclass));
 
-SELECT pg_temp.m110p_mark('one_policy_and_it_is_select_for_authenticated',
-  (SELECT count(*) = 1 AND bool_and(p.polcmd = 'r'
-            AND p.polroles = ARRAY[(SELECT oid FROM pg_roles WHERE rolname = 'authenticated')])
-     FROM pg_policy AS p
-    WHERE p.polrelid = 'public.provider_registry_pulls'::regclass));
+SELECT pg_temp.m110p_mark('no_policy',
+  NOT EXISTS (SELECT 1 FROM pg_policy
+               WHERE polrelid = 'public.provider_registry_pulls'::regclass));
 
 SELECT pg_temp.m110p_mark('no_trigger',
   NOT EXISTS (SELECT 1 FROM pg_trigger
                WHERE tgrelid = 'public.provider_registry_pulls'::regclass AND NOT tgisinternal));
 
-SELECT pg_temp.m110p_mark('authenticated_may_only_select',
-  has_table_privilege('authenticated', 'public.provider_registry_pulls', 'SELECT')
-  AND NOT has_table_privilege('authenticated', 'public.provider_registry_pulls',
-                              'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'));
+SELECT pg_temp.m110p_mark('authenticated_has_nothing',
+  NOT has_table_privilege('authenticated', 'public.provider_registry_pulls',
+                          'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'));
 
 SELECT pg_temp.m110p_mark('anon_has_nothing',
   NOT has_table_privilege('anon', 'public.provider_registry_pulls',
@@ -183,11 +159,11 @@ SELECT pg_temp.m110p_mark('public_has_nothing',
 -- ---------------------------------------------------------------------------
 -- Writes: service_role inserts; nothing else writes.
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.m110p_mark('service_role_inserts_a_pull',
+SELECT pg_temp.m110p_mark('service_role_inserts_a_confirmed_pull',
   pg_temp.m110p_ok(pg_temp.m110p_insert('insert_a', 'service_role',
     '11010000-0000-4000-a000-00000000000a', '11010000-0000-4000-a000-0000000a0001',
     p_sourced => '{"credentials": "DPT", "licenses": [{"state": "CO", "number": "PT-4471"}]}',
-    p_confirmed_at => 'now()', p_confirmed_by => '''11010000-0000-4000-a000-000000000001''::uuid')));
+    p_confirmed => 'true')));
 
 SELECT pg_temp.m110p_mark('service_role_inserts_a_pull_with_no_record',
   pg_temp.m110p_ok(pg_temp.m110p_insert('insert_a_no_record', 'service_role',
@@ -239,37 +215,22 @@ SELECT pg_temp.m110p_mark('anon_cannot_delete',
     LIKE '42501:%');
 
 -- ---------------------------------------------------------------------------
--- Reads: the org's admins and specialists see its rows only.
+-- What was written: the route's insert reads its row back as service_role;
+-- confirmed defaults to false.
 -- ---------------------------------------------------------------------------
-SELECT pg_temp.m110p_mark('admin_a_sees_org_a_only',
-  pg_temp.m110p_seen('seen_admin_a', 'authenticated', '11010000-0000-4000-a000-000000000001')
-    = 'ok:2/0');
-
-SELECT pg_temp.m110p_mark('specialist_a_sees_org_a_only',
-  pg_temp.m110p_seen('seen_specialist_a', 'authenticated', '11010000-0000-4000-a000-000000000002')
-    = 'ok:2/0');
-
-SELECT pg_temp.m110p_mark('billing_a_sees_nothing',
-  pg_temp.m110p_seen('seen_billing_a', 'authenticated', '11010000-0000-4000-a000-000000000003')
-    = 'ok:0/0');
-
-SELECT pg_temp.m110p_mark('admin_b_sees_org_b_only',
-  pg_temp.m110p_seen('seen_admin_b', 'authenticated', '11010000-0000-4000-a000-000000000004')
-    = 'ok:0/1');
-
-SELECT pg_temp.m110p_mark('a_user_with_no_membership_sees_nothing',
-  pg_temp.m110p_seen('seen_nobody', 'authenticated', '11010000-0000-4000-a000-000000000005')
-    = 'ok:0/0');
-
-SELECT pg_temp.m110p_mark('anon_cannot_select',
-  pg_temp.m110p_seen('seen_anon', 'anon', NULL) LIKE '42501:%');
-
 SELECT pg_temp.m110p_mark('the_row_reads_back_as_written',
-  pg_temp.m110p_run('read_back', 'authenticated', '11010000-0000-4000-a000-000000000001',
+  pg_temp.m110p_run('read_back', 'service_role', NULL,
     'SELECT (sourced->>''credentials'') || ''|'' || (sourced->''licenses''->0->>''number'')'
-    || ' || ''|'' || (confirmed_by IS NOT NULL)::text || ''|'' || (reply->>''npi'')'
-    || ' FROM public.provider_registry_pulls WHERE confirmed_at IS NOT NULL')
-    = 'ok:DPT|PT-4471|true|1234567893');
+    || ' || ''|'' || (reply->>''npi'') || ''|'' || (count(*) OVER ())::text'
+    || ' FROM public.provider_registry_pulls WHERE confirmed')
+    = 'ok:DPT|PT-4471|1234567893|1');
+
+SELECT pg_temp.m110p_mark('confirmed_defaults_to_false',
+  (SELECT count(*) = 2 AND bool_and(NOT confirmed)
+     FROM public.provider_registry_pulls
+    WHERE org_id IN ('11010000-0000-4000-a000-00000000000a',
+                     '11010000-0000-4000-a000-00000000000b')
+      AND sourced = '{}'::jsonb));
 
 -- ---------------------------------------------------------------------------
 -- Constraints.
@@ -297,13 +258,10 @@ SELECT pg_temp.m110p_mark('sourced_that_is_not_an_object_is_refused',
     '11010000-0000-4000-a000-00000000000a', '11010000-0000-4000-a000-0000000a0001',
     p_sourced => '"credentials"') LIKE '23514:%');
 
-SELECT pg_temp.m110p_mark('half_a_confirmation_is_refused',
-  pg_temp.m110p_insert('refuse_confirmed_at_only', 'service_role',
+SELECT pg_temp.m110p_mark('a_null_confirmed_is_refused',
+  pg_temp.m110p_insert('refuse_null_confirmed', 'service_role',
     '11010000-0000-4000-a000-00000000000a', '11010000-0000-4000-a000-0000000a0001',
-    p_confirmed_at => 'now()') LIKE '23514:%'
-  AND pg_temp.m110p_insert('refuse_confirmed_by_only', 'service_role',
-    '11010000-0000-4000-a000-00000000000a', '11010000-0000-4000-a000-0000000a0001',
-    p_confirmed_by => '''11010000-0000-4000-a000-000000000001''::uuid') LIKE '23514:%');
+    p_confirmed => 'NULL') LIKE '23502:%');
 
 -- ---------------------------------------------------------------------------
 -- The cascades: deleting a provider removes its rows, and both foreign keys

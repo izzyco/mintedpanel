@@ -55,8 +55,8 @@
 //   npibatch    the batch NPI check serves an anonymous caller and a billing
 //               member, and its answers can be cached           (37b, 37c, 37d)
 //   registrypulls a registry pull crosses the org wall: the route records one
-//               for another org's provider, and PostgREST reads every org's
-//               pulls and takes direct writes                (38b, 38e, 38f)
+//               for another org's provider, and PostgREST takes direct writes
+//                                                                  (38b, 38e)
 import { createServer } from "node:http";
 
 // Same fixture ids as the workflow env block, so the gate script needs no
@@ -219,21 +219,6 @@ const PROVIDERS = [
   provider("sp-prov-2", FIXTURES.SOUTHPARK_ORG, "Kenny", "McCormick", [SOUTHPARK_GROUP]),
   provider("sp-prov-3", FIXTURES.SOUTHPARK_ORG, "Kyle", "Broflovski", [SOUTHPARK_GROUP]),
   provider("sp-prov-4", FIXTURES.SOUTHPARK_ORG, "Stan", "Marsh", [SOUTHPARK_GROUP]),
-];
-
-// MINT-110 PR 3: one stored NPI Registry pull per org, so the PostgREST read
-// (38f) is never vacuous and a cross-org row is there to leak.
-const REGISTRY_PULLS = [
-  {
-    id: "b7a90000-0000-4000-a000-000000000401",
-    orgId: FIXTURES.KANSAS_ORG,
-    providerId: FIXTURES.KANSAS_PROVIDER_ID,
-  },
-  {
-    id: "d0e40000-0000-4000-a000-000000000401",
-    orgId: FIXTURES.SOUTHPARK_ORG,
-    providerId: FIXTURES.SOUTHPARK_PROVIDER_ID,
-  },
 ];
 
 // Case rows carry the dropdown projection of GET /api/cases (open cases only —
@@ -740,11 +725,10 @@ export async function createMockApiServer(options = {}) {
       return;
     }
 
-    // --- mock PostgREST: provider_registry_pulls only (MINT-110 PR 3) ---
-    // The real table: RLS SELECT for the org's admins and specialists, SELECT
-    // granted to authenticated and nothing else, so every direct write is
-    // 42501 (401 anonymous, 403 signed in). Leak "registrypulls" reads every
-    // org's rows to any member and takes direct writes.
+    // --- mock PostgREST: provider_registry_pulls writes only (MINT-110 PR 3) ---
+    // The real table grants nothing to anon or authenticated (no reader yet),
+    // so every direct write is 42501 (401 anonymous, 403 signed in). Leak
+    // "registrypulls" takes direct writes.
     if (/^\/rest\/v1\/provider_registry_pulls\/?$/.test(url.pathname)) {
       const bearer = (req.headers.authorization ?? "").replace(/^Bearer /, "");
       const caller = Object.values(USERS).find((u) => u.token === bearer) ?? null;
@@ -759,15 +743,6 @@ export async function createMockApiServer(options = {}) {
           message: "permission denied for table provider_registry_pulls",
         });
       if (req.headers.apikey !== "mock-anon-key") return json(401, { message: "No API key" });
-      if (method === "GET") {
-        if (!caller) return denied();
-        return json(
-          200,
-          REGISTRY_PULLS.filter(
-            (row) => open || (row.orgId === caller.orgId && caller.role !== "billing"),
-          ).map((row) => ({ id: row.id, org_id: row.orgId })),
-        );
-      }
       if (method === "POST" || method === "PATCH" || method === "DELETE") {
         await readBody(req);
         if (open && caller) return json(method === "POST" ? 201 : 204);
