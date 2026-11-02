@@ -21,6 +21,7 @@ vi.mock("@/services/cases", () => ({
 
 import {
   createContract,
+  createContractsIfMissing,
   getContract,
   isMissingContractSpecialtyKeyError,
   listContracts,
@@ -405,6 +406,118 @@ describe("contracts service — specialty key", () => {
     await updateContractStatus("c-1", "s-2", { specialtyKey: "nutrition", specialty: "x" });
     const statusPatch = statusUpdate.update.mock.calls[0][0] as Record<string, unknown>;
     expect(statusPatch).toEqual({ contracting_status_id: "s-2" });
+  });
+});
+
+// GCM-33 "+ Add state": the Not started records for a planned column, saved
+// as one insert that skips any key already holding a record.
+describe("createContractsIfMissing", () => {
+  beforeEach(() => {
+    fromMock.mockReset();
+    writeAuditMock.mockReset();
+    appendStatusHistoryMock.mockReset();
+  });
+
+  function upsertChain(result: { data: unknown; error: unknown }) {
+    return {
+      upsert: vi.fn().mockReturnThis(),
+      select: vi.fn().mockResolvedValue(result),
+    };
+  }
+
+  const NOT_STARTED = "s-not-started";
+  const inputs = ["p-1", "p-2"].map((payerId) => ({
+    groupId: "g-3",
+    payerId,
+    state: "la",
+    specialtyKey: "nutrition" as const,
+    contractingStatusId: NOT_STARTED,
+  }));
+
+  it("inserts every record in one statement that skips existing keys", async () => {
+    // p-2 already had a Nutrition record in LA: the insert skips it, so only
+    // p-1 comes back.
+    const chain = upsertChain({
+      data: [
+        {
+          id: "c-p1",
+          org_id: "org-123",
+          group_id: "g-3",
+          payer_id: "p-1",
+          state: "LA",
+          specialty_key: "nutrition",
+          contracting_status_id: NOT_STARTED,
+        },
+      ],
+      error: null,
+    });
+    fromMock.mockReturnValue(chain);
+
+    const created = await createContractsIfMissing(inputs);
+
+    expect(fromMock).toHaveBeenCalledTimes(1);
+    expect(fromMock).toHaveBeenCalledWith("contracts");
+    expect(chain.upsert).toHaveBeenCalledTimes(1);
+    const [rows, options] = chain.upsert.mock.calls[0] as [Record<string, unknown>[], unknown];
+    expect(options).toEqual({
+      onConflict: "group_id,payer_id,state,specialty_key",
+      ignoreDuplicates: true,
+    });
+    expect(rows).toEqual(
+      ["p-1", "p-2"].map((payerId) => ({
+        group_id: "g-3",
+        payer_id: payerId,
+        state: "LA",
+        specialty_key: "nutrition",
+        contracting_status_id: NOT_STARTED,
+        org_id: "org-123",
+      })),
+    );
+    expect(chain.select).toHaveBeenCalledWith("*");
+
+    expect(created.map((contract) => contract.id)).toEqual(["c-p1"]);
+    expect(created[0].specialtyKey).toBe("nutrition");
+    // Only the created record gets its status history and audit row.
+    expect(appendStatusHistoryMock).toHaveBeenCalledTimes(1);
+    expect(appendStatusHistoryMock).toHaveBeenCalledWith({
+      track: "contracting",
+      contractId: "c-p1",
+      fromStatusId: null,
+      toStatusId: NOT_STARTED,
+    });
+    expect(writeAuditMock).toHaveBeenCalledTimes(1);
+    expect(writeAuditMock).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: "CREATE", entityType: "contract", entityId: "c-p1" }),
+    );
+  });
+
+  it("writes no status history for a record saved with no status", async () => {
+    fromMock.mockReturnValue(
+      upsertChain({
+        data: [{ id: "c-x", group_id: "g-3", payer_id: "p-1", state: "LA" }],
+        error: null,
+      }),
+    );
+    await createContractsIfMissing([{ ...inputs[0], contractingStatusId: null }]);
+    expect(appendStatusHistoryMock).not.toHaveBeenCalled();
+    expect(writeAuditMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing for no records", async () => {
+    await expect(createContractsIfMissing([])).resolves.toEqual([]);
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it("throws when the insert fails and writes no history or audit", async () => {
+    fromMock.mockReturnValue(
+      upsertChain({
+        data: null,
+        error: { code: "42501", message: "new row violates row-level security policy" },
+      }),
+    );
+    await expect(createContractsIfMissing(inputs)).rejects.toBeTruthy();
+    expect(appendStatusHistoryMock).not.toHaveBeenCalled();
+    expect(writeAuditMock).not.toHaveBeenCalled();
   });
 });
 

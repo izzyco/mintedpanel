@@ -140,6 +140,54 @@ export async function createContract(input: ContractInput): Promise<Contract> {
   return created;
 }
 
+/** Creates the records whose (group, payer, state, specialty) key holds none
+ * yet, in one insert: a key that already has a record is skipped by the
+ * unique index (ON CONFLICT DO NOTHING), so this never duplicates a record and
+ * never changes one. Each created record gets the status history and audit
+ * row createContract writes. Returns only the created records. "+ Add state"
+ * in the contracts matrix saves its Not started records with it (GCM-33). */
+export async function createContractsIfMissing(
+  inputs: readonly ContractInput[],
+): Promise<Contract[]> {
+  if (inputs.length === 0) return [];
+  const orgId = requireActiveOrg();
+  const rows = inputs.map((input) => ({
+    ...writableColumns(input),
+    state: normalizeStateCode(input.state),
+    specialty_key: input.specialtyKey ?? "all",
+    org_id: orgId,
+  }));
+  const { data, error } = await supabase
+    .from("contracts")
+    .upsert(rows as never, {
+      onConflict: "group_id,payer_id,state,specialty_key",
+      ignoreDuplicates: true,
+    })
+    .select("*");
+  if (error) throw translateDbError(error);
+  const created = camelizeRow<Contract[]>(data ?? []);
+  await Promise.all(
+    created.map(async (contract) => {
+      if (contract.contractingStatusId) {
+        await appendStatusHistory({
+          track: "contracting",
+          contractId: contract.id,
+          fromStatusId: null,
+          toStatusId: contract.contractingStatusId,
+        });
+      }
+      await writeAudit({
+        actionType: "CREATE",
+        entityType: "contract",
+        entityId: contract.id,
+        after: contract,
+        description: `Created contract`,
+      });
+    }),
+  );
+  return created;
+}
+
 export async function updateContractStatus(
   contractId: string,
   statusId: string,
