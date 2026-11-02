@@ -41,7 +41,7 @@ import { AddTouchDialog, type TouchCaseCandidate } from "@/components/cases/AddT
 import { ManualCaseModal } from "@/components/cases/ManualCaseModal";
 import { CasesMatrix, type CasesMatrixGroupBy } from "@/components/cases/CasesMatrix";
 import { useProviders, useProviderAssignments } from "@/hooks/useProviders";
-import { useCases } from "@/hooks/useCases";
+import { useCaseAgeRules, useCaseAgeStopTimes, useCases } from "@/hooks/useCases";
 import { useLastTouchDates } from "@/hooks/useTouches";
 import { useFacilities } from "@/hooks/useLookups";
 import { usePayers } from "@/hooks/useAdmin";
@@ -49,6 +49,7 @@ import { useNextBestActions, useGenerationRun } from "@/hooks/useNextBestActions
 import { useCasesMatrix } from "@/hooks/useCasesMatrix";
 import { fmtDate } from "@/lib/format";
 import { useCanWrite } from "@/lib/permissions";
+import { caseDaysOpenWhenKnown } from "@/lib/caseAge";
 import { CASE_STATUSES, caseStatusLabel, type CaseStatus } from "@/lib/caseStatus";
 import { PRE_CRED_PAYER_NAME } from "@/lib/statusLabels";
 import { countLabel } from "@/lib/countLabel";
@@ -113,6 +114,7 @@ const KPI_LABELS: Record<CasesKpi, string> = {
 };
 
 const PAGE_SIZES = [10, 25, 50];
+const NO_CASE_AGE_STOPS: ReadonlyMap<string, string> = new Map();
 
 function capitalize(s: string): string {
   return s.length ? s[0].toUpperCase() + s.slice(1) : s;
@@ -126,6 +128,12 @@ function CasesPage() {
   const casesQ = useCases();
   const payersQ = usePayers();
   const lastTouchQ = useLastTouchDates();
+  const caseAgeRules = useCaseAgeRules();
+  const caseAgeStopsQ = useCaseAgeStopTimes();
+  // A failed read of the stops shows "—" for a closed case's Days open
+  // (caseDaysOpenWhenKnown) rather than fail the list or show a still-counting
+  // number; open cases are unaffected.
+  const caseAgeStops = caseAgeStopsQ.isError ? null : (caseAgeStopsQ.data ?? NO_CASE_AGE_STOPS);
   const assignmentsQ = useProviderAssignments();
   const facilitiesQ = useFacilities();
   const queue = useNextBestActions();
@@ -151,7 +159,10 @@ function CasesPage() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [newCaseOpen, setNewCaseOpen] = useState(false);
 
-  const loading = providersQ.isLoading || casesQ.isLoading || payersQ.isLoading;
+  // "Days open" waits for its stops (caseAgeStopTimes) rather than flash a
+  // closed case's still-counting number.
+  const loading =
+    providersQ.isLoading || casesQ.isLoading || payersQ.isLoading || caseAgeStopsQ.isLoading;
   const failed = providersQ.isError || casesQ.isError || payersQ.isError;
 
   const idSet = useMemo(
@@ -209,11 +220,20 @@ function CasesPage() {
           lastTouchLabel:
             lastTouchDays === null ? "—" : lastTouchDays === 0 ? "today" : `${lastTouchDays}d ago`,
           lastTouchDays,
-          daysOpen: Math.max(0, differenceInCalendarDays(now, parseISO(c.createdAt))),
+          daysOpen: caseDaysOpenWhenKnown(c, now, caseAgeStops, caseAgeRules),
           createdAt: c.createdAt,
         };
       });
-  }, [providersQ.data, casesQ.data, payersQ.data, lastTouchQ.data, runFilter, idSet]);
+  }, [
+    providersQ.data,
+    casesQ.data,
+    payersQ.data,
+    lastTouchQ.data,
+    caseAgeStops,
+    caseAgeRules,
+    runFilter,
+    idSet,
+  ]);
 
   // KPI counts always reflect the full (pre-filter) set so the cards are stable.
   const counts = useMemo(() => kpiCounts(allRows), [allRows]);
@@ -844,7 +864,7 @@ function FlatCaseTable({
               </td>
               <td className="px-3 py-2.5 text-muted-foreground">{r.lastTouchLabel}</td>
               <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                {r.daysOpen}d
+                {r.daysOpen === null ? "—" : `${r.daysOpen}d`}
               </td>
             </tr>
           ))}
