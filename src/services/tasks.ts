@@ -8,6 +8,7 @@
 import { supabase } from "@/integrations/supabase/externalClient";
 import { camelizeRow } from "@/lib/case";
 import { currentUserId, requireActiveOrg, writeAudit } from "@/lib/audit";
+import { activityDateRules, todayForActivity } from "@/lib/activityDate";
 import {
   planAttachStepArtifact,
   planDetachStepArtifact,
@@ -242,7 +243,9 @@ export async function updateTaskStatus(id: string, status: TaskStatus): Promise<
   const before = await getTask(id);
   const patch: Record<string, unknown> = { status };
   if (status === "completed") {
-    patch.completed_date = new Date().toISOString().slice(0, 10);
+    // The coordinator's local day by default, so the row agrees with its
+    // audit entry (ActivityDateRules, MINT-129).
+    patch.completed_date = todayForActivity(new Date(), activityDateRules());
   } else {
     patch.completed_date = null;
   }

@@ -4,6 +4,8 @@
 // derivation (which already subtracts nothing — it LABELS existing/excluded)
 // plus the E6.2 enrollment-facts overlay:
 //   candidate — proposed and not fact-covered; selectable (checked by default)
+//   blocked   — a candidate the E4.2 gating stops (missing required attribute,
+//               tied SOPs, no matching SOP); counted and shown, never selectable
 //   enrolled  — proposed but covered by a LIVE enrollment fact; grayed, never
 //               attempted, never casework
 //   existing  — a case already occupies the key; grayed with its reason
@@ -12,23 +14,123 @@
 // (no reason, no ceremony, no persistence — the candidate stays in the buffer
 // and reappears checked on the next preview); Exclude… is the deliberate,
 // persisted opt-out (the E2.0 store, restorable in one click). No I/O here.
+//
+// Which bucket a blocked candidate takes when a live fact also covers it is
+// business policy, so it is configuration (GenerationRules), never a
+// constant: it resolves from the decided default, then a platform override,
+// then an organization override (resolveGenerationRules), and
+// validateGenerationRules is the check an override must pass before it goes
+// live. Nothing stores an override yet; the Mission Control setting is
+// MINT-116. The confirm ledgers what the grid showed (splitGridSelection
+// reads the bucket), so a run row records the rule in force at confirm and a
+// later change never re-evaluates past rows.
 import type { BufferFactInput } from "@/lib/generationBuffer";
 import { previewRowKey, type GenerationPreviewRow } from "@/lib/generationPreview";
 
-export type GridBucket = "candidate" | "enrolled" | "existing" | "excluded";
+// ---------------------------------------------------------------------------
+// Rules
+
+export type FactCoveredBlockedBucket = "enrolled" | "blocked";
+
+/** The grid's policy rules. Each field names its default. */
+export interface GenerationRules {
+  /** A candidate the gating blocks (missing attribute, tied SOPs, no SOP)
+   * that a LIVE enrollment fact already covers. "enrolled" (default;
+   * Sowmya, Oct 30, D30): it shows as enrolled and the confirm records it in
+   * the run ledger with disposition `enrolled`; it never becomes a case.
+   * "blocked": it restores the earlier LEDGER behaviour only: the confirm
+   * does not record it. It is still shown as blocked, with its reason, and
+   * counted in "N blocked", like any other blocked candidate; hiding it, as
+   * the grid did before MINT-97, would break "N of N accounted for". */
+  factCoveredBlockedAs: FactCoveredBlockedBucket;
+}
+
+/** The platform default: the decided rule. */
+export const DEFAULT_GENERATION_RULES: Readonly<GenerationRules> = Object.freeze({
+  factCoveredBlockedAs: "enrolled",
+});
+
+/** A platform or organization override. A null or missing field inherits. */
+export type GenerationRulesOverride = {
+  readonly [K in keyof GenerationRules]?: GenerationRules[K] | null;
+};
+
+const FACT_COVERED_BLOCKED_BUCKETS: readonly FactCoveredBlockedBucket[] = ["enrolled", "blocked"];
+
+const RULE_CHECKS: { [K in keyof GenerationRules]: (value: unknown) => boolean } = {
+  factCoveredBlockedAs: (value) =>
+    FACT_COVERED_BLOCKED_BUCKETS.includes(value as FactCoveredBlockedBucket),
+};
+
+const RULE_KEYS = Object.keys(RULE_CHECKS) as Array<keyof GenerationRules>;
+
+/** Field by field: the organization's value, else the platform's, else the
+ * default. A stored value of the wrong shape is skipped like a missing one. */
+export function resolveGenerationRules(
+  platform?: GenerationRulesOverride | null,
+  organization?: GenerationRulesOverride | null,
+): GenerationRules {
+  const pick = <K extends keyof GenerationRules>(key: K): GenerationRules[K] => {
+    for (const override of [organization, platform]) {
+      const value: unknown = override?.[key];
+      if (value != null && RULE_CHECKS[key](value)) return value as GenerationRules[K];
+    }
+    return DEFAULT_GENERATION_RULES[key];
+  };
+  return { factCoveredBlockedAs: pick("factCoveredBlockedAs") };
+}
+
+/** Plain-language problems with an override; empty when it can go live. */
+export function validateGenerationRules(override: unknown): string[] {
+  if (override == null) return [];
+  if (typeof override !== "object" || Array.isArray(override))
+    return ["The generation rules must be a set of named rules."];
+  const errors: string[] = [];
+  const given = override as Record<string, unknown>;
+  for (const key of Object.keys(given)) {
+    if (!(RULE_KEYS as string[]).includes(key)) errors.push(`"${key}" is not a generation rule.`);
+  }
+  const covered = given.factCoveredBlockedAs;
+  if (covered != null && !RULE_CHECKS.factCoveredBlockedAs(covered))
+    errors.push(
+      'A blocked candidate an enrollment fact covers must show as "enrolled" or "blocked".',
+    );
+  return errors;
+}
+
+// ---------------------------------------------------------------------------
+// Buckets
+
+export type GridBucket = "candidate" | "blocked" | "enrolled" | "existing" | "excluded";
+
+/** The setup gap that blocks a proposed row (src/lib/generationGating.ts). */
+export type GridBlocker = "gated" | "ambiguous" | "unmatched";
+
+export const GRID_BLOCKER_LABELS: Record<GridBlocker, string> = {
+  gated: "Blocked — missing required attribute",
+  ambiguous: "Blocked — SOPs tie at equal priority",
+  unmatched: "Blocked — no matching SOP",
+};
 
 export interface GridRow {
   key: string;
   bucket: GridBucket;
   row: GenerationPreviewRow;
+  /** Set on blocked rows only. */
+  blocker?: GridBlocker;
 }
 
 /** Assign every preview row its single bucket (the facts overlay wins only
  * over proposed rows — an existing case or standing exclusion stays what it
- * is even when a fact also covers the key). */
+ * is even when a fact also covers the key). A proposed row that is both
+ * blocked and covered by a live fact takes `rules.factCoveredBlockedAs`: by
+ * default enrolled (an enrolled row needs no case, so its setup gap blocks
+ * nothing), or blocked. */
 export function bucketGridRows(
   rows: readonly GenerationPreviewRow[],
   facts: readonly BufferFactInput[],
+  blockers: ReadonlyMap<string, GridBlocker> = new Map(),
+  rules: GenerationRules = DEFAULT_GENERATION_RULES,
 ): GridRow[] {
   const liveFactKeys = new Set(
     facts
@@ -37,15 +139,19 @@ export function bucketGridRows(
   );
   return rows.map((row) => {
     const key = previewRowKey(row);
+    const blocker = blockers.get(key);
+    const covered = liveFactKeys.has(key);
     const bucket: GridBucket =
       row.disposition === "existing"
         ? "existing"
         : row.disposition === "excluded"
           ? "excluded"
-          : liveFactKeys.has(key)
-            ? "enrolled"
-            : "candidate";
-    return { key, bucket, row };
+          : blocker && (!covered || rules.factCoveredBlockedAs === "blocked")
+            ? "blocked"
+            : covered
+              ? "enrolled"
+              : "candidate";
+    return bucket === "blocked" ? { key, bucket, row, blocker } : { key, bucket, row };
   });
 }
 
@@ -58,21 +164,29 @@ export interface GridScope {
   facilityId?: string;
 }
 
+/** One scope test for grid rows and the banners beside them (skip rows
+ * carry the same provider / group / payer keys). */
+export function inGridScope(
+  row: Pick<GenerationPreviewRow, "providerId" | "groupId" | "payerId">,
+  scope: GridScope,
+  providerFacilities?: ReadonlyMap<string, ReadonlySet<string>>,
+): boolean {
+  if (scope.groupId && row.groupId !== scope.groupId) return false;
+  if (scope.payerId && row.payerId !== scope.payerId) return false;
+  if (scope.providerId && row.providerId !== scope.providerId) return false;
+  if (scope.facilityId) {
+    const set = providerFacilities?.get(row.providerId);
+    if (!set || !set.has(scope.facilityId)) return false;
+  }
+  return true;
+}
+
 export function filterGridRows(
   rows: readonly GridRow[],
   scope: GridScope,
   providerFacilities?: ReadonlyMap<string, ReadonlySet<string>>,
 ): GridRow[] {
-  return rows.filter(({ row }) => {
-    if (scope.groupId && row.groupId !== scope.groupId) return false;
-    if (scope.payerId && row.payerId !== scope.payerId) return false;
-    if (scope.providerId && row.providerId !== scope.providerId) return false;
-    if (scope.facilityId) {
-      const set = providerFacilities?.get(row.providerId);
-      if (!set || !set.has(scope.facilityId)) return false;
-    }
-    return true;
-  });
+  return rows.filter(({ row }) => inGridScope(row, scope, providerFacilities));
 }
 
 export type GridPivot = "provider" | "payer";
@@ -111,6 +225,7 @@ export function groupGridRows(rows: readonly GridRow[], pivot: GridPivot): GridG
 export interface GridReconciliation {
   create: number;
   skipped: number;
+  blocked: number;
   excluded: number;
   enrolled: number;
   existing: number;
@@ -120,8 +235,10 @@ export interface GridReconciliation {
 }
 
 /** The always-visible accounting: selected candidates create, unselected
- * candidates are skipped-for-now, and every other bucket is named. The sum
- * ALWAYS reconciles because every row has exactly one bucket. */
+ * candidates are skipped-for-now, and every other bucket is named — blocked
+ * rows included, so a gated or SOP-less candidate is in the denominator
+ * rather than silently absent. The sum ALWAYS reconciles because every row
+ * has exactly one bucket. */
 export function reconcileGrid(
   rows: readonly GridRow[],
   selectedKeys: ReadonlySet<string>,
@@ -129,6 +246,7 @@ export function reconcileGrid(
   const candidates = rows.filter((r) => r.bucket === "candidate");
   const create = candidates.filter((r) => selectedKeys.has(r.key)).length;
   const skipped = candidates.length - create;
+  const blocked = rows.filter((r) => r.bucket === "blocked").length;
   const excluded = rows.filter((r) => r.bucket === "excluded").length;
   const enrolled = rows.filter((r) => r.bucket === "enrolled").length;
   const existing = rows.filter((r) => r.bucket === "existing").length;
@@ -136,12 +254,13 @@ export function reconcileGrid(
 
   const parts = [`Create ${create}`];
   if (skipped > 0) parts.push(`${skipped} skipped`);
+  if (blocked > 0) parts.push(`${blocked} blocked`);
   if (excluded > 0) parts.push(`${excluded} excluded`);
   if (enrolled > 0) parts.push(`${enrolled} enrolled`);
   if (existing > 0) parts.push(`${existing} existing`);
   const line = `${parts.join(" · ")} — ${total} of ${total} accounted for`;
 
-  return { create, skipped, excluded, enrolled, existing, total, line };
+  return { create, skipped, blocked, excluded, enrolled, existing, total, line };
 }
 
 export interface GridSelectionSplit {
@@ -154,7 +273,11 @@ export interface GridSelectionSplit {
   excludedRows: GenerationPreviewRow[];
 }
 
-/** Split the grid by bucket + selection into the confirm inputs. */
+/** Split the grid by bucket + selection into the confirm inputs. Blocked rows
+ * ride none of them: the confirm never attempts or ledgers a blocked row.
+ * The split reads only the bucket, so the ledger records what the grid
+ * showed: a fact-covered blocked row is ledgered `enrolled` under the
+ * default rule and left out under "blocked" (GenerationRules). */
 export function splitGridSelection(
   rows: readonly GridRow[],
   selectedKeys: ReadonlySet<string>,
