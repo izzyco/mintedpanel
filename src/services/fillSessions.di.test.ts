@@ -6,12 +6,6 @@ import type { Database } from "@/integrations/supabase/types";
 // at load; stub it so this ctx-only suite needs no real env.
 vi.mock("@/integrations/supabase/externalClient", () => ({ supabase: {} }));
 vi.mock("@/services/workContext", () => ({ validateWorkContext: vi.fn() }));
-// MINT-135: the out-of-order recorder is its own module (taskOrderAdvisory.test.ts);
-// here it is a mock, so the fake db sees no extra read.
-const recordCompletedOutOfOrderMock = vi.hoisted(() => vi.fn());
-vi.mock("@/services/taskOrderAdvisory", () => ({
-  recordServerCompletedOutOfOrder: (...args: unknown[]) => recordCompletedOutOfOrderMock(...args),
-}));
 
 import {
   recordFillEvent,
@@ -998,10 +992,9 @@ describe("recordFillEvent — task completion", () => {
 });
 
 describe("recordFillEvent — out-of-order completion (MINT-135)", () => {
-  it("hands an open task it completes to the recorder, without waiting on it", async () => {
-    recordCompletedOutOfOrderMock.mockReset();
-    // A recorder that never settles: the request must not wait on it.
-    recordCompletedOutOfOrderMock.mockReturnValue(new Promise(() => {}));
+  it("hands an open task it completes to ctx.onTaskCompleted, without waiting on it", async () => {
+    // A callback that never settles: the request must not wait on it.
+    const onTaskCompleted = vi.fn(() => new Promise(() => {}));
     const { db } = makeFakeDb([
       { data: { id: CASE_ID } },
       { data: { id: TASK_ID } },
@@ -1012,11 +1005,14 @@ describe("recordFillEvent — out-of-order completion (MINT-135)", () => {
     ]);
     const { ctx } = ctxWith(db);
 
-    const result = await recordFillEvent(ctx, { ...baseInput, taskId: TASK_ID });
+    const result = await recordFillEvent(
+      { ...ctx, onTaskCompleted },
+      { ...baseInput, taskId: TASK_ID },
+    );
 
     expect(result.kind).toBe("created");
-    expect(recordCompletedOutOfOrderMock).toHaveBeenCalledTimes(1);
-    expect(recordCompletedOutOfOrderMock).toHaveBeenCalledWith(ctx, {
+    expect(onTaskCompleted).toHaveBeenCalledTimes(1);
+    expect(onTaskCompleted).toHaveBeenCalledWith({
       id: TASK_ID,
       caseId: CASE_ID,
       sortOrder: 2,
@@ -1024,7 +1020,7 @@ describe("recordFillEvent — out-of-order completion (MINT-135)", () => {
   });
 
   it("does not hand on a task that was already completed", async () => {
-    recordCompletedOutOfOrderMock.mockReset();
+    const onTaskCompleted = vi.fn();
     const { db } = makeFakeDb([
       { data: { id: CASE_ID } },
       { data: { id: TASK_ID } },
@@ -1034,9 +1030,9 @@ describe("recordFillEvent — out-of-order completion (MINT-135)", () => {
     ]);
     const { ctx } = ctxWith(db);
 
-    await recordFillEvent(ctx, { ...baseInput, taskId: TASK_ID });
+    await recordFillEvent({ ...ctx, onTaskCompleted }, { ...baseInput, taskId: TASK_ID });
 
-    expect(recordCompletedOutOfOrderMock).not.toHaveBeenCalled();
+    expect(onTaskCompleted).not.toHaveBeenCalled();
   });
 });
 

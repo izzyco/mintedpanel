@@ -2,13 +2,13 @@
 // completed. One rule for every path, the same as complete_sop_task_step's
 // and record_typed_enrollment_submission's: an earlier task is one of the same
 // case with a lower sort_order that is not completed and is not a removed
-// payer form. The browser's updateTaskStatus and the extension's direct
-// completions (completeTaskForFill, recordSubmissionTouch) share it.
+// payer form. The browser's updateTaskStatus and the extension routes'
+// recorder (src/server/taskOrderAdvisory.ts, for completeTaskForFill and
+// recordSubmissionTouch) share it. Browser-safe: nothing here imports
+// src/server/.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-import { ADVISORY_RECORD_FAILED, reportAdvisoryFailure } from "@/lib/advisoryChecks";
 import { isPayerFormRemoved } from "@/lib/payerForms";
-import { recordServerAdvisory, type AdvisoryRouteCtx } from "@/server/advisories";
 
 export interface CompletedTaskRef {
   id: string;
@@ -38,25 +38,4 @@ export async function countEarlierOpenCaseTasks(
       row.status !== "completed" &&
       !isPayerFormRemoved(row.sop_content),
   ).length;
-}
-
-/** The extension routes' recorder: call it, without awaiting, only after the
- * save that moved an open task to completed. It never throws or rejects. */
-export async function recordServerCompletedOutOfOrder(
-  ctx: AdvisoryRouteCtx,
-  task: CompletedTaskRef,
-): Promise<void> {
-  try {
-    const earlierOpenCount = await countEarlierOpenCaseTasks(ctx.db, ctx.orgId, task);
-    if (earlierOpenCount === 0) return;
-    await recordServerAdvisory(
-      ctx,
-      "extension",
-      "task.completed_out_of_order",
-      { table: "tasks", id: task.id },
-      { earlier_open_count: earlierOpenCount },
-    );
-  } catch (error) {
-    reportAdvisoryFailure(ADVISORY_RECORD_FAILED, "task.completed_out_of_order", error);
-  }
 }

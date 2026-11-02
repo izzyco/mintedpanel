@@ -27,13 +27,17 @@ import {
 } from "@/lib/workContext";
 import { validateWorkContext } from "@/services/workContext";
 import { isCalendarDateString } from "@/lib/systemTokens";
-import { recordServerCompletedOutOfOrder } from "@/services/taskOrderAdvisory";
+import type { CompletedTaskRef } from "@/services/taskOrderAdvisory";
 
 export interface FillSessionServiceCtx {
   db: SupabaseClient<Database>;
   orgId: string;
   userId: string;
   writeAudit: (input: AuditInput) => Promise<void>;
+  /** MINT-135: called, not awaited, after this call's save moved an open task
+   * to completed. The extension route sets it to the server-only out-of-order
+   * recorder (src/server/taskOrderAdvisory.ts). It must not throw. */
+  onTaskCompleted?: (task: CompletedTaskRef) => void;
 }
 
 export interface FillEventInput {
@@ -595,8 +599,8 @@ async function completeTaskForFill(ctx: FillSessionServiceCtx, taskId: string): 
     after: { status: "completed" },
     description: "Task completed by extension fill",
   });
-  // MINT-135: an out-of-order completion is recorded, never awaited.
-  void recordServerCompletedOutOfOrder(ctx, {
+  // MINT-135: the route records an out-of-order completion, never awaited.
+  ctx.onTaskCompleted?.({
     id: taskId,
     caseId: before.case_id,
     sortOrder: before.sort_order,

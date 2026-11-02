@@ -39,6 +39,7 @@ import {
 import { ok, fail, type ApiMeta } from "./envelope";
 import { isWriter, type AuthContext, type UserContext } from "./guard";
 import { resolveUserTokens } from "./userTokens";
+import { recordServerCompletedOutOfOrder } from "./taskOrderAdvisory";
 import { resolveOrgContactProfileTokens } from "@/services/orgContacts";
 import { proposeSharedFieldMap, type SharedProposeBody } from "@/services/sharedFieldMaps";
 import {
@@ -919,6 +920,8 @@ export async function handleCreateCaseTouch(
       orgId: ctx.orgId,
       userId: ctx.userId,
       writeAudit: ctx.writeAudit,
+      // MINT-135: a task the touch closes is checked for open earlier tasks.
+      onTaskCompleted: (task) => void recordServerCompletedOutOfOrder(ctx, task),
     },
     caseId,
     body as SubmissionTouchInput,
@@ -978,7 +981,14 @@ export async function handleCreateFillEvent(body: unknown, ctx: AuthContext): Pr
     return fail(422, "Request body must be a JSON object");
   }
   const result = await recordFillEvent(
-    { db: ctx.db, orgId: ctx.orgId, userId: ctx.userId, writeAudit: ctx.writeAudit },
+    {
+      db: ctx.db,
+      orgId: ctx.orgId,
+      userId: ctx.userId,
+      writeAudit: ctx.writeAudit,
+      // MINT-135: a task the fill completes is checked for open earlier tasks.
+      onTaskCompleted: (task) => void recordServerCompletedOutOfOrder(ctx, task),
+    },
     body as FillEventInput,
   );
   if (result.kind === "rejected") return fail(result.status, result.message);

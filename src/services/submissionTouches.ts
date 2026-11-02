@@ -54,13 +54,17 @@ import { CANONICAL_TOUCH_TYPES } from "@/lib/touchTypes";
 import { dispositionRequiresContext, isDisposition } from "@/lib/touchDispositions";
 import type { Touch, TouchOutcome, TouchType } from "@/types";
 import { validateWorkContextForFillReceipt } from "@/services/workContext";
-import { recordServerCompletedOutOfOrder } from "@/services/taskOrderAdvisory";
+import type { CompletedTaskRef } from "@/services/taskOrderAdvisory";
 
 export interface SubmissionTouchServiceCtx {
   db: SupabaseClient<Database>;
   orgId: string;
   userId: string;
   writeAudit: (input: AuditInput) => Promise<void>;
+  /** MINT-135: called, not awaited, after this call's save moved an open task
+   * to completed. The extension route sets it to the server-only out-of-order
+   * recorder (src/server/taskOrderAdvisory.ts). It must not throw. */
+  onTaskCompleted?: (task: CompletedTaskRef) => void;
 }
 
 // Wire shape of POST /api/cases/:id/touches — snake_case body keys per the
@@ -730,8 +734,8 @@ export async function recordSubmissionTouch(
       after: { status: "completed" },
       description: "Task completed by extension submit",
     });
-    // MINT-135: an out-of-order completion is recorded, never awaited.
-    void recordServerCompletedOutOfOrder(ctx, {
+    // MINT-135: the route records an out-of-order completion, never awaited.
+    ctx.onTaskCompleted?.({
       id: taskBefore.id,
       caseId: taskBefore.case_id,
       sortOrder: taskBefore.sort_order,
