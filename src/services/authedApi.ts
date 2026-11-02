@@ -13,6 +13,26 @@ interface ApiEnvelope<T> {
   error: string | null;
 }
 
+/** A non-OK /api response. The message is the envelope's error, exactly as
+ * before; `status` and `retryAfterSeconds` (from a Retry-After header in
+ * seconds, when sent) let a caller tell a rate limit from an outage. */
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterSeconds: number | null,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+function retryAfterSeconds(response: Response): number | null {
+  const raw = response.headers.get("retry-after");
+  const seconds = raw === null ? Number.NaN : Number(raw.trim());
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+}
+
 export async function authedApiFetch<T>(
   path: string,
   init?: RequestInit,
@@ -40,7 +60,11 @@ export async function authedApiFetch<T>(
     throw new Error("Access context changed; retry the request");
   }
   if (!response.ok || envelope.data === null) {
-    throw new Error(envelope.error ?? `Request failed (${response.status})`);
+    throw new ApiRequestError(
+      envelope.error ?? `Request failed (${response.status})`,
+      response.status,
+      retryAfterSeconds(response),
+    );
   }
   return envelope.data;
 }

@@ -135,6 +135,7 @@ export const LEAK_MODES = [
   "providerinvites",
   "intakesession",
   "npiregistry",
+  "npibatch",
 ];
 
 // GET /api/cases?q= result limit — mirrors CASE_SEARCH_DEFAULT_LIMIT and
@@ -764,6 +765,17 @@ export async function createMockApiServer(options = {}) {
         lastName: sp ? "Park" : "One",
         email: sp ? "sp.provider@example.test" : "kay.one@example.test",
       });
+    }
+
+    // --- MINT-110 PR 2 leak "npibatch", part 1: the batch NPI check answers
+    // an anonymous caller. (The "npiregistry" leak below opens the whole
+    // /api/npi-registry/ prefix, so it reddens 37b as well.)
+    if (
+      leak === "npibatch" &&
+      /^\/api\/npi-registry\/verify-batch\/?$/.test(url.pathname) &&
+      !(req.headers.authorization ?? "").startsWith("Bearer ")
+    ) {
+      return envelope(res, 200, { results: [] });
     }
 
     // --- MINT-110 leak "npiregistry", part 1: the NPI Registry proxy answers
@@ -1669,6 +1681,39 @@ export async function createMockApiServer(options = {}) {
         return envelope(res, 422, null, "Enter a 10-digit NPI with a valid check digit");
       }
       return envelope(res, 200, { record: null });
+    }
+
+    // --- /api/npi-registry/verify-batch (MINT-110 PR 2) ---
+    // Writer-only, then validated (1 to 10 check-digit-valid NPIs), before any
+    // registry call. Never calls out: each valid NPI comes back checked with no
+    // record. Leak "npibatch", part 2: a billing (read-only) member is served,
+    // and the answers lose Cache-Control: no-store.
+    if (/^\/api\/npi-registry\/verify-batch\/?$/.test(url.pathname)) {
+      if (method !== "POST") return envelope(res, 405, null, "Method not allowed");
+      if (user.role === "billing" && leak !== "npibatch") {
+        return envelope(
+          res,
+          403,
+          null,
+          "Only admins and specialists can check NPIs in the NPI Registry",
+        );
+      }
+      const body = (await readBody(req)) ?? {};
+      if (leak !== "npibatch") res.setHeader("cache-control", "private, no-store, max-age=0");
+      const npis = Array.isArray(body.npis) ? body.npis : [];
+      const valid = npis.every(
+        (npi) => typeof npi === "string" && /^\d{10}$/.test(npi.replace(/[-\s]/g, "")),
+      );
+      if (npis.length === 0 || npis.length > 10 || !valid) {
+        return envelope(res, 422, null, "Send 1 to 10 NPIs to check");
+      }
+      return envelope(res, 200, {
+        results: npis.map((npi) => ({
+          npi: npi.replace(/[-\s]/g, ""),
+          status: "checked",
+          record: null,
+        })),
+      });
     }
 
     // --- /api/payer-forms/* (Payer PDF) ---
