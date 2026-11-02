@@ -22,6 +22,7 @@ import {
   useProviderReadinessFacts,
 } from "@/hooks/useEnrollmentReadiness";
 import { useGenerationContractRows } from "@/hooks/useGenerationPreview";
+import { resolveCaqhAttestationWindowDays } from "@/lib/caqhAttestation";
 import { evaluateEnrollmentReadiness, type GroupContractInput } from "@/lib/enrollmentReadiness";
 import {
   buildNextBestActions,
@@ -158,6 +159,8 @@ export function useNextBestActions(): NextBestActionsData {
       groupDocuments: documentsQ.data ?? [],
       groupInsurancePolicies: insuranceQ.data ?? [],
       contracts,
+      // The shared CAQH window (A26); nothing stores an override yet (MINT-125).
+      caqhAttestationWindowDays: resolveCaqhAttestationWindowDays(null, null),
     }).map((row) => ({
       providerId: row.providerId,
       groupId: row.groupId,
