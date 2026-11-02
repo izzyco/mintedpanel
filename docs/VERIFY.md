@@ -71,14 +71,15 @@ npx playwright test e2e/<spec>.spec.ts
 
 ### Public / unauthenticated
 
-| Surface                                  | Spec(s)                                                                                                 |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `/login`                                 | `login.spec.ts`                                                                                         |
-| Landing resolver (first-run / workspace) | `landing-resolver.spec.ts`                                                                              |
-| `/capture/$token` (one-time capture)     | `capture-link.spec.ts`; abuse/throttle: `abuse-probe.spec.ts`; upload fence: `sectioned-intake.spec.ts` |
-| `/contact` (inbound leads)               | `contact-inbound.spec.ts`; abuse/throttle: `abuse-probe.spec.ts`                                        |
-| `/share/$token` (read-only report share) | `report-share.spec.ts`; abuse: `abuse-probe.spec.ts`                                                    |
-| `/intake/$token` (provider onboarding)   | `provider-intake.spec.ts` (mocked `/api/intake/*`)                                                      |
+| Surface                                      | Spec(s)                                                                                                 |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `/login`                                     | `login.spec.ts`                                                                                         |
+| Landing resolver (first-run / workspace)     | `landing-resolver.spec.ts`                                                                              |
+| `/capture/$token` (one-time capture)         | `capture-link.spec.ts`; abuse/throttle: `abuse-probe.spec.ts`; upload fence: `sectioned-intake.spec.ts` |
+| `/contact` (inbound leads)                   | `contact-inbound.spec.ts`; abuse/throttle: `abuse-probe.spec.ts`                                        |
+| `/share/$token` (read-only report share)     | `report-share.spec.ts`; abuse: `abuse-probe.spec.ts`                                                    |
+| `/intake/$token` (provider onboarding)       | `provider-intake.spec.ts` (mocked `/api/intake/*`)                                                      |
+| `/dev/provider-onboarding` (Stage 1 preview) | `provider-onboarding-preview.spec.ts` (sample data, no network)                                         |
 
 ### Shell & navigation
 

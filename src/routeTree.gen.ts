@@ -51,6 +51,7 @@ import { Route as CasesIndexRouteImport } from './routes/cases.index'
 import { Route as CasesIdRouteImport } from './routes/cases.$id'
 import { Route as DevGlobalSearchRouteImport } from './routes/dev.global-search'
 import { Route as DevPrimitivesRouteImport } from './routes/dev.primitives'
+import { Route as DevProviderOnboardingRouteImport } from './routes/dev.provider-onboarding'
 import { Route as GenerationRunsRouteImport } from './routes/generation_.runs'
 import { Route as GroupsIndexRouteImport } from './routes/groups.index'
 import { Route as GroupsGroupIdRouteImport } from './routes/groups.$groupId'
@@ -321,6 +322,11 @@ const DevGlobalSearchRoute = DevGlobalSearchRouteImport.update({
 const DevPrimitivesRoute = DevPrimitivesRouteImport.update({
   id: '/dev/primitives',
   path: '/dev/primitives',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DevProviderOnboardingRoute = DevProviderOnboardingRouteImport.update({
+  id: '/dev/provider-onboarding',
+  path: '/dev/provider-onboarding',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GenerationRunsRoute = GenerationRunsRouteImport.update({
@@ -688,6 +694,7 @@ export interface FileRoutesByFullPath {
   '/cases/$id': typeof CasesIdRoute
   '/dev/global-search': typeof DevGlobalSearchRoute
   '/dev/primitives': typeof DevPrimitivesRoute
+  '/dev/provider-onboarding': typeof DevProviderOnboardingRoute
   '/generation/runs': typeof GenerationRunsRouteWithChildren
   '/groups/$groupId': typeof GroupsGroupIdRouteWithChildren
   '/import/$runId': typeof ImportRunIdRoute
@@ -786,6 +793,7 @@ export interface FileRoutesByTo {
   '/cases/$id': typeof CasesIdRoute
   '/dev/global-search': typeof DevGlobalSearchRoute
   '/dev/primitives': typeof DevPrimitivesRoute
+  '/dev/provider-onboarding': typeof DevProviderOnboardingRoute
   '/import/$runId': typeof ImportRunIdRoute
   '/intake/$token': typeof IntakeTokenRoute
   '/join/$slug': typeof JoinSlugRoute
@@ -889,6 +897,7 @@ export interface FileRoutesById {
   '/cases/$id': typeof CasesIdRoute
   '/dev/global-search': typeof DevGlobalSearchRoute
   '/dev/primitives': typeof DevPrimitivesRoute
+  '/dev/provider-onboarding': typeof DevProviderOnboardingRoute
   '/generation_/runs': typeof GenerationRunsRouteWithChildren
   '/groups/$groupId': typeof GroupsGroupIdRouteWithChildren
   '/import/$runId': typeof ImportRunIdRoute
@@ -996,6 +1005,7 @@ export interface FileRouteTypes {
     | '/cases/$id'
     | '/dev/global-search'
     | '/dev/primitives'
+    | '/dev/provider-onboarding'
     | '/generation/runs'
     | '/groups/$groupId'
     | '/import/$runId'
@@ -1094,6 +1104,7 @@ export interface FileRouteTypes {
     | '/cases/$id'
     | '/dev/global-search'
     | '/dev/primitives'
+    | '/dev/provider-onboarding'
     | '/import/$runId'
     | '/intake/$token'
     | '/join/$slug'
@@ -1196,6 +1207,7 @@ export interface FileRouteTypes {
     | '/cases/$id'
     | '/dev/global-search'
     | '/dev/primitives'
+    | '/dev/provider-onboarding'
     | '/generation_/runs'
     | '/groups/$groupId'
     | '/import/$runId'
@@ -1301,6 +1313,7 @@ export interface RootRouteChildren {
   CaptureTokenRoute: typeof CaptureTokenRoute
   DevGlobalSearchRoute: typeof DevGlobalSearchRoute
   DevPrimitivesRoute: typeof DevPrimitivesRoute
+  DevProviderOnboardingRoute: typeof DevProviderOnboardingRoute
   GenerationRunsRoute: typeof GenerationRunsRouteWithChildren
   GroupsGroupIdRoute: typeof GroupsGroupIdRouteWithChildren
   ImportRunIdRoute: typeof ImportRunIdRoute
@@ -1631,6 +1644,13 @@ declare module '@tanstack/react-router' {
       path: '/dev/primitives'
       fullPath: '/dev/primitives'
       preLoaderRoute: typeof DevPrimitivesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dev/provider-onboarding': {
+      id: '/dev/provider-onboarding'
+      path: '/dev/provider-onboarding'
+      fullPath: '/dev/provider-onboarding'
+      preLoaderRoute: typeof DevProviderOnboardingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/generation_/runs': {
@@ -2260,6 +2280,7 @@ const rootRouteChildren: RootRouteChildren = {
   CaptureTokenRoute: CaptureTokenRoute,
   DevGlobalSearchRoute: DevGlobalSearchRoute,
   DevPrimitivesRoute: DevPrimitivesRoute,
+  DevProviderOnboardingRoute: DevProviderOnboardingRoute,
   GenerationRunsRoute: GenerationRunsRouteWithChildren,
   GroupsGroupIdRoute: GroupsGroupIdRouteWithChildren,
   ImportRunIdRoute: ImportRunIdRoute,

@@ -3,6 +3,7 @@ import {
   INTAKE_MAX_BYTES,
   canContinue,
   canResend,
+  classifyInvite,
   deriveStage,
   deriveWaitingOn,
   documentSlots,
@@ -39,12 +40,17 @@ function completeDraft(): IntakeDraft {
       taxonomyCode: given("225100000X"),
       dateOfBirth: given("1990-04-02"),
       caqhId: given("12345678"),
-      ssnOnFile: true,
+      ssn: given("6789"),
     },
     contact: {
       email: "anita.rao@example.test",
       mobile: given("(704) 555-0100"),
-      homeAddress: given("1 Main St, Charlotte, NC 28202"),
+      homeAddress: {
+        street: given("1 Main St"),
+        city: given("Charlotte"),
+        state: given("NC"),
+        zip: given("28202"),
+      },
     },
     licenses: [{ state: given("NC"), number: given("PT1234"), expiresOn: given("2027-06-30") }],
     logins: { caqhOnFile: true, pecosOnFile: true },
@@ -147,7 +153,7 @@ describe("sectionProgress and canContinue", () => {
   it("counts the verified email in Contact", () => {
     const draft = completeDraft();
     draft.contact.mobile = EMPTY;
-    draft.contact.homeAddress = EMPTY;
+    draft.contact.homeAddress = { street: EMPTY, city: EMPTY, state: EMPTY, zip: EMPTY };
     expect(sectionProgress(draft).contact).toEqual({ done: 1, total: 3 });
   });
 
@@ -164,7 +170,7 @@ describe("sectionProgress and canContinue", () => {
     expect(canContinue(noPecos)).toBe(false);
 
     const noSsn = completeDraft();
-    noSsn.identity.ssnOnFile = false;
+    noSsn.identity.ssn = EMPTY;
     expect(canContinue(noSsn)).toBe(false);
   });
 });
@@ -269,6 +275,70 @@ describe("preview fixtures", () => {
       confirmed: 10,
       pending: 3,
       total: 13,
+    });
+  });
+});
+
+describe("classifyInvite", () => {
+  const people = [
+    {
+      displayName: "Anita Rao, PT",
+      email: "Anita.Rao@example.test",
+      npi: "1234567893",
+      groupNames: ["Charlotte"],
+      journey: "none" as const,
+    },
+    {
+      displayName: "Marcus Bell, DPT",
+      email: "marcus.bell@example.test",
+      npi: null,
+      groupNames: ["Charlotte"],
+      journey: "open" as const,
+    },
+    {
+      displayName: "Lena Ortiz, PTA",
+      email: "lena.ortiz@example.test",
+      npi: "1987654328",
+      groupNames: ["Charlotte"],
+      journey: "submitted" as const,
+    },
+  ];
+  const invite = (email: string, npi = "", groupName = "Charlotte") => ({ email, npi, groupName });
+
+  it("is new when neither the email nor the NPI is on file", () => {
+    expect(classifyInvite(invite("new.hire@example.test"), people)).toEqual({ kind: "new" });
+  });
+
+  it("matches email without case, and names what matched", () => {
+    expect(classifyInvite(invite("anita.rao@EXAMPLE.test"), people)).toEqual({
+      kind: "active_on_file",
+      person: people[0],
+      matchedOn: "email",
+    });
+  });
+
+  it("splits a same-group match by where her journey stands", () => {
+    expect(classifyInvite(invite("marcus.bell@example.test"), people).kind).toBe(
+      "already_onboarding",
+    );
+    expect(classifyInvite(invite("lena.ortiz@example.test"), people).kind).toBe(
+      "already_submitted",
+    );
+  });
+
+  it("adds the group, with no email, when she is on file in another group", () => {
+    expect(classifyInvite(invite("x@example.test", "1234567893", "Concord"), people)).toEqual({
+      kind: "on_file_other_group",
+      person: people[0],
+      matchedOn: "npi",
+    });
+  });
+
+  it("refuses to guess when the email and the NPI belong to two different people", () => {
+    expect(classifyInvite(invite("marcus.bell@example.test", "1234567893"), people)).toEqual({
+      kind: "conflict",
+      byEmail: people[1],
+      byNpi: people[0],
     });
   });
 });

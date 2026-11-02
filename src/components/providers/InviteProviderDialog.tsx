@@ -13,20 +13,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { InviteFields } from "@/components/providers/InviteFields";
+import { EMPTY_INVITE, inviteFieldsReady } from "@/lib/inviteFields";
 import { useProviderGroups } from "@/hooks/useLookups";
 import { useCreateProviderInvite, useResendProviderInvite } from "@/hooks/useProviderInvites";
 import type { InviteDelivery } from "@/services/providerInvites";
-
-const NONE = "__none__";
 
 function notifyDelivery(delivery: InviteDelivery, sentMessage: string) {
   if (delivery === "sent") toast.success(sentMessage);
@@ -39,19 +30,15 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
   const groups = useProviderGroups();
   const invite = useCreateProviderInvite();
   const resend = useResendProviderInvite();
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [email, setEmail] = useState("");
-  const [groupId, setGroupId] = useState(NONE);
-  const [npi, setNpi] = useState("");
-  const [startDate, setStartDate] = useState("");
+  const [values, setValues] = useState(EMPTY_INVITE);
   const [existingId, setExistingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const ready = firstName.trim() && lastName.trim() && email.trim() && groupId !== NONE;
+  const ready = inviteFieldsReady(values);
 
   async function onSend() {
     setError(null);
+    const { firstName, lastName, email, groupId, npi, startDate } = values;
     try {
       const result = await invite.mutateAsync({
         firstName,
@@ -112,81 +99,13 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
             </p>
           </div>
         ) : (
-          <div className="grid gap-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="invite-first">First name</Label>
-                <Input
-                  id="invite-first"
-                  value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="invite-last">Last name</Label>
-                <Input
-                  id="invite-last"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="invite-email">Email</Label>
-              <Input
-                id="invite-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="invite-group">Group</Label>
-              <Select value={groupId} onValueChange={setGroupId}>
-                <SelectTrigger id="invite-group">
-                  <SelectValue placeholder="Choose a group" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE} disabled>
-                    Choose a group
-                  </SelectItem>
-                  {(groups.data ?? [])
-                    .filter((g) => g.isActive)
-                    .map((g) => (
-                      <SelectItem key={g.id} value={g.id}>
-                        {g.name}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <details className="text-[13px]">
-              <summary className="cursor-pointer text-muted-foreground">
-                + NPI and start date (optional)
-              </summary>
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="invite-npi">NPI</Label>
-                  <Input
-                    id="invite-npi"
-                    value={npi}
-                    onChange={(e) => setNpi(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                    inputMode="numeric"
-                    placeholder="10 digits"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="invite-start">Start date</Label>
-                  <Input
-                    id="invite-start"
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                  />
-                </div>
-              </div>
-            </details>
-          </div>
+          <InviteFields
+            values={values}
+            onChange={setValues}
+            groups={(groups.data ?? [])
+              .filter((g) => g.isActive)
+              .map((g) => ({ id: g.id, name: g.name }))}
+          />
         )}
 
         {error ? (

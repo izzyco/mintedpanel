@@ -2,13 +2,20 @@
 // decision 18; not built yet — the derivation tests are the only consumer).
 // Synthetic canvas names only, no real PHI. Every count a screen shows is
 // computed from these rows, never typed in separately.
-import type { IntakeDraft, OnboardingHire, VerificationCheck } from "@/types/providerOnboarding";
+import type {
+  FieldValue,
+  IntakeDraft,
+  KnownPerson,
+  OnboardingHire,
+  VerificationCheck,
+} from "@/types/providerOnboarding";
+import { deriveStage } from "@/lib/providerOnboarding";
 export { CONSENT } from "@/lib/intakeConsent";
 
 export const PRACTICE = {
   name: "Shelby Sports Rehab",
   key: "pk_7f3a9c",
-  groups: ["Shelby Sports Rehab"],
+  groups: ["Shelby Sports Rehab · Charlotte", "Shelby Sports Rehab · Concord"],
   locations: ["Charlotte", "Concord"],
   address: "410 Mint St, Charlotte, NC 28202",
 };
@@ -94,27 +101,101 @@ export const HIRES: OnboardingHire[] = [
 // Hires already past onboarding, for screen 0's footer count.
 export const EARLIER_HIRES_IN_CREDENTIALING = 9;
 
-const ROSTER = { label: "From Shelby's roster", asOf: "2026-08-12" };
+const INVITATION = { label: "From your invitation", asOf: "2026-10-30" };
 
-// Anita's draft as the form first shows it: the roster supplied her name, the
+const EMPTY: FieldValue<string> = { value: null, source: null };
+const EMPTY_ADDRESS = { street: EMPTY, city: EMPTY, state: EMPTY, zip: EMPTY };
+
+// Anita's draft as the form first shows it: the invitation supplied her name, the
 // license state is a bare prefill, and nothing else is entered yet.
 export function initialDraft(email: string): IntakeDraft {
-  const empty = { value: null, source: null };
   return {
     identity: {
-      firstName: { value: "Anita", source: ROSTER },
-      lastName: { value: "Rao", source: ROSTER },
-      npi: empty,
-      taxonomyCode: empty,
-      dateOfBirth: empty,
-      caqhId: empty,
-      ssnOnFile: false,
+      firstName: { value: "Anita", source: INVITATION },
+      lastName: { value: "Rao", source: INVITATION },
+      npi: EMPTY,
+      taxonomyCode: EMPTY,
+      dateOfBirth: EMPTY,
+      caqhId: EMPTY,
+      ssn: EMPTY,
     },
-    contact: { email, mobile: empty, homeAddress: empty },
-    licenses: [{ state: { value: "NC", source: null }, number: empty, expiresOn: empty }],
+    contact: { email, mobile: EMPTY, homeAddress: EMPTY_ADDRESS },
+    licenses: [{ state: { value: "NC", source: null }, number: EMPTY, expiresOn: EMPTY }],
     logins: { caqhOnFile: false, pecosOnFile: false },
   };
 }
+
+const ON_FILE = { label: "On file", asOf: "2026-03-14" };
+const onFile = (value: string, locked = false): FieldValue<string> => ({
+  value,
+  source: ON_FILE,
+  locked,
+});
+
+// Board 5a-2: Priya is already an active provider, re-invited to review her
+// details. SSN, NPI and date of birth are on her live record, so they lock.
+export function reviewDraft(email: string): IntakeDraft {
+  return {
+    identity: {
+      firstName: onFile("Priya"),
+      lastName: onFile("Shah"),
+      npi: onFile("1730195835", true),
+      taxonomyCode: onFile("225100000X"),
+      dateOfBirth: onFile("1988-07-21", true),
+      caqhId: onFile("12345678"),
+      ssn: onFile("6789", true),
+    },
+    contact: {
+      email,
+      mobile: EMPTY,
+      homeAddress: {
+        street: onFile("18 Elm St"),
+        city: onFile("Charlotte"),
+        state: onFile("NC"),
+        zip: onFile("28203"),
+      },
+    },
+    licenses: [
+      { state: onFile("NC"), number: onFile("PT-48213"), expiresOn: onFile("2027-12-31") },
+    ],
+    logins: { caqhOnFile: true, pecosOnFile: false },
+  };
+}
+
+// Everyone an invite can match (board 1b): the hires above plus providers
+// already on the roster. Each journey is derived from the hire's events.
+export const KNOWN_PEOPLE: KnownPerson[] = [
+  ...HIRES.map((h) => {
+    const stage = deriveStage(h.events);
+    const journey: KnownPerson["journey"] =
+      stage === "invited" || stage === "started"
+        ? "open"
+        : stage === "submitted"
+          ? "submitted"
+          : "none";
+    return {
+      displayName: h.displayName,
+      email: h.invitedEmail,
+      npi: null,
+      groupNames: [h.groupName],
+      journey,
+    };
+  }),
+  {
+    displayName: "Priya Shah, PT",
+    email: "priya.shah@example.test",
+    npi: "1730195835",
+    groupNames: [PRACTICE.groups[0]],
+    journey: "none",
+  },
+  {
+    displayName: "Dev Patel, PT",
+    email: "dev.patel@example.test",
+    npi: "1588667638",
+    groupNames: [PRACTICE.groups[1]],
+    journey: "none",
+  },
+];
 
 const auto = (key: string, label: string): VerificationCheck => ({
   key,
