@@ -732,6 +732,15 @@ would go stale.
 `/cases` as an escape hatch). Starter cases and launch-driven creation are
 retired; `src/lib/oneDoor.test.ts` greps the source tree to keep it that way.
 
+`ManualCaseModal`'s payer picker opens on the picked group's network (active
+`payer_network_targets` via `alreadyAttachedPayerIds`) with a visible "Show all
+payers (new contracting)" escape; a zero-network group, a failed targets read,
+no group yet, and Contract all show the full `manualCasePayers` list
+(`src/lib/manualCasePayerOptions.ts`). It only shapes the list: SOP resolution,
+dedupe and creation read the pick exactly as before, and a pick that falls
+outside a newly chosen group's network stays picked with an "Out of network"
+tag. The State picker is unfiltered.
+
 The Cases Matrix respects this: a gap cell `<Link>`s to `/generation`
 pre-scoped (`?provider=&payer=&group=`) rather than creating anything. Creating
 inline would ship a case without its payer forms and execution types, which only

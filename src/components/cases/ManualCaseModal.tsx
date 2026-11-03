@@ -10,6 +10,11 @@
 // every group at its 3-part key. The pre-check renders a block-with-link to
 // the existing case; the swapped DB constraint stays the backstop (a 23505
 // race surfaces the TE-4 duplicate message).
+//
+// Payer defaults: once a group is picked (Enrollment), the payer picker opens
+// on that group's active network with a visible "Show all payers" escape
+// (`manualCasePayerOptions`). Contract keeps the full catalog. The filter only
+// shapes the list — every pick resolves and creates exactly as before.
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -37,10 +42,13 @@ import {
 } from "@/hooks/useProviders";
 import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { usePayers, useSops } from "@/hooks/useAdmin";
+import { usePayerNetworkTargets } from "@/hooks/usePayerNetworkTargets";
 import { useTemplatePayerForms } from "@/hooks/usePayerForms";
 import { resolveCaseFacilityId } from "@/lib/caseFacility";
 import { hydratePayerFormTasks, payerFormsByFamily } from "@/lib/payerForms";
 import { manualCasePayers } from "@/lib/payerSetup";
+import { manualCasePayerOptions } from "@/lib/manualCasePayerOptions";
+import { StatusPill } from "@/components/StatusPill";
 import { isFallbackTemplate, topRankedTemplates } from "@/lib/pickTemplate";
 import { resolveTemplate } from "@/lib/sopResolver";
 import { stampExecutionTypes, stampTasks } from "@/lib/sopStamp";
@@ -67,6 +75,10 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
   const facilitiesQ = useFacilities();
   const payersQ = usePayers();
   const templatesQ = useSops();
+  // Shapes the payer picker's default only. Deliberately NOT in the loading /
+  // failed gates below: an unavailable network read shows today's full list
+  // and never blocks or disables Create.
+  const targetsQ = usePayerNetworkTargets();
   const casesQ = useCases();
   const createCase = useCreateCase();
   const canWrite = useCanWrite();
@@ -77,6 +89,7 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
   const [groupId, setGroupId] = useState(NONE);
   const [payerId, setPayerId] = useState(NONE);
   const [state, setState] = useState(NONE);
+  const [showAllPayers, setShowAllPayers] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
 
   // Filter by business purpose before applying the existing match precedence.
@@ -132,6 +145,18 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
     return roster.filter((p) => assignedProviderIds.has(p.id));
   }, [currentProviderAssignments, roster]);
   const payers = useMemo(() => manualCasePayers(payersQ.data ?? []), [payersQ.data]);
+  const payerPicker = useMemo(
+    () =>
+      manualCasePayerOptions({
+        payers,
+        targets: targetsQ.isError ? undefined : targetsQ.data,
+        groupId: groupId === NONE ? null : groupId,
+        payerId: payerId === NONE ? null : payerId,
+        caseType,
+        showAll: showAllPayers,
+      }),
+    [payers, targetsQ.isError, targetsQ.data, groupId, payerId, caseType, showAllPayers],
+  );
 
   // TE-6: the group select offers the provider's groups from
   // provider_group_assignments (un-ended memberships, the E1.3 semantic).
@@ -478,6 +503,8 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
                 onValueChange={(v) => {
                   setGroupId(v);
                   setSelectedTemplateId(null);
+                  // A new group opens on its own network. The payer pick is kept.
+                  setShowAllPayers(false);
                 }}
                 disabled={caseType !== "contract" && providerId === NONE}
               >
@@ -507,9 +534,14 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="manual-case-payer">
-                Payer {keyFieldsRequired ? requiredMark : null}
-              </Label>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="manual-case-payer">
+                  Payer {keyFieldsRequired ? requiredMark : null}
+                </Label>
+                {payerPicker.pickedOutOfNetwork ? (
+                  <StatusPill status="neutral" label="Out of network" />
+                ) : null}
+              </div>
               <Select
                 required={keyFieldsRequired}
                 value={payerId}
@@ -522,13 +554,38 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
                   <SelectValue placeholder="Select a payer" />
                 </SelectTrigger>
                 <SelectContent>
-                  {payers.map((p) => (
+                  {payerPicker.options.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
                       {p.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {payerPicker.view === "network" ? (
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs"
+                  onClick={() => setShowAllPayers(true)}
+                >
+                  Show all payers (new contracting)
+                </Button>
+              ) : payerPicker.view === "all" ? (
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs"
+                  onClick={() => setShowAllPayers(false)}
+                >
+                  Show only this group&apos;s network
+                </Button>
+              ) : payerPicker.view === "no_network" ? (
+                <p className="text-xs text-muted-foreground">
+                  This group has no payers in its network yet. Showing all payers.
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-1.5">

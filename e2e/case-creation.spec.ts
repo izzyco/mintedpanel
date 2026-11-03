@@ -774,8 +774,17 @@ test("TS-52: a manual one-off case against an unattached payer gets the same key
   await page.getByRole("option", { name: "Jane Whitaker" }).click();
   await dialog.getByRole("combobox", { name: "Group" }).click();
   await page.getByRole("option", { name: "Group 1" }).click();
+
+  // The picker opens on Group 1's network; the unattached payer is one
+  // visible click away, behind the new-contracting escape.
+  await dialog.getByRole("combobox", { name: "Payer" }).click();
+  await expect(page.getByRole("option", { name: "BCBS-NC" })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Cigna-NC" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Show all payers (new contracting)" }).click();
   await dialog.getByRole("combobox", { name: "Payer" }).click();
   await page.getByRole("option", { name: "Cigna-NC" }).click();
+  await expect(dialog.getByText("Out of network")).toBeVisible();
   await dialog.getByRole("combobox", { name: "State" }).click();
   await page.getByRole("option", { name: "NC", exact: true }).click();
 
@@ -801,6 +810,7 @@ test("TS-52: a manual one-off case against an unattached payer gets the same key
   await page.getByRole("option", { name: "Jane Whitaker" }).click();
   await dialog2.getByRole("combobox", { name: "Group" }).click();
   await page.getByRole("option", { name: "Group 1" }).click();
+  await dialog2.getByRole("button", { name: "Show all payers (new contracting)" }).click();
   await dialog2.getByRole("combobox", { name: "Payer" }).click();
   await page.getByRole("option", { name: "Cigna-NC" }).click();
   await dialog2.getByRole("combobox", { name: "State" }).click();
@@ -864,6 +874,7 @@ test("MINT-93: manual case marks the four key fields required and names the miss
   await page.getByRole("option", { name: "Enrollment" }).click();
   await expect(hint).toHaveText("Choose a payer and state to create the case.");
 
+  await dialog.getByRole("button", { name: "Show all payers (new contracting)" }).click();
   await dialog.getByRole("combobox", { name: "Payer" }).click();
   await page.getByRole("option", { name: "Cigna-NC" }).click();
   await dialog.getByRole("combobox", { name: "State" }).click();
@@ -872,6 +883,65 @@ test("MINT-93: manual case marks the four key fields required and names the miss
   await expect(hint).toHaveCount(0);
   await expect(createButton).toBeEnabled();
   await expect(createButton).not.toHaveAttribute("aria-describedby");
+});
+
+test("manual case keeps a picked payer across a group switch, explains an empty network, and leaves Contract unfiltered", async ({
+  context,
+  page,
+}) => {
+  const fixtures = makeFixtures();
+  // Group 2 has no active network payers (its one target is archived).
+  fixtures.payer_network_targets = fixtures.payer_network_targets.map((target) =>
+    target.group_id === "g-2" ? { ...target, status: "archived" } : target,
+  );
+  const { handler } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context, ORG_SHELBY);
+
+  await page.goto("/cases");
+  await page.getByRole("button", { name: "New case" }).click();
+  const dialog = page.getByRole("dialog");
+  const payerPicker = dialog.getByRole("combobox", { name: "Payer" });
+
+  // No group yet: today's full list, no escape, no note.
+  await payerPicker.click();
+  await expect(page.getByRole("option", { name: "BCBS-NC" })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Cigna-NC" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog.getByRole("button", { name: /Show all payers/ })).toHaveCount(0);
+
+  await dialog.getByRole("combobox", { name: "Provider" }).click();
+  await page.getByRole("option", { name: "Jane Whitaker" }).click();
+  await dialog.getByRole("combobox", { name: "Group" }).click();
+  await page.getByRole("option", { name: "Group 1" }).click();
+  await payerPicker.click();
+  await page.getByRole("option", { name: "BCBS-NC" }).click();
+  await expect(dialog.getByText("Out of network")).toHaveCount(0);
+
+  // Switch to a group with no network: the pick stays, is tagged, and the
+  // picker says why it shows everything.
+  await dialog.getByRole("combobox", { name: "Group" }).click();
+  await page.getByRole("option", { name: "Group 2" }).click();
+  await expect(payerPicker).toContainText("BCBS-NC");
+  await expect(dialog.getByText("Out of network")).toBeVisible();
+  await expect(
+    dialog.getByText("This group has no payers in its network yet. Showing all payers."),
+  ).toBeVisible();
+  await payerPicker.click();
+  await expect(page.getByRole("option", { name: "Cigna-NC" })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  // Contract keeps the full catalog: no escape, no note, no tag.
+  await dialog.getByRole("combobox", { name: "Case type" }).click();
+  await page.getByRole("option", { name: "Contract" }).click();
+  await dialog.getByRole("combobox", { name: "Group" }).click();
+  await page.getByRole("option", { name: "Group 1" }).click();
+  await payerPicker.click();
+  await expect(page.getByRole("option", { name: "BCBS-NC" })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Cigna-NC" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog.getByRole("button", { name: /Show all payers/ })).toHaveCount(0);
+  await expect(dialog.getByText("Out of network")).toHaveCount(0);
 });
 
 test("manual case replaces empty selectors with provider and payer setup actions", async ({
