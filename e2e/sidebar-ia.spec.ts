@@ -202,10 +202,13 @@ async function assertSixItems(page: import("@playwright/test").Page) {
   // (the "Admin" text in the user footer is the role display, not a section).
   await expect(rail.locator("nav").getByText("Admin", { exact: true })).toHaveCount(0);
 
-  // Branding untouched (F6.1.1 AC): the shipped white layered-jack mark.
+  // Branding (F6.1.1 AC): the shipped layered-jack mark, the PNG as a mask
+  // filled from the rail ink token — white here; rail-ink only on the Mission
+  // Control rail (mission-control.spec.ts).
   const logo = rail.getByRole("img", { name: "Minted Panel" });
   await expect(logo).toBeVisible();
-  await expect(logo).toHaveAttribute("src", /logo-white/);
+  await expect(logo).toHaveCSS("mask-image", /logo-white/);
+  await expect(logo).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(rail.getByText("Minted Panel", { exact: true })).toBeVisible();
 }
 

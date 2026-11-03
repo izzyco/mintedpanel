@@ -157,6 +157,11 @@ export const queryKeys = {
   // so switching orgs must not invalidate it. The row is resolved from the
   // session inside the service — no id rides the key.
   myProfile: () => ["my-profile"] as const,
+  // Mission Control Home tiles (platform_metrics() RPC). Deliberately NOT
+  // org-scoped: the counts span every organization and a platform admin may
+  // belong to none. The org switch's removeQueries() clears it anyway, and the
+  // hook only runs for a platform admin.
+  platformMetrics: () => ["platform", "metrics"] as const,
   // Reporting Center (redesign E0.6). CROSS-org (renders without an active org):
   // the caller's shares per report.
   reportShares: (reportKey: string) => ["report-shares", reportKey] as const,
