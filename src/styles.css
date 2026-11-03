@@ -60,6 +60,13 @@
 
   /* M1 token utilities (values in styles/tokens.css) */
   --color-mp-sidebar: var(--mp-sidebar);
+  /* Rail ink steps (values in :root below; the Mission Control surface overrides them) */
+  --color-mp-sidebar-ink: var(--mp-sidebar-ink);
+  --color-mp-sidebar-ink-70: var(--mp-sidebar-ink-70);
+  --color-mp-sidebar-ink-60: var(--mp-sidebar-ink-60);
+  --color-mp-sidebar-ink-50: var(--mp-sidebar-ink-50);
+  --color-mp-sidebar-ink-40: var(--mp-sidebar-ink-40);
+  --color-mp-sidebar-ink-35: var(--mp-sidebar-ink-35);
   --color-mp-app: var(--mp-app);
   --color-mp-card: var(--mp-card);
   --color-mp-border: var(--mp-border);
@@ -110,6 +117,25 @@
   --ring: var(--mp-primary);
   --text-muted: var(--mp-ink-faint);
 
+  /* Sidebar rail ink and chrome. The defaults are exactly the rail's existing
+     white-on-forest values (text-white and its 70/60/50/40/35 alphas, the
+     #C8DBD4 active bar, the white-alpha focus ring), so every route renders
+     pixel-identical. The alpha steps derive from the ink with the same
+     color-mix Tailwind emits for text-white/NN, so their computed values are
+     identical too (e2e pins them as oklab(… / 0.35) and oklab(… / 0.6)); the
+     var() operand matters, a literal one is constant-folded by Lightning CSS
+     into lab(). The steps are separate tokens on purpose: an alpha of dark
+     ink over a light rail loses contrast much faster than white over forest,
+     so a light surface overrides them with solid steps to stay WCAG AA. */
+  --mp-sidebar-ink: #ffffff;
+  --mp-sidebar-ink-70: color-mix(in oklab, var(--mp-sidebar-ink) 70%, transparent);
+  --mp-sidebar-ink-60: color-mix(in oklab, var(--mp-sidebar-ink) 60%, transparent);
+  --mp-sidebar-ink-50: color-mix(in oklab, var(--mp-sidebar-ink) 50%, transparent);
+  --mp-sidebar-ink-40: color-mix(in oklab, var(--mp-sidebar-ink) 40%, transparent);
+  --mp-sidebar-ink-35: color-mix(in oklab, var(--mp-sidebar-ink) 35%, transparent);
+  --mp-sidebar-accent: #c8dbd4;
+  --mp-sidebar-focus: rgba(255, 255, 255, 0.35);
+
   --status-gray: var(--mp-neutral);
   --status-blue: var(--mp-info);
   --status-amber: var(--mp-warn);
@@ -135,9 +161,42 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/* Mission Control (/mission-control, platform admins only) is the one surface
+   with its own palette: a distinct mint instead of the forest, so the operator
+   surface is never mistaken for a customer workspace. __root.tsx sets the
+   data-surface attribute on <html> for a known platform admin on those routes
+   and nowhere else, so nothing outside the surface changes and
+   src/styles/tokens.css stays byte-identical. Every shade below is a proposal
+   (Nov 1, 2026) and a one-line edit; the ink steps are solid colors chosen to
+   keep every rail text pair at WCAG AA (ratios in PR #541). */
+:root[data-surface="mission-control"] {
+  --mp-sidebar: #cff3e3;
+  --mp-sidebar-ink: #06281d;
+  --mp-sidebar-ink-70: #083a2b;
+  --mp-sidebar-ink-60: #094634;
+  --mp-sidebar-ink-50: #0a523d;
+  --mp-sidebar-ink-40: #0b5d45;
+  --mp-sidebar-ink-35: #0c694e;
+  --mp-sidebar-accent: #0e7a5b;
+  --mp-sidebar-focus: rgba(6, 40, 29, 0.45);
+  --mp-primary: #3eb489;
+  --mp-primary-hover: #379e79;
+  --mp-primary-tint: #e4f7ee;
+  --mp-brand-tint: #e4f7ee;
+  --mp-brand-ink: #0e7a5b;
+  --mp-focus: 0 0 0 2px rgba(62, 180, 137, 0.28);
+  --primary-foreground: #06281d;
+}
+
 @layer base {
   * {
     border-color: var(--color-border);
+  }
+
+  /* The surface's focus ring follows its primary (the base ring below is the
+     DS forest). Stays in the base layer so the rail's own ring utility wins. */
+  :root[data-surface="mission-control"] *:focus-visible {
+    outline-color: rgba(62, 180, 137, 0.28);
   }
 
   body {

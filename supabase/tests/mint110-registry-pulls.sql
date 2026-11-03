@@ -136,7 +136,9 @@ SELECT pg_temp.m110p_mark('no_policy',
 
 SELECT pg_temp.m110p_mark('no_trigger',
   NOT EXISTS (SELECT 1 FROM pg_trigger
-               WHERE tgrelid = 'public.provider_registry_pulls'::regclass AND NOT tgisinternal));
+               WHERE tgrelid = 'public.provider_registry_pulls'::regclass
+                 AND NOT tgisinternal
+                 AND tgname <> 'block_writes_when_offboarded'));
 
 SELECT pg_temp.m110p_mark('authenticated_has_nothing',
   NOT has_table_privilege('authenticated', 'public.provider_registry_pulls',

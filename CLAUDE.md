@@ -96,6 +96,14 @@ Component (src/routes/*, src/components/<module>/*)
 - **Auth/org** — `src/lib/auth-store.ts` (Zustand, persisted `activeOrgId`);
   `useActiveOrgId()` / `useRole()` / `useCanWrite()` / `useIsAdmin()`
   (`src/lib/permissions.ts`). Switching org calls `queryClient.removeQueries()`.
+  The store also holds `isPlatformAdmin: boolean | null` (Mission Control):
+  loaded in `loadMemberships()` by the bound `is_platform_admin` RPC and
+  committed together with `memberships` (an RPC error reads as `false`,
+  `null` = not known yet), never persisted; read it with `usePlatformAdmin()`.
+  `MembershipEntry.lifecycleState` is the stored stage key, as is.
+  `useCanWrite()` is admin|specialist **and** a writable lifecycle stage for
+  the active org (`useActiveLifecycleStage()`), so an offboarded org is
+  read-only in the UI as it is in the database.
 - **Domain types** — `src/types/index.ts`, one interface per table, additive only.
 - **Pure logic lives in `src/lib/*` with tests.** Derivations (readiness,
   rollups, generation buckets, ranking) are computed, never stored. If you find
@@ -367,6 +375,25 @@ before any schema work.
   `isMissingContractSpecialtyKeyError` in `src/lib/dbErrors.ts`); contract
   saves fail until it is applied. Verify the objects listed in the
   migration header.
+- `20261102160000_mission_control_platform_admins.sql` — Mission Control
+  M1: `platform_admins`, `admin_audit_log`, four RPCs, six `mc_*` SELECT
+  policies. Applied on staging 2026-10-30 (ledger `20261030204806`; all
+  four function bodies md5-match the repo); production unverified. Verify:
+  the four functions in `pg_proc` and six `pg_policies` rows named `mc_%`
+  (queries in `docs/ops/mission-control-bootstrap.md`, which also holds the
+  operator insert for the first platform admin).
+- `20261102163000_mc_org_slug_plan_tier.sql`, `20261102163100_mc_lifecycle_stages.sql`,
+  `20261102163200_mc_offboarded_write_freeze.sql`, `20261102163300_mc_platform_org_rpcs.sql`,
+  `20261102163400_mc_generation_gate.sql`
+  — Mission Control M3, repo-only. Apply in order, after M1. Verify:
+  `organizations.slug` is NOT NULL with `organizations_slug_key`, four rows in
+  `lifecycle_stages`, no `organizations_lifecycle_state_check`, the
+  `block_writes_when_offboarded` trigger on every public table with `org_id`
+  except the four exempt ones (`SELECT public.apply_offboarded_write_freeze()`
+  returns `{}`), the five RPCs in `pg_proc`, and the
+  `block_generation_when_not_allowed` trigger on `case_generation_runs`. The UI reads stage defaults
+  when `lifecycle_stages` is absent, but organization creation, lifecycle
+  moves and the Organizations list need the migrations.
 - `20260809120000_slice6_create_payer_assign_flag.sql.superseded` — retired,
   never applied. Do not resurrect.
 
@@ -384,7 +411,11 @@ text; both function bodies md5-match the repo) and
 `20261014154527`), not the filenames.
 
 Because some are unapplied, a `types.ts` regen may **delete** types for columns
-the repo just added. Check before regenerating.
+the repo just added. Check before regenerating. The reverse also bites: the
+checked-in file carries deliberate hand edits (nullable RPC args, merged
+overloads, `Json` returns), so a raw staging regen (2026-10-30) changes 28
+signatures, adds staging-only backup tables, and fails `tsc` in three
+services. Splice new blocks from the generated output instead.
 
 ### Key RPCs
 
@@ -436,6 +467,33 @@ All are repo migrations unless noted.
   where), not values. **Not curated** — it reads `information_schema.columns`
   over nine tables, so any new column on a card-eligible table becomes a token
   automatically.
+- **`is_platform_admin()`** — Mission Control's authorization helper (STABLE
+  SECURITY DEFINER, `auth.uid()` has an active `platform_admins` row). The
+  only way a policy or RPC asks "platform admin?". No flag on `profiles`, no
+  JWT claim.
+- **`grant_platform_admin(p_user_id, p_note)` / `revoke_platform_admin(p_user_id, p_note)`**
+  — the only browser write path to `platform_admins`. Caller must already be
+  a platform admin (`42501 platform_admin_required`); one advisory lock
+  serializes both; revoking the last active admin raises
+  `last_platform_admin` (23514); each change writes one `admin_audit_log`
+  row in the same transaction; a no-op returns `changed: false` and writes
+  nothing. Return jsonb, never the row.
+- **`platform_metrics()`** — the Mission Control Home tiles, one jsonb
+  document whose keys are a pinned contract (SCHEMA.md › Mission Control).
+  Raises `42501` for anyone but a platform admin.
+- **Mission Control M3** (SCHEMA.md › Mission Control M3):
+  `platform_create_organization` (its own path: org row, the canonical
+  `status_configs` seed pinned to `canonicalStatuses.ts`, owner party,
+  ledger row; **no membership**, the operator opens the org with Grant myself
+  admin membership; a duplicate normalized name is allowed with a notice,
+  while the `create_organization` overloads keep their refusal),
+  `platform_set_org_lifecycle` (validated against
+  `lifecycle_stages.allowed_next`), `platform_grant_membership` (the caller,
+  as admin), `platform_org_summary` (counts, never provider rows),
+  `update_organization_profile` (platform admin → `admin_audit_log`; org
+  admin → `audit_log`). Each platform-admin mutation writes one
+  `admin_audit_log` row; no reason fields. **A migration that adds a tenant
+  table ends with `SELECT public.apply_offboarded_write_freeze();`.**
 - `claim_invites()`, `set_default_party_role`, `set_primary_assignment`,
   `archive_org_payer_assignment`, `advance_payer_pipeline` (dormant).
 
@@ -540,6 +598,70 @@ group_id, payer_id, state)` on `credential_cases`. Legacy NULL-group rows
 | `fill_sessions.case_step_id`                                                  | deprecated in place (uuid) — SOP step ids are text; `case_step_key` is the step column. No writer; the insert guard copies a legacy value into the key |
 
 ## Cross-cutting subsystems
+
+### Mission Control (platform administration)
+
+The internal, cross-tenant surface for platform admins (`platform_admins` +
+`is_platform_admin()`), mounted at **`/mission-control`** because `/admin/*`
+is the per-org payer admin namespace. Plan of record: the Mission Control
+milestones (M1 schema, M2 shell, M3 organizations; M4 users next).
+
+- **Route group.** Layout `src/routes/mission-control.tsx` owns the guard and
+  the chrome (`MissionControlHeader`: breadcrumb, page header, section strip);
+  each section is a child route file, and its entry in
+  `src/lib/missionControl.ts` `MISSION_CONTROL_SECTIONS` (the one list the
+  header reads: Home, Organizations) lands with its route, never before.
+- **Guard, twice.** `beforeLoad` redirects to `/` on client navigation once the
+  store says "not a platform admin" (`canEnterMissionControl`); on a hard load
+  the store is empty there (the `beforeLoad` wart), so every page renders
+  through `RequirePlatformAdmin`, which shows a skeleton until the flag is
+  known and then the page or the generic `NotFoundView` (never "forbidden").
+  `__root.tsx` lets a platform admin with zero memberships through on
+  `/mission-control*` only, and sets `data-surface="mission-control"` on
+  `<html>` there for a known admin (the scoped mint palette in `styles.css`).
+- **Organizations (M3).** `/mission-control/organizations` (search, sort,
+  25 per page under RLS; offboarded hidden until "Include offboarded"; New
+  organization in one form) and `/mission-control/organizations/$orgId`
+  (profile edit, one-click lifecycle moves with no confirm, summary counts,
+  members, pending invites, Copy join link, Grant myself admin membership →
+  Open in workspace). Services `src/services/platformOrganizations.ts`
+  (`OrgRpcError.code` is the database message), hooks
+  `src/hooks/usePlatformOrganizations.ts` (keys under `["platform", ...]`;
+  writes invalidate that prefix and reload memberships). The Settings tab is
+  reserved in `src/lib/orgDetailTabs.ts` and renders from the first
+  organization-scope setting.
+- **Lifecycle stages are configuration.** `public.lifecycle_stages` rows
+  (prospect, onboarding, active, offboarded) carry allowed next stages and
+  behaviours: switcher group, writable, generation allowed, shown by default.
+  Read every `lifecycle_state` through `normalizeLifecycle()` /
+  `lifecycleStage()` in `src/lib/lifecycle.ts` (legacy `inactive` →
+  `offboarded`); `useLifecycleStages()` returns the configured rows, with
+  `DEFAULT_LIFECYCLE_STAGES` (a hand mirror of the seed, pinned by a vitest)
+  until they load. The Sidebar switcher groups by stage (In motion,
+  Prospects; offboarded drops out), the Portfolio buckets and the store's
+  active-org selection read the defaults, the shell shows
+  `OffboardedBanner` for a non-writable stage, and `/generation` renders
+  `GenerationStageGate`: when the stage disallows generation (everything but
+  active by default; Sowmya's explicit exception to working rule 2) it shows
+  the reason and whom to ask instead of the grid, and the database refuses
+  the generation path (`block_generation_when_not_allowed` on
+  `case_generation_runs`, the path's first write). `ManualCaseModal` writes
+  no run and is not gated.
+- **`/join/$slug`** is invite-gated: it reloads memberships (which runs
+  `claim_invites()`), then looks for the caller's own membership in the org
+  with that slug; found → that workspace, otherwise "This link needs an
+  invitation" with whom to ask. It needs a session (not in the public route
+  list in `__root.tsx`).
+- **Shortcuts.** `/organizations`, `/users`, `/settings` take a platform admin
+  into Mission Control (`PlatformAdminRedirect`) and show anyone else the
+  not-found view at the same URL.
+- **e2e opt-out.** The shared fixture `e2e/fixtures/legacy-access-context.ts`
+  answers `is_platform_admin()` with `false` inside the page, so legacy specs
+  never see the Mission Control entry and their recorded request lists stay
+  unchanged. A spec that exercises Mission Control sets
+  `test.use({ platformAdminRpc: "passthrough" })` and answers the RPC in its
+  own route handler (`e2e/mission-control.spec.ts`,
+  `e2e/mission-control-organizations.spec.ts`).
 
 ### Case status
 
@@ -819,6 +941,18 @@ control silently dates a break to a fill that never touched it.**
   `src/lib/providerDossier.ts`; a conflicting expiration is shown, not
   dropped. DEA, SSN, and home address are not in the select. Analysis:
   `docs/ops/provider-dossier-spike.md`.
+- `mc_organizations_select_platform_admin` (and its siblings on
+  `memberships`, `profiles`, `pending_invites`) widen those reads for
+  platform admins, so RLS alone no longer means "my orgs". `listPortfolioOrgs`
+  scopes to the caller's memberships with an inner embed, and
+  `findMyOrganizationBySlug` (`/join`) filters on the caller's `user_id`. Any
+  new browser read of those four tables that means "my orgs" must filter by
+  membership the same way.
+- An offboarded org refuses every API write (`42501 org_offboarded`) but not
+  direct database sessions: the trigger skips sessions without
+  `request.jwt.claims`, so migrations and operator SQL still work.
+  `admin_audit_log.org_id` has no ON DELETE action, so an org with Mission
+  Control ledger rows cannot be hard-deleted (offboard it instead).
 - `PROVIDER_LIST_COLUMNS` is a **partial projection**; list rows are typed
   `Provider` but omit unlisted columns. `getProvider` selects `*`.
 - `provider_facility_assignments.practice_frequency` is never written.

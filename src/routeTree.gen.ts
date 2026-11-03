@@ -20,7 +20,9 @@ import { Route as GetStartedRouteImport } from './routes/get-started'
 import { Route as HomeRouteImport } from './routes/home'
 import { Route as LaunchesRouteImport } from './routes/launches'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as MissionControlRouteImport } from './routes/mission-control'
 import { Route as OrgDetailRouteImport } from './routes/org-detail'
+import { Route as OrganizationsRouteImport } from './routes/organizations'
 import { Route as OutcomesRouteImport } from './routes/outcomes'
 import { Route as PayerDirectoryRouteImport } from './routes/payer-directory'
 import { Route as PortfolioRouteImport } from './routes/portfolio'
@@ -29,7 +31,9 @@ import { Route as ProgressRouteImport } from './routes/progress'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as ScopeRouteImport } from './routes/scope'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SoonRouteImport } from './routes/soon'
+import { Route as UsersRouteImport } from './routes/users'
 import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as WorkRouteImport } from './routes/work'
 import { Route as AdminAuditRouteImport } from './routes/admin.audit'
@@ -52,8 +56,10 @@ import { Route as GroupsIndexRouteImport } from './routes/groups.index'
 import { Route as GroupsGroupIdRouteImport } from './routes/groups.$groupId'
 import { Route as ImportRunIdRouteImport } from './routes/import.$runId'
 import { Route as IntakeTokenRouteImport } from './routes/intake.$token'
+import { Route as JoinSlugRouteImport } from './routes/join.$slug'
 import { Route as LaunchesIndexRouteImport } from './routes/launches.index'
 import { Route as LaunchesIdRouteImport } from './routes/launches.$id'
+import { Route as MissionControlIndexRouteImport } from './routes/mission-control.index'
 import { Route as OnboardingIndexRouteImport } from './routes/onboarding.index'
 import { Route as OnboardingWizardRouteImport } from './routes/onboarding.wizard'
 import { Route as ProvidersIndexRouteImport } from './routes/providers.index'
@@ -91,6 +97,8 @@ import { Route as GenerationRunsRunIdRouteImport } from './routes/generation_.ru
 import { Route as GroupsGroupIdIndexRouteImport } from './routes/groups.$groupId.index'
 import { Route as GroupsGroupIdFacilitiesRouteImport } from './routes/groups.$groupId.facilities'
 import { Route as GroupsGroupIdPayerNetworkRouteImport } from './routes/groups.$groupId.payer-network'
+import { Route as MissionControlOrganizationsIndexRouteImport } from './routes/mission-control.organizations.index'
+import { Route as MissionControlOrganizationsOrgIdRouteImport } from './routes/mission-control.organizations.$orgId'
 import { Route as PortalsPortalKeyTrainRouteImport } from './routes/portals.$portalKey.train'
 import { Route as ProvidersIdIndexRouteImport } from './routes/providers.$id.index'
 import { Route as ProvidersIdEditRouteImport } from './routes/providers.$id.edit'
@@ -160,9 +168,19 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MissionControlRoute = MissionControlRouteImport.update({
+  id: '/mission-control',
+  path: '/mission-control',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OrgDetailRoute = OrgDetailRouteImport.update({
   id: '/org-detail',
   path: '/org-detail',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OrganizationsRoute = OrganizationsRouteImport.update({
+  id: '/organizations',
+  path: '/organizations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OutcomesRoute = OutcomesRouteImport.update({
@@ -205,9 +223,19 @@ const ScopeRoute = ScopeRouteImport.update({
   path: '/scope',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SoonRoute = SoonRouteImport.update({
   id: '/soon',
   path: '/soon',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const UsersRoute = UsersRouteImport.update({
+  id: '/users',
+  path: '/users',
   getParentRoute: () => rootRouteImport,
 } as any)
 const WelcomeRoute = WelcomeRouteImport.update({
@@ -320,6 +348,11 @@ const IntakeTokenRoute = IntakeTokenRouteImport.update({
   path: '/intake/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
+const JoinSlugRoute = JoinSlugRouteImport.update({
+  id: '/join/$slug',
+  path: '/join/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LaunchesIndexRoute = LaunchesIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -329,6 +362,11 @@ const LaunchesIdRoute = LaunchesIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => LaunchesRoute,
+} as any)
+const MissionControlIndexRoute = MissionControlIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => MissionControlRoute,
 } as any)
 const OnboardingIndexRoute = OnboardingIndexRouteImport.update({
   id: '/onboarding/',
@@ -523,6 +561,18 @@ const GroupsGroupIdPayerNetworkRoute =
     path: '/payer-network',
     getParentRoute: () => GroupsGroupIdRoute,
   } as any)
+const MissionControlOrganizationsIndexRoute =
+  MissionControlOrganizationsIndexRouteImport.update({
+    id: '/organizations/',
+    path: '/organizations/',
+    getParentRoute: () => MissionControlRoute,
+  } as any)
+const MissionControlOrganizationsOrgIdRoute =
+  MissionControlOrganizationsOrgIdRouteImport.update({
+    id: '/organizations/$orgId',
+    path: '/organizations/$orgId',
+    getParentRoute: () => MissionControlRoute,
+  } as any)
 const PortalsPortalKeyTrainRoute = PortalsPortalKeyTrainRouteImport.update({
   id: '/portals/$portalKey/train',
   path: '/portals/$portalKey/train',
@@ -608,7 +658,9 @@ export interface FileRoutesByFullPath {
   '/home': typeof HomeRoute
   '/launches': typeof LaunchesRouteWithChildren
   '/login': typeof LoginRoute
+  '/mission-control': typeof MissionControlRouteWithChildren
   '/org-detail': typeof OrgDetailRoute
+  '/organizations': typeof OrganizationsRoute
   '/outcomes': typeof OutcomesRoute
   '/payer-directory': typeof PayerDirectoryRoute
   '/portfolio': typeof PortfolioRoute
@@ -617,7 +669,9 @@ export interface FileRoutesByFullPath {
   '/providers': typeof ProvidersRouteWithChildren
   '/reports': typeof ReportsRoute
   '/scope': typeof ScopeRoute
+  '/settings': typeof SettingsRoute
   '/soon': typeof SoonRoute
+  '/users': typeof UsersRoute
   '/welcome': typeof WelcomeRoute
   '/work': typeof WorkRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -638,6 +692,7 @@ export interface FileRoutesByFullPath {
   '/groups/$groupId': typeof GroupsGroupIdRouteWithChildren
   '/import/$runId': typeof ImportRunIdRoute
   '/intake/$token': typeof IntakeTokenRoute
+  '/join/$slug': typeof JoinSlugRoute
   '/launches/$id': typeof LaunchesIdRoute
   '/onboarding/wizard': typeof OnboardingWizardRoute
   '/providers/$id': typeof ProvidersIdRouteWithChildren
@@ -660,6 +715,7 @@ export interface FileRoutesByFullPath {
   '/cases/': typeof CasesIndexRoute
   '/groups/': typeof GroupsIndexRoute
   '/launches/': typeof LaunchesIndexRoute
+  '/mission-control/': typeof MissionControlIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
   '/providers/': typeof ProvidersIndexRoute
   '/reporting/': typeof ReportingIndexRoute
@@ -674,6 +730,7 @@ export interface FileRoutesByFullPath {
   '/generation/runs/$runId': typeof GenerationRunsRunIdRoute
   '/groups/$groupId/facilities': typeof GroupsGroupIdFacilitiesRoute
   '/groups/$groupId/payer-network': typeof GroupsGroupIdPayerNetworkRoute
+  '/mission-control/organizations/$orgId': typeof MissionControlOrganizationsOrgIdRoute
   '/portals/$portalKey/train': typeof PortalsPortalKeyTrainRoute
   '/providers/$id/edit': typeof ProvidersIdEditRoute
   '/reporting/rosters/history': typeof ReportingRostersHistoryRoute
@@ -683,6 +740,7 @@ export interface FileRoutesByFullPath {
   '/admin/templates/': typeof AdminTemplatesIndexRoute
   '/generation/runs/': typeof GenerationRunsIndexRoute
   '/groups/$groupId/': typeof GroupsGroupIdIndexRoute
+  '/mission-control/organizations/': typeof MissionControlOrganizationsIndexRoute
   '/providers/$id/': typeof ProvidersIdIndexRoute
   '/admin/payer-admin/catalog/$payerId': typeof AdminPayerAdminCatalogPayerIdRoute
   '/admin/payer-admin/forms/$payerId': typeof AdminPayerAdminFormsPayerIdRoute
@@ -704,6 +762,7 @@ export interface FileRoutesByTo {
   '/home': typeof HomeRoute
   '/login': typeof LoginRoute
   '/org-detail': typeof OrgDetailRoute
+  '/organizations': typeof OrganizationsRoute
   '/outcomes': typeof OutcomesRoute
   '/payer-directory': typeof PayerDirectoryRoute
   '/portfolio': typeof PortfolioRoute
@@ -711,7 +770,9 @@ export interface FileRoutesByTo {
   '/progress': typeof ProgressRoute
   '/reports': typeof ReportsRoute
   '/scope': typeof ScopeRoute
+  '/settings': typeof SettingsRoute
   '/soon': typeof SoonRoute
+  '/users': typeof UsersRoute
   '/welcome': typeof WelcomeRoute
   '/work': typeof WorkRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -727,6 +788,7 @@ export interface FileRoutesByTo {
   '/dev/primitives': typeof DevPrimitivesRoute
   '/import/$runId': typeof ImportRunIdRoute
   '/intake/$token': typeof IntakeTokenRoute
+  '/join/$slug': typeof JoinSlugRoute
   '/launches/$id': typeof LaunchesIdRoute
   '/onboarding/wizard': typeof OnboardingWizardRoute
   '/providers/new': typeof ProvidersNewRoute
@@ -748,6 +810,7 @@ export interface FileRoutesByTo {
   '/cases': typeof CasesIndexRoute
   '/groups': typeof GroupsIndexRoute
   '/launches': typeof LaunchesIndexRoute
+  '/mission-control': typeof MissionControlIndexRoute
   '/onboarding': typeof OnboardingIndexRoute
   '/providers': typeof ProvidersIndexRoute
   '/reporting': typeof ReportingIndexRoute
@@ -762,6 +825,7 @@ export interface FileRoutesByTo {
   '/generation/runs/$runId': typeof GenerationRunsRunIdRoute
   '/groups/$groupId/facilities': typeof GroupsGroupIdFacilitiesRoute
   '/groups/$groupId/payer-network': typeof GroupsGroupIdPayerNetworkRoute
+  '/mission-control/organizations/$orgId': typeof MissionControlOrganizationsOrgIdRoute
   '/portals/$portalKey/train': typeof PortalsPortalKeyTrainRoute
   '/providers/$id/edit': typeof ProvidersIdEditRoute
   '/reporting/rosters/history': typeof ReportingRostersHistoryRoute
@@ -771,6 +835,7 @@ export interface FileRoutesByTo {
   '/admin/templates': typeof AdminTemplatesIndexRoute
   '/generation/runs': typeof GenerationRunsIndexRoute
   '/groups/$groupId': typeof GroupsGroupIdIndexRoute
+  '/mission-control/organizations': typeof MissionControlOrganizationsIndexRoute
   '/providers/$id': typeof ProvidersIdIndexRoute
   '/admin/payer-admin/catalog/$payerId': typeof AdminPayerAdminCatalogPayerIdRoute
   '/admin/payer-admin/forms/$payerId': typeof AdminPayerAdminFormsPayerIdRoute
@@ -794,7 +859,9 @@ export interface FileRoutesById {
   '/home': typeof HomeRoute
   '/launches': typeof LaunchesRouteWithChildren
   '/login': typeof LoginRoute
+  '/mission-control': typeof MissionControlRouteWithChildren
   '/org-detail': typeof OrgDetailRoute
+  '/organizations': typeof OrganizationsRoute
   '/outcomes': typeof OutcomesRoute
   '/payer-directory': typeof PayerDirectoryRoute
   '/portfolio': typeof PortfolioRoute
@@ -803,7 +870,9 @@ export interface FileRoutesById {
   '/providers': typeof ProvidersRouteWithChildren
   '/reports': typeof ReportsRoute
   '/scope': typeof ScopeRoute
+  '/settings': typeof SettingsRoute
   '/soon': typeof SoonRoute
+  '/users': typeof UsersRoute
   '/welcome': typeof WelcomeRoute
   '/work': typeof WorkRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -824,6 +893,7 @@ export interface FileRoutesById {
   '/groups/$groupId': typeof GroupsGroupIdRouteWithChildren
   '/import/$runId': typeof ImportRunIdRoute
   '/intake/$token': typeof IntakeTokenRoute
+  '/join/$slug': typeof JoinSlugRoute
   '/launches/$id': typeof LaunchesIdRoute
   '/onboarding/wizard': typeof OnboardingWizardRoute
   '/providers/$id': typeof ProvidersIdRouteWithChildren
@@ -846,6 +916,7 @@ export interface FileRoutesById {
   '/cases/': typeof CasesIndexRoute
   '/groups/': typeof GroupsIndexRoute
   '/launches/': typeof LaunchesIndexRoute
+  '/mission-control/': typeof MissionControlIndexRoute
   '/onboarding/': typeof OnboardingIndexRoute
   '/providers/': typeof ProvidersIndexRoute
   '/reporting/': typeof ReportingIndexRoute
@@ -860,6 +931,7 @@ export interface FileRoutesById {
   '/generation_/runs/$runId': typeof GenerationRunsRunIdRoute
   '/groups/$groupId/facilities': typeof GroupsGroupIdFacilitiesRoute
   '/groups/$groupId/payer-network': typeof GroupsGroupIdPayerNetworkRoute
+  '/mission-control/organizations/$orgId': typeof MissionControlOrganizationsOrgIdRoute
   '/portals/$portalKey/train': typeof PortalsPortalKeyTrainRoute
   '/providers/$id/edit': typeof ProvidersIdEditRoute
   '/reporting/rosters/history': typeof ReportingRostersHistoryRoute
@@ -869,6 +941,7 @@ export interface FileRoutesById {
   '/admin/templates/': typeof AdminTemplatesIndexRoute
   '/generation_/runs/': typeof GenerationRunsIndexRoute
   '/groups/$groupId/': typeof GroupsGroupIdIndexRoute
+  '/mission-control/organizations/': typeof MissionControlOrganizationsIndexRoute
   '/providers/$id/': typeof ProvidersIdIndexRoute
   '/admin/payer-admin/catalog_/$payerId': typeof AdminPayerAdminCatalogPayerIdRoute
   '/admin/payer-admin/forms/$payerId': typeof AdminPayerAdminFormsPayerIdRoute
@@ -893,7 +966,9 @@ export interface FileRouteTypes {
     | '/home'
     | '/launches'
     | '/login'
+    | '/mission-control'
     | '/org-detail'
+    | '/organizations'
     | '/outcomes'
     | '/payer-directory'
     | '/portfolio'
@@ -902,7 +977,9 @@ export interface FileRouteTypes {
     | '/providers'
     | '/reports'
     | '/scope'
+    | '/settings'
     | '/soon'
+    | '/users'
     | '/welcome'
     | '/work'
     | '/admin/audit'
@@ -923,6 +1000,7 @@ export interface FileRouteTypes {
     | '/groups/$groupId'
     | '/import/$runId'
     | '/intake/$token'
+    | '/join/$slug'
     | '/launches/$id'
     | '/onboarding/wizard'
     | '/providers/$id'
@@ -945,6 +1023,7 @@ export interface FileRouteTypes {
     | '/cases/'
     | '/groups/'
     | '/launches/'
+    | '/mission-control/'
     | '/onboarding/'
     | '/providers/'
     | '/reporting/'
@@ -959,6 +1038,7 @@ export interface FileRouteTypes {
     | '/generation/runs/$runId'
     | '/groups/$groupId/facilities'
     | '/groups/$groupId/payer-network'
+    | '/mission-control/organizations/$orgId'
     | '/portals/$portalKey/train'
     | '/providers/$id/edit'
     | '/reporting/rosters/history'
@@ -968,6 +1048,7 @@ export interface FileRouteTypes {
     | '/admin/templates/'
     | '/generation/runs/'
     | '/groups/$groupId/'
+    | '/mission-control/organizations/'
     | '/providers/$id/'
     | '/admin/payer-admin/catalog/$payerId'
     | '/admin/payer-admin/forms/$payerId'
@@ -989,6 +1070,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/login'
     | '/org-detail'
+    | '/organizations'
     | '/outcomes'
     | '/payer-directory'
     | '/portfolio'
@@ -996,7 +1078,9 @@ export interface FileRouteTypes {
     | '/progress'
     | '/reports'
     | '/scope'
+    | '/settings'
     | '/soon'
+    | '/users'
     | '/welcome'
     | '/work'
     | '/admin/audit'
@@ -1012,6 +1096,7 @@ export interface FileRouteTypes {
     | '/dev/primitives'
     | '/import/$runId'
     | '/intake/$token'
+    | '/join/$slug'
     | '/launches/$id'
     | '/onboarding/wizard'
     | '/providers/new'
@@ -1033,6 +1118,7 @@ export interface FileRouteTypes {
     | '/cases'
     | '/groups'
     | '/launches'
+    | '/mission-control'
     | '/onboarding'
     | '/providers'
     | '/reporting'
@@ -1047,6 +1133,7 @@ export interface FileRouteTypes {
     | '/generation/runs/$runId'
     | '/groups/$groupId/facilities'
     | '/groups/$groupId/payer-network'
+    | '/mission-control/organizations/$orgId'
     | '/portals/$portalKey/train'
     | '/providers/$id/edit'
     | '/reporting/rosters/history'
@@ -1056,6 +1143,7 @@ export interface FileRouteTypes {
     | '/admin/templates'
     | '/generation/runs'
     | '/groups/$groupId'
+    | '/mission-control/organizations'
     | '/providers/$id'
     | '/admin/payer-admin/catalog/$payerId'
     | '/admin/payer-admin/forms/$payerId'
@@ -1078,7 +1166,9 @@ export interface FileRouteTypes {
     | '/home'
     | '/launches'
     | '/login'
+    | '/mission-control'
     | '/org-detail'
+    | '/organizations'
     | '/outcomes'
     | '/payer-directory'
     | '/portfolio'
@@ -1087,7 +1177,9 @@ export interface FileRouteTypes {
     | '/providers'
     | '/reports'
     | '/scope'
+    | '/settings'
     | '/soon'
+    | '/users'
     | '/welcome'
     | '/work'
     | '/admin/audit'
@@ -1108,6 +1200,7 @@ export interface FileRouteTypes {
     | '/groups/$groupId'
     | '/import/$runId'
     | '/intake/$token'
+    | '/join/$slug'
     | '/launches/$id'
     | '/onboarding/wizard'
     | '/providers/$id'
@@ -1130,6 +1223,7 @@ export interface FileRouteTypes {
     | '/cases/'
     | '/groups/'
     | '/launches/'
+    | '/mission-control/'
     | '/onboarding/'
     | '/providers/'
     | '/reporting/'
@@ -1144,6 +1238,7 @@ export interface FileRouteTypes {
     | '/generation_/runs/$runId'
     | '/groups/$groupId/facilities'
     | '/groups/$groupId/payer-network'
+    | '/mission-control/organizations/$orgId'
     | '/portals/$portalKey/train'
     | '/providers/$id/edit'
     | '/reporting/rosters/history'
@@ -1153,6 +1248,7 @@ export interface FileRouteTypes {
     | '/admin/templates/'
     | '/generation_/runs/'
     | '/groups/$groupId/'
+    | '/mission-control/organizations/'
     | '/providers/$id/'
     | '/admin/payer-admin/catalog_/$payerId'
     | '/admin/payer-admin/forms/$payerId'
@@ -1176,7 +1272,9 @@ export interface RootRouteChildren {
   HomeRoute: typeof HomeRoute
   LaunchesRoute: typeof LaunchesRouteWithChildren
   LoginRoute: typeof LoginRoute
+  MissionControlRoute: typeof MissionControlRouteWithChildren
   OrgDetailRoute: typeof OrgDetailRoute
+  OrganizationsRoute: typeof OrganizationsRoute
   OutcomesRoute: typeof OutcomesRoute
   PayerDirectoryRoute: typeof PayerDirectoryRoute
   PortfolioRoute: typeof PortfolioRoute
@@ -1185,7 +1283,9 @@ export interface RootRouteChildren {
   ProvidersRoute: typeof ProvidersRouteWithChildren
   ReportsRoute: typeof ReportsRoute
   ScopeRoute: typeof ScopeRoute
+  SettingsRoute: typeof SettingsRoute
   SoonRoute: typeof SoonRoute
+  UsersRoute: typeof UsersRoute
   WelcomeRoute: typeof WelcomeRoute
   WorkRoute: typeof WorkRoute
   AdminAuditRoute: typeof AdminAuditRoute
@@ -1205,6 +1305,7 @@ export interface RootRouteChildren {
   GroupsGroupIdRoute: typeof GroupsGroupIdRouteWithChildren
   ImportRunIdRoute: typeof ImportRunIdRoute
   IntakeTokenRoute: typeof IntakeTokenRoute
+  JoinSlugRoute: typeof JoinSlugRoute
   OnboardingWizardRoute: typeof OnboardingWizardRoute
   ReportingAuditLogRoute: typeof ReportingAuditLogRoute
   ReportingBillingReadinessRoute: typeof ReportingBillingReadinessRoute
@@ -1315,11 +1416,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mission-control': {
+      id: '/mission-control'
+      path: '/mission-control'
+      fullPath: '/mission-control'
+      preLoaderRoute: typeof MissionControlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/org-detail': {
       id: '/org-detail'
       path: '/org-detail'
       fullPath: '/org-detail'
       preLoaderRoute: typeof OrgDetailRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/organizations': {
+      id: '/organizations'
+      path: '/organizations'
+      fullPath: '/organizations'
+      preLoaderRoute: typeof OrganizationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/outcomes': {
@@ -1378,11 +1493,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ScopeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/soon': {
       id: '/soon'
       path: '/soon'
       fullPath: '/soon'
       preLoaderRoute: typeof SoonRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/users': {
+      id: '/users'
+      path: '/users'
+      fullPath: '/users'
+      preLoaderRoute: typeof UsersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/welcome': {
@@ -1539,6 +1668,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IntakeTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/join/$slug': {
+      id: '/join/$slug'
+      path: '/join/$slug'
+      fullPath: '/join/$slug'
+      preLoaderRoute: typeof JoinSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/launches/': {
       id: '/launches/'
       path: '/'
@@ -1552,6 +1688,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/launches/$id'
       preLoaderRoute: typeof LaunchesIdRouteImport
       parentRoute: typeof LaunchesRoute
+    }
+    '/mission-control/': {
+      id: '/mission-control/'
+      path: '/'
+      fullPath: '/mission-control/'
+      preLoaderRoute: typeof MissionControlIndexRouteImport
+      parentRoute: typeof MissionControlRoute
     }
     '/onboarding/': {
       id: '/onboarding/'
@@ -1812,6 +1955,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GroupsGroupIdPayerNetworkRouteImport
       parentRoute: typeof GroupsGroupIdRoute
     }
+    '/mission-control/organizations/': {
+      id: '/mission-control/organizations/'
+      path: '/organizations'
+      fullPath: '/mission-control/organizations/'
+      preLoaderRoute: typeof MissionControlOrganizationsIndexRouteImport
+      parentRoute: typeof MissionControlRoute
+    }
+    '/mission-control/organizations/$orgId': {
+      id: '/mission-control/organizations/$orgId'
+      path: '/organizations/$orgId'
+      fullPath: '/mission-control/organizations/$orgId'
+      preLoaderRoute: typeof MissionControlOrganizationsOrgIdRouteImport
+      parentRoute: typeof MissionControlRoute
+    }
     '/portals/$portalKey/train': {
       id: '/portals/$portalKey/train'
       path: '/portals/$portalKey/train'
@@ -1930,6 +2087,22 @@ const LaunchesRouteChildren: LaunchesRouteChildren = {
 
 const LaunchesRouteWithChildren = LaunchesRoute._addFileChildren(
   LaunchesRouteChildren,
+)
+
+interface MissionControlRouteChildren {
+  MissionControlIndexRoute: typeof MissionControlIndexRoute
+  MissionControlOrganizationsOrgIdRoute: typeof MissionControlOrganizationsOrgIdRoute
+  MissionControlOrganizationsIndexRoute: typeof MissionControlOrganizationsIndexRoute
+}
+
+const MissionControlRouteChildren: MissionControlRouteChildren = {
+  MissionControlIndexRoute: MissionControlIndexRoute,
+  MissionControlOrganizationsOrgIdRoute: MissionControlOrganizationsOrgIdRoute,
+  MissionControlOrganizationsIndexRoute: MissionControlOrganizationsIndexRoute,
+}
+
+const MissionControlRouteWithChildren = MissionControlRoute._addFileChildren(
+  MissionControlRouteChildren,
 )
 
 interface ProvidersIdRouteChildren {
@@ -2058,7 +2231,9 @@ const rootRouteChildren: RootRouteChildren = {
   HomeRoute: HomeRoute,
   LaunchesRoute: LaunchesRouteWithChildren,
   LoginRoute: LoginRoute,
+  MissionControlRoute: MissionControlRouteWithChildren,
   OrgDetailRoute: OrgDetailRoute,
+  OrganizationsRoute: OrganizationsRoute,
   OutcomesRoute: OutcomesRoute,
   PayerDirectoryRoute: PayerDirectoryRoute,
   PortfolioRoute: PortfolioRoute,
@@ -2067,7 +2242,9 @@ const rootRouteChildren: RootRouteChildren = {
   ProvidersRoute: ProvidersRouteWithChildren,
   ReportsRoute: ReportsRoute,
   ScopeRoute: ScopeRoute,
+  SettingsRoute: SettingsRoute,
   SoonRoute: SoonRoute,
+  UsersRoute: UsersRoute,
   WelcomeRoute: WelcomeRoute,
   WorkRoute: WorkRoute,
   AdminAuditRoute: AdminAuditRoute,
@@ -2087,6 +2264,7 @@ const rootRouteChildren: RootRouteChildren = {
   GroupsGroupIdRoute: GroupsGroupIdRouteWithChildren,
   ImportRunIdRoute: ImportRunIdRoute,
   IntakeTokenRoute: IntakeTokenRoute,
+  JoinSlugRoute: JoinSlugRoute,
   OnboardingWizardRoute: OnboardingWizardRoute,
   ReportingAuditLogRoute: ReportingAuditLogRoute,
   ReportingBillingReadinessRoute: ReportingBillingReadinessRoute,

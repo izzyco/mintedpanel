@@ -82,12 +82,14 @@ npx playwright test e2e/<spec>.spec.ts
 
 ### Shell & navigation
 
-| Surface                                                                                                                                                                                                               | Spec(s)                          |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| Sidebar IA v2, org switcher, nav counts                                                                                                                                                                               | `sidebar-ia.spec.ts`             |
-| Global provider lookup (shell palette, cross-org NPI)                                                                                                                                                                 | `global-provider-search.spec.ts` |
-| Provider footprint inspector (`/dev/global-search`, on-demand NPI dossier)                                                                                                                                            | `provider-dossier.spec.ts`       |
-| Legacy/flat route sweep (`/home`, `/providers`, `/launches`, `/reports`, `/fix-it`, `/client-progress`, `/admin/*`, `/work`, redirects `/portfolio` `/progress` `/admin/sops`, reserved `/soon` `/scope` `/outcomes`) | `legacy-routes.spec.ts`          |
+| Surface                                                                                                                                                                                                               | Spec(s)                                                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Sidebar IA v2, org switcher, nav counts                                                                                                                                                                               | `sidebar-ia.spec.ts`                                                                        |
+| Global provider lookup (shell palette, cross-org NPI)                                                                                                                                                                 | `global-provider-search.spec.ts`                                                            |
+| Provider footprint inspector (`/dev/global-search`, on-demand NPI dossier)                                                                                                                                            | `provider-dossier.spec.ts`                                                                  |
+| Mission Control (`/mission-control`: platform-admin guard on hard load and client navigation, sidebar entry, Home tiles, membership-less admin)                                                                       | `mission-control.spec.ts`                                                                   |
+| Mission Control › Organizations (`/mission-control/organizations*`: list, create, detail, lifecycle moves), `/join/$slug`, offboarded banner, `/organizations` `/users` `/settings` shortcuts                         | `mission-control-organizations.spec.ts` (+ `mission-control.spec.ts`, `sidebar-ia.spec.ts`) |
+| Legacy/flat route sweep (`/home`, `/providers`, `/launches`, `/reports`, `/fix-it`, `/client-progress`, `/admin/*`, `/work`, redirects `/portfolio` `/progress` `/admin/sops`, reserved `/soon` `/scope` `/outcomes`) | `legacy-routes.spec.ts`                                                                     |
 
 ### Onboarding & org intake
 

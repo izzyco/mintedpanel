@@ -10,6 +10,7 @@ import { Menu, X, BarChart3, Search } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { Sidebar } from "./Sidebar";
 import { GlobalProviderSearchDialog } from "@/components/search/GlobalProviderSearchDialog";
+import { OffboardedBanner } from "@/components/org/OffboardedBanner";
 import { useActiveMembership } from "@/lib/auth-store";
 
 interface AppShellProps {
@@ -66,7 +67,7 @@ export function AppShell({ children }: AppShellProps) {
             type="button"
             aria-label="Close navigation"
             onClick={closeDrawer}
-            className="absolute top-3 right-3 w-8 h-8 rounded-[var(--mp-radius-sm)] flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+            className="absolute top-3 right-3 w-8 h-8 rounded-[var(--mp-radius-sm)] flex items-center justify-center text-mp-sidebar-ink-60 hover:text-mp-sidebar-ink hover:bg-mp-sidebar-ink/10 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -105,7 +106,10 @@ export function AppShell({ children }: AppShellProps) {
           </Link>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4">{children}</main>
+        <main className="flex-1 overflow-y-auto p-4">
+          <OffboardedBanner />
+          {children}
+        </main>
       </div>
       <GlobalProviderSearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
     </div>

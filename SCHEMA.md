@@ -329,6 +329,111 @@ The single case-activity spine (Story 1, migration `20260707120000_touchlog_entr
 
 `id, org_id, ts, user_id, user_name, action_type, entity_type, entity_id, before jsonb, after jsonb, description, created_at`. No edit, no delete, by anyone — including admins. `action_type` is check-constrained to `CREATE | UPDATE | STATUS_CHANGE | TOUCH_LOGGED | TERMINATION | READ` (`READ` added 2026-07-05 for profile-endpoint read auditing — migration `20260705190000_audit_log_read_action_type.sql`).
 
+## Mission Control (platform administration)
+
+Migration `20261102160000_mission_control_platform_admins.sql` (applied on
+staging 2026-10-30, ledger `20261030204806`; production unverified). A
+platform admin is a Minted operator who works across organizations. This is a
+platform role, separate from per-org `memberships` roles and from E6.12's
+per-org `private.internal_staff` manifest. Security packet:
+`supabase/tests/mission-control-security.sql`, run by
+`scripts/security/verify-mission-control.mjs` in CI's P01 job.
+
+### platform_admins
+
+`user_id (PK → auth.users ON DELETE CASCADE), granted_by, granted_at,
+revoked_at, revoked_by, note, created_at, updated_at`. Active means
+`revoked_at IS NULL`; revocation is a soft flip, and the history of every
+change lives in `admin_audit_log`. RLS on (not forced). `authenticated` holds
+SELECT only, with one policy, `mc_platform_admins_select_self` (`user_id =
+auth.uid()`): the browser can ask "am I one" and nothing else. No client
+write grant or policy. Writes go through the two RPCs below or an operator
+with the service role. There is no self-bootstrap path: the first row is an
+operator insert (`docs/ops/mission-control-bootstrap.md`).
+
+### admin_audit_log (APPEND-ONLY, immutable)
+
+`id, ts, actor_user_id (NOT NULL → auth.users), actor_email, action,
+target_type, target_id text, org_id (nullable → organizations), before jsonb,
+after jsonb, description`. Indexes on `ts DESC`, `(actor_user_id, ts DESC)`,
+`(org_id, ts DESC)`, `(action, ts DESC)`. The platform-scoped ledger beside
+`audit_log`, which stays untouched (its `org_id` is NOT NULL and its
+`action_type` CHECK is case-centric). `action` is a dotted string with no
+CHECK: `platform_admin.grant`, `platform_admin.revoke`, and later `org.*`,
+`membership.*`, `user.*`. SELECT policy `mc_admin_audit_log_select_platform_admin`
+(`is_platform_admin()`); `authenticated` holds SELECT and no other privilege,
+`anon` holds nothing. Rows are written only inside SECURITY DEFINER RPCs or by
+the service role, which keeps its elevated table privileges like `audit_log`.
+The foreign keys have no ON DELETE action, so a user who has acted or an
+organization with ledger rows cannot be hard-deleted until those rows are
+dealt with (the same posture as `audit_log`; the teardown scripts in
+`docs/ops/` will need a line once org-scoped rows exist).
+
+### Helper and RPCs
+
+All four are SECURITY DEFINER with `search_path` pinned to `public`, have no
+defaulted arguments, and grant EXECUTE to `authenticated` and `service_role`
+only (`PUBLIC` and `anon` revoked).
+
+- `is_platform_admin() RETURNS boolean` (STABLE SQL) — the caller has an
+  active row. Policies call it as `(SELECT public.is_platform_admin())` so it
+  runs once per query.
+- `grant_platform_admin(p_user_id uuid, p_note text) RETURNS jsonb` and
+  `revoke_platform_admin(p_user_id uuid, p_note text) RETURNS jsonb` — caller
+  must be a platform admin (`42501`, `platform_admin_required`); target must
+  exist in `auth.users` (`P0002`, `user_not_found`). Both take one
+  transaction-scoped advisory lock and re-check the caller after it, so two
+  admins revoking each other cannot leave zero. Grant inserts or re-activates
+  a revoked row (clears `revoked_*`, sets `granted_by = auth.uid()`,
+  `granted_at = now()`); revoke stamps `revoked_at`/`revoked_by` and refuses
+  the last active admin (`23514`, `last_platform_admin`). `p_note` (trimmed,
+  blank → NULL) becomes the row's `note`. Each change writes one ledger row
+  (`actor_user_id = auth.uid()`, `actor_email` from `auth.users`,
+  `target_type = 'user'`, `target_id = p_user_id::text`, `before`/`after` =
+  the row as jsonb) in the same transaction. A call that changes nothing
+  (grant of an active admin, revoke of an inactive or absent one) returns
+  `changed: false` and writes no row. The return is
+  `{ userId, active, grantedBy, grantedAt, revokedBy, revokedAt, note,
+changed, auditId }`, never the table row (the self-only SELECT policy would
+  re-apply to a returned row).
+- `platform_metrics() RETURNS jsonb` (STABLE plpgsql) — raises `42501` unless
+  `is_platform_admin()`, otherwise returns the Mission Control Home contract.
+  Every key is always present and every leaf except `generatedAt` is an
+  integer:
+
+  ```text
+  {
+    "generatedAt": "<UTC ISO 8601, e.g. 2026-10-30T20:48:06.123Z>",
+    "organizations": { "total", "active", "prospect", "inactive" },   -- by lifecycle_state
+    "users": { "total", "platformAdmins" },     -- auth.users WHERE deleted_at IS NULL; active platform_admins
+    "providers": { "total", "active", "onboarding", "pendingVerification" },  -- status; verification_state = 'pending_verification'
+    "cases": { "total", "open" },
+    "pendingInvites": n                         -- count(pending_invites)
+  }
+  ```
+
+  `cases.open` counts `credential_cases.case_status` in the five open unified
+  statuses (`not_started`, `in_progress`, `submitted`, `in_review`,
+  `action_required`), the same set as `OPEN_CASE_STATUSES` in
+  `src/lib/caseStatus.ts`. `approved`, `denied` and `not_pursuing` are
+  terminal. It reads the E6.0 `case_status` column, not the legacy
+  `credentialing_status_id` → `status_configs` mirror, whose per-org rows are
+  no longer a user-facing machine.
+
+### Additive metadata policies
+
+One permissive SELECT policy per table, each `TO authenticated USING ((SELECT
+public.is_platform_admin()))`: `mc_organizations_select_platform_admin`,
+`mc_memberships_select_platform_admin`, `mc_profiles_select_platform_admin`,
+`mc_pending_invites_select_platform_admin`. Permissive policies OR together,
+so the existing member policies are neither copied nor changed and a
+non-admin sees exactly what their memberships allowed before. Nothing else is
+widened: providers, cases, documents, `audit_log` and every other tenant table
+still require a membership, so a platform admin works inside an organization
+only through a membership of their own. A browser read of these four tables
+that means "my orgs" must filter by membership rather than rely on RLS (see
+the Portfolio wart in CLAUDE.md).
+
 ## E6.12 restricted client access context (2026-09-25)
 
 E6.12 adds a private, service-only authorization graph for the Enrollment
@@ -990,3 +1095,165 @@ p_outcome) → boolean` — records `sent` or `failed` on a `claimed` row;
   false when the row is not claimed. Refuses any other outcome (22023).
 - Regression packet: `supabase/tests/mint108-notification-sends.sql`, run by
   CI's Migration dry-run job after the MINT-107 packet.
+
+## Mission Control M3: organizations, lifecycle stages, write freeze (repository-only)
+
+Five migrations, one per concern, repo-only until an operator applies them
+(staging first): `20261102163000_mc_org_slug_plan_tier.sql`,
+`20261102163100_mc_lifecycle_stages.sql`,
+`20261102163200_mc_offboarded_write_freeze.sql`,
+`20261102163300_mc_platform_org_rpcs.sql`,
+`20261102163400_mc_generation_gate.sql`. SQL packet
+`supabase/tests/mission-control-organizations.sql`, run by
+`scripts/security/verify-mission-control-organizations.mjs` in CI's P01 job
+(five leak modes). Policy names avoid the `mc_` prefix, which M1's packet pins
+at six.
+
+### organizations.slug, organizations.plan_tier
+
+- `slug text NOT NULL`: the organization's URL name (`/join/<slug>`). A DNS
+  label (`organizations_slug_format`:
+  `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`), unique
+  (`organizations_slug_key`), and fixed once set (BEFORE UPDATE OF slug
+  trigger `organizations_slug_immutable`, `23514 slug_immutable`, for every
+  session, operators included). Every organization has one: existing rows were
+  backfilled from their name in created order, and BEFORE INSERT
+  `organizations_fill_slug` fills a missing slug the same way
+  (`org_slug_from_name()`: lowercase, runs of anything but `a-z0-9` become one
+  hyphen, no edge hyphens, at most 63, `org` when empty;
+  `org_slug_first_free()` appends `-2`, `-3`, ... on a collision), so every
+  creation path keeps working. `platform_create_organization` inserts the
+  operator's chosen slug directly.
+- `plan_tier text NULL`, no CHECK: informational (the UI offers pilot,
+  standard, enterprise from `src/lib/orgProfile.ts`), so a new tier is not a
+  migration. Only a platform admin changes it.
+
+### lifecycle_stages (configuration)
+
+`key text PK (^[a-z][a-z0-9_]{0,31}$), display_name, sort_order,
+allowed_next text[], switcher_group text NULL, writable boolean,
+generation_allowed boolean, shown_by_default boolean`. The organization
+lifecycle as stage objects (business policy is configuration): adding a stage
+such as `paused` is an INSERT, not a migration. RLS on; `authenticated` holds
+SELECT (policy `lifecycle_stages_select_authenticated`, every signed-in user
+reads the one platform vocabulary); `anon` nothing; writes only by the
+service role until the settings shell adds its RPC. Seed (mirrored by
+`DEFAULT_LIFECYCLE_STAGES` in `src/lib/lifecycle.ts`; keep the two in sync):
+
+| key        | display    | order | allowed_next           | switcher_group | writable | generation | shown by default |
+| ---------- | ---------- | ----- | ---------------------- | -------------- | -------- | ---------- | ---------------- |
+| prospect   | Prospect   | 10    | onboarding, offboarded | prospects      | yes      | no         | yes              |
+| onboarding | Onboarding | 20    | active, offboarded     | prospects      | yes      | no         | yes              |
+| active     | Active     | 30    | offboarded             | in_motion      | yes      | yes        | yes              |
+| offboarded | Offboarded | 40    | active                 | (hidden)       | no       | no         | no               |
+
+### organizations.lifecycle_state (final shape)
+
+The column is unchanged: `lifecycle_state text NOT NULL DEFAULT 'active'`.
+Accepted values: every `lifecycle_stages.key` plus the legacy alias
+`inactive`, so the legacy values `prospect`, `active` and `inactive` still
+write, and `onboarding` and `offboarded` are new. Validated by the BEFORE
+INSERT OR UPDATE OF lifecycle_state trigger `organizations_lifecycle_state_valid`
+(`23514 lifecycle_stage_unknown`) against the stage table, which replaces the
+CHECK `organizations_lifecycle_state_check`. `inactive` reads as `offboarded`
+everywhere: `public.normalize_lifecycle_state(text)` in SQL and
+`normalizeLifecycle()` in `src/lib/lifecycle.ts`. Changes go through
+`platform_set_org_lifecycle` only (no client UPDATE policy on organizations).
+
+### The offboarded write freeze
+
+`block_writes_when_offboarded()` runs BEFORE INSERT, UPDATE and DELETE on
+every public base table with an `org_id` column and refuses a write to a row
+of an organization whose stage is not writable (`42501 org_offboarded`; the
+old row on UPDATE/DELETE, the new row on INSERT or an org_id move).
+`org_is_writable(p_org_id)` answers the question (an organization whose stage
+has no configured row stays writable). Reads are untouched. Exempt tables (the
+installer never attaches): `admin_audit_log`, `audit_log` (reads write READ
+rows), `memberships` and `pending_invites` (access, not tenant data: a
+platform admin grants themself a membership to read an offboarded org, and
+`claim_invites()` runs at sign-in). Always allowed inside the function, so it
+holds on a trigger attached by hand: `sms_consents` DELETE and
+`sms_consent_archive` INSERT (an organization delete cascades consents into
+the archive; that evidence is a compliance floor), and any session without
+`request.jwt.claims` (migrations and operator SQL are not API traffic;
+PostgREST sets the claims for anon, authenticated and service_role).
+
+**A migration that adds a tenant table (any public table with `org_id`) ends
+with this one line**, which attaches the trigger where it is missing and is
+safe to call any number of times (service role only; returns the tables it
+attached on that call):
+
+```sql
+SELECT public.apply_offboarded_write_freeze();
+```
+
+### The generation gate
+
+Migration `20261102163400_mc_generation_gate.sql`. Sowmya, Nov 2 2026, her
+explicit exception to working rule 2: no case generation until the
+organization is in a stage whose `generation_allowed` behaviour is true
+(`active` only by default, configurable on the stage object). BEFORE INSERT
+trigger `block_generation_when_not_allowed` on `case_generation_runs` (the
+generation path's first write, whose id every `create_case_with_tasks` call of
+the run carries) raises `P0001 generation_not_allowed` with the stage in the
+DETAIL. `org_generation_allowed(p_org_id)` answers the question (no configured
+row: allowed). Same scope as the freeze: API traffic only, not direct database
+sessions. `ManualCaseModal` writes no run and is not gated. The UI mirrors it
+with `GenerationStageGate` (reason instead of the grid).
+
+### RPCs (SECURITY DEFINER, `search_path = public`, no defaulted arguments, jsonb returns)
+
+Each platform-admin mutation writes exactly one `admin_audit_log` row in the
+same transaction; a call that changes nothing writes nothing.
+
+- `platform_set_org_lifecycle(p_org_id uuid, p_stage text)` — platform admin
+  (`42501 platform_admin_required`); unknown org `P0002 org_not_found`;
+  unknown stage `22023 lifecycle_stage_unknown`; a target outside the current
+  stage's `allowed_next` (the current value read through the alias)
+  `22023 lifecycle_transition_not_allowed`; the same stage returns
+  `changed: false`. Ledger `org.lifecycle_change`, target `organization`,
+  `before/after = {lifecycleState}`. No reason or note.
+- `platform_create_organization(p_name, p_slug, p_owner_name, p_owner_email,
+p_plan_tier)` — platform admin; `22023 slug_invalid`, `23505 slug_taken`;
+  the owner name and email checks of the 3-arg overload. Its own additive
+  path: the organization row (slug, `prospect`, `plan_tier`), the 22
+  canonical `status_configs` (the `create_organization` seed, pinned to
+  `CANONICAL_STATUSES` by `src/lib/platformCreateSeed.test.ts`), the owner
+  party, and the ledger row `org.create` (after: name, slug, planTier,
+  lifecycleState, owner). **No membership** (Sowmya, Nov 2 2026): the operator
+  opens the organization with `platform_grant_membership`. A name matching an
+  existing organization's normalized name is **allowed** (Sowmya, Nov 1 2026;
+  Mission Control shows a notice linking the other organization). Every
+  `create_organization` overload is unchanged (each still adds its caller as
+  admin and keeps its duplicate refusal). Returns `{ orgId, name, slug,
+planTier, lifecycleState, auditId }`.
+- `platform_grant_membership(p_org_id uuid)` — "Grant myself admin
+  membership": the caller as `admin` (insert, or a role raise). Ledger
+  `membership.grant`, target `user` = the caller, `before` = the previous role
+  or NULL. Works on an offboarded organization.
+- `platform_org_summary(p_org_id uuid)` (STABLE) — platform admin only.
+  Counts and non-PHI identifiers, every key always present:
+  `{ orgId, owner: {name, email} | null, groups: [{id, name, tinLast4, npi,
+active}], providers: {total, onboarding, pendingVerification, active,
+inCredentialing, terminated}, cases: {open, byStatus: {not_started,
+in_progress, submitted, in_review, action_required}}, members,
+pendingInvites, lastActivityAt }`. `npi` is `provider_groups.npi_type2`;
+  `lastActivityAt` is the newest `touches.created_at`. No provider rows or
+  names.
+- `update_organization_profile(p_org_id, p_name, p_owner_name, p_owner_email,
+p_plan_tier)` — the one organization profile write; the caller is resolved
+  inside: a platform admin (ledger `org.update`, before/after = name, planTier,
+  owner) or the organization's own `admin` (`audit_log` UPDATE row; changing
+  `plan_tier` is `42501 plan_tier_platform_only`); anyone else
+  `42501 org_admin_required`. Refused while offboarded (`42501 org_offboarded`).
+  Updates the org's default owner party, or creates one. A duplicate
+  normalized name is allowed, as at creation.
+
+Also new: `normalize_lifecycle_state(text)`, `org_is_writable(uuid)`,
+`org_slug_from_name(text)` (authenticated, service_role),
+`org_slug_first_free(text)` and `apply_offboarded_write_freeze()`
+(service_role only), and the trigger functions above. `admin_audit_log.org_id`
+has no ON DELETE action, so an organization with Mission Control ledger rows
+cannot be hard-deleted; offboard it instead. The teardown SQL in `docs/ops/`
+predates this.
+

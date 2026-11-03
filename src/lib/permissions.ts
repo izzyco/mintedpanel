@@ -1,6 +1,8 @@
 // Pure permission helpers and hooks derived from the active membership role.
 // Centralizes all role-based UI gating so intent is explicit and future-proof.
-import { useRole, type AppRole } from "./auth-store";
+import { useLifecycleStages } from "@/hooks/useLifecycleStages";
+import { useActiveMembership, useAuthStore, useRole, type AppRole } from "./auth-store";
+import { lifecycleStage, type LifecycleStage } from "./lifecycle";
 
 /** Display labels for the three membership roles. Lives here (the role-semantics
  * module) rather than in a component, so the sidebar footer and the /account
@@ -27,10 +29,51 @@ export function isAdmin(role: AppRole | null | undefined): boolean {
   return role === "admin";
 }
 
+/**
+ * The active organization's lifecycle stage object (Mission Control M3), or
+ * null with no active organization. Read through normalizeLifecycle(), so a
+ * legacy `inactive` organization is the offboarded stage.
+ */
+export function useActiveLifecycleStage(): LifecycleStage | null {
+  const membership = useActiveMembership();
+  const stages = useLifecycleStages();
+  return membership ? lifecycleStage(membership.lifecycleState, stages) : null;
+}
+
+/** Writes are open to admins and specialists of an organization whose
+ * lifecycle stage is writable. An offboarded organization is read-only for
+ * everyone (the database refuses its writes with org_offboarded); reads still
+ * work. */
 export function useCanWrite(): boolean {
-  return canWrite(useRole());
+  const role = useRole();
+  const stage = useActiveLifecycleStage();
+  return canWrite(role) && (stage?.writable ?? true);
 }
 
 export function useIsAdmin(): boolean {
   return isAdmin(useRole());
+}
+
+/** Mission Control: whether the signed-in user is a platform admin. `null`
+ * means not known yet (the membership load for this actor has not finished).
+ * Independent of the active org — a platform admin may belong to none. */
+export function usePlatformAdmin(): boolean | null {
+  return useAuthStore((s) => s.isPlatformAdmin);
+}
+
+export type MissionControlAccess = "allow" | "deny" | "pending";
+
+/**
+ * The one Mission Control entry decision, shared by the layout route's
+ * client-side `beforeLoad` and the render-time `RequirePlatformAdmin`
+ * backstop. "pending" until the store has initialized and the flag is known —
+ * on a hard load `beforeLoad` runs before the store has anything, so it must
+ * never treat "unknown" as "no". Only an explicit `false` denies.
+ */
+export function canEnterMissionControl(
+  isPlatformAdmin: boolean | null,
+  initialized: boolean,
+): MissionControlAccess {
+  if (!initialized || isPlatformAdmin === null) return "pending";
+  return isPlatformAdmin ? "allow" : "deny";
 }

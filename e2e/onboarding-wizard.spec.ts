@@ -537,9 +537,12 @@ test("F1.0.4: sidebar shows the approved white mark and conformed rail text alph
   await seedAuth(context, ORG_LONE_STAR);
 
   await page.goto("/onboarding/wizard");
+  // The mark is the shipped PNG as a mask filled from the rail ink token:
+  // white here (rail-ink only on the Mission Control rail).
   const logo = page.getByRole("img", { name: "Minted Panel" }).first();
   await expect(logo).toBeVisible({ timeout: 30000 });
-  await expect(logo).toHaveAttribute("src", /logo-white/);
+  await expect(logo).toHaveCSS("mask-image", /logo-white/);
+  await expect(logo).toHaveCSS("background-color", "rgb(255, 255, 255)");
 
   // Rail text conformance (TE-8 semantic white-alpha values, not a blanket
   // brightening): section headings white/35, inactive nav items white/60.

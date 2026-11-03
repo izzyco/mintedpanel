@@ -371,6 +371,14 @@ jobs:
         env:
           FILLER_OUTCOMES_DOCKER_CONTEXT: default
         run: node scripts/security/verify-filler-outcomes.mjs
+      - name: Verify Mission Control platform-admin authorization and admin ledger
+        env:
+          MISSION_CONTROL_DOCKER_CONTEXT: default
+        run: node scripts/security/verify-mission-control.mjs
+      - name: Verify Mission Control organization lifecycle, write freeze and org RPCs
+        env:
+          MISSION_CONTROL_ORGS_DOCKER_CONTEXT: default
+        run: node scripts/security/verify-mission-control-organizations.mjs
 
   staging-uat-seed:
     name: Deterministic staging UAT seed
