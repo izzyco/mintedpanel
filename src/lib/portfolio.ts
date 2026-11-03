@@ -53,6 +53,7 @@ export function splitPortfolio(
     inMotionCount: inMotion.length,
     prospectCount: prospects.length,
     inactiveCount: inactive.length,
+    isEmpty,
     allInactive: isEmpty && inactive.length > 0,
   };
 }
