@@ -14,7 +14,9 @@ on:
       - "IDE_HANDOFF_*"
       - ".agents/**"
   push:
-    branches: [main, staging]
+    # Not staging: it is a fast-forward pointer to commits that already ran
+    # here on main, and the staging delivery gate admits main runs only.
+    branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -145,7 +147,8 @@ jobs:
         run: npm run test:ops
 
   # Gate 0.5 — Fast Playwright smoke skeleton (login render & unauthenticated guard).
-  # Runs in <1 minute. Full 400+ spec regression runs via e2e-full.yml on merge/nightly.
+  # Runs in <1 minute. The full regression suite runs nightly and on manual
+  # dispatch via e2e-full.yml.
   e2e:
     name: Playwright smoke
     runs-on: ubuntu-latest
