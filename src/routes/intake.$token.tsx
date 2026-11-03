@@ -1,25 +1,19 @@
-// Provider intake (slice 1, docs/provider-onboarding/slice-1-invite-to-form.md).
-// Public and chromeless (listed in __root.tsx). The link token is the door; the
-// emailed code is the key. The session that follows is an HttpOnly cookie, so
-// nothing here stores a token. One route, the step in component state.
-import { useEffect, useState } from "react";
+// Provider intake (docs/provider-onboarding/slice-1-invite-to-form.md, canvas
+// Stage 1). Public and chromeless (listed in __root.tsx). The link token is the
+// door; the emailed code is the key. The session that follows is an HttpOnly
+// cookie, so nothing here stores a token. Answers are not saved in this build.
 import { createFileRoute } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  CodeStep,
-  ConsentStep,
-  DetailsStep,
-  IdentifyStep,
-  IntakeShell,
-  InvalidLink,
-  TryAgain,
-} from "@/components/intake/IntakeScreens";
+import { IntakeFlow, type IntakeGateway } from "@/components/intake/IntakeFlow";
+import { IntakeShell, InvalidLink, TryAgain } from "@/components/intake/IntakeScreens";
 import {
   useIntakeLink,
   useIntakeMe,
   useOpenIntakeSession,
   useRequestIntakeCode,
+  useSignOutIntake,
 } from "@/hooks/useIntake";
+import { draftFromInvitation } from "@/lib/providerOnboarding";
 
 export const Route = createFileRoute("/intake/$token")({
   head: () => ({
@@ -32,27 +26,14 @@ export const Route = createFileRoute("/intake/$token")({
   component: IntakePage,
 });
 
-type Step = "identify" | "code" | "consent" | "details";
-
 function IntakePage() {
   const { token } = Route.useParams();
   const qc = useQueryClient();
   const link = useIntakeLink(token);
-  const [step, setStep] = useState<Step>("identify");
-  const [error, setError] = useState<string | null>(null);
+  const me = useIntakeMe(token, link.data != null);
   const requestCode = useRequestIntakeCode();
   const openSession = useOpenIntakeSession();
-  const signedIn = step === "consent" || step === "details";
-  const me = useIntakeMe(token, link.data != null);
-
-  // A live session from earlier in this browser (2 hours) skips the code; a
-  // session that ended (expired, or replaced by a resend) goes back to the start.
-  useEffect(() => {
-    // Only a definite "no session" sends her back; a failed read doesn't.
-    if (!me.isSuccess) return;
-    if (step === "identify" && me.data) setStep("consent");
-    if (signedIn && me.data === null) setStep("identify");
-  }, [me.isSuccess, me.data, step, signedIn]);
+  const signOut = useSignOutIntake();
 
   if (link.isLoading) {
     return (
@@ -63,84 +44,35 @@ function IntakePage() {
   }
   if (link.isError) return <TryAgain onRetry={() => void link.refetch()} />;
   if (!link.data) return <InvalidLink />;
-  const { practiceName, email } = link.data;
 
-  async function sendCode(): Promise<boolean> {
-    setError(null);
-    try {
-      await requestCode.mutateAsync(token);
-      setStep("code");
-      return true;
-    } catch {
-      setError("We couldn't send a code just now. Please try again.");
-      return false;
-    }
-  }
-
-  async function checkCode(code: string) {
-    setError(null);
-    try {
-      const ok = await openSession.mutateAsync({ token, code });
-      if (!ok) {
-        setError("That code didn't work. Use the newest code we sent, or send a new one.");
-        return;
-      }
-      await qc.invalidateQueries({ queryKey: ["intake-me", token] });
-      setStep("consent");
-    } catch {
-      setError("Something went wrong. Please try again.");
-    }
-  }
-
-  if (step === "identify") {
-    return (
-      <IntakeShell practiceName={practiceName}>
-        <IdentifyStep
-          email={email}
-          sending={requestCode.isPending}
-          error={error}
-          onSend={() => void sendCode()}
-        />
-      </IntakeShell>
-    );
-  }
-
-  if (step === "code") {
-    return (
-      <IntakeShell practiceName={practiceName}>
-        <CodeStep
-          email={email}
-          checking={openSession.isPending}
-          error={error}
-          onSubmit={checkCode}
-          onResend={sendCode}
-        />
-      </IntakeShell>
-    );
-  }
-
-  // Signed in, but her details didn't load: offer a retry rather than an
-  // endless spinner (a definite "no session" is handled by the effect above).
-  if (me.isError) return <TryAgain onRetry={() => void me.refetch()} />;
-  if (!me.data) {
-    return (
-      <IntakeShell practiceName={practiceName}>
-        <div className="text-[13px] text-muted-foreground">Loading…</div>
-      </IntakeShell>
-    );
-  }
+  const meKey = ["intake-me", token];
+  const gateway: IntakeGateway = {
+    practiceName: link.data.practiceName,
+    email: link.data.email,
+    requestCode: () => requestCode.mutateAsync(token),
+    checkCode: async (code) => {
+      if (!(await openSession.mutateAsync({ token, code }))) return "wrong";
+      await qc.invalidateQueries({ queryKey: meKey });
+      return "ok";
+    },
+    signOut: async () => {
+      await signOut.mutateAsync();
+      qc.setQueryData(meKey, null);
+    },
+  };
 
   return (
-    <IntakeShell practiceName={me.data.practiceName} signedInAs={me.data.email}>
-      {step === "consent" ? (
-        <ConsentStep practiceName={me.data.practiceName} onSign={() => setStep("details")} />
-      ) : (
-        <DetailsStep
-          firstName={me.data.firstName}
-          lastName={me.data.lastName}
-          email={me.data.email}
-        />
-      )}
-    </IntakeShell>
+    <IntakeFlow
+      gateway={gateway}
+      session={me.isSuccess ? (me.data ? "live" : "none") : null}
+      startingDraft={me.data ? draftFromInvitation(me.data) : null}
+      onRetryProfile={me.isError ? () => void me.refetch() : undefined}
+      notice={
+        <p role="note" className="rounded-md bg-amber-50 px-3 py-2 text-[13px] text-amber-900">
+          This form isn't connected yet. Your answers stay on this page only, nothing is sent to
+          your practice, and they're gone if you close or reload it.
+        </p>
+      }
+    />
   );
 }

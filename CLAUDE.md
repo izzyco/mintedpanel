@@ -252,6 +252,19 @@ the code runs, and need the migration plus the email env. Each write is one `SEC
   (`HttpOnly; SameSite=Strict; Path=/api/intake`, 2 hours), and `me` takes
   `{ t }` so a session reads back only under its own link. Tokens and codes
   are hashed before they reach SQL.
+- The provider's screens (canvas Stage 1: confirm → code → consent → form →
+  documents → thank you) are one reducer, `src/lib/intakeFlow.ts`, rendered
+  by `src/components/intake/IntakeFlow.tsx` through an `IntakeGateway`. Only
+  sign-in is real. Consent, answers, file names, help requests and Submit
+  live in page memory and are never sent; the live link shows a notice
+  saying so. The full SSN and passwords never enter React state (the draft
+  keeps the last 4 and an on-file flag). Form rules: `src/lib/intakeForm.ts`.
+- `/dev/provider-onboarding` (dev flag, chromeless in `__root.tsx`) runs the
+  same flow on a fake gateway (code 123456, scenarios incl. a re-invited
+  provider with locked SSN/NPI/DOB) and the practice's New hires view
+  (`src/components/providerOnboarding/`, reducer `src/lib/newHires.ts`) on
+  sample data. Practice users have no login yet, so New hires exists only
+  there. The staff Invite dialog and the practice's share `InviteFields`.
 
 ### Contracts worth knowing before you touch them
 

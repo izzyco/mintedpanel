@@ -23,7 +23,8 @@ export interface TemplateDataMap {
 }
 
 // Canvas board 2. The canvas's reassurance line is placeholder copy (Q3), so
-// it is left out rather than sent to a real inbox.
+// it is left out rather than sent to a real inbox. So are the help links and
+// the postal address: nothing exists yet for them to point at or read from.
 const HAVE_READY = [
   "Your NPI",
   "Your state license number and expiration date",
@@ -161,6 +162,42 @@ function followUpDigest(data: FollowUpDigestEmailData): RenderedEmail {
   };
 }
 
+// The letter in the header badge. emailShell escapes it. The first letter or
+// digit, so "(Shelby) Rehab" and an emoji-led name still get one; "M" (Minted)
+// when the name has none, which includes the blank name the routes can pass.
+export function practiceInitial(practiceName: string): string {
+  const first = practiceName.match(/[\p{L}\p{N}]/u);
+  return first ? first[0].toUpperCase() : "M";
+}
+
+function sentOnBehalf(practiceName: string): string {
+  return `Sent by Minted Panel on behalf of ${practiceName}`;
+}
+
+const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const TABLE = 'role="presentation" cellpadding="0" cellspacing="0" border="0"';
+const GAP = "margin:14px 0 0;";
+const MUTED = "font-size:13px;color:#6B7280;";
+
+// The canvas card in markup mail clients keep: tables and inline styles only.
+// Gmail drops <style> and SVG, so the shield mark becomes the practice's
+// initial; Outlook ignores padding on a link, so a button is a filled cell.
+function emailShell(practiceName: string, body: string): string {
+  return (
+    `<table ${TABLE} width="100%" bgcolor="#F3F4F6" style="background:#F3F4F6;"><tr><td align="center" style="padding:16px 12px;">` +
+    `<table ${TABLE} width="100%" style="max-width:600px;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px;"><tr>` +
+    `<td style="padding:22px 20px;font-family:${FONT};font-size:14px;line-height:1.55;color:#1F2937;">` +
+    `<table ${TABLE} width="100%" style="border-bottom:1px solid #F0EEEA;"><tr><td style="padding-bottom:12px;"><table ${TABLE}><tr>` +
+    `<td width="24" height="24" align="center" valign="middle" bgcolor="#1B4D3E" style="width:24px;height:24px;border-radius:6px;background:#1B4D3E;color:#FFFFFF;font-size:13px;font-weight:600;line-height:24px;">${escapeHtml(practiceInitial(practiceName))}</td>` +
+    `<td style="padding-left:8px;font-size:13px;font-weight:600;color:#1F2937;">${escapeHtml(practiceName)}</td>` +
+    `</tr></table></td></tr></table>` +
+    body +
+    `</td></tr></table>` +
+    `<p style="margin:0;padding:14px 8px 0;font-family:${FONT};font-size:11px;line-height:1.5;color:#4B5563;text-align:center;">${escapeHtml(sentOnBehalf(practiceName))}</p>` +
+    `</td></tr></table>`
+  );
+}
+
 export const TEMPLATES: { [K in TemplateKey]: (data: TemplateDataMap[K]) => RenderedEmail } = {
   test: ({ practiceName }) => ({
     subject: `Test email from ${practiceName}`,
@@ -182,24 +219,38 @@ export const TEMPLATES: { [K in TemplateKey]: (data: TemplateDataMap[K]) => Rend
         codeLine,
         "Questions? Just reply to this email.",
         `Thanks,\n${plainInline(practiceName)}`,
+        sentOnBehalf(plainInline(practiceName)),
       ].join("\n\n"),
-      html: [
-        `<p>Hi ${escapeHtml(firstName)},</p>`,
-        `<p>${intro}</p>`,
-        "<p>Make sure you have these on hand before you start:</p>",
-        `<ul>${HAVE_READY.map((item) => `<li>${item}</li>`).join("")}</ul>`,
-        `<p><a href="${escapeHtml(link)}">Get started</a></p>`,
-        `<p>${codeLine}</p>`,
-        "<p>Questions? Just reply to this email.</p>",
-        `<p>Thanks,<br>${escapeHtml(practiceName)}</p>`,
-      ].join(""),
+      html: emailShell(
+        practiceName,
+        [
+          `<p style="${GAP}">Hi ${escapeHtml(firstName)},</p>`,
+          `<p style="${GAP}">${intro}</p>`,
+          `<p style="${GAP}">Make sure you have these on hand before you start:</p>`,
+          `<ul style="${GAP}padding-left:20px;">${HAVE_READY.map((item) => `<li style="margin:0 0 4px;">${item}</li>`).join("")}</ul>`,
+          `<table ${TABLE} width="100%" style="margin-top:14px;"><tr><td align="center" bgcolor="#1B4D3E" style="border-radius:6px;background:#1B4D3E;">` +
+            `<a href="${escapeHtml(link)}" style="display:block;padding:13px 16px;color:#FFFFFF;text-decoration:none;font-weight:600;font-size:15px;">Get started</a>` +
+            `</td></tr></table>`,
+          `<p style="${GAP}${MUTED}">${codeLine}</p>`,
+          `<table ${TABLE} width="100%" style="margin-top:14px;border-top:1px solid #F0EEEA;"><tr><td style="padding-top:12px;${MUTED}">Questions? Just reply to this email.</td></tr></table>`,
+          `<p style="${GAP}">Thanks,<br>${escapeHtml(practiceName)}</p>`,
+        ].join(""),
+      ),
     };
   },
   intake_code: ({ practiceName, code }) => ({
     // The code stays out of the subject, so lock-screen previews don't show it.
     subject: `Your sign-in code for ${practiceName}`,
-    text: `Your code is ${code}. It expires in 10 minutes.\n\nIf you didn't ask for a code, you can ignore this email.`,
-    html: `<p>Your code is <strong>${escapeHtml(code)}</strong>. It expires in 10 minutes.</p><p>If you didn't ask for a code, you can ignore this email.</p>`,
+    text: `Your code is ${code}. It expires in 10 minutes.\n\nIf you didn't ask for a code, you can ignore this email.\n\n${sentOnBehalf(plainInline(practiceName))}`,
+    html: emailShell(
+      practiceName,
+      [
+        `<p style="${GAP}">Your code is:</p>`,
+        `<table ${TABLE} width="100%" style="margin-top:10px;"><tr><td align="center" bgcolor="#F3F4F6" style="border-radius:6px;background:#F3F4F6;padding:14px 16px;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:600;letter-spacing:6px;color:#1F2937;">${escapeHtml(code)}</td></tr></table>`,
+        `<p style="${GAP}">It expires in 10 minutes.</p>`,
+        `<p style="${GAP}${MUTED}">If you didn't ask for a code, you can ignore this email.</p>`,
+      ].join(""),
+    ),
   }),
   followup_digest_daily: followUpDigest,
 };

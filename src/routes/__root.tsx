@@ -167,6 +167,9 @@ function RootComponent() {
   // recipients. They must remain reachable before a session is present so the
   // page can send the recipient to sign in with the token preserved.
   const isClientInviteClaimRoute = pathname.startsWith("/client-invites/claim/");
+  // The onboarding preview shows the provider's chromeless screens and the
+  // practice view on sample data, with no session (dev-flag-gated).
+  const isOnboardingPreviewRoute = pathname === "/dev/provider-onboarding";
   const session = useAuthStore((s) => s.session);
   const isChromelessRoute =
     isAuthRoute ||
@@ -177,6 +180,7 @@ function RootComponent() {
     isShareRoute ||
     isSsnIntakeRoute ||
     isProviderIntakeRoute ||
+    isOnboardingPreviewRoute ||
     isClientInviteClaimRoute;
   const isPublicRoute = isChromelessRoute || isDevRoute;
   const router = useRouter();

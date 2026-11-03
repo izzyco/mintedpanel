@@ -38,10 +38,20 @@ export interface OnboardingHire {
   events: OnboardingEvent[];
 }
 
-// source null = not yet provided or confirmed by the provider.
+// source null = not yet provided or confirmed by the provider. locked = the
+// value is on her live record and is one she can't change here (SSN, NPI and
+// date of birth; she asks for a fix instead).
 export interface FieldValue<T> {
   value: T | null;
-  source: { label: string; asOf: string } | null;
+  source: { label: string; asOf: string | null } | null;
+  locked?: boolean;
+}
+
+export interface HomeAddress {
+  street: FieldValue<string>;
+  city: FieldValue<string>;
+  state: FieldValue<string>;
+  zip: FieldValue<string>;
 }
 
 export interface IntakeLicense {
@@ -50,7 +60,8 @@ export interface IntakeLicense {
   expiresOn: FieldValue<string>;
 }
 
-// Secrets are write-only: the draft only ever knows whether one is on file.
+// Secrets are write-only: the draft holds only the SSN's last 4 digits and
+// whether each login is on file, never the full SSN or a password.
 export interface IntakeDraft {
   identity: {
     firstName: FieldValue<string>;
@@ -59,16 +70,33 @@ export interface IntakeDraft {
     taxonomyCode: FieldValue<string>;
     dateOfBirth: FieldValue<string>;
     caqhId: FieldValue<string>;
-    ssnOnFile: boolean;
+    ssn: FieldValue<string>;
   };
   contact: {
     email: string;
     mobile: FieldValue<string>;
-    homeAddress: FieldValue<string>;
+    homeAddress: HomeAddress;
   };
   licenses: IntakeLicense[];
   logins: { caqhOnFile: boolean; pecosOnFile: boolean };
 }
+
+// Who the practice's invite matched, for the Invite dialog's outcome (board 1b).
+export interface KnownPerson {
+  displayName: string;
+  email: string;
+  npi: string | null;
+  groupNames: string[];
+  journey: "none" | "open" | "submitted";
+}
+
+export type InviteMatch =
+  | { kind: "new" }
+  | { kind: "active_on_file"; person: KnownPerson; matchedOn: "email" | "npi" }
+  | { kind: "already_onboarding"; person: KnownPerson; matchedOn: "email" | "npi" }
+  | { kind: "already_submitted"; person: KnownPerson; matchedOn: "email" | "npi" }
+  | { kind: "on_file_other_group"; person: KnownPerson; matchedOn: "email" | "npi" }
+  | { kind: "conflict"; byEmail: KnownPerson; byNpi: KnownPerson };
 
 export interface DocumentSlot {
   key: string;

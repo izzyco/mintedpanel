@@ -6,6 +6,7 @@ import {
   readIntakeLink,
   readIntakeMe,
   requestIntakeCode,
+  signOutIntake,
 } from "@/services/intake";
 
 export function useIntakeLink(token: string) {
@@ -34,4 +35,8 @@ export function useOpenIntakeSession() {
   return useMutation({
     mutationFn: (vars: { token: string; code: string }) => openIntakeSession(vars.token, vars.code),
   });
+}
+
+export function useSignOutIntake() {
+  return useMutation({ mutationFn: signOutIntake });
 }

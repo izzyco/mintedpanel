@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FollowUpDigestEmailData, FollowUpDigestRow } from "@/lib/followUpDigest";
 import { NOTIFICATION_TEMPLATES } from "@/lib/notificationTemplates";
-import { TEMPLATES } from "./templates.ts";
+import { practiceInitial, TEMPLATES } from "./templates.ts";
 
 describe("provider_invitation", () => {
   const email = TEMPLATES.provider_invitation({
@@ -23,16 +23,62 @@ describe("provider_invitation", () => {
     expect(email.text).toContain("- Your PECOS login (username and password)");
     expect(email.text + email.html).not.toMatch(/\[|placeholder/i);
   });
+
+  it("renders Get started as a filled button cell around the link", () => {
+    expect(email.html).toMatch(
+      /<td[^>]*bgcolor="#1B4D3E"[^>]*>\s*<a href="https:\/\/staging\.example\.test\/intake\/abc_-123"[^>]*>Get started<\/a>/,
+    );
+  });
+
+  it("names the practice in the header and the footer of both parts", () => {
+    expect(email.html).toContain(">Shelby &lt;Sports&gt; Rehab</td>");
+    expect(email.html).toContain("Sent by Minted Panel on behalf of Shelby &lt;Sports&gt; Rehab");
+    expect(email.text).toContain("Sent by Minted Panel on behalf of Shelby <Sports> Rehab");
+  });
+
+  it("uses only markup mail clients keep, and no links that don't work yet", () => {
+    expect(email.html).not.toMatch(/<svg|<style|<script|class=/i);
+    expect(email.text + email.html).not.toMatch(
+      /I need help|don't need to do this|Why am I receiving/,
+    );
+  });
 });
 
 describe("intake_code", () => {
+  const email = TEMPLATES.intake_code({ practiceName: "Shelby", code: "012345" });
+
   it("shows the code and its 10-minute expiry, with no link", () => {
-    const email = TEMPLATES.intake_code({ practiceName: "Shelby", code: "012345" });
     expect(email.subject).toBe("Your sign-in code for Shelby");
     expect(email.subject).not.toContain("012345");
     expect(email.text).toContain("012345");
+    expect(email.html).toContain(">012345</td>");
     expect(email.text).toContain("10 minutes");
     expect(email.html).not.toContain("href");
+  });
+
+  it("uses the same practice header and footer as the invitation", () => {
+    expect(email.html).toContain(">Shelby</td>");
+    expect(email.html).toContain("Sent by Minted Panel on behalf of Shelby");
+    expect(email.text).toContain("Sent by Minted Panel on behalf of Shelby");
+  });
+});
+
+describe("practiceInitial", () => {
+  it("is the first letter of the practice name, uppercased", () => {
+    expect(practiceInitial("Shelby Sports Rehab")).toBe("S");
+    expect(practiceInitial("  anchor PT")).toBe("A");
+  });
+
+  it("skips punctuation and emoji, keeps a leading digit or accented letter", () => {
+    expect(practiceInitial("(Shelby) Rehab")).toBe("S");
+    expect(practiceInitial("😀 Happy Feet")).toBe("H");
+    expect(practiceInitial("1st Choice PT")).toBe("1");
+    expect(practiceInitial("éclair PT")).toBe("É");
+  });
+
+  it("falls back to M when the name has no letter or digit", () => {
+    expect(practiceInitial("")).toBe("M");
+    expect(practiceInitial("   ")).toBe("M");
   });
 });
 

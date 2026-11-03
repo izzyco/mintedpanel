@@ -4,7 +4,10 @@
 import type {
   DocumentSlot,
   FieldValue,
+  HomeAddress,
   IntakeDraft,
+  InviteMatch,
+  KnownPerson,
   OnboardingEvent,
   OnboardingEventType,
   OnboardingStage,
@@ -37,7 +40,7 @@ export function deriveStage(events: OnboardingEvent[]): OnboardingStage {
   return milestone ? milestone[1] : "invited";
 }
 
-function isBeforeSubmit(stage: OnboardingStage): boolean {
+export function isBeforeSubmit(stage: OnboardingStage): boolean {
   return stage === "invited" || stage === "started";
 }
 
@@ -76,6 +79,10 @@ function licenseComplete(license: IntakeDraft["licenses"][number]): boolean {
   return provided(license.state) && provided(license.number) && provided(license.expiresOn);
 }
 
+function addressComplete(address: HomeAddress): boolean {
+  return [address.street, address.city, address.state, address.zip].every(provided);
+}
+
 export function sectionProgress(draft: IntakeDraft) {
   const { identity, contact, licenses, logins } = draft;
   return {
@@ -86,10 +93,10 @@ export function sectionProgress(draft: IntakeDraft) {
       provided(identity.taxonomyCode),
       provided(identity.dateOfBirth),
       provided(identity.caqhId),
-      identity.ssnOnFile,
+      provided(identity.ssn),
     ]),
     // The email is verified by the sign-in code, so it always counts.
-    contact: count([true, provided(contact.mobile), provided(contact.homeAddress)]),
+    contact: count([true, provided(contact.mobile), addressComplete(contact.homeAddress)]),
     licenses: licenses.length === 0 ? { done: 0, total: 1 } : count(licenses.map(licenseComplete)),
     logins: count([logins.caqhOnFile, logins.pecosOnFile]),
   };
@@ -154,6 +161,61 @@ export function validateUpload(file: { name: string; type: string; size: number 
     return "This file is over 10 MB. Try a photo of each page instead.";
   }
   return null;
+}
+
+// Board 1b. A same-group match splits by where her journey stands; a match in
+// another group adds that group with no email (decision 4). When the email and
+// the NPI point at two different people, nothing is guessed.
+export function classifyInvite(
+  input: { email: string; npi: string; groupName: string },
+  people: KnownPerson[],
+): InviteMatch {
+  const email = input.email.trim().toLowerCase();
+  const npi = input.npi.trim();
+  const byEmail = people.find((p) => p.email.toLowerCase() === email);
+  const byNpi = npi ? people.find((p) => p.npi === npi) : undefined;
+  if (byEmail && byNpi && byEmail !== byNpi) return { kind: "conflict", byEmail, byNpi };
+  const person = byEmail ?? byNpi;
+  if (!person) return { kind: "new" };
+  const matchedOn = byEmail ? "email" : "npi";
+  if (!person.groupNames.includes(input.groupName)) {
+    return { kind: "on_file_other_group", person, matchedOn };
+  }
+  const kind = {
+    none: "active_on_file",
+    open: "already_onboarding",
+    submitted: "already_submitted",
+  } as const;
+  return { kind: kind[person.journey], person, matchedOn };
+}
+
+// The draft the form opens with on the live link: only her name and verified
+// email are known, both from the invitation.
+export function draftFromInvitation(me: {
+  firstName: string;
+  lastName: string;
+  email: string;
+}): IntakeDraft {
+  const empty = { value: null, source: null };
+  const invitation = { label: "From your invitation", asOf: null };
+  return {
+    identity: {
+      firstName: { value: me.firstName, source: invitation },
+      lastName: { value: me.lastName, source: invitation },
+      npi: empty,
+      taxonomyCode: empty,
+      dateOfBirth: empty,
+      caqhId: empty,
+      ssn: empty,
+    },
+    contact: {
+      email: me.email,
+      mobile: empty,
+      homeAddress: { street: empty, city: empty, state: empty, zip: empty },
+    },
+    licenses: [{ state: empty, number: empty, expiresOn: empty }],
+    logins: { caqhOnFile: false, pecosOnFile: false },
+  };
 }
 
 export function verificationSummary(checks: VerificationCheck[]) {
