@@ -47,3 +47,9 @@ supabase/.temp/
 # Vercel
 .vercel/
 
+
+# PR demos (pr-demo skill): captures are published to the pr-media branch,
+# per-PR demo specs stay local
+/demo-output/
+/e2e/demo/*.demo.ts
+!/e2e/demo/login.example.demo.ts

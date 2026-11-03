@@ -1059,6 +1059,12 @@ does **not** typecheck.
 **Read `docs/VERIFY.md`** for the bootstrap one-liner, the verification tier
 table (what to run for a given diff), measured costs, and the route→spec map.
 
+**PR bodies say functionally what we did.** Open with **What changes for
+you** (plain language: who sees what, where, step by step), then a
+**Walkthrough** of numbered screenshots for any change a person can see or
+click, then the technical sections. Capture locally against the mock harness
+and publish to the `pr-media` branch — see the **`pr-demo`** skill.
+
 **Cloud sandboxes block egress to `*.supabase.co`.** Database work goes through
 the Supabase MCP tools; browser verification goes through the Playwright mock
 harness — see the **`e2e-harness`** skill.
@@ -1071,6 +1077,8 @@ harness — see the **`e2e-harness`** skill.
   verification; read before adding a resource route.
 - **`e2e-harness`** — Playwright + Supabase-mock harness for browser
   verification in cloud sandboxes.
+- **`pr-demo`** — PR body shape (functional summary first) and the screenshot
+  walkthrough: local capture, publish to `pr-media`.
 - **`adhd`** — ADHD-friendly response shaping (next action first, numbered
   steps, concrete estimates, visible wins).
 - **`minted-m3-audit`** — Lean 3M (Muda/Mura/Muri) health-check audit of a
