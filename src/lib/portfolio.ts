@@ -96,4 +96,3 @@ export function stateBreakdown(
     ordered.push({ state: UNKNOWN_STATE, count: counts.get(UNKNOWN_STATE) as number });
   return ordered;
 }
-

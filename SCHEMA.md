@@ -1256,4 +1256,3 @@ Also new: `normalize_lifecycle_state(text)`, `org_is_writable(uuid)`,
 has no ON DELETE action, so an organization with Mission Control ledger rows
 cannot be hard-deleted; offboard it instead. The teardown SQL in `docs/ops/`
 predates this.
-
