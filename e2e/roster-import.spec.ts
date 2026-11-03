@@ -544,9 +544,11 @@ test("TS-60: async scan survives navigation; good rows stage, error report lists
 
   // Leave mid-scan via in-app navigation (the SPA keeps the scan driving) —
   // wait for the destination to COMMIT so the wizard page really unmounts …
-  await page.locator("aside").getByRole("link", { name: "Org Detail" }).click();
+  await page.locator("aside").getByRole("link", { name: "Organization settings" }).click();
   await expect(page).toHaveURL(/\/org-detail/, { timeout: 15000 });
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
+    timeout: 15000,
+  });
   // … and return: progress lives on the run row, not React state. The
   // streamlined uploader keeps a ready_for_review run visible on return.
   await page.goBack();

@@ -49,6 +49,8 @@ import { useNextBestActions, useGenerationRun } from "@/hooks/useNextBestActions
 import { useCasesMatrix } from "@/hooks/useCasesMatrix";
 import { fmtDate } from "@/lib/format";
 import { useCanWrite } from "@/lib/permissions";
+import { useAuthStore } from "@/lib/auth-store";
+import { myCaseIds } from "@/lib/myWork";
 import { caseDaysOpenWhenKnown } from "@/lib/caseAge";
 import { CASE_STATUSES, caseStatusLabel, type CaseStatus } from "@/lib/caseStatus";
 import { PRE_CRED_PAYER_NAME } from "@/lib/statusLabels";
@@ -86,6 +88,8 @@ interface CasesSearch {
   chip?: string;
   ids?: string;
   runId?: string;
+  /** My work: only the cases assigned to the signed-in user. */
+  mine?: boolean;
   run?: string;
 }
 
@@ -103,6 +107,7 @@ export const Route = createFileRoute("/cases/")({
     ids: typeof search.ids === "string" && search.ids.trim() ? search.ids : undefined,
     runId: typeof search.runId === "string" && search.runId ? search.runId : undefined,
     run: typeof search.run === "string" && search.run ? search.run : undefined,
+    mine: search.mine === true || search.mine === "true" || search.mine === 1 ? true : undefined,
   }),
 });
 
@@ -122,7 +127,8 @@ function capitalize(s: string): string {
 
 function CasesPage() {
   const navigate = useNavigate();
-  const { pivot: pivotParam, chip: chipParam, ids: idsParam, runId, run } = Route.useSearch();
+  const { pivot: pivotParam, chip: chipParam, ids: idsParam, runId, run, mine } = Route.useSearch();
+  const userId = useAuthStore((s) => s.user?.id ?? null);
 
   const providersQ = useProviders();
   const casesQ = useCases();
@@ -165,10 +171,14 @@ function CasesPage() {
     providersQ.isLoading || casesQ.isLoading || payersQ.isLoading || caseAgeStopsQ.isLoading;
   const failed = providersQ.isError || casesQ.isError || payersQ.isError;
 
-  const idSet = useMemo(
-    () => (idsParam ? new Set(idsParam.split(",").filter(Boolean)) : null),
-    [idsParam],
-  );
+  // ?ids= and My work (?mine) both narrow to a case-id set; together they
+  // intersect.
+  const idSet = useMemo(() => {
+    const fromParam = idsParam ? new Set(idsParam.split(",").filter(Boolean)) : null;
+    if (!mine) return fromParam;
+    const assigned = myCaseIds(casesQ.data ?? [], userId);
+    return fromParam ? new Set([...assigned].filter((id) => fromParam.has(id))) : assigned;
+  }, [idsParam, mine, casesQ.data, userId]);
 
   const matrixQ = useCasesMatrix({
     kpi,
@@ -315,6 +325,7 @@ function CasesPage() {
         ...(chipParam ? { chip: chipParam } : {}),
         ...(runFilter ? { runId: runFilter } : {}),
         ...(idsParam ? { ids: idsParam } : {}),
+        ...(mine ? { mine } : {}),
       },
     });
   };
@@ -327,6 +338,7 @@ function CasesPage() {
         ...(k === "total" ? {} : { chip: k }),
         ...(runFilter ? { runId: runFilter } : {}),
         ...(idsParam ? { ids: idsParam } : {}),
+        ...(mine ? { mine } : {}),
       },
     });
   };
@@ -389,7 +401,7 @@ function CasesPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
-        title="Cases"
+        title={mine ? "My work" : "Cases"}
         description={subtitle}
         actions={
           canWrite ? (
@@ -573,14 +585,18 @@ function CasesPage() {
             size="sm"
             className="ml-auto h-7"
             onClick={() =>
-              navigate({ to: "/cases", search: view === "matrix" ? {} : { pivot: view } })
+              navigate({
+                to: "/cases",
+                search: { ...(view === "matrix" ? {} : { pivot: view }), mine },
+              })
             }
           >
             Show all cases
           </Button>
         </div>
       ) : null}
-      {idSet ? (
+      {/* The touch banner is for ?ids= only; My work narrows silently. */}
+      {idsParam ? (
         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-[#E8E5E0] p-3 text-[13px]">
           <span>
             Showing {allRows.length} {allRows.length === 1 ? "case" : "cases"} you just logged a
@@ -591,7 +607,10 @@ function CasesPage() {
             size="sm"
             className="ml-auto h-7"
             onClick={() =>
-              navigate({ to: "/cases", search: view === "matrix" ? {} : { pivot: view } })
+              navigate({
+                to: "/cases",
+                search: { ...(view === "matrix" ? {} : { pivot: view }), mine },
+              })
             }
           >
             <X className="mr-1 h-4 w-4" /> Show all cases

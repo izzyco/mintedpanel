@@ -1,13 +1,14 @@
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
 
-// E6.1 F6.1.1 / TS-106 + TS-121 — the six-item sidebar over the mock harness,
-// using the 11-org seed universe (seed-universe.md). Supersedes the E0.9 IA
-// v2 pins. Covers:
-//   - exactly six primary items in the stated zones and order: Workspace
-//     (Cases + open-case count, Payer Setup, Reporting Center) / org zone
-//     (Org Detail, Groups, Providers) — for BOTH admin and specialist (the
-//     TS-121 role sweep; Payer Setup is visible to all roles for now)
-//   - NO Admin section, no Home, no My Cases, no reserved Facilities slot
+// Organization-first sidebar (Option B, 2026-11-02; supersedes the E6.1
+// F6.1.1 / TS-106 two-zone pins) over the mock harness, using the 11-org seed
+// universe (seed-universe.md). Covers:
+//   - the switcher tile at the top, above Find a provider and the nav
+//   - exactly seven nav links: Main (My work, Cases + open-case count,
+//     Providers, Groups, Reports) and Setup (Payer Setup, Organization
+//     settings) — for BOTH admin and specialist (the TS-121 role sweep; Payer
+//     Setup is visible to all roles for now)
+//   - NO Admin section, no Home, no reserved Facilities slot, no retired labels
 //   - branding untouched: the white layered-jack mark + wordmark (F6.1.1 AC)
 //   - the org switcher tile keeps the E0.9 lifecycle-grouped menu (headings
 //     only, never a per-org status label) + footer actions
@@ -148,41 +149,54 @@ async function seedAuth(context: {
   );
 }
 
-const SIX_ITEMS = [
+const NAV_ITEMS = [
+  "My work",
   "Cases",
-  "Payer Setup",
-  "Reporting Center",
-  "Org Detail",
-  "Groups",
   "Providers",
+  "Groups",
+  "Reports",
+  "Payer Setup",
+  "Organization settings",
 ] as const;
 
-async function assertSixItems(page: import("@playwright/test").Page) {
+async function assertNavItems(page: import("@playwright/test").Page) {
   const rail = page.locator("aside").first();
-  await expect(rail.getByText("Workspace", { exact: true })).toBeVisible({ timeout: 30000 });
+  const main = rail.getByRole("navigation", { name: "Main" });
+  await expect(main).toBeVisible({ timeout: 30000 });
 
-  // The six, with their stated destinations.
-  const expectHref = async (name: string, href: string) => {
+  // The seven, with their stated destinations.
+  const expectHref = async (name: string, href: string | RegExp) => {
     const link = rail.getByRole("link", { name: new RegExp(`^${name}`) });
     await expect(link).toBeVisible();
     await expect(link).toHaveAttribute("href", href);
   };
+  await expectHref("My work", /^\/cases\?mine=true$/);
   await expectHref("Cases", "/cases");
-  await expectHref("Payer Setup", "/admin/payer-admin");
-  await expectHref("Reporting Center", "/reporting");
-  await expectHref("Org Detail", "/org-detail");
-  await expectHref("Groups", "/groups");
   await expectHref("Providers", "/providers");
+  await expectHref("Groups", "/groups");
+  await expectHref("Reports", "/reporting");
+  await expectHref("Payer Setup", "/admin/payer-admin");
+  await expectHref("Organization settings", "/org-detail");
 
-  // Exactly six primary nav links across the two nav zones (the switcher and
-  // user footer are buttons/menus, not nav links).
-  const navLinks = rail.locator("nav a");
-  await expect(navLinks).toHaveCount(SIX_ITEMS.length);
+  // Main then Setup, in the stated order (the switcher, search and user
+  // footer are buttons/menus, not nav links).
+  await expect(rail.locator("nav a")).toHaveText(NAV_ITEMS.map((n) => new RegExp(`^${n}`)));
+
+  // Order on the rail: switcher tile, then Find a provider, then the nav.
+  const tileBox = await rail.getByRole("button", { name: /Switch organization/ }).boundingBox();
+  const searchBox = await rail.getByRole("button", { name: "Find a provider" }).boundingBox();
+  const mainBox = await main.boundingBox();
+  expect(tileBox && searchBox && mainBox).toBeTruthy();
+  expect(tileBox!.y).toBeLessThan(searchBox!.y);
+  expect(searchBox!.y).toBeLessThan(mainBox!.y);
 
   // Retired entries and labels are gone — no Admin section for any role.
   for (const gone of [
     "Home",
     "My Cases",
+    "Reporting Center",
+    "Org Detail",
+    "Mission Control",
     "Account Detail",
     "Facilities",
     "Payer Management",
@@ -198,9 +212,10 @@ async function assertSixItems(page: import("@playwright/test").Page) {
   ]) {
     await expect(rail.getByRole("link", { name: gone, exact: true })).toHaveCount(0);
   }
-  // No Admin SECTION exists — the only zone label on the rail is Workspace
-  // (the "Admin" text in the user footer is the role display, not a section).
+  // No Admin SECTION exists (the "Admin" text in the user footer is the role
+  // display, not a section), and the old Workspace zone label is gone.
   await expect(rail.locator("nav").getByText("Admin", { exact: true })).toHaveCount(0);
+  await expect(rail.getByText("Workspace", { exact: true })).toHaveCount(0);
 
   // Branding (F6.1.1 AC): the shipped layered-jack mark, the PNG as a mask
   // filled from the rail ink token — white here; rail-ink only on the Mission
@@ -218,14 +233,12 @@ test.describe("admin (P1)", () => {
     await seedAuth(context);
   });
 
-  test("TS-106: exactly the six items render, in zones, with untouched branding", async ({
+  test("Option B: the switcher leads, then the seven items, with untouched branding", async ({
     page,
   }) => {
     await page.goto("/org-detail");
-    await assertSixItems(page);
+    await assertNavItems(page);
 
-    // Zone order: the Workspace zone precedes the org switcher tile; the org
-    // zone items sit under it.
     const rail = page.locator("aside").first();
     await expect(rail.getByText("Organization", { exact: true })).toBeVisible();
     await expect(rail.getByText(ACTIVE_ORG.name)).toBeVisible();
@@ -283,10 +296,34 @@ test.describe("admin (P1)", () => {
     const items = menu.getByRole("menuitem");
     await expect(items.filter({ hasText: "Settings" })).toBeVisible();
     await expect(items.filter({ hasText: "Sign out" })).toBeVisible();
+    // Not a platform admin, so no Mission Control item.
+    await expect(items.filter({ hasText: "Mission Control" })).toHaveCount(0);
     await menu.getByText("Settings").click();
-    // 2026-08-16: personal settings live on /account; Org Detail stays the
-    // ORG-level surface and keeps its own nav entry in the org zone.
+    // 2026-08-16: personal settings live on /account; Organization settings
+    // stays the ORG-level surface with its own nav entry.
     await expect(page).toHaveURL(/\/account\/?$/, { timeout: 15000 });
+  });
+
+  test("My work opens Cases narrowed to me; Cases clears it", async ({ page }) => {
+    await page.goto("/cases");
+    const rail = page.locator("aside").first();
+    await rail.getByRole("link", { name: /^My work/ }).click({ timeout: 30000 });
+    await expect(page).toHaveURL(/\/cases\?mine=true$/, { timeout: 15000 });
+    await expect(page.getByRole("heading", { level: 1, name: "My work" })).toBeVisible();
+    await expect(rail.getByRole("link", { name: /^My work/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await expect(rail.getByRole("link", { name: /^Cases/ })).not.toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    // My work narrows silently: the ?ids= touch banner is not shown.
+    await expect(page.getByText(/you just logged a touch on/)).toHaveCount(0);
+
+    await rail.getByRole("link", { name: /^Cases/ }).click();
+    await expect(page).toHaveURL(/\/cases\/?$/, { timeout: 15000 });
+    await expect(page.getByRole("heading", { level: 1, name: "Cases" })).toBeVisible();
   });
 
   test("TS-121: narrow viewport follows the shell rules with no horizontal scroll", async ({
@@ -309,10 +346,10 @@ test.describe("specialist (P2) — TS-121 role sweep", () => {
     await seedAuth(context);
   });
 
-  test("the identical six items render — Payer Setup visible to all roles, no admin-only section", async ({
+  test("the identical seven items render — Payer Setup visible to all roles, no admin-only section", async ({
     page,
   }) => {
     await page.goto("/cases");
-    await assertSixItems(page);
+    await assertNavItems(page);
   });
 });

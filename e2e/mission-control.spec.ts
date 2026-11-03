@@ -225,7 +225,7 @@ function sidebar(page: Page) {
   return page.locator("aside").first();
 }
 
-test("(a) a platform admin hard-loads Mission Control: header, six tiles, sidebar entry", async ({
+test("(a) a platform admin hard-loads Mission Control: header, six tiles, its own rail", async ({
   context,
   page,
 }) => {
@@ -241,7 +241,8 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
   await expect(crumbs.getByRole("link")).toHaveCount(0);
   await expect(crumbs.locator('[aria-current="page"]')).toHaveCount(1);
   await expect(page.getByRole("heading", { level: 1, name: "Mission Control" })).toBeVisible();
-  // Home and Organizations (M3): the section strip, Home current.
+  // Home and Organizations (M3): the sections on Mission Control's own rail,
+  // Home current.
   const sections = page.getByRole("navigation", { name: "Mission Control sections" });
   await expect(sections.getByRole("link")).toHaveText(["Home", "Organizations"]);
   await expect(sections.getByRole("link", { name: "Home" })).toHaveAttribute(
@@ -252,11 +253,17 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
   await expectTiles(page);
   await expect(page.getByText("Generated Oct 30, 2026 · 1:15 PM")).toBeVisible();
 
-  const entry = sidebar(page).getByRole("link", { name: "Mission Control" });
-  await expect(entry).toHaveAttribute("href", "/mission-control");
-  await expect(entry).toHaveAttribute("aria-current", "page");
-  // Seven primary items for a platform admin: the six plus Mission Control.
-  await expect(sidebar(page).locator("nav a")).toHaveCount(7);
+  // Mission Control's own rail (Option B): a way back plus the sections; the
+  // workspace nav is not on it.
+  await expect(sections).toBeVisible();
+  await expect(
+    sidebar(page).getByRole("navigation", { name: "Mission Control sections" }),
+  ).toHaveCount(1);
+  await expect(sidebar(page).getByRole("link", { name: "Back to Minted Panel" })).toHaveAttribute(
+    "href",
+    "/cases",
+  );
+  await expect(sidebar(page).getByRole("navigation", { name: "Main" })).toHaveCount(0);
 
   expect(rpcCalls).toContain("is_platform_admin");
   expect(rpcCalls).toContain("platform_metrics");
@@ -273,14 +280,19 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
   await page.goto("/mission-control/audit");
   await expectNotFound(page);
 
-  // A workspace route for the same admin is the ordinary forest rail.
+  // A workspace route for the same admin is the ordinary forest rail, and
+  // the account menu is the way in.
   await page.goto("/cases");
-  await expect(sidebar(page).getByText("Workspace", { exact: true })).toBeVisible({
+  await expect(sidebar(page).getByRole("navigation", { name: "Main" })).toBeVisible({
     timeout: 30000,
   });
   await expect(page.locator("html[data-surface]")).toHaveCount(0);
   await expect(sidebar(page)).toHaveCSS("background-color", FOREST_RAIL);
   await expect(mark(page)).toHaveCSS("background-color", WHITE_MARK);
+  await sidebar(page).getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Mission Control" }).click();
+  await expect(page).toHaveURL(/\/mission-control$/, { timeout: 15000 });
+  await expect(sidebar(page)).toHaveCSS("background-color", MINT_RAIL);
 });
 
 test("(b) a non-admin gets the generic not-found view, no sidebar entry, and client navigation lands on /", async ({
@@ -304,9 +316,12 @@ test("(b) a non-admin gets the generic not-found view, no sidebar entry, and cli
   await expect(sidebar(page)).toHaveCSS("background-color", FOREST_RAIL);
   await expect(mark(page)).toHaveCSS("background-color", WHITE_MARK);
 
-  await expect(sidebar(page).getByText("Workspace", { exact: true })).toBeVisible();
+  await expect(sidebar(page).getByRole("navigation", { name: "Main" })).toBeVisible();
   await expect(sidebar(page).getByRole("link", { name: "Mission Control" })).toHaveCount(0);
-  await expect(sidebar(page).locator("nav a")).toHaveCount(6);
+  await expect(sidebar(page).locator("nav a")).toHaveCount(7);
+  await sidebar(page).getByRole("button", { name: "Account menu" }).click();
+  await expect(page.getByRole("menuitem", { name: "Mission Control" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   expect(rpcCalls).toContain("is_platform_admin");
   expect(rpcCalls).not.toContain("platform_metrics");
 
@@ -314,7 +329,7 @@ test("(b) a non-admin gets the generic not-found view, no sidebar entry, and cli
   // beforeLoad redirects to / (which lands a member on /cases), so the
   // not-found backstop never even renders.
   await page.goto("/cases");
-  await expect(sidebar(page).getByText("Workspace", { exact: true })).toBeVisible({
+  await expect(sidebar(page).getByRole("navigation", { name: "Main" })).toBeVisible({
     timeout: 30000,
   });
   await page.evaluate(() => {
@@ -338,7 +353,7 @@ test("(c) an is_platform_admin() error is treated exactly like false", async ({
   await page.goto("/mission-control");
   await expectNotFound(page);
   // The app itself still loaded (not the "Can't reach Minted Panel" screen).
-  await expect(sidebar(page).getByText("Workspace", { exact: true })).toBeVisible();
+  await expect(sidebar(page).getByRole("navigation", { name: "Main" })).toBeVisible();
   await expect(sidebar(page).getByRole("link", { name: "Mission Control" })).toHaveCount(0);
   expect(rpcCalls).toContain("is_platform_admin");
   expect(rpcCalls).not.toContain("platform_metrics");
@@ -356,8 +371,8 @@ test("(d) a platform admin with no organization reaches Mission Control, never t
   });
   await expectTiles(page);
   await expect(page.getByText("Create your first organization")).toHaveCount(0);
-  await expect(sidebar(page).getByRole("link", { name: "Mission Control" })).toBeVisible();
-  await expect(sidebar(page).getByText("Select an organization to see its details.")).toBeVisible();
+  await expect(sidebar(page).getByRole("link", { name: "Back to Minted Panel" })).toBeVisible();
+  await expect(sidebar(page).getByRole("link", { name: "Organizations" })).toBeVisible();
 
   // The authenticated root lands such a user in Mission Control too.
   await page.goto("/");

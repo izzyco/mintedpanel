@@ -238,7 +238,9 @@ test("TS-78/TS-115 — fixed defaults (E6.6 F6.6.6): no reason-code editor rende
   // the module with the E6.5 consolidation).
   await page.goto("/admin/payer-admin?tab=org-settings");
   await expect(page).toHaveURL(/\/org-detail$/, { timeout: 30000 });
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
+    timeout: 30000,
+  });
 
   // The denial word-list ships as the fixed default set — the org editor is
   // GONE (no add input, no Add code, no Deactivate, no Reason codes section).
@@ -253,7 +255,9 @@ test("TS-91/TS-115 — fixed defaults (E6.6 F6.6.6): no queue-ranking editor ren
 }) => {
   currentRole = "admin";
   await page.goto("/org-detail");
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
+    timeout: 30000,
+  });
 
   // Queue ranking runs the shipped default order — the config UI is GONE.
   await expect(page.getByRole("heading", { name: "Queue settings" })).toHaveCount(0);
@@ -278,7 +282,9 @@ test("2026-07-20 re-scope — Org Detail carries NO per-org identifier config; n
   // Detail keeps no identifier table and no Configure-ID affordance, and the
   // dormant org_payer_settings grain is never written.
   await page.goto("/org-detail");
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
+    timeout: 30000,
+  });
 
   await expect(page.getByRole("heading", { name: "Resolution identifiers" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Configure ID" })).toHaveCount(0);

@@ -333,7 +333,7 @@ test("TS-19: Org Detail mirrors the org-intake outputs read-only", async ({ cont
 
   await page.goto("/org-detail");
 
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
     timeout: 30000,
   });
   await expect(page.getByText("Organization summary")).toBeVisible();
@@ -350,7 +350,7 @@ test("TS-19: Org Detail mirrors the org-intake outputs read-only", async ({ cont
   await expect(page.getByRole("button", { name: "Begin onboarding" })).toHaveCount(0);
 });
 
-test("TS-20: workspace shell carries Minted Panel branding with the Workspace segment and org-zone switcher tile", async ({
+test("TS-20: workspace shell carries Minted Panel branding with the switcher tile above the nav", async ({
   context,
   page,
 }) => {
@@ -359,7 +359,7 @@ test("TS-20: workspace shell carries Minted Panel branding with the Workspace se
 
   await page.goto("/org-detail");
 
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
     timeout: 30000,
   });
   // F0.8.7 branding holds; the E0.8 "Org space" label was superseded by E0.9
@@ -367,7 +367,10 @@ test("TS-20: workspace shell carries Minted Panel branding with the Workspace se
   // with its ORGANIZATION eyebrow. The sidebar is mounted twice (desktop rail
   // + mobile drawer), hence .first().
   await expect(page.getByText("Minted Panel").first()).toBeVisible();
-  await expect(page.getByText("Workspace", { exact: true }).first()).toBeVisible();
+  // Option B (2026-11-02): no Workspace zone label; the Main nav sits under
+  // the switcher tile.
+  await expect(page.getByRole("navigation", { name: "Main" }).first()).toBeVisible();
+  await expect(page.getByText("Workspace", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Organization", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("Org space", { exact: true })).toHaveCount(0);
 });

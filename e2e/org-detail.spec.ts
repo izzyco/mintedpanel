@@ -360,7 +360,9 @@ test("TS-107: Org Detail carries only the container content, members render with
   await seedAuth(context);
 
   await page.goto("/org-detail");
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
+    timeout: 30000,
+  });
 
   // The container content (F6.1.4, consolidated 2026-07-21): an ORG-IDENTITY
   // summary (people are NOT restated there) + the unified People section
@@ -413,7 +415,9 @@ test("TS-107: the banner never renders once every wizard section is complete; th
   await seedAuth(context);
 
   await page.goto("/org-detail");
-  await expect(page.getByRole("heading", { name: "Org Detail" })).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole("heading", { name: "Organization settings" })).toBeVisible({
+    timeout: 30000,
+  });
   await expect(page.getByRole("heading", { name: "Organization summary" })).toBeVisible();
   // Every section resolves complete → the loud banner is gone, replaced by
   // the compact persistent wizard entry (PM decision 2026-07-21).
