@@ -7,6 +7,7 @@
 // Applied at the two authenticated entry points (post-login; the "/" root
 // redirect); reloading a specific workspace URL preserves context via the
 // persisted store and never routes through the resolver.
+import { lifecycleStage } from "@/lib/lifecycle";
 import type { LifecycleState, PortfolioOrg } from "@/types";
 
 export type LandingDecision =
@@ -15,18 +16,27 @@ export type LandingDecision =
   | { kind: "portfolio" }
   | { kind: "mission-control" };
 
+// An org is "live" for selection when its lifecycle stage sits in a switcher
+// group (Mission Control M3 stage objects, read through normalizeLifecycle()):
+// offboarded, and the legacy inactive that reads as offboarded, are not. Pure,
+// so it uses the seed-mirroring default stages; the store calls it before any
+// configured stage has loaded.
+function isLive(o: { lifecycleState: LifecycleState }): boolean {
+  return lifecycleStage(o.lifecycleState).switcherGroup !== null;
+}
+
 // Given orgs (with lifecycle + createdAt) and the persisted last-active id, pick
-// the org that should be ACTIVE: the valid non-inactive last-active, else the
-// most recently created live (non-inactive) org, else null (no orgs, or every org
-// inactive). Shared by the landing resolver (TE-1) and the store's boot-time
-// validation (TE-2) so the route and the active org never disagree.
+// the org that should be ACTIVE: the valid live last-active, else the most
+// recently created live org, else null (no orgs, or no live org). Shared by the
+// landing resolver (TE-1) and the store's boot-time validation (TE-2) so the
+// route and the active org never disagree.
 export function selectActiveOrgId(
   orgs: Array<{ id: string; lifecycleState: LifecycleState; createdAt: string }>,
   activeOrgId: string | null,
 ): string | null {
   const lastActive = activeOrgId ? orgs.find((o) => o.id === activeOrgId) : undefined;
-  if (lastActive && lastActive.lifecycleState !== "inactive") return lastActive.id; // TE-1 rule 2
-  const live = orgs.filter((o) => o.lifecycleState !== "inactive");
+  if (lastActive && isLive(lastActive)) return lastActive.id; // TE-1 rule 2
+  const live = orgs.filter(isLive);
   if (live.length === 0) return null; // no orgs / every org inactive
   return live.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).id; // TE-1 rule 4
 }

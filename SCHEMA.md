@@ -1095,3 +1095,165 @@ p_outcome) → boolean` — records `sent` or `failed` on a `claimed` row;
   false when the row is not claimed. Refuses any other outcome (22023).
 - Regression packet: `supabase/tests/mint108-notification-sends.sql`, run by
   CI's Migration dry-run job after the MINT-107 packet.
+
+## Mission Control M3: organizations, lifecycle stages, write freeze (repository-only)
+
+Five migrations, one per concern, repo-only until an operator applies them
+(staging first): `20261102163000_mc_org_slug_plan_tier.sql`,
+`20261102163100_mc_lifecycle_stages.sql`,
+`20261102163200_mc_offboarded_write_freeze.sql`,
+`20261102163300_mc_platform_org_rpcs.sql`,
+`20261102163400_mc_generation_gate.sql`. SQL packet
+`supabase/tests/mission-control-organizations.sql`, run by
+`scripts/security/verify-mission-control-organizations.mjs` in CI's P01 job
+(five leak modes). Policy names avoid the `mc_` prefix, which M1's packet pins
+at six.
+
+### organizations.slug, organizations.plan_tier
+
+- `slug text NOT NULL`: the organization's URL name (`/join/<slug>`). A DNS
+  label (`organizations_slug_format`:
+  `^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`), unique
+  (`organizations_slug_key`), and fixed once set (BEFORE UPDATE OF slug
+  trigger `organizations_slug_immutable`, `23514 slug_immutable`, for every
+  session, operators included). Every organization has one: existing rows were
+  backfilled from their name in created order, and BEFORE INSERT
+  `organizations_fill_slug` fills a missing slug the same way
+  (`org_slug_from_name()`: lowercase, runs of anything but `a-z0-9` become one
+  hyphen, no edge hyphens, at most 63, `org` when empty;
+  `org_slug_first_free()` appends `-2`, `-3`, ... on a collision), so every
+  creation path keeps working. `platform_create_organization` inserts the
+  operator's chosen slug directly.
+- `plan_tier text NULL`, no CHECK: informational (the UI offers pilot,
+  standard, enterprise from `src/lib/orgProfile.ts`), so a new tier is not a
+  migration. Only a platform admin changes it.
+
+### lifecycle_stages (configuration)
+
+`key text PK (^[a-z][a-z0-9_]{0,31}$), display_name, sort_order,
+allowed_next text[], switcher_group text NULL, writable boolean,
+generation_allowed boolean, shown_by_default boolean`. The organization
+lifecycle as stage objects (business policy is configuration): adding a stage
+such as `paused` is an INSERT, not a migration. RLS on; `authenticated` holds
+SELECT (policy `lifecycle_stages_select_authenticated`, every signed-in user
+reads the one platform vocabulary); `anon` nothing; writes only by the
+service role until the settings shell adds its RPC. Seed (mirrored by
+`DEFAULT_LIFECYCLE_STAGES` in `src/lib/lifecycle.ts`; keep the two in sync):
+
+| key        | display    | order | allowed_next           | switcher_group | writable | generation | shown by default |
+| ---------- | ---------- | ----- | ---------------------- | -------------- | -------- | ---------- | ---------------- |
+| prospect   | Prospect   | 10    | onboarding, offboarded | prospects      | yes      | no         | yes              |
+| onboarding | Onboarding | 20    | active, offboarded     | prospects      | yes      | no         | yes              |
+| active     | Active     | 30    | offboarded             | in_motion      | yes      | yes        | yes              |
+| offboarded | Offboarded | 40    | active                 | (hidden)       | no       | no         | no               |
+
+### organizations.lifecycle_state (final shape)
+
+The column is unchanged: `lifecycle_state text NOT NULL DEFAULT 'active'`.
+Accepted values: every `lifecycle_stages.key` plus the legacy alias
+`inactive`, so the legacy values `prospect`, `active` and `inactive` still
+write, and `onboarding` and `offboarded` are new. Validated by the BEFORE
+INSERT OR UPDATE OF lifecycle_state trigger `organizations_lifecycle_state_valid`
+(`23514 lifecycle_stage_unknown`) against the stage table, which replaces the
+CHECK `organizations_lifecycle_state_check`. `inactive` reads as `offboarded`
+everywhere: `public.normalize_lifecycle_state(text)` in SQL and
+`normalizeLifecycle()` in `src/lib/lifecycle.ts`. Changes go through
+`platform_set_org_lifecycle` only (no client UPDATE policy on organizations).
+
+### The offboarded write freeze
+
+`block_writes_when_offboarded()` runs BEFORE INSERT, UPDATE and DELETE on
+every public base table with an `org_id` column and refuses a write to a row
+of an organization whose stage is not writable (`42501 org_offboarded`; the
+old row on UPDATE/DELETE, the new row on INSERT or an org_id move).
+`org_is_writable(p_org_id)` answers the question (an organization whose stage
+has no configured row stays writable). Reads are untouched. Exempt tables (the
+installer never attaches): `admin_audit_log`, `audit_log` (reads write READ
+rows), `memberships` and `pending_invites` (access, not tenant data: a
+platform admin grants themself a membership to read an offboarded org, and
+`claim_invites()` runs at sign-in). Always allowed inside the function, so it
+holds on a trigger attached by hand: `sms_consents` DELETE and
+`sms_consent_archive` INSERT (an organization delete cascades consents into
+the archive; that evidence is a compliance floor), and any session without
+`request.jwt.claims` (migrations and operator SQL are not API traffic;
+PostgREST sets the claims for anon, authenticated and service_role).
+
+**A migration that adds a tenant table (any public table with `org_id`) ends
+with this one line**, which attaches the trigger where it is missing and is
+safe to call any number of times (service role only; returns the tables it
+attached on that call):
+
+```sql
+SELECT public.apply_offboarded_write_freeze();
+```
+
+### The generation gate
+
+Migration `20261102163400_mc_generation_gate.sql`. Sowmya, Nov 2 2026, her
+explicit exception to working rule 2: no case generation until the
+organization is in a stage whose `generation_allowed` behaviour is true
+(`active` only by default, configurable on the stage object). BEFORE INSERT
+trigger `block_generation_when_not_allowed` on `case_generation_runs` (the
+generation path's first write, whose id every `create_case_with_tasks` call of
+the run carries) raises `P0001 generation_not_allowed` with the stage in the
+DETAIL. `org_generation_allowed(p_org_id)` answers the question (no configured
+row: allowed). Same scope as the freeze: API traffic only, not direct database
+sessions. `ManualCaseModal` writes no run and is not gated. The UI mirrors it
+with `GenerationStageGate` (reason instead of the grid).
+
+### RPCs (SECURITY DEFINER, `search_path = public`, no defaulted arguments, jsonb returns)
+
+Each platform-admin mutation writes exactly one `admin_audit_log` row in the
+same transaction; a call that changes nothing writes nothing.
+
+- `platform_set_org_lifecycle(p_org_id uuid, p_stage text)` — platform admin
+  (`42501 platform_admin_required`); unknown org `P0002 org_not_found`;
+  unknown stage `22023 lifecycle_stage_unknown`; a target outside the current
+  stage's `allowed_next` (the current value read through the alias)
+  `22023 lifecycle_transition_not_allowed`; the same stage returns
+  `changed: false`. Ledger `org.lifecycle_change`, target `organization`,
+  `before/after = {lifecycleState}`. No reason or note.
+- `platform_create_organization(p_name, p_slug, p_owner_name, p_owner_email,
+p_plan_tier)` — platform admin; `22023 slug_invalid`, `23505 slug_taken`;
+  the owner name and email checks of the 3-arg overload. Its own additive
+  path: the organization row (slug, `prospect`, `plan_tier`), the 22
+  canonical `status_configs` (the `create_organization` seed, pinned to
+  `CANONICAL_STATUSES` by `src/lib/platformCreateSeed.test.ts`), the owner
+  party, and the ledger row `org.create` (after: name, slug, planTier,
+  lifecycleState, owner). **No membership** (Sowmya, Nov 2 2026): the operator
+  opens the organization with `platform_grant_membership`. A name matching an
+  existing organization's normalized name is **allowed** (Sowmya, Nov 1 2026;
+  Mission Control shows a notice linking the other organization). Every
+  `create_organization` overload is unchanged (each still adds its caller as
+  admin and keeps its duplicate refusal). Returns `{ orgId, name, slug,
+planTier, lifecycleState, auditId }`.
+- `platform_grant_membership(p_org_id uuid)` — "Grant myself admin
+  membership": the caller as `admin` (insert, or a role raise). Ledger
+  `membership.grant`, target `user` = the caller, `before` = the previous role
+  or NULL. Works on an offboarded organization.
+- `platform_org_summary(p_org_id uuid)` (STABLE) — platform admin only.
+  Counts and non-PHI identifiers, every key always present:
+  `{ orgId, owner: {name, email} | null, groups: [{id, name, tinLast4, npi,
+active}], providers: {total, onboarding, pendingVerification, active,
+inCredentialing, terminated}, cases: {open, byStatus: {not_started,
+in_progress, submitted, in_review, action_required}}, members,
+pendingInvites, lastActivityAt }`. `npi` is `provider_groups.npi_type2`;
+  `lastActivityAt` is the newest `touches.created_at`. No provider rows or
+  names.
+- `update_organization_profile(p_org_id, p_name, p_owner_name, p_owner_email,
+p_plan_tier)` — the one organization profile write; the caller is resolved
+  inside: a platform admin (ledger `org.update`, before/after = name, planTier,
+  owner) or the organization's own `admin` (`audit_log` UPDATE row; changing
+  `plan_tier` is `42501 plan_tier_platform_only`); anyone else
+  `42501 org_admin_required`. Refused while offboarded (`42501 org_offboarded`).
+  Updates the org's default owner party, or creates one. A duplicate
+  normalized name is allowed, as at creation.
+
+Also new: `normalize_lifecycle_state(text)`, `org_is_writable(uuid)`,
+`org_slug_from_name(text)` (authenticated, service_role),
+`org_slug_first_free(text)` and `apply_offboarded_write_freeze()`
+(service_role only), and the trigger functions above. `admin_audit_log.org_id`
+has no ON DELETE action, so an organization with Mission Control ledger rows
+cannot be hard-deleted; offboard it instead. The teardown SQL in `docs/ops/`
+predates this.
+

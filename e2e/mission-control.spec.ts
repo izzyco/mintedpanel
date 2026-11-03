@@ -12,8 +12,8 @@ import {
 //   platform_metrics()  -> { generatedAt, organizations{…}, users{…},
 //                            providers{…}, cases{…}, pendingInvites }
 // Covers:
-//   (a) a platform admin hard-loads /mission-control: breadcrumb (Home is the
-//       only section, so no section strip), the six tiles with the fixture
+//   (a) a platform admin hard-loads /mission-control: breadcrumb, the section
+//       strip (Home and Organizations, M3), the six tiles with the fixture
 //       numbers, the sidebar entry, the surface palette (data-surface on
 //       <html>, mint rail) that a workspace route does not carry; a Mission
 //       Control path with no page is the generic not-found view
@@ -241,8 +241,13 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
   await expect(crumbs.getByRole("link")).toHaveCount(0);
   await expect(crumbs.locator('[aria-current="page"]')).toHaveCount(1);
   await expect(page.getByRole("heading", { level: 1, name: "Mission Control" })).toBeVisible();
-  // Home is the only section, so there is no section strip to choose from.
-  await expect(page.getByRole("navigation", { name: "Mission Control sections" })).toHaveCount(0);
+  // Home and Organizations (M3): the section strip, Home current.
+  const sections = page.getByRole("navigation", { name: "Mission Control sections" });
+  await expect(sections.getByRole("link")).toHaveText(["Home", "Organizations"]);
+  await expect(sections.getByRole("link", { name: "Home" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 
   await expectTiles(page);
   await expect(page.getByText("Generated Oct 30, 2026 · 1:15 PM")).toBeVisible();
@@ -265,7 +270,7 @@ test("(a) a platform admin hard-loads Mission Control: header, six tiles, sideba
 
   // A Mission Control path with no page yet is an ordinary unknown URL, even
   // for a platform admin: no placeholder page ships.
-  await page.goto("/mission-control/organizations");
+  await page.goto("/mission-control/audit");
   await expectNotFound(page);
 
   // A workspace route for the same admin is the ordinary forest rail.

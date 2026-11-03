@@ -112,11 +112,13 @@ describe("listPortfolioOrgs", () => {
         lifecycleState: "prospect",
         createdAt: "2026-07-01T00:00:00Z",
       },
-      // An unknown lifecycle value coerces to active.
+      // A value with no known stage (one configured after this code shipped)
+      // is carried as stored; lifecycleStage() reads it as a visible, writable
+      // stage, so the Portfolio still counts it in motion.
       {
         id: "o3",
         name: "Shelby Sports Rehab",
-        lifecycleState: "active",
+        lifecycleState: "archived",
         createdAt: "2026-07-02T00:00:00Z",
       },
     ]);

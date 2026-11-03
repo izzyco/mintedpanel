@@ -239,12 +239,15 @@ test.describe("admin (P1)", () => {
     await rail.getByRole("button", { name: /Switch organization/ }).click({ timeout: 30000 });
 
     const menu = page.getByRole("menu");
-    // Lifecycle group headings only (Portfolio precedent) — never a per-org label.
-    await expect(menu.getByText("Active", { exact: true })).toBeVisible();
+    // Lifecycle group headings only (Portfolio precedent) — never a per-org
+    // label. The groups come from the lifecycle stage objects (Mission Control
+    // M3): In motion, Prospects; an offboarded org (here the legacy inactive
+    // Outer Banks) drops out of the switcher, and the Portfolio still lists it.
+    await expect(menu.getByText("In motion", { exact: true })).toBeVisible();
     await expect(menu.getByText("Prospects", { exact: true })).toBeVisible();
-    await expect(menu.getByText("Inactive", { exact: true })).toBeVisible();
+    await expect(menu.getByText("Inactive", { exact: true })).toHaveCount(0);
     await expect(menu.getByText("Tree Hill Sports Therapy")).toBeVisible();
-    await expect(menu.getByText("Outer Banks Therapy Group")).toBeVisible();
+    await expect(menu.getByText("Outer Banks Therapy Group")).toHaveCount(0);
 
     // 11 orgs > 10 → the search field renders.
     const search = menu.getByLabel("Search organizations");

@@ -19,8 +19,11 @@ describe("isMissionControlPath", () => {
 });
 
 describe("MISSION_CONTROL_SECTIONS", () => {
-  it("names only sections whose page exists: Home, for now", () => {
-    expect(MISSION_CONTROL_SECTIONS.map((section) => section.to)).toEqual(["/mission-control"]);
+  it("names only sections whose page exists: Home and Organizations", () => {
+    expect(MISSION_CONTROL_SECTIONS.map((section) => section.to)).toEqual([
+      "/mission-control",
+      "/mission-control/organizations",
+    ]);
   });
 });
 
@@ -31,7 +34,12 @@ describe("missionControlSection", () => {
   });
 
   it("falls back to Home for a path no section claims", () => {
-    expect(missionControlSection("/mission-control/organizations").label).toBe("Home");
+    expect(missionControlSection("/mission-control/users").label).toBe("Home");
+  });
+
+  it("resolves Organizations for the list and a detail page", () => {
+    expect(missionControlSection("/mission-control/organizations").label).toBe("Organizations");
+    expect(missionControlSection("/mission-control/organizations/abc").label).toBe("Organizations");
   });
 
   // A later section, as a milestone will add one: its own path and nested

@@ -42,6 +42,8 @@ import { useCases } from "@/hooks/useCases";
 import { useStatusConfigs } from "@/hooks/useAdmin";
 import { useFormDrift } from "@/hooks/useFormDrift";
 import { ROLE_LABELS, usePlatformAdmin } from "@/lib/permissions";
+import { useLifecycleStages } from "@/hooks/useLifecycleStages";
+import { groupBySwitcherGroup, type LifecycleStage } from "@/lib/lifecycle";
 // The approved white layered-jack mark (E1.0 F1.0.4 / TE-8), copied from
 // docs/redesign/design-system/design-system-reference/assets/logo-white.png —
 // pinned untouched by E6.1 F6.1.1 (the decision-mock gradient square is a
@@ -141,20 +143,21 @@ function CountChip({ count, label }: { count: number; label: string }) {
 }
 
 // Lifecycle-grouped switcher entries. Group headings only — never a per-org
-// status label (E0.0 locked decision, same mechanism as the Portfolio).
-const LIFECYCLE_GROUPS = [
-  { key: "active", label: "Active" },
-  { key: "prospect", label: "Prospects" },
-  { key: "inactive", label: "Inactive" },
-] as const;
-
-function groupMemberships(memberships: MembershipEntry[], query: string) {
+// status label (E0.0 locked decision, same mechanism as the Portfolio). The
+// groups come from the lifecycle stage objects (Mission Control M3), read
+// through normalizeLifecycle(): In motion (active), Prospects (prospect,
+// onboarding); an offboarded organization (and a legacy inactive one) is in
+// no group and drops out of the switcher. The Portfolio still lists it.
+function groupMemberships(
+  memberships: MembershipEntry[],
+  query: string,
+  stages: readonly LifecycleStage[],
+) {
   const q = query.trim().toLowerCase();
   const matches = (m: MembershipEntry) => !q || m.orgName.toLowerCase().includes(q);
-  return LIFECYCLE_GROUPS.map((g) => ({
-    ...g,
-    orgs: memberships.filter((m) => (m.lifecycleState ?? "active") === g.key && matches(m)),
-  })).filter((g) => g.orgs.length > 0);
+  return groupBySwitcherGroup(memberships.filter(matches), (m) => m.lifecycleState, stages).map(
+    (g) => ({ key: g.key, label: g.label, orgs: g.items }),
+  );
 }
 
 interface SidebarProps {
@@ -173,6 +176,7 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
   const fullName = useAuthStore((s) => s.fullName);
   const active = useActiveMembership();
   const isPlatformAdmin = usePlatformAdmin();
+  const lifecycleStages = useLifecycleStages();
   const openCases = useOpenCaseCount();
   // E6.5 F6.5.4 — the chip is DRIFT-ONLY now: mappings the last real fill
   // couldn't find on the live page (the one repair signal), derived from two
@@ -218,8 +222,9 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
     ? groupMemberships(
         memberships.filter((m) => m.orgId === activeOrgId),
         "",
+        lifecycleStages,
       )
-    : groupMemberships(memberships, orgQuery);
+    : groupMemberships(memberships, orgQuery, lifecycleStages);
 
   return (
     <aside className="w-full md:w-[232px] flex-shrink-0 bg-mp-sidebar flex flex-col h-full">
@@ -337,9 +342,7 @@ export function Sidebar({ onNavigate, onOpenSearch }: SidebarProps) {
                         <DropdownMenuItem
                           key={m.orgId}
                           onSelect={() => setActiveOrg(m.orgId)}
-                          className={`flex items-center justify-between gap-2 px-3 py-[7px] text-[13px] ${
-                            group.key === "inactive" ? "text-[var(--mp-ink-faint)]" : ""
-                          }`}
+                          className="flex items-center justify-between gap-2 px-3 py-[7px] text-[13px]"
                         >
                           <span className={m.orgId === activeOrgId ? "font-medium" : ""}>
                             {m.orgName}

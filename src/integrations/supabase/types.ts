@@ -1657,6 +1657,39 @@ export type Database = {
           },
         ];
       };
+      lifecycle_stages: {
+        Row: {
+          allowed_next: string[];
+          display_name: string;
+          generation_allowed: boolean;
+          key: string;
+          shown_by_default: boolean;
+          sort_order: number;
+          switcher_group: string | null;
+          writable: boolean;
+        };
+        Insert: {
+          allowed_next?: string[];
+          display_name: string;
+          generation_allowed?: boolean;
+          key: string;
+          shown_by_default?: boolean;
+          sort_order: number;
+          switcher_group?: string | null;
+          writable?: boolean;
+        };
+        Update: {
+          allowed_next?: string[];
+          display_name?: string;
+          generation_allowed?: boolean;
+          key?: string;
+          shown_by_default?: boolean;
+          sort_order?: number;
+          switcher_group?: string | null;
+          writable?: boolean;
+        };
+        Relationships: [];
+      };
       memberships: {
         Row: {
           created_at: string;
@@ -2210,18 +2243,24 @@ export type Database = {
           id: string;
           lifecycle_state: string;
           name: string;
+          plan_tier: string | null;
+          slug: string;
         };
         Insert: {
           created_at?: string;
           id?: string;
           lifecycle_state?: string;
           name: string;
+          plan_tier?: string | null;
+          slug?: string;
         };
         Update: {
           created_at?: string;
           id?: string;
           lifecycle_state?: string;
           name?: string;
+          plan_tier?: string | null;
+          slug?: string;
         };
         Relationships: [];
       };
@@ -6042,6 +6081,36 @@ export type Database = {
       };
       is_platform_admin: { Args: never; Returns: boolean };
       platform_metrics: { Args: never; Returns: Json };
+      apply_offboarded_write_freeze: { Args: never; Returns: string[] };
+      normalize_lifecycle_state: { Args: { p_state: string }; Returns: string };
+      org_is_writable: { Args: { p_org_id: string }; Returns: boolean };
+      org_slug_from_name: { Args: { p_name: string }; Returns: string };
+      platform_create_organization: {
+        Args: {
+          p_name: string;
+          p_owner_email: string;
+          p_owner_name: string;
+          p_plan_tier: string | null;
+          p_slug: string;
+        };
+        Returns: Json;
+      };
+      platform_grant_membership: { Args: { p_org_id: string }; Returns: Json };
+      platform_org_summary: { Args: { p_org_id: string }; Returns: Json };
+      platform_set_org_lifecycle: {
+        Args: { p_org_id: string; p_stage: string };
+        Returns: Json;
+      };
+      update_organization_profile: {
+        Args: {
+          p_name: string;
+          p_org_id: string;
+          p_owner_email: string;
+          p_owner_name: string;
+          p_plan_tier: string | null;
+        };
+        Returns: Json;
+      };
       revoke_platform_admin: {
         Args: { p_note: string; p_user_id: string };
         Returns: Json;
