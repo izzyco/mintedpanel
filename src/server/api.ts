@@ -43,6 +43,7 @@ const loadRosterRoutes = () => import("./rosterRoutes");
 const loadProviderIntakeRoutes = () => import("./providerIntakeRoutes");
 const loadNpiRegistryRoutes = () => import("./npiRegistryRoutes");
 const loadJobRoutes = () => import("./jobs/route");
+const loadDirectoryRoutes = () => import("./directoryRoutes");
 
 // `/api/providers/:id/profile` — must be matched before the generic :id route.
 const PROVIDER_PROFILE_ROUTE = /^\/api\/providers\/([^/]+)\/profile\/?$/;
@@ -90,6 +91,9 @@ const ME_ORGS_ROUTE = /^\/api\/me\/orgs\/?$/;
 // `/api/me/view-prefs` — the caller's saved extension quick-card layout
 // (user-scoped, no org context — prefs follow the user across orgs).
 const ME_VIEW_PREFS_ROUTE = /^\/api\/me\/view-prefs\/?$/;
+// `/api/me/directory-layouts` — the caller's saved Workbench directory card
+// layouts (user-scoped like /view-prefs).
+const ME_DIRECTORY_LAYOUTS_ROUTE = /^\/api\/me\/directory-layouts\/?$/;
 const ME_ACCESS_CONTEXT_ROUTE = /^\/api\/me\/access-context\/?$/;
 const ME_ACCESS_CONTEXT_SELECT_ROUTE = /^\/api\/me\/access-context\/select\/?$/;
 const ME_CLIENT_INVITE_CLAIM_ROUTE = /^\/api\/me\/client-invites\/claim\/?$/;
@@ -114,6 +118,9 @@ const NPI_REGISTRY_ROUTE = /^\/api\/npi-registry\/(search|lookup)\/?$/;
 const NPI_REGISTRY_BATCH_ROUTE = /^\/api\/npi-registry\/verify-batch\/?$/;
 // MINT-110 PR 3: a save that used a registry answer stores it as source data.
 const NPI_REGISTRY_PULLS_ROUTE = /^\/api\/npi-registry\/pulls\/?$/;
+// Workbench directory (Nov 4, 2026): read-only search and record cards.
+const DIRECTORY_SEARCH_ROUTE = /^\/api\/directory\/search\/?$/;
+const DIRECTORY_RECORD_ROUTE = /^\/api\/directory\/(groups|providers|locations)\/([^/]+)\/?$/;
 
 // Keep verified user context request-scoped. Legacy routes retain one auth
 // call while the additive context-revision header reuses that actor after
@@ -475,6 +482,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
   const isNextBestAction = NEXT_BEST_ACTION_ROUTE.test(pathname);
   const isMeOrgs = ME_ORGS_ROUTE.test(pathname);
   const isMeViewPrefs = ME_VIEW_PREFS_ROUTE.test(pathname);
+  const isMeDirectoryLayouts = ME_DIRECTORY_LAYOUTS_ROUTE.test(pathname);
   const isAccessContext = ME_ACCESS_CONTEXT_ROUTE.test(pathname);
   const isAccessContextSelect = ME_ACCESS_CONTEXT_SELECT_ROUTE.test(pathname);
   const isClientInviteClaim = ME_CLIENT_INVITE_CLAIM_ROUTE.test(pathname);
@@ -501,6 +509,8 @@ async function routeApiRequest(request: Request): Promise<Response> {
   const npiRegistryMatch = pathname.match(NPI_REGISTRY_ROUTE);
   const isNpiRegistryBatch = NPI_REGISTRY_BATCH_ROUTE.test(pathname);
   const isNpiRegistryPulls = NPI_REGISTRY_PULLS_ROUTE.test(pathname);
+  const isDirectorySearch = DIRECTORY_SEARCH_ROUTE.test(pathname);
+  const directoryRecordMatch = pathname.match(DIRECTORY_RECORD_ROUTE);
   if (
     !profileMatch &&
     !ssnReleaseMatch &&
@@ -519,6 +529,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
     !isNextBestAction &&
     !isMeOrgs &&
     !isMeViewPrefs &&
+    !isMeDirectoryLayouts &&
     !isAccessContext &&
     !isAccessContextSelect &&
     !isClientInviteClaim &&
@@ -540,7 +551,9 @@ async function routeApiRequest(request: Request): Promise<Response> {
     !providerInviteResendMatch &&
     !npiRegistryMatch &&
     !isNpiRegistryBatch &&
-    !isNpiRegistryPulls
+    !isNpiRegistryPulls &&
+    !isDirectorySearch &&
+    !directoryRecordMatch
   ) {
     return fail(404, "Not found");
   }
@@ -568,6 +581,19 @@ async function routeApiRequest(request: Request): Promise<Response> {
       return method === "GET"
         ? await routes.handleGetViewPrefs(user)
         : await routes.handlePutViewPrefs(await readJsonBody(request), user);
+    } catch (error) {
+      return toErrorResponse(error, request);
+    }
+  }
+
+  if (isMeDirectoryLayouts) {
+    if (method !== "GET" && method !== "PUT") return fail(405, "Method not allowed");
+    try {
+      const user = await authenticateUserForRequest(request);
+      const routes = await loadDirectoryRoutes();
+      return method === "GET"
+        ? await routes.handleGetDirectoryLayouts(user)
+        : await routes.handlePutDirectoryLayout(await readBoundedJsonBody(request, 4096), user);
     } catch (error) {
       return toErrorResponse(error, request);
     }
@@ -896,6 +922,19 @@ async function routeApiRequest(request: Request): Promise<Response> {
       if (method !== "POST") return fail(405, "Method not allowed");
       const routes = await loadPayerFormRoutes();
       return await routes.handleFinalizePayerForm(await readJsonBody(request), ctx);
+    }
+    if (isDirectorySearch) {
+      if (method !== "GET") return noStore(fail(405, "Method not allowed"));
+      const routes = await loadDirectoryRoutes();
+      return await routes.handleDirectorySearch(url, ctx);
+    }
+    if (directoryRecordMatch) {
+      if (method !== "GET") return noStore(fail(405, "Method not allowed"));
+      const routes = await loadDirectoryRoutes();
+      const [, kind, id] = directoryRecordMatch;
+      if (kind === "groups") return await routes.handleDirectoryGroup(id, ctx);
+      if (kind === "providers") return await routes.handleDirectoryProvider(id, ctx);
+      return await routes.handleDirectoryLocation(id, ctx);
     }
     if (payerFormDownloadMatch) {
       if (method !== "GET") return fail(405, "Method not allowed");

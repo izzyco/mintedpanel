@@ -161,6 +161,9 @@ const EXPECTED_FAILS = {
   providerinvites: ["35b", "35c"],
   // A provider intake session reads another org's provider (35d).
   intakesession: ["35d"],
+  // Workbench directory: another org's provider (39b), location (39c) and
+  // group (39d) cards, and its records in search (39e).
+  directory: ["39b", "39c", "39d", "39e"],
   // MINT-110: the NPI Registry proxy serves an anonymous caller (36b) and a
   // read-only billing member (36c). The anonymous leak opens the whole
   // /api/npi-registry/ prefix, so the batch and pulls routes' anonymous checks

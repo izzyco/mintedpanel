@@ -2107,6 +2107,75 @@ function looksLikeVercelGate(r) {
     );
   }
 
+  // 39. Workbench directory (Nov 4, 2026): read-only cards and search, any
+  //     role, org-guarded. Kansas reads its own provider card (proves the
+  //     negatives below are not vacuous against a dead route), and no card
+  //     ever names an SSN...
+  const ownDirectoryCard = await apiGet(`/api/directory/providers/${env.KANSAS_PROVIDER_ID}`, {
+    token: kansasTok,
+  });
+  check(
+    "39. Kansas reads its own provider directory card, with no SSN field",
+    ownDirectoryCard.status === 200 &&
+      ownDirectoryCard.body?.data?.id === env.KANSAS_PROVIDER_ID &&
+      !/ssn/i.test(ownDirectoryCard.raw || ""),
+    `status=${ownDirectoryCard.status}`,
+  );
+  //     ...while another org's provider, location and group are a 404 with no
+  //     data...
+  const xDirectoryProvider = await apiGet(`/api/directory/providers/${env.SOUTHPARK_PROVIDER_ID}`, {
+    token: kansasTok,
+  });
+  check(
+    "39b. Kansas GET directory card of a South Park provider -> 404, no data",
+    xDirectoryProvider.status === 404 && xDirectoryProvider.body?.data == null,
+    `status=${xDirectoryProvider.status} (expect 404)`,
+    { leak: true },
+  );
+  const xDirectoryLocation = await apiGet(`/api/directory/locations/${env.SOUTHPARK_FACILITY_ID}`, {
+    token: kansasTok,
+  });
+  check(
+    "39c. Kansas GET directory card of a South Park location -> 404, no data",
+    xDirectoryLocation.status === 404 && xDirectoryLocation.body?.data == null,
+    `status=${xDirectoryLocation.status} (expect 404)`,
+    { leak: true },
+  );
+  if (env.SOUTHPARK_GROUP_ID) {
+    const xDirectoryGroup = await apiGet(`/api/directory/groups/${env.SOUTHPARK_GROUP_ID}`, {
+      token: kansasTok,
+    });
+    check(
+      "39d. Kansas GET directory card of a South Park group -> 404, no data",
+      xDirectoryGroup.status === 404 && xDirectoryGroup.body?.data == null,
+      `status=${xDirectoryGroup.status} (expect 404)`,
+      { leak: true },
+    );
+  } else {
+    console.log("SKIP  39d. cross-org directory group — SOUTHPARK_GROUP_ID not set");
+  }
+  //     ...and a search for South Park's name finds nothing for Kansas (the
+  //     same SEARCH_LEAK_QUERY as 15b, which matches no Kansas record).
+  const directoryLeakQuery = env.SEARCH_LEAK_QUERY ?? "South Park";
+  const xDirectorySearch = await apiGet(
+    `/api/directory/search?q=${encodeURIComponent(directoryLeakQuery)}`,
+    { token: kansasTok },
+  );
+  const directoryHits = ["groups", "providers", "locations"].reduce(
+    (n, key) =>
+      n +
+      (Array.isArray(xDirectorySearch.body?.data?.[key])
+        ? xDirectorySearch.body.data[key].length
+        : 0),
+    0,
+  );
+  check(
+    `39e. Kansas directory search "${directoryLeakQuery}" -> 200, no South Park record`,
+    xDirectorySearch.status === 200 && directoryHits === 0,
+    `status=${xDirectorySearch.status} hits=${directoryHits} (expect 0)`,
+    { leak: true },
+  );
+
   // ---- Pass/fail table ----
   const w = Math.max(...rows.map((r) => r.name.length));
   const line = "+" + "-".repeat(w + 2) + "+--------+";

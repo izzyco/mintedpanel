@@ -29,7 +29,24 @@ vi.mock("./extensionRoutes", () => ({
   handlePutViewPrefs: vi.fn(),
 }));
 
+vi.mock("./directoryRoutes", () => ({
+  handleDirectorySearch: vi.fn(),
+  handleDirectoryGroup: vi.fn(),
+  handleDirectoryProvider: vi.fn(),
+  handleDirectoryLocation: vi.fn(),
+  handleGetDirectoryLayouts: vi.fn(),
+  handlePutDirectoryLayout: vi.fn(),
+}));
+
 import { authenticate, authenticateUser, GuardError } from "./guard";
+import {
+  handleDirectorySearch,
+  handleDirectoryGroup,
+  handleDirectoryProvider,
+  handleDirectoryLocation,
+  handleGetDirectoryLayouts,
+  handlePutDirectoryLayout,
+} from "./directoryRoutes";
 import { handleListProviders, handleGetProvider } from "./providerRoutes";
 import {
   handleProviderProfile,
@@ -330,6 +347,112 @@ describe("handleApiRequest — /api/me/view-prefs (user-scoped auth, no org reso
     expect(res.status).toBe(405);
     expect(getViewPrefsMock).not.toHaveBeenCalled();
     expect(putViewPrefsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleApiRequest — /api/directory/* (org-guarded, read-only)", () => {
+  const okResponse = () => new Response('{"data":{},"error":null,"meta":null}', { status: 200 });
+
+  it("search runs on the org guard with the header org", async () => {
+    authenticateMock.mockResolvedValue({ orgId: "org-1", role: "billing" } as never);
+    vi.mocked(handleDirectorySearch).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(
+      new Request("https://x.test/api/directory/search?q=nm", {
+        method: "GET",
+        headers: { "x-org-id": "org-1" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(authenticateMock).toHaveBeenCalledWith(expect.any(Request), "org-1");
+    expect(vi.mocked(handleDirectorySearch)).toHaveBeenCalledWith(
+      expect.any(URL),
+      expect.objectContaining({ orgId: "org-1" }),
+    );
+  });
+
+  it.each([
+    ["groups", handleDirectoryGroup],
+    ["providers", handleDirectoryProvider],
+    ["locations", handleDirectoryLocation],
+  ] as const)("GET /api/directory/%s/:id dispatches with the org ctx", async (kind, handler) => {
+    authenticateMock.mockResolvedValue({ orgId: "org-1", role: "specialist" } as never);
+    vi.mocked(handler).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(GET(`/api/directory/${kind}/abc`));
+    expect(res.status).toBe(200);
+    expect(vi.mocked(handler)).toHaveBeenCalledWith(
+      "abc",
+      expect.objectContaining({ orgId: "org-1" }),
+    );
+  });
+
+  it("a guard failure never reaches a handler", async () => {
+    authenticateMock.mockRejectedValue(new GuardError(401, "Missing bearer token"));
+    const res = await handleApiRequest(GET("/api/directory/providers/abc"));
+    expect(res.status).toBe(401);
+    expect(vi.mocked(handleDirectoryProvider)).not.toHaveBeenCalled();
+  });
+
+  it.each([["POST"], ["PUT"], ["DELETE"]])("%s is 405 and no-store", async (method) => {
+    authenticateMock.mockResolvedValue({ orgId: "org-1", role: "admin" } as never);
+    const search = await handleApiRequest(
+      new Request("https://x.test/api/directory/search?q=nm", { method }),
+    );
+    const card = await handleApiRequest(
+      new Request("https://x.test/api/directory/groups/abc", { method }),
+    );
+    expect(search.status).toBe(405);
+    expect(card.status).toBe(405);
+    expect(search.headers.get("cache-control")).toContain("no-store");
+    expect(vi.mocked(handleDirectorySearch)).not.toHaveBeenCalled();
+    expect(vi.mocked(handleDirectoryGroup)).not.toHaveBeenCalled();
+  });
+
+  it("an unknown directory path is a JSON 404", async () => {
+    const res = await handleApiRequest(GET("/api/directory/payers/abc"));
+    expect(res.status).toBe(404);
+    expect(authenticateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleApiRequest — /api/me/directory-layouts (user-scoped auth, no org resolution)", () => {
+  const okResponse = () => new Response('{"data":{},"error":null,"meta":null}', { status: 200 });
+
+  it("GET runs on authenticateUser, never the org guard", async () => {
+    authenticateUserMock.mockResolvedValue({ userId: "u1" } as never);
+    vi.mocked(handleGetDirectoryLayouts).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(GET("/api/me/directory-layouts"));
+    expect(res.status).toBe(200);
+    expect(authenticateMock).not.toHaveBeenCalled();
+    expect(vi.mocked(handleGetDirectoryLayouts)).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "u1" }),
+    );
+  });
+
+  it("PUT passes the parsed body", async () => {
+    authenticateUserMock.mockResolvedValue({ userId: "u1" } as never);
+    vi.mocked(handlePutDirectoryLayout).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(
+      new Request("https://x.test/api/me/directory-layouts", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "group", fields: ["tin"] }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(authenticateMock).not.toHaveBeenCalled();
+    expect(vi.mocked(handlePutDirectoryLayout)).toHaveBeenCalledWith(
+      { type: "group", fields: ["tin"] },
+      expect.objectContaining({ userId: "u1" }),
+    );
+  });
+
+  it.each([["POST"], ["DELETE"]])("%s is 405", async (method) => {
+    const res = await handleApiRequest(
+      new Request("https://x.test/api/me/directory-layouts", { method }),
+    );
+    expect(res.status).toBe(405);
+    expect(vi.mocked(handleGetDirectoryLayouts)).not.toHaveBeenCalled();
+    expect(vi.mocked(handlePutDirectoryLayout)).not.toHaveBeenCalled();
   });
 });
 
