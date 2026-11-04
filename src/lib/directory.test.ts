@@ -155,6 +155,19 @@ describe("parseDirectoryQuery", () => {
     });
   });
 
+  it("takes a two-letter code as a state only when typed in capitals", () => {
+    expect(q("NM")).toEqual({ states: [{ code: "NM", phrase: "new mexico" }], terms: [] });
+    expect(q("smith NM")).toEqual({
+      states: [{ code: "NM", phrase: "new mexico" }],
+      terms: ["smith"],
+    });
+    // "Mi", "mi", "nm" are the start of a name, not Michigan or New Mexico.
+    expect(q("Mi")).toEqual({ states: [], terms: ["mi"] });
+    expect(q("nm")).toEqual({ states: [], terms: ["nm"] });
+    // A code and the same state's name count once.
+    expect(q("NM new mexico").states).toEqual([{ code: "NM", phrase: "new mexico" }]);
+  });
+
   it("prefers the longest state name", () => {
     expect(q("West Virginia").states.map((s) => s.code)).toEqual(["WV"]);
     expect(q("Virginia").states.map((s) => s.code)).toEqual(["VA"]);
@@ -165,7 +178,8 @@ describe("parseDirectoryQuery", () => {
   });
 
   it("lists the state codes a query can match", () => {
-    expect(directoryQueryStateCodes(q("New Mexico co smith")).sort()).toEqual(["CO", "NM"]);
+    expect(directoryQueryStateCodes(q("New Mexico CO smith")).sort()).toEqual(["CO", "NM"]);
+    expect(directoryQueryStateCodes(q("New Mexico co smith"))).toEqual(["NM"]);
     expect(directoryQueryStateCodes(q("smith"))).toEqual([]);
   });
 });
@@ -190,11 +204,18 @@ describe("matchesDirectoryQuery", () => {
 
   it("matches a state by code or full name", () => {
     expect(matchesDirectoryQuery(group, q("NM"))).toBe(true);
-    expect(matchesDirectoryQuery(group, q("nm"))).toBe(true);
     expect(matchesDirectoryQuery(group, q("New Mexico"))).toBe(true);
+    expect(matchesDirectoryQuery(group, q("new mexico"))).toBe(true);
     expect(matchesDirectoryQuery(group, q("Colorado"))).toBe(true);
     expect(matchesDirectoryQuery(group, q("Kansas"))).toBe(false);
     expect(matchesDirectoryQuery(group, q("KS"))).toBe(false);
+  });
+
+  it("never matches a lower- or mixed-case pair against a record's states", () => {
+    const michigan: DirectorySearchable = { text: ["Ada Okafor"], ids: [], states: ["MI"] };
+    expect(matchesDirectoryQuery(michigan, q("Mi"))).toBe(false);
+    expect(matchesDirectoryQuery(michigan, q("mi"))).toBe(false);
+    expect(matchesDirectoryQuery(michigan, q("MI"))).toBe(true);
   });
 
   it("needs every term to match somewhere", () => {
@@ -239,10 +260,11 @@ describe("derivations", () => {
     ).toBe("A111, B222");
   });
 
-  it("isCurrentAssignment: open-ended or ending today or later", () => {
-    expect(isCurrentAssignment(null, "2026-11-04")).toBe(true);
-    expect(isCurrentAssignment("2026-11-04", "2026-11-04")).toBe(true);
-    expect(isCurrentAssignment("2026-11-03", "2026-11-04")).toBe(false);
+  it("isCurrentAssignment: only an assignment with no end date (the list row's rule)", () => {
+    expect(isCurrentAssignment(null)).toBe(true);
+    expect(isCurrentAssignment(undefined)).toBe(true);
+    expect(isCurrentAssignment("2099-12-31")).toBe(false);
+    expect(isCurrentAssignment("2026-01-01")).toBe(false);
   });
 
   it("directoryAddressLine skips blanks", () => {

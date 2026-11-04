@@ -139,11 +139,8 @@ describe("provider route handlers", () => {
     const c = ctx("billing");
     const res = await handleGetProvider("p1", c);
     expect((await body(res)).data).toEqual({ ...row, ...extras });
-    expect(extrasMock).toHaveBeenCalledWith(
-      expect.objectContaining({ orgId: "org-1" }),
-      "p1",
-      expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
-    );
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(extrasMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: "org-1" }), "p1");
     // The route audits nothing today, and still does not.
     expect(c.writeAudit).not.toHaveBeenCalled();
   });

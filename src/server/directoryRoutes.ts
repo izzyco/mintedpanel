@@ -27,12 +27,6 @@ import type { AuthContext, UserContext } from "./guard";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Date-only ISO for "is this assignment current" — a server clock read at the
-// route boundary, never inside the pure module.
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function noStore(response: Response): Response {
   response.headers.set("cache-control", "no-store");
   return response;
@@ -83,7 +77,7 @@ export async function handleListLocations(url: URL, ctx: AuthContext): Promise<R
 // GET /api/groups/:id
 export async function handleGetGroup(id: string, ctx: AuthContext): Promise<Response> {
   if (!UUID_RE.test(id)) return noStore(fail(404, "Group not found"));
-  const group = await getDirectoryGroup({ db: ctx.db, orgId: ctx.orgId }, id, todayIso());
+  const group = await getDirectoryGroup({ db: ctx.db, orgId: ctx.orgId }, id);
   if (!group) return noStore(fail(404, "Group not found"));
   return noStore(ok(group));
 }

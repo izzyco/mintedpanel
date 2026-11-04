@@ -59,8 +59,9 @@
 //               for another org's provider, and PostgREST takes direct writes
 //                                                                  (38b, 38e)
 //   directory   the Workbench group and location reads drop their org filter:
-//               another org's groups and locations show up in the lists and
-//               their cards are served                      (39b, 39c, 39d, 39e)
+//               another org's groups and locations show up in the lists, their
+//               cards are served, and a provider card's related lists name
+//               them                                   (39b, 39c, 39d, 39e, 39j)
 import { createServer } from "node:http";
 
 // Same fixture ids as the workflow env block, so the gate script needs no
@@ -1992,17 +1993,22 @@ export async function createMockApiServer(options = {}) {
       const visible = p && (p.orgId === orgId || leak === "providers");
       if (!visible) return envelope(res, 404, null, "Provider not found");
       // The Workbench directory card's related lists ride the row (Nov 4, 2026).
+      // Leak "directory": those lists forget the org filter and name South
+      // Park's group and location on a Kansas card (39j).
+      const cardGroups =
+        leak === "directory" ? [...(p.groups ?? []), SOUTHPARK_GROUP] : (p.groups ?? []);
+      const cardFacilities = leak === "directory" ? FACILITIES : facilitiesOf(p);
       return envelope(res, 200, {
         ...p,
         licenses: [],
         medicareIds: [],
-        groups: (p.groups ?? []).map((g) => ({
+        groups: cardGroups.map((g) => ({
           id: g.id,
           name: g.name,
           tin: null,
           isPrimary: g.isPrimary,
         })),
-        locations: facilitiesOf(p).map((f) => ({
+        locations: cardFacilities.map((f) => ({
           id: f.id,
           name: f.name,
           city: f.city,

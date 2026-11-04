@@ -86,7 +86,6 @@ function makeDb(tables: Record<string, Row[]>) {
 
 const ORG = "00000000-0000-4000-a000-000000000001";
 const OTHER = "00000000-0000-4000-a000-000000000002";
-const TODAY = "2026-11-04";
 const uuid = (n: number) => `10000000-0000-4000-a000-${String(n).padStart(12, "0")}`;
 
 const G1 = uuid(1); // active, NM
@@ -472,7 +471,7 @@ describe("filterProvidersBySearch", () => {
   ];
   const match = async (raw: string) => {
     const { ctx } = setup();
-    return (await filterProvidersBySearch(ctx, candidates, q(raw), TODAY)).map((p) => p.id);
+    return (await filterProvidersBySearch(ctx, candidates, q(raw))).map((p) => p.id);
   };
 
   it("matches what the plain search did: name, NPI, email", async () => {
@@ -493,12 +492,25 @@ describe("filterProvidersBySearch", () => {
     tables.provider_groups[3].tin = "98-7654321";
     const { db } = makeDb(tables);
     for (const tin of ["98-7654321", "987654321"]) {
-      const rows = await filterProvidersBySearch({ db, orgId: ORG }, candidates, q(tin), TODAY);
+      const rows = await filterProvidersBySearch({ db, orgId: ORG }, candidates, q(tin));
       expect(rows.map((p) => p.id)).toEqual([P1]);
     }
     // P4's only assignment ended; the inactive group never matches.
     expect(await match("sandia")).toEqual([P1]);
     expect(await match("closed")).toEqual([]);
+  });
+
+  it("counts a group only while the assignment has no end date, as the list row does", async () => {
+    const tables = fixture();
+    // Ends in the future: already off the list row's groups[], so off search too.
+    tables.provider_group_assignments[0].end_date = "2099-12-31";
+    const { db } = makeDb(tables);
+    const rows = await filterProvidersBySearch({ db, orgId: ORG }, candidates, q("front range"));
+    expect(rows).toEqual([]);
+  });
+
+  it("never treats a lower-case pair as a license state", async () => {
+    expect(await match("nm")).toEqual([]);
   });
 
   it("needs every term to match, so a name plus a group narrows", async () => {
@@ -508,7 +520,7 @@ describe("filterProvidersBySearch", () => {
 
   it("keeps the caller's order and scopes every read to the org", async () => {
     const { ctx, unscoped } = setup();
-    const rows = await filterProvidersBySearch(ctx, candidates, q("example"), TODAY);
+    const rows = await filterProvidersBySearch(ctx, candidates, q("example"));
     expect(rows.map((p) => p.id)).toEqual([P4, P1]);
     expect(unscoped).toEqual([]);
   });
@@ -517,7 +529,7 @@ describe("filterProvidersBySearch", () => {
 describe("getDirectoryGroup", () => {
   it("returns the active group card with locations, roster, PTAN and current documents", async () => {
     const { ctx, unscoped } = setup();
-    const group = await getDirectoryGroup(ctx, G1, TODAY);
+    const group = await getDirectoryGroup(ctx, G1);
     expect(group).toMatchObject({
       id: G1,
       name: "Sandia Physical Therapy",
@@ -560,28 +572,28 @@ describe("getDirectoryGroup", () => {
       ...ids.map((id) => ({ org_id: ORG, provider_id: id, group_id: G1, end_date: null })),
     );
     const { db } = makeDb(tables);
-    const group = await getDirectoryGroup({ db, orgId: ORG }, G1, TODAY);
+    const group = await getDirectoryGroup({ db, orgId: ORG }, G1);
     expect(group?.providers).toHaveLength(251);
   });
 
   it("returns null for an inactive or another org's group", async () => {
     const { ctx } = setup();
-    expect(await getDirectoryGroup(ctx, G2, TODAY)).toBeNull();
-    expect(await getDirectoryGroup(ctx, G3, TODAY)).toBeNull();
+    expect(await getDirectoryGroup(ctx, G2)).toBeNull();
+    expect(await getDirectoryGroup(ctx, G3)).toBeNull();
   });
 
   it("returns a null PTAN when no Medicare target holds one", async () => {
     const tables = fixture();
     tables.payer_network_targets = [];
     const { db } = makeDb(tables);
-    expect((await getDirectoryGroup({ db, orgId: ORG }, G1, TODAY))?.medicarePtan).toBeNull();
+    expect((await getDirectoryGroup({ db, orgId: ORG }, G1))?.medicarePtan).toBeNull();
   });
 });
 
 describe("getProviderDirectoryExtras", () => {
   it("returns licenses, Medicare IDs, groups and locations", async () => {
     const { ctx, unscoped } = setup();
-    const extras = await getProviderDirectoryExtras(ctx, P1, TODAY);
+    const extras = await getProviderDirectoryExtras(ctx, P1);
     expect(extras.licenses).toEqual([
       { state: "CO", licenseNumber: "CO-9", expirationDate: null },
       { state: "NM", licenseNumber: "NM-1", expirationDate: "2027-01-01" },
@@ -602,13 +614,13 @@ describe("getProviderDirectoryExtras", () => {
 
   it("never reads another org's rows", async () => {
     const { ctx } = setup();
-    const extras = await getProviderDirectoryExtras(ctx, P3, TODAY);
+    const extras = await getProviderDirectoryExtras(ctx, P3);
     expect(extras).toEqual({ licenses: [], medicareIds: [], groups: [], locations: [] });
   });
 
   it("returns empty lists when the provider has none", async () => {
     const { ctx } = setup();
-    expect(await getProviderDirectoryExtras(ctx, P4, TODAY)).toEqual({
+    expect(await getProviderDirectoryExtras(ctx, P4)).toEqual({
       licenses: [],
       medicareIds: [],
       groups: [],

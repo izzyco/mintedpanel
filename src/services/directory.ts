@@ -318,7 +318,7 @@ export async function filterProvidersBySearch<
     email?: string | null;
     caqhId?: string | null;
   },
->(ctx: DirectoryServiceCtx, providers: T[], query: DirectoryQuery, today: string): Promise<T[]> {
+>(ctx: DirectoryServiceCtx, providers: T[], query: DirectoryQuery): Promise<T[]> {
   if (providers.length === 0) return providers;
   const stateCodes = directoryQueryStateCodes(query);
   const [groupRows, assignmentRows, licenseRows] = await Promise.all([
@@ -347,7 +347,7 @@ export async function filterProvidersBySearch<
   for (const a of assignmentRows) {
     const g = groupById.get(a.group_id as string);
     const providerId = str(a.provider_id);
-    if (!g || !providerId || !isCurrentAssignment(str(a.end_date), today)) continue;
+    if (!g || !providerId || !isCurrentAssignment(str(a.end_date))) continue;
     groupsOf.set(providerId, [...(groupsOf.get(providerId) ?? []), g]);
   }
   const licenseStates = new Map<string, string[]>();
@@ -375,7 +375,6 @@ export async function filterProvidersBySearch<
 export async function getDirectoryGroup(
   ctx: DirectoryServiceCtx,
   groupId: string,
-  today: string,
 ): Promise<DirectoryGroup | null> {
   const group = one(
     await ctx.db
@@ -426,7 +425,7 @@ export async function getDirectoryGroup(
     : [];
 
   const providerIds = rows(assignmentRes)
-    .filter((a) => isCurrentAssignment(str(a.end_date), today))
+    .filter((a) => isCurrentAssignment(str(a.end_date)))
     .map((a) => a.provider_id as string);
 
   const documents = currentVersions(
@@ -495,7 +494,6 @@ export async function getDirectoryGroup(
 export async function getProviderDirectoryExtras(
   ctx: DirectoryServiceCtx,
   providerId: string,
-  today: string,
 ): Promise<ProviderDirectoryExtras> {
   const [licenseRes, groupAssignRes, facilityAssignRes, medicareIds] = await Promise.all([
     ctx.db
@@ -517,7 +515,7 @@ export async function getProviderDirectoryExtras(
   ]);
 
   const currentAssignments = rows(groupAssignRes).filter((a) =>
-    isCurrentAssignment(str(a.end_date), today),
+    isCurrentAssignment(str(a.end_date)),
   );
   const facilityIds = rows(facilityAssignRes)
     .map((a) => str(a.facility_id))

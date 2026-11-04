@@ -25,12 +25,6 @@ function serviceCtx(ctx: AuthContext): ProviderServiceCtx {
   return { db: ctx.db, orgId: ctx.orgId, writeAudit: ctx.writeAudit };
 }
 
-// Date-only ISO for "is this group assignment current" — a server clock read at
-// the route boundary, never inside the pure module.
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function parsePositiveInt(value: string | null, fallback: number): number {
   const n = Number.parseInt(value ?? "", 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -79,7 +73,6 @@ export async function handleListProviders(url: URL, ctx: AuthContext): Promise<R
       { db: ctx.db, orgId: ctx.orgId },
       candidates,
       parsed.query,
-      todayIso(),
     );
     const from = (page - 1) * pageSize;
     const rows = await attachGroupsToProviders(svc, matched.slice(from, from + pageSize));
@@ -104,8 +97,12 @@ export async function handleGetProvider(id: string, ctx: AuthContext): Promise<R
   if (!provider) return fail(404, "Provider not found");
   // Workbench directory card (Nov 4, 2026): the related lists are added beside
   // the row's own fields, which stay exactly as they were.
-  const extras = await getProviderDirectoryExtras({ db: ctx.db, orgId: ctx.orgId }, id, todayIso());
-  return ok({ ...provider, ...extras });
+  const extras = await getProviderDirectoryExtras({ db: ctx.db, orgId: ctx.orgId }, id);
+  // License numbers and Medicare IDs join DOB and ssnLast4 here, so the
+  // response is no-store (a header, not a wire change).
+  const response = ok({ ...provider, ...extras });
+  response.headers.set("cache-control", "no-store");
+  return response;
 }
 
 export async function handleCreateProvider(body: unknown, ctx: AuthContext): Promise<Response> {

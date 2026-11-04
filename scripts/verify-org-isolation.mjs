@@ -2124,6 +2124,23 @@ function looksLikeVercelGate(r) {
       ["licenses", "medicareIds", "groups", "locations"].every((k) => Array.isArray(ownCard?.[k])),
     `status=${ownProvider.status}`,
   );
+  //     The card's lists are read from the provider's own org only: no South
+  //     Park group, location or provider id anywhere on it.
+  const southParkAnyIds = [
+    env.SOUTHPARK_PROVIDER_ID,
+    env.SOUTHPARK_GROUP_ID,
+    env.SOUTHPARK_FACILITY_ID,
+  ].filter(Boolean);
+  const cardListIds = ["medicareIds", "groups", "locations"].flatMap((k) =>
+    Array.isArray(ownCard?.[k]) ? ownCard[k].flatMap((x) => [x?.id, x?.groupId]) : [],
+  );
+  const cardLeaks = cardListIds.filter((id) => southParkAnyIds.includes(id));
+  check(
+    "39j. Kansas's provider card lists no South Park group, location or provider",
+    ownProvider.status === 200 && cardLeaks.length === 0,
+    `leaked=${cardLeaks.length}`,
+    { leak: true },
+  );
   const ownLocationId = ownCard?.locations?.[0]?.id;
   if (ownLocationId) {
     const ownLocation = await apiGet(`/api/locations/${ownLocationId}`, { token: kansasTok });
@@ -2221,6 +2238,45 @@ function looksLikeVercelGate(r) {
     `status=${searches.map((r) => r.status).join("/")} hits=${searchHits} (expect 0)`,
     { leak: true },
   );
+  //     ...nor does the extended provider search, which now also matches group
+  //     names and TINs: no South Park provider, and no South Park group on any
+  //     row it returns.
+  const xProviderSearch = await apiGet(
+    `/api/providers?search=${encodeURIComponent(directoryLeakQuery)}&pageSize=10`,
+    { token: kansasTok },
+  );
+  const providerSearchRows = Array.isArray(xProviderSearch.body?.data)
+    ? xProviderSearch.body.data
+    : [];
+  const providerSearchLeaks = providerSearchRows.filter(
+    (p) =>
+      p?.id === env.SOUTHPARK_PROVIDER_ID ||
+      (p?.groups ?? []).some((g) => g?.id === env.SOUTHPARK_GROUP_ID),
+  ).length;
+  check(
+    `39k. Kansas provider search "${directoryLeakQuery}" -> 200, no South Park provider or group`,
+    xProviderSearch.status === 200 && providerSearchLeaks === 0,
+    `status=${xProviderSearch.status} leaked=${providerSearchLeaks}`,
+    { leak: true },
+  );
+  //     The positive that keeps 39e honest: a search for Kansas's own group
+  //     name finds that group.
+  const ownGroupName = typeof ownCard?.groups?.[0]?.name === "string" ? ownCard.groups[0].name : "";
+  if (ownGroupId && ownGroupName) {
+    const ownGroupSearch = await apiGet(
+      `/api/groups?search=${encodeURIComponent(ownGroupName)}&pageSize=10`,
+      { token: kansasTok },
+    );
+    check(
+      "39l. Kansas group search for its own group's name finds that group",
+      ownGroupSearch.status === 200 &&
+        Array.isArray(ownGroupSearch.body?.data) &&
+        ownGroupSearch.body.data.some((g) => g.id === ownGroupId),
+      `status=${ownGroupSearch.status}`,
+    );
+  } else {
+    console.log("SKIP  39l. own group search — the Kansas provider lists no group");
+  }
 
   // ---- Pass/fail table ----
   const w = Math.max(...rows.map((r) => r.name.length));

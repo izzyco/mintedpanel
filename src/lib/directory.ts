@@ -7,7 +7,7 @@
 // Owns the card field catalogs (keys, labels, sections and defaults match the
 // approved mocks), the layout PUT validator, the search query parser (state
 // code or full state name), the term matcher, and the small derivations the
-// service shapes rows with. No clock reads: `today` is passed in.
+// service shapes rows with. No clock reads.
 import { US_STATE_NAMES, US_STATES } from "@/lib/usStates";
 
 export const DIRECTORY_CARD_TYPES = ["group", "provider", "location"] as const;
@@ -192,7 +192,8 @@ export interface DirectoryStateTerm {
 }
 
 export interface DirectoryQuery {
-  /** Full state names found in the query, matched as one term each. */
+  /** States named in the query (a full name, or a code typed in capitals),
+   * matched as one term each. */
   states: DirectoryStateTerm[];
   /** Every other whitespace-separated term, lower-cased. */
   terms: string[];
@@ -208,20 +209,35 @@ const STATE_NAME_ENTRIES = (Object.entries(US_STATE_NAMES) as [string, string][]
   .sort((a, b) => b.phrase.length - a.phrase.length);
 
 /** Parse `?search=`: trimmed; blank is no search (query null), longer than
- * 100 characters is an error. Full state names ("New Mexico") are pulled out
- * first as single state terms; the rest splits on whitespace. */
+ * 100 characters is an error. A state is a full name in any case ("New
+ * Mexico", "new mexico") or a two-letter code typed in capitals ("NM"); a
+ * lower- or mixed-case pair ("nm", "Mi") stays an ordinary term, so typing
+ * the start of "Mitchell" never pulls in every Michigan licensee. The rest
+ * splits on whitespace. */
 export function parseDirectoryQuery(raw: string | null): DirectoryQueryParse {
   const q = (raw ?? "").trim();
   if (!q) return { ok: true, query: null };
   if (q.length > DIRECTORY_QUERY_MAX) {
     return { ok: false, message: `search must be at most ${DIRECTORY_QUERY_MAX} characters` };
   }
-  let rest = ` ${q.toLowerCase().replace(/\s+/g, " ")} `;
   const states: DirectoryStateTerm[] = [];
+  const addState = (code: string) => {
+    if (states.some((s) => s.code === code)) return;
+    const name = (US_STATE_NAMES as Record<string, string>)[code];
+    states.push({ code, phrase: name.toLowerCase() });
+  };
+  const words = q.split(/\s+/).filter((word) => {
+    if (/^[A-Z]{2}$/.test(word) && STATE_CODE_SET.has(word)) {
+      addState(word);
+      return false;
+    }
+    return true;
+  });
+  let rest = ` ${words.join(" ").toLowerCase()} `;
   for (const entry of STATE_NAME_ENTRIES) {
     const needle = ` ${entry.phrase} `;
     if (rest.includes(needle)) {
-      states.push(entry);
+      addState(entry.code);
       rest = rest.split(needle).join(" ");
     }
   }
@@ -229,22 +245,16 @@ export function parseDirectoryQuery(raw: string | null): DirectoryQueryParse {
   return { ok: true, query: { states, terms } };
 }
 
-/** The two-letter state codes a query can match: its full state names plus any
- * term that is itself a state code. Lets the service read only the license
- * rows that can matter. */
+/** The two-letter state codes a query names. Lets the service read only the
+ * license rows that can matter. */
 export function directoryQueryStateCodes(query: DirectoryQuery): string[] {
-  const codes = new Set(query.states.map((s) => s.code));
-  for (const term of query.terms) {
-    const upper = term.toUpperCase();
-    if (STATE_CODE_SET.has(upper)) codes.add(upper);
-  }
-  return [...codes];
+  return query.states.map((s) => s.code);
 }
 
 /** What one record can be found by. `text` matches as a case-insensitive
  * substring; `ids` (TIN, NPI, CAQH ID, ZIP) also match with dashes and spaces
  * ignored, so "12-3456789" and "123456789" find the same TIN; `states` are
- * two-letter codes matched exactly. */
+ * two-letter codes, matched only by a state the query names. */
 export interface DirectorySearchable {
   text: ReadonlyArray<string | null | undefined>;
   ids: ReadonlyArray<string | null | undefined>;
@@ -256,14 +266,10 @@ const digitsOnly = (value: string) => value.replace(/[\s-]/g, "");
 function termMatches(term: string, record: DirectorySearchable): boolean {
   if (record.text.some((t) => t != null && t.toLowerCase().includes(term))) return true;
   const idTerm = digitsOnly(term);
-  if (
-    idTerm &&
+  return (
+    idTerm !== "" &&
     record.ids.some((id) => id != null && digitsOnly(id.toLowerCase()).includes(idTerm))
-  ) {
-    return true;
-  }
-  const upper = term.toUpperCase();
-  return STATE_CODE_SET.has(upper) && record.states.some((s) => s?.toUpperCase() === upper);
+  );
 }
 
 function stateMatches(state: DirectoryStateTerm, record: DirectorySearchable): boolean {
@@ -300,9 +306,11 @@ export function compareDirectoryPeople(
 // Derivations
 // ---------------------------------------------------------------------------
 
-/** A provider↔group assignment is current until its end date has passed. */
-export function isCurrentAssignment(endDate: string | null | undefined, today: string): boolean {
-  return !endDate || endDate >= today;
+/** A provider↔group assignment is current while it has no end date: the same
+ * rule as the list row's groups[] (indexProviderGroups), so search, card and
+ * list agree on who is on a group. */
+export function isCurrentAssignment(endDate: string | null | undefined): boolean {
+  return !endDate;
 }
 
 /** The group's Medicare PTAN from its active Medicare network targets (one per
