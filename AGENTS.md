@@ -14,19 +14,32 @@ Epic lifecycle: [`docs/redesign/README.md`](docs/redesign/README.md).
 
 ## CI and release protocol (Preserving GitHub runner minutes)
 
+- **When CI runs**: CI (`ci.yml`) runs on non-draft PRs to `main` and on pushes to `main`. It does not run on `staging` pushes: `staging` only fast-forwards to `main` commits that already passed CI there.
 - **Always open PRs as Draft**: While developing, testing, or iterating, all PRs **must** be created as drafts (`gh pr create --draft`). Draft PRs skip CI entirely (`!github.event.pull_request.draft`), consuming **0 runner minutes**.
 - **Consolidated Batch Release Pattern**: Do NOT merge individual feature PRs one-by-one into `main`. When a set of features or tickets is ready, group them into a single consolidated release branch (`release/vYYYY.MM-<topic>`) branched from `main`. Merge the feature branches into the release branch, resolve any conflicts, and open a single batch PR to `main`. This collapses 10+ redundant CI runs into one single ~7-minute cycle.
-- **Local Pre-flight Before Marking Ready**: Before undrafting or creating a release PR, always run all checks locally to guarantee first-run green CI:
+- **Exceptions to batching**: CI, infrastructure, and urgent-fix PRs may merge to `main` on their own. They still need required CI to pass and explicit PM authorization.
+- **Local Pre-flight Before Marking Ready**: Before undrafting or creating a release PR, run the same checks CI runs to guarantee first-run green CI:
   ```bash
-  npm run check:migrations
+  npx prettier --check .
   npx tsc --noEmit
   npm run lint
-  npm run lint:epics
+  npm run lint:epics # local only; CI does not run it
+  npm test
+  npm run build
+  npm run check:migrations
   npm run test:migrations
   npm run test:release
-  npm test
+  npm run test:recovery
+  npm run test:delivery
+  npm run test:backup
+  npm run test:luna-scale
+  npm run test:ops
+  npm run test:e2e:smoke # when UI, routes, or auth changed
   ```
-- **Heavy test suites are manual-only**: Never re-introduce automatic triggers, cron schedules, or PR runs for the 413-spec Playwright regression (`e2e-full.yml`), the 3,500-provider seed rehearsal (`luna-scale-rehearsal.yml`), or background ticks (`followup-digest-tick.yml`). They must remain isolated to manual `workflow_dispatch` only.
+- **Scheduled and heavy workflows**: Do not add, remove, or change the triggers on these without explicit PM approval.
+  - `e2e-full.yml` (413-spec Playwright regression): nightly on `main` (08:17 UTC) plus manual `workflow_dispatch`. PRs get the smoke subset in `ci.yml`. Never add PR or push triggers.
+  - `luna-scale-rehearsal.yml` (3,500-provider seed rehearsal): manual `workflow_dispatch` only.
+  - `followup-digest-tick.yml`: manual `workflow_dispatch` only. The hourly schedule is disabled to save runner minutes. The Vercel cron in `vercel.json` calls the follow-up digest once daily (18:00 UTC), which is the accepted cadence.
 
 ## Project overview
 
