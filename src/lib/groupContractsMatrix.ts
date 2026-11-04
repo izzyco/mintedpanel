@@ -52,14 +52,19 @@ import {
 } from "@/lib/providerFootprint";
 import {
   APPLICATION_SUBMITTED_LABEL,
+  CONTRACT_RECEIVED_LABEL,
   CONTRACT_SIGNED_LABEL,
+  CONTRACTED_LABEL,
   DENIED_APPEALED_LABEL,
   DENIED_LABEL,
   DENIED_REAPPLIED_LABEL,
   IN_NETWORK_LABEL,
+  IN_PROGRESS_LABEL,
   NOT_STARTED_LABEL,
+  OON_LABEL,
   OUT_OF_NETWORK_LABEL,
   PRE_CRED_PAYER_NAME,
+  TERMINATED_LABEL,
 } from "@/lib/statusLabels";
 import type {
   ContractSpecialtyKey,
@@ -70,15 +75,19 @@ import type {
 
 // ---------- status display ----------
 
-/** Tone key for a cell's status chip. `other` is a status outside the 8
+/** Tone key for a cell's status chip. `other` is a status outside the
  * governed contracting labels (or a record with no status set). */
 export type ContractStatusTone =
   | "in-network"
   | "signed"
+  | "received"
+  | "in-progress"
   | "submitted"
   | "appealed"
   | "reapplied"
   | "denied"
+  | "terminated"
+  | "contracted"
   | "out-of-network"
   | "not-started"
   | "other";
@@ -88,10 +97,14 @@ export type ContractStatusTone =
 export const CONTRACT_STATUS_SHORT_LABELS: Readonly<Record<ContractingStatusLabel, string>> = {
   [IN_NETWORK_LABEL]: "In network",
   [CONTRACT_SIGNED_LABEL]: "Signed",
+  [CONTRACT_RECEIVED_LABEL]: "Received",
+  [IN_PROGRESS_LABEL]: "In progress",
   [APPLICATION_SUBMITTED_LABEL]: "Submitted",
   [DENIED_APPEALED_LABEL]: "Appealed",
   [DENIED_REAPPLIED_LABEL]: "Reapplied",
   [DENIED_LABEL]: "Denied",
+  [TERMINATED_LABEL]: "Terminated",
+  [CONTRACTED_LABEL]: "Contracted",
   [OUT_OF_NETWORK_LABEL]: "Out of network",
   [NOT_STARTED_LABEL]: "Not started",
 };
@@ -99,10 +112,14 @@ export const CONTRACT_STATUS_SHORT_LABELS: Readonly<Record<ContractingStatusLabe
 export const CONTRACT_STATUS_TONES: Readonly<Record<ContractingStatusLabel, ContractStatusTone>> = {
   [IN_NETWORK_LABEL]: "in-network",
   [CONTRACT_SIGNED_LABEL]: "signed",
+  [CONTRACT_RECEIVED_LABEL]: "received",
+  [IN_PROGRESS_LABEL]: "in-progress",
   [APPLICATION_SUBMITTED_LABEL]: "submitted",
   [DENIED_APPEALED_LABEL]: "appealed",
   [DENIED_REAPPLIED_LABEL]: "reapplied",
   [DENIED_LABEL]: "denied",
+  [TERMINATED_LABEL]: "terminated",
+  [CONTRACTED_LABEL]: "contracted",
   [OUT_OF_NETWORK_LABEL]: "out-of-network",
   [NOT_STARTED_LABEL]: "not-started",
 };
@@ -111,10 +128,14 @@ export const CONTRACT_STATUS_TONES: Readonly<Record<ContractingStatusLabel, Cont
 export const MATRIX_STATUS_ORDER: readonly ContractingStatusLabel[] = [
   IN_NETWORK_LABEL,
   CONTRACT_SIGNED_LABEL,
+  CONTRACT_RECEIVED_LABEL,
+  IN_PROGRESS_LABEL,
   APPLICATION_SUBMITTED_LABEL,
   DENIED_APPEALED_LABEL,
   DENIED_REAPPLIED_LABEL,
   DENIED_LABEL,
+  TERMINATED_LABEL,
+  CONTRACTED_LABEL,
   OUT_OF_NETWORK_LABEL,
   NOT_STARTED_LABEL,
 ];
@@ -129,20 +150,74 @@ export function isContractingStatusLabel(label: string): label is ContractingSta
 export interface ContractStatusDisplay {
   /** The status's full label as configured, or null when the record has none. */
   label: string | null;
-  /** The governed label it matches (through canonicalLabel), if any. */
+  /** The governed label it matches (through canonicalLabel/normalizeContractingStatus), if any. */
   canonical: ContractingStatusLabel | null;
   shortLabel: string;
   tone: ContractStatusTone;
 }
 
-/** Short label and tone for a status label. A label outside the 8 governed
- * ones (a legacy contracting status) shows in full with the `other` tone. */
+/** Normalizes raw or legacy contracting status labels to their governed equivalent. */
+export function normalizeContractingStatus(
+  label: string | null | undefined,
+): ContractingStatusLabel | null {
+  if (!label) return null;
+  const trimmed = label.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower === "oon" || lower === "out of network") return OUT_OF_NETWORK_LABEL;
+  if (lower === "terminated") return TERMINATED_LABEL;
+  if (
+    lower === "contract received" ||
+    lower === "contract received / awaiting signature" ||
+    lower === "received / awaiting signature" ||
+    lower === "received"
+  ) {
+    return CONTRACT_RECEIVED_LABEL;
+  }
+  if (
+    lower === "in progress (contract signed)" ||
+    lower === "contract signed" ||
+    lower === "signed" ||
+    lower === "in progress (signed)"
+  ) {
+    return CONTRACT_SIGNED_LABEL;
+  }
+  if (lower === "in progress" || lower === "in-progress") {
+    return IN_PROGRESS_LABEL;
+  }
+  if (lower === "contracted") {
+    return CONTRACTED_LABEL;
+  }
+  if (lower === "in-network" || lower === "in network") {
+    return IN_NETWORK_LABEL;
+  }
+  if (lower === "application submitted" || lower === "submitted") {
+    return APPLICATION_SUBMITTED_LABEL;
+  }
+  if (lower === "denied - appealed" || lower === "denied-appealed") {
+    return DENIED_APPEALED_LABEL;
+  }
+  if (lower === "denied - reapplied" || lower === "denied-reapplied") {
+    return DENIED_REAPPLIED_LABEL;
+  }
+  if (lower === "denied") {
+    return DENIED_LABEL;
+  }
+  if (lower === "not started" || lower === "not-started") {
+    return NOT_STARTED_LABEL;
+  }
+  const canonical = canonicalLabel(trimmed);
+  if (isContractingStatusLabel(canonical)) return canonical;
+  return null;
+}
+
+/** Short label and tone for a status label. A label outside the governed
+ * ones (an unmapped legacy contracting status) shows in full with the `other` tone. */
 export function contractStatusDisplay(label: string | null | undefined): ContractStatusDisplay {
   if (!label) {
     return { label: null, canonical: null, shortLabel: NO_STATUS_TEXT, tone: "other" };
   }
-  const canonical = canonicalLabel(label);
-  if (isContractingStatusLabel(canonical)) {
+  const canonical = normalizeContractingStatus(label);
+  if (canonical && isContractingStatusLabel(canonical)) {
     return {
       label,
       canonical,

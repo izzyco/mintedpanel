@@ -214,17 +214,36 @@ export function GroupContractsMatrix({
     [refetchContracts],
   );
   const handleAddState = useCallback(
-    async (specialty: ContractSpecialty, groupId: string, state: string) => {
+    async (
+      specialty: ContractSpecialty,
+      groupId: string,
+      state: string,
+      initializeNotStarted: boolean = false,
+    ) => {
       if (!canWrite) return;
       const column: ContractsMatrixAddedColumn = { specialty, groupId, state };
-      setAddedColumns((current) => [...current, column]);
-      const outcome = await saveAddedState({
-        input: matrixInput,
-        column,
-        refetchContracts,
-        create: createIfMissing,
+      setAddedColumns((current) => {
+        const exists = current.some(
+          (c) =>
+            c.specialty === specialty &&
+            c.groupId === groupId &&
+            c.state.toUpperCase() === state.toUpperCase(),
+        );
+        return exists ? current : [...current, column];
       });
-      toast[outcome.tone](outcome.text);
+      if (initializeNotStarted) {
+        const outcome = await saveAddedState({
+          input: matrixInput,
+          column,
+          refetchContracts,
+          create: createIfMissing,
+        });
+        toast[outcome.tone](outcome.text);
+      } else {
+        const groupName = matrixInput.groups.find((group) => group.id === groupId)?.name ?? "";
+        const where = `${state.toUpperCase()} for ${groupName} (${CONTRACT_SPECIALTY_LABELS[specialty]})`;
+        toast.success(`Added ${where} column with blank contract cells.`);
+      }
     },
     [canWrite, createIfMissing, matrixInput, refetchContracts],
   );
@@ -312,7 +331,21 @@ export function GroupContractsMatrix({
     [allRecordKeys, canWrite, matrix],
   );
 
-  const isLoading = queries.some((query) => query.isLoading);
+  const hasIdlePending = queries.some(
+    (query) => query.isPending && query.fetchStatus === "idle" && !query.isError,
+  );
+  useEffect(() => {
+    if (!hasIdlePending) return;
+    for (const query of queries) {
+      if (query.isPending && query.fetchStatus === "idle" && !query.isError) {
+        void query.refetch();
+      }
+    }
+  }, [hasIdlePending, queries]);
+
+  const isLoading = queries.some(
+    (query) => query.isLoading || (query.isPending && !query.isError),
+  );
   const isError = queries.some((query) => query.isError);
 
   if (isLoading) {
@@ -646,7 +679,9 @@ export function GroupContractsMatrix({
             groups={selectedGroups}
             countFor={(groupId, state) => countNotStartedFor(addStateFor, groupId, state)}
             counting={contractsFetching}
-            onAdd={(groupId, state) => void handleAddState(addStateFor, groupId, state)}
+            onAdd={(groupId, state, initializeNotStarted) =>
+              void handleAddState(addStateFor, groupId, state, initializeNotStarted)
+            }
             onClose={() => setAddStateFor(null)}
           />
         ) : null}

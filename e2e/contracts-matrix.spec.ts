@@ -283,7 +283,6 @@ async function installMatrix(page: Page, role: "admin" | "billing" = "admin") {
     const wantsObject = (request.headers()["accept"] ?? "").includes("vnd.pgrst.object");
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
-
     if (path.startsWith("rpc/")) return json(path === "rpc/claim_invites" ? 0 : []);
     const table = path;
     if (method === "HEAD") {
@@ -660,6 +659,9 @@ async function addNutritionLa(page: Page, buttonLabel: string, beforeSave?: () =
   await page.getByRole("option", { name: "Group Name 3", exact: true }).click();
   await dialog.getByRole("combobox", { name: "State" }).click();
   await page.getByRole("option", { name: "LA", exact: true }).click();
+  if (buttonLabel.includes("Not started") || buttonLabel.includes("this visit")) {
+    await dialog.locator("#contracts-matrix-init-not-started").check();
+  }
   const save = dialog.getByRole("button", { name: buttonLabel, exact: true });
   await expect(save).toBeEnabled();
   beforeSave?.();
