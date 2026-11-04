@@ -26,10 +26,19 @@ function makeDb(tables: Record<string, Row[]>) {
       let cols: string[] | null = null;
       const preds: Array<(r: Row) => boolean> = [];
       let orgScoped = false;
+      let orderBy: string | null = null;
+      let window: [number, number] | null = null;
       const run = () => {
-        const out = (tables[table] ?? [])
-          .filter((r) => preds.every((p) => p(r)))
-          .map((r) => (cols ? Object.fromEntries(cols.map((c) => [c, r[c] ?? null])) : { ...r }));
+        let matched = (tables[table] ?? []).filter((r) => preds.every((p) => p(r)));
+        if (orderBy) {
+          const col = orderBy;
+          matched = [...matched].sort((a, b) => String(a[col]).localeCompare(String(b[col])));
+        }
+        // PostgREST's silent max-rows cap on an unranged read.
+        matched = window ? matched.slice(window[0], window[1] + 1) : matched.slice(0, 1000);
+        const out = matched.map((r) =>
+          cols ? Object.fromEntries(cols.map((c) => [c, r[c] ?? null])) : { ...r },
+        );
         if (!orgScoped && table !== "payers") unscoped.push(table);
         return out;
       };
@@ -49,6 +58,14 @@ function makeDb(tables: Record<string, Row[]>) {
         },
         in(col: string, vals: unknown[]) {
           preds.push((r) => vals.includes(r[col]));
+          return builder;
+        },
+        order(col: string) {
+          orderBy = col;
+          return builder;
+        },
+        range(from: number, to: number) {
+          window = [from, to];
           return builder;
         },
         is(col: string, val: unknown) {
@@ -415,6 +432,20 @@ describe("searchDirectory", () => {
     expect(names[0]).toBe("Group A");
   });
 
+  it("pages past PostgREST's 1000-row cap", async () => {
+    const tables = fixture();
+    tables.provider_groups = Array.from({ length: 1200 }, (_, i) => ({
+      id: uuid(1000 + i),
+      org_id: ORG,
+      is_active: true,
+      name: i === 1199 ? "Zuni Last Group" : `Filler ${i}`,
+      states: [],
+    }));
+    const { db } = makeDb(tables);
+    const result = await searchDirectory({ db, orgId: ORG }, q("zuni"), TODAY);
+    expect(result.groups.map((g) => g.name)).toEqual(["Zuni Last Group"]);
+  });
+
   it("never carries an SSN", async () => {
     const { ctx } = setup();
     const json = JSON.stringify(await searchDirectory(ctx, q("ada"), TODAY));
@@ -451,6 +482,26 @@ describe("getDirectoryGroup", () => {
       },
     ]);
     expect(unscoped).toEqual([]);
+  });
+
+  it("lists a large roster in full (ids read in chunks)", async () => {
+    const tables = fixture();
+    const ids = Array.from({ length: 250 }, (_, i) => uuid(5000 + i));
+    tables.providers.push(
+      ...ids.map((id, i) => ({
+        id,
+        org_id: ORG,
+        status: "active",
+        first_name: "P",
+        last_name: `Roster${String(i).padStart(3, "0")}`,
+      })),
+    );
+    tables.provider_group_assignments.push(
+      ...ids.map((id) => ({ org_id: ORG, provider_id: id, group_id: G1, end_date: null })),
+    );
+    const { db } = makeDb(tables);
+    const group = await getDirectoryGroup({ db, orgId: ORG }, G1, TODAY);
+    expect(group?.providers).toHaveLength(251);
   });
 
   it("returns null for an inactive or another org's group", async () => {

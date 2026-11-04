@@ -12,6 +12,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import type { ProviderGroup } from "@/types";
 import { camelizeRow } from "@/lib/case";
+import { readCompletePages } from "@/lib/completePages";
 import { currentVersions, documentKindLabel } from "@/lib/documents";
 import { groupDefaultContact, resolveFacilityContact } from "@/lib/facilityContact";
 import { hoursSummary } from "@/lib/facilityHours";
@@ -180,19 +181,46 @@ function person(r: Row): DirectoryPersonRow {
   };
 }
 
+// A filtered list query that can still be ordered and ranged.
+interface PageableQuery {
+  order(column: string): PageableQuery;
+  range(from: number, to: number): PromiseLike<{ data: unknown; error: unknown }>;
+}
+
+/** Every row of a list read, paged by id: PostgREST silently caps an unranged
+ * read at 1000 rows, which would drop search matches at random. */
+function readAll(label: string, query: unknown): Promise<Row[]> {
+  return readCompletePages<Row>(
+    async (from, to) => {
+      const page = await (query as PageableQuery).order("id").range(from, to);
+      return { data: page.data as Row[] | null, error: page.error };
+    },
+    { label },
+  );
+}
+
+// Ids per `.in()` filter, so a large roster never builds an oversized URL.
+const IN_CHUNK = 100;
+
 /** Active (non-terminated) providers of the org among `ids`, A→Z. */
 async function activePeople(
   ctx: DirectoryServiceCtx,
   ids: string[],
 ): Promise<DirectoryPersonRow[]> {
-  if (ids.length === 0) return [];
-  const res = await ctx.db
-    .from("providers")
-    .select(PERSON_COLUMNS)
-    .eq("org_id", ctx.orgId)
-    .neq("status", "terminated")
-    .in("id", [...new Set(ids)]);
-  return rows(res).map(person).sort(compareDirectoryPeople);
+  const unique = [...new Set(ids)];
+  const chunks: string[][] = [];
+  for (let i = 0; i < unique.length; i += IN_CHUNK) chunks.push(unique.slice(i, i + IN_CHUNK));
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      ctx.db
+        .from("providers")
+        .select(PERSON_COLUMNS)
+        .eq("org_id", ctx.orgId)
+        .neq("status", "terminated")
+        .in("id", chunk),
+    ),
+  );
+  return results.flatMap(rows).map(person).sort(compareDirectoryPeople);
 }
 
 /** Medicare payer ids in the catalog. Org rows key payer-issued ids to these. */
@@ -213,35 +241,46 @@ export async function searchDirectory(
   today: string,
 ): Promise<DirectorySearch> {
   const stateCodes = directoryQueryStateCodes(query);
-  const [groupRes, providerRes, facilityRes, licenseRes] = await Promise.all([
-    ctx.db
-      .from("provider_groups")
-      .select("id, name, tin, npi_type2, states")
-      .eq("org_id", ctx.orgId)
-      .eq("is_active", true),
-    ctx.db
-      .from("providers")
-      .select(SEARCH_PROVIDER_COLUMNS)
-      .eq("org_id", ctx.orgId)
-      .neq("status", "terminated"),
-    ctx.db
-      .from("facilities")
-      .select("id, name, city, state, zip, group_id")
-      .eq("org_id", ctx.orgId)
-      .eq("is_active", true),
+  const [groupRows, providerRows, facilityRows, licenseRows] = await Promise.all([
+    readAll(
+      "Directory groups",
+      ctx.db
+        .from("provider_groups")
+        .select("id, name, tin, npi_type2, states")
+        .eq("org_id", ctx.orgId)
+        .eq("is_active", true),
+    ),
+    readAll(
+      "Directory providers",
+      ctx.db
+        .from("providers")
+        .select(SEARCH_PROVIDER_COLUMNS)
+        .eq("org_id", ctx.orgId)
+        .neq("status", "terminated"),
+    ),
+    readAll(
+      "Directory locations",
+      ctx.db
+        .from("facilities")
+        .select("id, name, city, state, zip, group_id")
+        .eq("org_id", ctx.orgId)
+        .eq("is_active", true),
+    ),
     // Licenses only decide a state match, so read just the states asked for.
     stateCodes.length
-      ? ctx.db
-          .from("state_licenses")
-          .select("provider_id, state")
-          .eq("org_id", ctx.orgId)
-          .in("state", stateCodes)
-      : Promise.resolve({ data: [], error: null }),
+      ? readAll(
+          "Directory licenses",
+          ctx.db
+            .from("state_licenses")
+            .select("id, provider_id, state")
+            .eq("org_id", ctx.orgId)
+            .in("state", stateCodes),
+        )
+      : Promise.resolve([] as Row[]),
   ]);
-  const groupRows = rows(groupRes);
   const groupNames = new Map(groupRows.map((g) => [g.id as string, g.name as string]));
   const licenseStates = new Map<string, string[]>();
-  for (const l of rows(licenseRes)) {
+  for (const l of licenseRows) {
     const id = l.provider_id as string | null;
     if (id) licenseStates.set(id, [...(licenseStates.get(id) ?? []), l.state as string]);
   }
@@ -262,7 +301,7 @@ export async function searchDirectory(
     .sort((a, b) => compareDirectoryNames(a.name, b.name))
     .slice(0, DIRECTORY_RESULT_LIMIT);
 
-  const matchedPeople = rows(providerRes)
+  const matchedPeople = providerRows
     .filter((p) => {
       const first = str(p.first_name) ?? "";
       const last = str(p.last_name) ?? "";
@@ -313,7 +352,7 @@ export async function searchDirectory(
       .map((a) => ({ id: a.group_id as string, name: groupNames.get(a.group_id as string) ?? "" })),
   }));
 
-  const locations = rows(facilityRes)
+  const locations = facilityRows
     .filter((f) =>
       matchesDirectoryQuery(
         { text: [str(f.name), str(f.city)], ids: [str(f.zip)], states: [str(f.state)] },

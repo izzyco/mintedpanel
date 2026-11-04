@@ -2055,7 +2055,12 @@ export async function createMockApiServer(options = {}) {
             tin: null,
             isPrimary: g.isPrimary,
           })),
-          locations: [],
+          locations: facilitiesOf(p).map((f) => ({
+            id: f.id,
+            name: f.name,
+            city: f.city,
+            state: f.state,
+          })),
         });
       }
       const f = FACILITIES.find((row) => row.id === id && directoryVisible(row));
