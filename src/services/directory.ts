@@ -1,11 +1,13 @@
-// Workbench directory reads (Nov 4, 2026) behind GET /api/directory/*: search
-// and the group, provider and location cards. Read-only, org-scoped on every
-// statement (the service-role client bypasses RLS, so `org_id = ctx.orgId` IS
-// the isolation), active records only: no terminated providers, inactive
-// groups or inactive locations. reference_only rows stay in.
+// Workbench directory reads (Nov 4, 2026): the group and location lists and
+// cards behind GET /api/groups and /api/locations, the extra matching behind
+// GET /api/providers?search=, and the related lists GET /api/providers/:id
+// adds to its row. Read-only, org-scoped on every statement (the service-role
+// client bypasses RLS, so `org_id = ctx.orgId` IS the isolation), active
+// records only: no terminated providers, inactive groups or inactive
+// locations. reference_only rows stay in.
 //
-// Never selects ssn_last4 (or anything from the SSN vault): the directory
-// shows no SSN at all. Explicit column lists everywhere, never `*`.
+// Never selects ssn_last4 (or anything from the SSN vault). Explicit column
+// lists everywhere, never `*`.
 //
 // Server-only surface (no browser-default ctx) — see caseContext.ts.
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -17,8 +19,6 @@ import { currentVersions, documentKindLabel } from "@/lib/documents";
 import { groupDefaultContact, resolveFacilityContact } from "@/lib/facilityContact";
 import { hoursSummary } from "@/lib/facilityHours";
 import {
-  DIRECTORY_RESULT_LIMIT,
-  boardCertificationText,
   compareDirectoryNames,
   compareDirectoryPeople,
   directoryAddressLine,
@@ -36,23 +36,24 @@ export interface DirectoryServiceCtx {
 
 // --- wire shapes (pinned contract; mirrored in the extension) ---------------
 
-export interface DirectorySearch {
-  groups: { id: string; name: string; tin: string | null; states: string[] }[];
-  providers: {
-    id: string;
-    firstName: string;
-    lastName: string;
-    credentials: string | null;
-    npi: string | null;
-    groups: { id: string; name: string }[];
-  }[];
-  locations: {
-    id: string;
-    name: string;
-    city: string | null;
-    state: string | null;
-    group: { id: string; name: string } | null;
-  }[];
+export interface DirectoryPage<T> {
+  rows: T[];
+  total: number;
+}
+
+export interface DirectoryGroupRow {
+  id: string;
+  name: string;
+  tin: string | null;
+  states: string[];
+}
+
+export interface DirectoryLocationRow {
+  id: string;
+  name: string;
+  city: string | null;
+  state: string | null;
+  group: { id: string; name: string } | null;
 }
 
 export interface DirectoryPersonRow {
@@ -92,31 +93,10 @@ export interface DirectoryGroup {
   }[];
 }
 
-export interface DirectoryProvider {
-  id: string;
-  firstName: string;
-  middleInitial: string | null;
-  lastName: string;
-  credentials: string | null;
-  npi: string | null;
-  caqhId: string | null;
-  email: string | null;
-  phone: string | null;
-  dateOfBirth: string | null;
-  gender: string | null;
-  languages: string[];
+/** What GET /api/providers/:id adds to the provider row for the card. */
+export interface ProviderDirectoryExtras {
   licenses: { state: string; licenseNumber: string | null; expirationDate: string | null }[];
   medicareIds: { groupId: string; groupName: string; medicareId: string }[];
-  taxonomyCode: string | null;
-  specialty: string | null;
-  boardCertification: string | null;
-  deaNumber: string | null;
-  education: { degree: string | null; school: string | null; graduationDate: string | null };
-  malpractice: {
-    carrier: string | null;
-    policyNumber: string | null;
-    expirationDate: string | null;
-  };
   groups: { id: string; name: string; tin: string | null; isPrimary: boolean }[];
   locations: { id: string; name: string; city: string | null; state: string | null }[];
 }
@@ -140,12 +120,6 @@ export interface DirectoryLocation {
 // --- column sets ---------------------------------------------------------------
 
 const PERSON_COLUMNS = "id, first_name, last_name, credentials, npi";
-const SEARCH_PROVIDER_COLUMNS = "id, first_name, last_name, credentials, npi, caqh_id, email";
-const PROVIDER_CARD_COLUMNS =
-  "id, first_name, middle_initial, last_name, credentials, npi, caqh_id, email, phone, " +
-  "date_of_birth, gender, languages, taxonomy_code, specialty, board_certified, dea_number, " +
-  "degree, school_name, graduation_date, malpractice_carrier, malpractice_policy_number, " +
-  "malpractice_coverage_end";
 const CONTACT_BLOCK_COLUMNS = ["credentialing", "correspondence", "billing"]
   .map((b) => `${b}_contact_name, ${b}_phone, ${b}_fax, ${b}_email`)
   .join(", ");
@@ -229,42 +203,132 @@ async function medicarePayerIds(ctx: DirectoryServiceCtx): Promise<string[]> {
   return rows(res).map((r) => r.id as string);
 }
 
-// --- search ------------------------------------------------------------------
+// --- lists and search ----------------------------------------------------------
 
-/** Groups, providers and locations matching every term, each A→Z, at most 10.
- * Reads the org's active records and filters in memory: one org's roster is
- * small, and matching on a state name, a dash-less TIN or a license state is
- * simpler here than in PostgREST filters. */
-export async function searchDirectory(
+function pageOf<T>(all: T[], page: number, pageSize: number): DirectoryPage<T> {
+  const from = (page - 1) * pageSize;
+  return { rows: all.slice(from, from + pageSize), total: all.length };
+}
+
+/** The org's active groups by id, read in full (search matches on their names). */
+async function activeGroups(ctx: DirectoryServiceCtx): Promise<Row[]> {
+  return readAll(
+    "Directory groups",
+    ctx.db
+      .from("provider_groups")
+      .select("id, name, tin, npi_type2, states")
+      .eq("org_id", ctx.orgId)
+      .eq("is_active", true),
+  );
+}
+
+/** GET /api/groups: active groups A→Z, filtered by `query` when there is one.
+ * Matches name, TIN and Group NPI (dashes ignored) and state code or name.
+ * Reads the org's active groups and filters in memory: one org's roster is
+ * small, and a state name or a dash-less TIN is simpler here than in
+ * PostgREST filters. */
+export async function listDirectoryGroups(
   ctx: DirectoryServiceCtx,
-  query: DirectoryQuery,
-  today: string,
-): Promise<DirectorySearch> {
-  const stateCodes = directoryQueryStateCodes(query);
-  const [groupRows, providerRows, facilityRows, licenseRows] = await Promise.all([
-    readAll(
-      "Directory groups",
-      ctx.db
-        .from("provider_groups")
-        .select("id, name, tin, npi_type2, states")
-        .eq("org_id", ctx.orgId)
-        .eq("is_active", true),
-    ),
-    readAll(
-      "Directory providers",
-      ctx.db
-        .from("providers")
-        .select(SEARCH_PROVIDER_COLUMNS)
-        .eq("org_id", ctx.orgId)
-        .neq("status", "terminated"),
-    ),
+  query: DirectoryQuery | null,
+  page: number,
+  pageSize: number,
+): Promise<DirectoryPage<DirectoryGroupRow>> {
+  const all = (await activeGroups(ctx))
+    .filter(
+      (g) =>
+        !query ||
+        matchesDirectoryQuery(
+          { text: [str(g.name)], ids: [str(g.tin), str(g.npi_type2)], states: strArr(g.states) },
+          query,
+        ),
+    )
+    .map((g) => ({
+      id: g.id as string,
+      name: g.name as string,
+      tin: str(g.tin),
+      states: strArr(g.states),
+    }))
+    .sort((a, b) => compareDirectoryNames(a.name, b.name));
+  return pageOf(all, page, pageSize);
+}
+
+/** GET /api/locations: active facilities A→Z, filtered by `query` when there
+ * is one. Matches name, street, city, ZIP, state code or name, and the owning
+ * group's name. The group is shown only when it is active. */
+export async function listDirectoryLocations(
+  ctx: DirectoryServiceCtx,
+  query: DirectoryQuery | null,
+  page: number,
+  pageSize: number,
+): Promise<DirectoryPage<DirectoryLocationRow>> {
+  const [groupRows, facilityRows] = await Promise.all([
+    activeGroups(ctx),
     readAll(
       "Directory locations",
       ctx.db
         .from("facilities")
-        .select("id, name, city, state, zip, group_id")
+        .select("id, name, street, city, state, zip, group_id")
         .eq("org_id", ctx.orgId)
         .eq("is_active", true),
+    ),
+  ]);
+  const groupNames = new Map(groupRows.map((g) => [g.id as string, g.name as string]));
+  const all = facilityRows
+    .map((f) => {
+      const groupId = str(f.group_id);
+      const groupName = groupId ? groupNames.get(groupId) : undefined;
+      return {
+        raw: f,
+        row: {
+          id: f.id as string,
+          name: f.name as string,
+          city: str(f.city),
+          state: str(f.state),
+          group: groupId && groupName != null ? { id: groupId, name: groupName } : null,
+        },
+      };
+    })
+    .filter(
+      ({ raw, row }) =>
+        !query ||
+        matchesDirectoryQuery(
+          {
+            text: [row.name, str(raw.street), row.city, row.group?.name],
+            ids: [str(raw.zip)],
+            states: [row.state],
+          },
+          query,
+        ),
+    )
+    .map(({ row }) => row)
+    .sort((a, b) => compareDirectoryNames(a.name, b.name));
+  return pageOf(all, page, pageSize);
+}
+
+/** The providers among `providers` that match `query`, order kept. Beyond
+ * name, NPI and email (what the plain list search covers) this matches CAQH
+ * ID, license state (code or full name) and the name and TIN of each current
+ * group, so "Smith Acme" finds Smith on Acme's roster. */
+export async function filterProvidersBySearch<
+  T extends {
+    id: string;
+    firstName?: string | null;
+    lastName?: string | null;
+    npi?: string | null;
+    email?: string | null;
+    caqhId?: string | null;
+  },
+>(ctx: DirectoryServiceCtx, providers: T[], query: DirectoryQuery, today: string): Promise<T[]> {
+  if (providers.length === 0) return providers;
+  const stateCodes = directoryQueryStateCodes(query);
+  const [groupRows, assignmentRows, licenseRows] = await Promise.all([
+    activeGroups(ctx),
+    readAll(
+      "Directory group assignments",
+      ctx.db
+        .from("provider_group_assignments")
+        .select("id, provider_id, group_id, end_date")
+        .eq("org_id", ctx.orgId),
     ),
     // Licenses only decide a state match, so read just the states asked for.
     stateCodes.length
@@ -278,102 +342,32 @@ export async function searchDirectory(
         )
       : Promise.resolve([] as Row[]),
   ]);
-  const groupNames = new Map(groupRows.map((g) => [g.id as string, g.name as string]));
+  const groupById = new Map(groupRows.map((g) => [g.id as string, g]));
+  const groupsOf = new Map<string, Row[]>();
+  for (const a of assignmentRows) {
+    const g = groupById.get(a.group_id as string);
+    const providerId = str(a.provider_id);
+    if (!g || !providerId || !isCurrentAssignment(str(a.end_date), today)) continue;
+    groupsOf.set(providerId, [...(groupsOf.get(providerId) ?? []), g]);
+  }
   const licenseStates = new Map<string, string[]>();
   for (const l of licenseRows) {
-    const id = l.provider_id as string | null;
+    const id = str(l.provider_id);
     if (id) licenseStates.set(id, [...(licenseStates.get(id) ?? []), l.state as string]);
   }
-
-  const groups = groupRows
-    .filter((g) =>
-      matchesDirectoryQuery(
-        { text: [str(g.name)], ids: [str(g.tin), str(g.npi_type2)], states: strArr(g.states) },
-        query,
-      ),
-    )
-    .map((g) => ({
-      id: g.id as string,
-      name: g.name as string,
-      tin: str(g.tin),
-      states: strArr(g.states),
-    }))
-    .sort((a, b) => compareDirectoryNames(a.name, b.name))
-    .slice(0, DIRECTORY_RESULT_LIMIT);
-
-  const matchedPeople = providerRows
-    .filter((p) => {
-      const first = str(p.first_name) ?? "";
-      const last = str(p.last_name) ?? "";
-      return matchesDirectoryQuery(
-        {
-          text: [first, last, `${first} ${last}`, str(p.email)],
-          ids: [str(p.npi), str(p.caqh_id)],
-          states: licenseStates.get(p.id as string) ?? [],
-        },
-        query,
-      );
-    })
-    .map(person)
-    .sort(compareDirectoryPeople)
-    .slice(0, DIRECTORY_RESULT_LIMIT);
-
-  // Group labels for the matched providers only: current assignments to
-  // active groups, primary first then A→Z.
-  const assignmentRows = matchedPeople.length
-    ? rows(
-        await ctx.db
-          .from("provider_group_assignments")
-          .select("provider_id, group_id, is_primary, end_date")
-          .eq("org_id", ctx.orgId)
-          .in(
-            "provider_id",
-            matchedPeople.map((p) => p.id),
-          ),
-      )
-    : [];
-  const providers = matchedPeople.map((p) => ({
-    ...p,
-    groups: assignmentRows
-      .filter(
-        (a) =>
-          a.provider_id === p.id &&
-          groupNames.has(a.group_id as string) &&
-          isCurrentAssignment(str(a.end_date), today),
-      )
-      .sort(
-        (a, b) =>
-          Number(Boolean(b.is_primary)) - Number(Boolean(a.is_primary)) ||
-          compareDirectoryNames(
-            groupNames.get(a.group_id as string) ?? "",
-            groupNames.get(b.group_id as string) ?? "",
-          ),
-      )
-      .map((a) => ({ id: a.group_id as string, name: groupNames.get(a.group_id as string) ?? "" })),
-  }));
-
-  const locations = facilityRows
-    .filter((f) =>
-      matchesDirectoryQuery(
-        { text: [str(f.name), str(f.city)], ids: [str(f.zip)], states: [str(f.state)] },
-        query,
-      ),
-    )
-    .map((f) => {
-      const groupId = str(f.group_id);
-      const groupName = groupId ? groupNames.get(groupId) : undefined;
-      return {
-        id: f.id as string,
-        name: f.name as string,
-        city: str(f.city),
-        state: str(f.state),
-        group: groupId && groupName != null ? { id: groupId, name: groupName } : null,
-      };
-    })
-    .sort((a, b) => compareDirectoryNames(a.name, b.name))
-    .slice(0, DIRECTORY_RESULT_LIMIT);
-
-  return { groups, providers, locations };
+  return providers.filter((p) => {
+    const first = p.firstName ?? "";
+    const last = p.lastName ?? "";
+    const groups = groupsOf.get(p.id) ?? [];
+    return matchesDirectoryQuery(
+      {
+        text: [first, last, `${first} ${last}`, p.email, ...groups.map((g) => str(g.name))],
+        ids: [p.npi, p.caqhId, ...groups.map((g) => str(g.tin))],
+        states: licenseStates.get(p.id) ?? [],
+      },
+      query,
+    );
+  });
 }
 
 // --- group card --------------------------------------------------------------
@@ -492,24 +486,17 @@ export async function getDirectoryGroup(
   };
 }
 
-// --- provider card -------------------------------------------------------------
+// --- provider card extras --------------------------------------------------------
 
-export async function getDirectoryProvider(
+/** The related lists GET /api/providers/:id adds to the provider row: licenses
+ * by state, Medicare IDs from live enrollment facts on the Medicare payer
+ * under active groups, current groups (primary first) and active locations.
+ * The caller has already found the provider in this org. */
+export async function getProviderDirectoryExtras(
   ctx: DirectoryServiceCtx,
   providerId: string,
   today: string,
-): Promise<DirectoryProvider | null> {
-  const p = one(
-    await ctx.db
-      .from("providers")
-      .select(PROVIDER_CARD_COLUMNS)
-      .eq("id", providerId)
-      .eq("org_id", ctx.orgId)
-      .neq("status", "terminated")
-      .maybeSingle(),
-  );
-  if (!p) return null;
-
+): Promise<ProviderDirectoryExtras> {
   const [licenseRes, groupAssignRes, facilityAssignRes, medicareIds] = await Promise.all([
     ctx.db
       .from("state_licenses")
@@ -575,7 +562,7 @@ export async function getDirectoryProvider(
     : [];
   const groupById = new Map(groupRows.map((g) => [g.id as string, g]));
 
-  const medicare: DirectoryProvider["medicareIds"] = [];
+  const medicare: ProviderDirectoryExtras["medicareIds"] = [];
   for (const f of facts) {
     const g = groupById.get(f.group_id as string);
     const medicareId = (f.payer_issued_id as string).trim();
@@ -589,18 +576,6 @@ export async function getDirectoryProvider(
   );
 
   return {
-    id: p.id as string,
-    firstName: str(p.first_name) ?? "",
-    middleInitial: str(p.middle_initial),
-    lastName: str(p.last_name) ?? "",
-    credentials: str(p.credentials),
-    npi: str(p.npi),
-    caqhId: str(p.caqh_id),
-    email: str(p.email),
-    phone: str(p.phone),
-    dateOfBirth: str(p.date_of_birth),
-    gender: str(p.gender),
-    languages: strArr(p.languages),
     licenses: rows(licenseRes)
       .map((l) => ({
         state: l.state as string,
@@ -613,20 +588,6 @@ export async function getDirectoryProvider(
           (a.licenseNumber ?? "").localeCompare(b.licenseNumber ?? ""),
       ),
     medicareIds: medicare,
-    taxonomyCode: str(p.taxonomy_code),
-    specialty: str(p.specialty),
-    boardCertification: boardCertificationText(p.board_certified as boolean | null),
-    deaNumber: str(p.dea_number),
-    education: {
-      degree: str(p.degree),
-      school: str(p.school_name),
-      graduationDate: str(p.graduation_date),
-    },
-    malpractice: {
-      carrier: str(p.malpractice_carrier),
-      policyNumber: str(p.malpractice_policy_number),
-      expirationDate: str(p.malpractice_coverage_end),
-    },
     groups: currentAssignments
       .filter((a) => groupById.has(a.group_id as string))
       .map((a) => {

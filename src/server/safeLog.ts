@@ -48,6 +48,7 @@ const ROUTE_WORDS: ReadonlySet<string> = new Set([
   "internal",
   "jobs",
   "link",
+  "locations",
   "mappings",
   "me",
   "next-best-action",

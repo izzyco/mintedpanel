@@ -1,5 +1,5 @@
 // Workbench directory card layouts (Nov 4, 2026), read and written through
-// GET/PUT /api/me/directory-layouts. USER-scoped like the quick-card layout in
+// GET/PUT /api/me/view-prefs?card=group|provider|location. USER-scoped like the quick-card layout in
 // ./extensionViewPrefs.ts: same user_table_prefs storage, one page_key per
 // card type (DIRECTORY_LAYOUT_PAGE_KEYS), value { fields: string[] }. Every
 // statement is scoped by the JWT-verified user id only; on the service-role
@@ -11,7 +11,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/integrations/supabase/types";
 import {
-  DIRECTORY_CARD_TYPES,
   DIRECTORY_LAYOUT_PAGE_KEYS,
   storedDirectoryLayout,
   type DirectoryCardType,
@@ -22,26 +21,20 @@ export interface DirectoryLayoutsServiceCtx {
   userId: string;
 }
 
-/** The caller's saved layout per card type; null = never saved (or a
+/** The caller's saved layout for one card type; null = never saved (or a
  * malformed stored value), so the client shows the catalog defaults. */
-export async function getDirectoryLayouts(
+export async function getDirectoryLayout(
   ctx: DirectoryLayoutsServiceCtx,
-): Promise<Record<DirectoryCardType, string[] | null>> {
+  type: DirectoryCardType,
+): Promise<string[] | null> {
   const { data, error } = await ctx.db
     .from("user_table_prefs")
-    .select("page_key, prefs")
+    .select("prefs")
     .eq("user_id", ctx.userId)
-    .in("page_key", Object.values(DIRECTORY_LAYOUT_PAGE_KEYS));
+    .eq("page_key", DIRECTORY_LAYOUT_PAGE_KEYS[type])
+    .maybeSingle();
   if (error) throw error;
-  const layouts = { group: null, provider: null, location: null } as Record<
-    DirectoryCardType,
-    string[] | null
-  >;
-  for (const type of DIRECTORY_CARD_TYPES) {
-    const row = (data ?? []).find((r) => r.page_key === DIRECTORY_LAYOUT_PAGE_KEYS[type]);
-    layouts[type] = row ? storedDirectoryLayout(row.prefs) : null;
-  }
-  return layouts;
+  return data ? storedDirectoryLayout(data.prefs) : null;
 }
 
 /** Upsert one card type's layout (validated by the route first). Keyed on

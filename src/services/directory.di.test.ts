@@ -3,10 +3,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import { parseDirectoryQuery, type DirectoryQuery } from "@/lib/directory";
 import {
+  filterProvidersBySearch,
   getDirectoryGroup,
   getDirectoryLocation,
-  getDirectoryProvider,
-  searchDirectory,
+  getProviderDirectoryExtras,
+  listDirectoryGroups,
+  listDirectoryLocations,
   type DirectoryServiceCtx,
 } from "./directory";
 
@@ -342,7 +344,7 @@ function fixture(): Record<string, Row[]> {
 
 function q(raw: string): DirectoryQuery {
   const parsed = parseDirectoryQuery(raw);
-  if (!parsed.ok) throw new Error(parsed.message);
+  if (!parsed.ok || !parsed.query) throw new Error("expected a query");
   return parsed.query;
 }
 
@@ -352,70 +354,33 @@ function setup() {
   return { ctx, ...fake };
 }
 
-describe("searchDirectory", () => {
-  it("finds the org's active groups, providers licensed there, and locations by state name", async () => {
+const ids = (page: { rows: { id: string }[] }) => page.rows.map((r) => r.id);
+
+describe("listDirectoryGroups", () => {
+  it("lists every active group of the org A→Z when there is no search", async () => {
     const { ctx, unscoped } = setup();
-    const result = await searchDirectory(ctx, q("New Mexico"), TODAY);
-    expect(result.groups.map((g) => g.id)).toEqual([G1]);
-    expect(result.providers.map((p) => p.id)).toEqual([P1]);
-    expect(result.locations.map((l) => l.id)).toEqual([F1]);
+    const page = await listDirectoryGroups(ctx, null, 1, 25);
+    expect(page.rows).toEqual([
+      { id: G4, name: "Front Range Rehab", tin: null, states: ["CO"] },
+      { id: G1, name: "Sandia Physical Therapy", tin: "12-3456789", states: ["NM"] },
+    ]);
+    expect(page.total).toBe(2);
     expect(unscoped).toEqual([]);
   });
 
-  it("matches the state code the same as the name", async () => {
+  it("matches name, TIN with or without the dash, Group NPI, and state code or name", async () => {
     const { ctx } = setup();
-    expect(await searchDirectory(ctx, q("NM"), TODAY)).toEqual(
-      await searchDirectory(ctx, q("new mexico"), TODAY),
-    );
+    for (const raw of ["sandia", "123456789", "12-3456789", "1999999999", "NM", "New Mexico"]) {
+      expect(ids(await listDirectoryGroups(ctx, q(raw), 1, 25))).toEqual([G1]);
+    }
   });
 
-  it("never returns another org's or inactive records", async () => {
+  it("never returns another org's or an inactive group", async () => {
     const { ctx } = setup();
-    const result = await searchDirectory(ctx, q("sandia"), TODAY);
-    expect(result.groups.map((g) => g.name)).toEqual(["Sandia Physical Therapy"]);
-    const albq = await searchDirectory(ctx, q("albuquerque"), TODAY);
-    expect(albq.locations.map((l) => l.id)).toEqual([F1]);
-    const terry = await searchDirectory(ctx, q("terry"), TODAY);
-    expect(terry.providers).toEqual([]);
-    const ada = await searchDirectory(ctx, q("ada"), TODAY);
-    expect(ada.providers.map((p) => p.id)).toEqual([P1]);
+    expect(ids(await listDirectoryGroups(ctx, q("sandia"), 1, 25))).toEqual([G1]);
   });
 
-  it("finds a group by TIN with or without the dash, and a provider by NPI, CAQH or email", async () => {
-    const { ctx } = setup();
-    expect((await searchDirectory(ctx, q("123456789"), TODAY)).groups.map((g) => g.id)).toEqual([
-      G1,
-    ]);
-    expect((await searchDirectory(ctx, q("12-3456789"), TODAY)).groups.map((g) => g.id)).toEqual([
-      G1,
-    ]);
-    expect((await searchDirectory(ctx, q("1234567890"), TODAY)).providers.map((p) => p.id)).toEqual(
-      [P1],
-    );
-    expect((await searchDirectory(ctx, q("55501"), TODAY)).providers.map((p) => p.id)).toEqual([
-      P1,
-    ]);
-    expect((await searchDirectory(ctx, q("ben@"), TODAY)).providers.map((p) => p.id)).toEqual([P4]);
-  });
-
-  it("lists a provider's current active groups, primary first", async () => {
-    const { ctx } = setup();
-    const result = await searchDirectory(ctx, q("okafor"), TODAY);
-    expect(result.providers[0].groups).toEqual([
-      { id: G1, name: "Sandia Physical Therapy" },
-      { id: G4, name: "Front Range Rehab" },
-    ]);
-    const ben = await searchDirectory(ctx, q("brooks"), TODAY);
-    expect(ben.providers[0].groups).toEqual([]);
-  });
-
-  it("names a location's group", async () => {
-    const { ctx } = setup();
-    const result = await searchDirectory(ctx, q("87110"), TODAY);
-    expect(result.locations[0].group).toEqual({ id: G1, name: "Sandia Physical Therapy" });
-  });
-
-  it("sorts each list A→Z and caps it at 10", async () => {
+  it("pages A→Z with an exact total", async () => {
     const tables = fixture();
     tables.provider_groups = Array.from({ length: 12 }, (_, i) => ({
       id: uuid(100 + i),
@@ -425,14 +390,14 @@ describe("searchDirectory", () => {
       states: ["NM"],
     }));
     const { db } = makeDb(tables);
-    const result = await searchDirectory({ db, orgId: ORG }, q("group"), TODAY);
-    expect(result.groups).toHaveLength(10);
-    const names = result.groups.map((g) => g.name);
-    expect(names).toEqual([...names].sort());
-    expect(names[0]).toBe("Group A");
+    const first = await listDirectoryGroups({ db, orgId: ORG }, q("group"), 1, 10);
+    expect(first.total).toBe(12);
+    expect(first.rows.map((g) => g.name)).toEqual("ABCDEFGHIJ".split("").map((c) => `Group ${c}`));
+    const second = await listDirectoryGroups({ db, orgId: ORG }, q("group"), 2, 10);
+    expect(second.rows.map((g) => g.name)).toEqual(["Group K", "Group L"]);
   });
 
-  it("pages past PostgREST's 1000-row cap", async () => {
+  it("reads past PostgREST's 1000-row cap", async () => {
     const tables = fixture();
     tables.provider_groups = Array.from({ length: 1200 }, (_, i) => ({
       id: uuid(1000 + i),
@@ -442,15 +407,110 @@ describe("searchDirectory", () => {
       states: [],
     }));
     const { db } = makeDb(tables);
-    const result = await searchDirectory({ db, orgId: ORG }, q("zuni"), TODAY);
-    expect(result.groups.map((g) => g.name)).toEqual(["Zuni Last Group"]);
+    const page = await listDirectoryGroups({ db, orgId: ORG }, q("zuni"), 1, 10);
+    expect(page.rows.map((g) => g.name)).toEqual(["Zuni Last Group"]);
+    expect((await listDirectoryGroups({ db, orgId: ORG }, null, 1, 10)).total).toBe(1200);
+  });
+});
+
+describe("listDirectoryLocations", () => {
+  it("lists the org's active locations with their group when there is no search", async () => {
+    const { ctx, unscoped } = setup();
+    const page = await listDirectoryLocations(ctx, null, 1, 25);
+    expect(page).toEqual({
+      rows: [
+        {
+          id: F1,
+          name: "Albuquerque – Uptown",
+          city: "Albuquerque",
+          state: "NM",
+          group: { id: G1, name: "Sandia Physical Therapy" },
+        },
+      ],
+      total: 1,
+    });
+    expect(unscoped).toEqual([]);
   });
 
-  it("never carries an SSN", async () => {
+  it("matches name, street, city, ZIP, state code or name, and group name", async () => {
     const { ctx } = setup();
-    const json = JSON.stringify(await searchDirectory(ctx, q("ada"), TODAY));
-    expect(json).not.toContain("4321");
-    expect(json.toLowerCase()).not.toContain("ssn");
+    for (const raw of [
+      "uptown",
+      "louisiana",
+      "albuquerque",
+      "87110",
+      "NM",
+      "New Mexico",
+      "sandia",
+    ]) {
+      expect(ids(await listDirectoryLocations(ctx, q(raw), 1, 25))).toEqual([F1]);
+    }
+    expect(ids(await listDirectoryLocations(ctx, q("front range"), 1, 25))).toEqual([]);
+  });
+
+  it("shows no group when the owning group is inactive", async () => {
+    const tables = fixture();
+    tables.facilities[0].group_id = G2;
+    const { db } = makeDb(tables);
+    const page = await listDirectoryLocations({ db, orgId: ORG }, null, 1, 25);
+    expect(page.rows[0].group).toBeNull();
+  });
+});
+
+describe("filterProvidersBySearch", () => {
+  // What GET /api/providers hands in: the org's non-terminated list rows.
+  const candidates = [
+    { id: P4, firstName: "Ben", lastName: "Brooks", npi: null, email: "ben@example.com" },
+    {
+      id: P1,
+      firstName: "Ada",
+      lastName: "Okafor",
+      npi: "1234567890",
+      email: "ada@example.com",
+      caqhId: "55501",
+    },
+  ];
+  const match = async (raw: string) => {
+    const { ctx } = setup();
+    return (await filterProvidersBySearch(ctx, candidates, q(raw), TODAY)).map((p) => p.id);
+  };
+
+  it("matches what the plain search did: name, NPI, email", async () => {
+    expect(await match("okafor")).toEqual([P1]);
+    expect(await match("1234567890")).toEqual([P1]);
+    expect(await match("ben@")).toEqual([P4]);
+  });
+
+  it("also matches CAQH ID and license state by code or name", async () => {
+    expect(await match("55501")).toEqual([P1]);
+    expect(await match("NM")).toEqual([P1]);
+    expect(await match("New Mexico")).toEqual([P1]);
+  });
+
+  it("also matches the name and TIN of a current, active group", async () => {
+    expect(await match("front range")).toEqual([P1]);
+    const tables = fixture();
+    tables.provider_groups[3].tin = "98-7654321";
+    const { db } = makeDb(tables);
+    for (const tin of ["98-7654321", "987654321"]) {
+      const rows = await filterProvidersBySearch({ db, orgId: ORG }, candidates, q(tin), TODAY);
+      expect(rows.map((p) => p.id)).toEqual([P1]);
+    }
+    // P4's only assignment ended; the inactive group never matches.
+    expect(await match("sandia")).toEqual([P1]);
+    expect(await match("closed")).toEqual([]);
+  });
+
+  it("needs every term to match, so a name plus a group narrows", async () => {
+    expect(await match("ada sandia")).toEqual([P1]);
+    expect(await match("ben sandia")).toEqual([]);
+  });
+
+  it("keeps the caller's order and scopes every read to the org", async () => {
+    const { ctx, unscoped } = setup();
+    const rows = await filterProvidersBySearch(ctx, candidates, q("example"), TODAY);
+    expect(rows.map((p) => p.id)).toEqual([P4, P1]);
+    expect(unscoped).toEqual([]);
   });
 });
 
@@ -518,56 +578,41 @@ describe("getDirectoryGroup", () => {
   });
 });
 
-describe("getDirectoryProvider", () => {
-  it("returns the card with licenses, Medicare IDs, groups and locations", async () => {
+describe("getProviderDirectoryExtras", () => {
+  it("returns licenses, Medicare IDs, groups and locations", async () => {
     const { ctx, unscoped } = setup();
-    const p = await getDirectoryProvider(ctx, P1, TODAY);
-    expect(p).toMatchObject({
-      id: P1,
-      firstName: "Ada",
-      middleInitial: "M",
-      lastName: "Okafor",
-      npi: "1234567890",
-      caqhId: "55501",
-      dateOfBirth: "1980-01-02",
-      languages: ["English", "Igbo"],
-      boardCertification: "Yes",
-    });
-    expect(p?.licenses.map((l) => l.state)).toEqual(["CO", "NM"]);
+    const extras = await getProviderDirectoryExtras(ctx, P1, TODAY);
+    expect(extras.licenses).toEqual([
+      { state: "CO", licenseNumber: "CO-9", expirationDate: null },
+      { state: "NM", licenseNumber: "NM-1", expirationDate: "2027-01-01" },
+    ]);
     // Only the live Medicare fact under an active group.
-    expect(p?.medicareIds).toEqual([
+    expect(extras.medicareIds).toEqual([
       { groupId: G1, groupName: "Sandia Physical Therapy", medicareId: "MCR-1" },
     ]);
-    expect(p?.groups).toEqual([
+    expect(extras.groups).toEqual([
       { id: G1, name: "Sandia Physical Therapy", tin: "12-3456789", isPrimary: true },
       { id: G4, name: "Front Range Rehab", tin: null, isPrimary: false },
     ]);
-    expect(p?.locations.map((l) => l.id)).toEqual([F1]);
+    expect(extras.locations).toEqual([
+      { id: F1, name: "Albuquerque – Uptown", city: "Albuquerque", state: "NM" },
+    ]);
     expect(unscoped).toEqual([]);
   });
 
-  it("never carries an SSN or ssn_last4", async () => {
+  it("never reads another org's rows", async () => {
     const { ctx } = setup();
-    const json = JSON.stringify(await getDirectoryProvider(ctx, P1, TODAY));
-    expect(json.toLowerCase()).not.toContain("ssn");
-    expect(json).not.toContain("4321");
-  });
-
-  it("returns null for a terminated or another org's provider", async () => {
-    const { ctx } = setup();
-    expect(await getDirectoryProvider(ctx, P2, TODAY)).toBeNull();
-    expect(await getDirectoryProvider(ctx, P3, TODAY)).toBeNull();
+    const extras = await getProviderDirectoryExtras(ctx, P3, TODAY);
+    expect(extras).toEqual({ licenses: [], medicareIds: [], groups: [], locations: [] });
   });
 
   it("returns empty lists when the provider has none", async () => {
     const { ctx } = setup();
-    const p = await getDirectoryProvider(ctx, P4, TODAY);
-    expect(p).toMatchObject({
+    expect(await getProviderDirectoryExtras(ctx, P4, TODAY)).toEqual({
       licenses: [],
       medicareIds: [],
       groups: [],
       locations: [],
-      languages: [],
     });
   });
 });

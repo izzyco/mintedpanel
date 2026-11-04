@@ -1,8 +1,8 @@
 // Workbench directory (Nov 4, 2026): the pure half of the read-only lookup of
-// groups, providers and locations behind /api/directory/* and
-// /api/me/directory-layouts. Spec: the vault note "2026-11-04 - Minted
-// Extension - Directory Search Spec" (contract pinned there; the extension
-// codes to it).
+// groups, providers and locations behind GET /api/groups, /api/locations,
+// the extended /api/providers search and card, and the directory card layouts
+// on /api/me/view-prefs?card=. Spec: the vault note "2026-11-04 - Minted
+// Extension - Directory Search Spec".
 //
 // Owns the card field catalogs (keys, labels, sections and defaults match the
 // approved mocks), the layout PUT validator, the search query parser (state
@@ -145,19 +145,19 @@ export function isDirectoryCardType(raw: unknown): raw is DirectoryCardType {
 }
 
 export type DirectoryLayoutValidation =
-  { ok: true; type: DirectoryCardType; fields: string[] } | { ok: false; message: string };
+  { ok: true; fields: string[] } | { ok: false; message: string };
 
-/** PUT /api/me/directory-layouts body: { type, fields }. `fields` is an
- * ordered, deduplicated list of that type's catalog keys (empty = every field
+/** PUT /api/me/view-prefs?card= body: { fields }. `fields` is an ordered,
+ * deduplicated list of that card type's catalog keys (empty = every field
  * off). Anything else is a 422 message. */
-export function validateDirectoryLayoutBody(body: unknown): DirectoryLayoutValidation {
+export function validateDirectoryLayoutBody(
+  type: DirectoryCardType,
+  body: unknown,
+): DirectoryLayoutValidation {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, message: "Request body must be a JSON object" };
   }
-  const { type, fields } = body as { type?: unknown; fields?: unknown };
-  if (!isDirectoryCardType(type)) {
-    return { ok: false, message: 'type must be "group", "provider" or "location"' };
-  }
+  const { fields } = body as { fields?: unknown };
   if (!Array.isArray(fields) || !fields.every((f) => typeof f === "string")) {
     return { ok: false, message: "fields must be an array of strings" };
   }
@@ -168,7 +168,7 @@ export function validateDirectoryLayoutBody(body: unknown): DirectoryLayoutValid
     if (seen.has(key)) return { ok: false, message: `Duplicate field: ${key}` };
     seen.add(key);
   }
-  return { ok: true, type, fields: fields as string[] };
+  return { ok: true, fields: fields as string[] };
 }
 
 /** A stored layout, or null when it is missing or malformed (the client then
@@ -183,9 +183,7 @@ export function storedDirectoryLayout(prefs: unknown): string[] | null {
 // Search
 // ---------------------------------------------------------------------------
 
-export const DIRECTORY_QUERY_MIN = 2;
 export const DIRECTORY_QUERY_MAX = 100;
-export const DIRECTORY_RESULT_LIMIT = 10;
 
 export interface DirectoryStateTerm {
   code: string;
@@ -201,7 +199,7 @@ export interface DirectoryQuery {
 }
 
 export type DirectoryQueryParse =
-  { ok: true; query: DirectoryQuery } | { ok: false; message: string };
+  { ok: true; query: DirectoryQuery | null } | { ok: false; message: string };
 
 const STATE_CODE_SET = new Set<string>(US_STATES);
 // Longest names first, so "west virginia" is taken before "virginia".
@@ -209,15 +207,14 @@ const STATE_NAME_ENTRIES = (Object.entries(US_STATE_NAMES) as [string, string][]
   .map(([code, name]) => ({ code, phrase: name.toLowerCase() }))
   .sort((a, b) => b.phrase.length - a.phrase.length);
 
-/** Parse `?q=`: trimmed, 2..100 characters. Full state names ("New Mexico")
- * are pulled out first as single state terms; the rest splits on whitespace. */
+/** Parse `?search=`: trimmed; blank is no search (query null), longer than
+ * 100 characters is an error. Full state names ("New Mexico") are pulled out
+ * first as single state terms; the rest splits on whitespace. */
 export function parseDirectoryQuery(raw: string | null): DirectoryQueryParse {
   const q = (raw ?? "").trim();
-  if (q.length < DIRECTORY_QUERY_MIN || q.length > DIRECTORY_QUERY_MAX) {
-    return {
-      ok: false,
-      message: `q must be ${DIRECTORY_QUERY_MIN} to ${DIRECTORY_QUERY_MAX} characters`,
-    };
+  if (!q) return { ok: true, query: null };
+  if (q.length > DIRECTORY_QUERY_MAX) {
+    return { ok: false, message: `search must be at most ${DIRECTORY_QUERY_MAX} characters` };
   }
   let rest = ` ${q.toLowerCase().replace(/\s+/g, " ")} `;
   const states: DirectoryStateTerm[] = [];
@@ -320,12 +317,6 @@ export function medicarePtanFrom(
     if (value && !values.includes(value)) values.push(value);
   }
   return values.length ? values.join(", ") : null;
-}
-
-/** `providers.board_certified` is a yes/no flag; the card shows it as text. */
-export function boardCertificationText(flag: boolean | null | undefined): string | null {
-  if (flag == null) return null;
-  return flag ? "Yes" : "No";
 }
 
 /** One-line address: "street, suite, city, ST zip", skipping blanks. */

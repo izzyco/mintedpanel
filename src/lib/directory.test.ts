@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   DIRECTORY_CATALOGS,
   DIRECTORY_LAYOUT_PAGE_KEYS,
-  boardCertificationText,
   directoryAddressLine,
   directoryQueryStateCodes,
   isCurrentAssignment,
@@ -17,7 +16,7 @@ import {
 
 function q(raw: string): DirectoryQuery {
   const parsed = parseDirectoryQuery(raw);
-  if (!parsed.ok) throw new Error(parsed.message);
+  if (!parsed.ok || !parsed.query) throw new Error("expected a query");
   return parsed.query;
 }
 
@@ -101,29 +100,27 @@ describe("directory catalogs", () => {
 
 describe("validateDirectoryLayoutBody", () => {
   it.each([
-    ["null", null],
-    ["a string", "group"],
-    ["an array", []],
-    ["a missing type", { fields: [] }],
-    ["an unknown type", { type: "payer", fields: [] }],
-    ["missing fields", { type: "group" }],
-    ["non-array fields", { type: "group", fields: "tin" }],
-    ["non-string fields", { type: "group", fields: ["tin", 3] }],
-    ["a key from another type", { type: "group", fields: ["npi"] }],
-    ["an unknown key", { type: "provider", fields: ["ssnLast4"] }],
-    ["a duplicate key", { type: "location", fields: ["zip", "zip"] }],
-  ])("rejects %s", (_name, body) => {
-    expect(validateDirectoryLayoutBody(body).ok).toBe(false);
+    ["null", "group", null],
+    ["a string", "group", "tin"],
+    ["an array", "group", []],
+    ["missing fields", "group", {}],
+    ["non-array fields", "group", { fields: "tin" }],
+    ["non-string fields", "group", { fields: ["tin", 3] }],
+    ["a key from another card", "group", { fields: ["npi"] }],
+    ["an unknown key", "provider", { fields: ["ssnLast4"] }],
+    ["a duplicate key", "location", { fields: ["zip", "zip"] }],
+  ] as const)("rejects %s", (_name, type, body) => {
+    expect(validateDirectoryLayoutBody(type, body).ok).toBe(false);
   });
 
   it("accepts an ordered layout and keeps its order", () => {
-    expect(
-      validateDirectoryLayoutBody({ type: "group", fields: ["list.docs", "tin", "phone"] }),
-    ).toEqual({ ok: true, type: "group", fields: ["list.docs", "tin", "phone"] });
+    expect(validateDirectoryLayoutBody("group", { fields: ["list.docs", "tin", "phone"] })).toEqual(
+      { ok: true, fields: ["list.docs", "tin", "phone"] },
+    );
   });
 
   it("accepts an empty layout (every field off)", () => {
-    expect(validateDirectoryLayoutBody({ type: "location", fields: [] }).ok).toBe(true);
+    expect(validateDirectoryLayoutBody("location", { fields: [] }).ok).toBe(true);
   });
 });
 
@@ -137,17 +134,17 @@ describe("storedDirectoryLayout", () => {
 });
 
 describe("parseDirectoryQuery", () => {
-  it.each([[""], [" "], ["a"], ["  a  "], ["x".repeat(101)]])("rejects %j", (raw) => {
-    expect(parseDirectoryQuery(raw).ok).toBe(false);
+  it.each([[null], [""], ["   "]])("reads %j as no search", (raw) => {
+    expect(parseDirectoryQuery(raw)).toEqual({ ok: true, query: null });
   });
 
-  it("rejects a missing q", () => {
-    expect(parseDirectoryQuery(null).ok).toBe(false);
+  it("rejects more than 100 characters after trimming", () => {
+    expect(parseDirectoryQuery("x".repeat(101)).ok).toBe(false);
+    expect(parseDirectoryQuery(` ${"x".repeat(100)} `).ok).toBe(true);
   });
 
-  it("accepts 2 and 100 characters after trimming", () => {
-    expect(parseDirectoryQuery(" nm ").ok).toBe(true);
-    expect(parseDirectoryQuery("x".repeat(100)).ok).toBe(true);
+  it("accepts a single character as one term", () => {
+    expect(q(" a ")).toEqual({ states: [], terms: ["a"] });
   });
 
   it("takes a full state name as one state term", () => {
@@ -246,12 +243,6 @@ describe("derivations", () => {
     expect(isCurrentAssignment(null, "2026-11-04")).toBe(true);
     expect(isCurrentAssignment("2026-11-04", "2026-11-04")).toBe(true);
     expect(isCurrentAssignment("2026-11-03", "2026-11-04")).toBe(false);
-  });
-
-  it("boardCertificationText", () => {
-    expect(boardCertificationText(true)).toBe("Yes");
-    expect(boardCertificationText(false)).toBe("No");
-    expect(boardCertificationText(null)).toBeNull();
   });
 
   it("directoryAddressLine skips blanks", () => {

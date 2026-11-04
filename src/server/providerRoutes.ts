@@ -1,6 +1,7 @@
 // Provider route handlers. These compose the existing provider service module
 // (no query logic is duplicated) with an injected server context.
 import {
+  attachGroupsToProviders,
   createProvider,
   getProvider,
   listProviders,
@@ -12,6 +13,8 @@ import {
 import type { ProviderStatus } from "@/types";
 import { CAQH_CURRENT_DAYS } from "@/lib/enrollmentReadiness";
 import { recordFieldVerifications } from "@/services/fieldVerifications";
+import { filterProvidersBySearch, getProviderDirectoryExtras } from "@/services/directory";
+import { parseDirectoryQuery } from "@/lib/directory";
 import { ok, fail } from "./envelope";
 import { isWriter, type AuthContext } from "./guard";
 
@@ -20,6 +23,12 @@ const PROVIDER_STATUSES: ReadonlySet<string> = new Set(["onboarding", "active", 
 // The provider service only needs db + orgId + writeAudit from the auth context.
 function serviceCtx(ctx: AuthContext): ProviderServiceCtx {
   return { db: ctx.db, orgId: ctx.orgId, writeAudit: ctx.writeAudit };
+}
+
+// Date-only ISO for "is this group assignment current" — a server clock read at
+// the route boundary, never inside the pure module.
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function parsePositiveInt(value: string | null, fallback: number): number {
@@ -52,6 +61,31 @@ export async function handleListProviders(url: URL, ctx: AuthContext): Promise<R
   const sortColumn = params.get("sort") ?? undefined;
   const sortAscending = (params.get("order") ?? "asc").toLowerCase() !== "desc";
 
+  // Workbench directory (Nov 4, 2026): ?search= also matches CAQH ID, license
+  // state (code or full name) and the name and TIN of each current group, and
+  // every whitespace-separated term must match somewhere. That needs licenses
+  // and groups beside each row, so the filtered set is read in full (other
+  // filters and the sort still apply in SQL), matched in memory, then paged.
+  // A search over 100 characters keeps the plain name/NPI/email match.
+  const parsed = parseDirectoryQuery(filters.search ?? null);
+  if (parsed.ok && parsed.query) {
+    const svc = serviceCtx(ctx);
+    const { rows: candidates } = await listProviders(
+      svc,
+      { ...filters, search: undefined },
+      { sortColumn, sortAscending },
+    );
+    const matched = await filterProvidersBySearch(
+      { db: ctx.db, orgId: ctx.orgId },
+      candidates,
+      parsed.query,
+      todayIso(),
+    );
+    const from = (page - 1) * pageSize;
+    const rows = await attachGroupsToProviders(svc, matched.slice(from, from + pageSize));
+    return ok(rows, { total: matched.length, page, pageSize });
+  }
+
   const { rows, total } = await listProviders(serviceCtx(ctx), filters, {
     page,
     pageSize,
@@ -68,7 +102,10 @@ export async function handleListProviders(url: URL, ctx: AuthContext): Promise<R
 export async function handleGetProvider(id: string, ctx: AuthContext): Promise<Response> {
   const provider = await getProvider(id, serviceCtx(ctx));
   if (!provider) return fail(404, "Provider not found");
-  return ok(provider);
+  // Workbench directory card (Nov 4, 2026): the related lists are added beside
+  // the row's own fields, which stay exactly as they were.
+  const extras = await getProviderDirectoryExtras({ db: ctx.db, orgId: ctx.orgId }, id, todayIso());
+  return ok({ ...provider, ...extras });
 }
 
 export async function handleCreateProvider(body: unknown, ctx: AuthContext): Promise<Response> {

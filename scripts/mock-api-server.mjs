@@ -58,9 +58,9 @@
 //   registrypulls a registry pull crosses the org wall: the route records one
 //               for another org's provider, and PostgREST takes direct writes
 //                                                                  (38b, 38e)
-//   directory   the Workbench directory drops its org filter: another org's
-//               provider, location and group cards are served, and its
-//               records show up in search                   (39b, 39c, 39d, 39e)
+//   directory   the Workbench group and location reads drop their org filter:
+//               another org's groups and locations show up in the lists and
+//               their cards are served                      (39b, 39c, 39d, 39e)
 import { createServer } from "node:http";
 
 // Same fixture ids as the workflow env block, so the gate script needs no
@@ -1991,87 +1991,77 @@ export async function createMockApiServer(options = {}) {
       const p = allProviders().find((row) => row.id === id);
       const visible = p && (p.orgId === orgId || leak === "providers");
       if (!visible) return envelope(res, 404, null, "Provider not found");
-      return envelope(res, 200, p);
+      // The Workbench directory card's related lists ride the row (Nov 4, 2026).
+      return envelope(res, 200, {
+        ...p,
+        licenses: [],
+        medicareIds: [],
+        groups: (p.groups ?? []).map((g) => ({
+          id: g.id,
+          name: g.name,
+          tin: null,
+          isPrimary: g.isPrimary,
+        })),
+        locations: facilitiesOf(p).map((f) => ({
+          id: f.id,
+          name: f.name,
+          city: f.city,
+          state: f.state,
+        })),
+      });
     }
 
-    // --- /api/directory/* (Workbench directory, Nov 4 2026): read-only,
-    // org-scoped, active records only. Leak "directory" drops the org filter
-    // on both the cards and the search.
+    // --- /api/groups and /api/locations (Workbench directory, Nov 4 2026):
+    // read-only, org-scoped, active records only. Leak "directory" drops the
+    // org filter on the lists and the cards.
     const directoryVisible = (row) => row.orgId === orgId || leak === "directory";
     const directoryGroups = [
       { ...KANSAS_GROUP, orgId: FIXTURES.KANSAS_ORG, states: ["KS"] },
       { ...SOUTHPARK_GROUP, orgId: FIXTURES.SOUTHPARK_ORG, states: ["CO"] },
     ];
-    if (/^\/api\/directory\/search\/?$/.test(url.pathname)) {
-      if (method !== "GET") return envelope(res, 405, null, "Method not allowed");
-      const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
-      if (q.length < 2 || q.length > 100) {
-        return envelope(res, 422, null, "q must be 2 to 100 characters");
-      }
-      const has = (...parts) => parts.some((p) => (p ?? "").toLowerCase().includes(q));
-      return envelope(res, 200, {
-        groups: directoryGroups
-          .filter((g) => directoryVisible(g) && has(g.name))
-          .map((g) => ({ id: g.id, name: g.name, tin: null, states: g.states })),
-        providers: PROVIDERS.filter(
-          (p) =>
-            directoryVisible(p) && has(p.firstName, p.lastName, `${p.firstName} ${p.lastName}`),
-        ).map((p) => ({
-          id: p.id,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          credentials: null,
-          npi: null,
-          groups: p.groups.map((g) => ({ id: g.id, name: g.name })),
-        })),
-        locations: FACILITIES.filter((f) => directoryVisible(f) && has(f.name, f.city)).map(
-          (f) => ({ id: f.id, name: f.name, city: f.city, state: f.state, group: null }),
-        ),
-      });
-    }
-    const directoryMatch = url.pathname.match(
-      /^\/api\/directory\/(groups|providers|locations)\/([^/]+)\/?$/,
-    );
+    const directoryMatch = url.pathname.match(/^\/api\/(groups|locations)(?:\/([^/]+))?\/?$/);
     if (directoryMatch) {
       if (method !== "GET") return envelope(res, 405, null, "Method not allowed");
       const [, kind, id] = directoryMatch;
+      const search = (url.searchParams.get("search") ?? "").trim().toLowerCase();
+      const has = (...parts) =>
+        !search || parts.some((p) => (p ?? "").toLowerCase().includes(search));
+      const groupOf = (f) => directoryGroups.find((g) => g.orgId === f.orgId) ?? null;
       if (kind === "groups") {
-        const g = directoryGroups.find((row) => row.id === id && directoryVisible(row));
-        if (!g) return envelope(res, 404, null, "Group not found");
-        return envelope(res, 200, { id: g.id, name: g.name, states: g.states, providers: [] });
+        if (id) {
+          const g = directoryGroups.find((row) => row.id === id && directoryVisible(row));
+          if (!g) return envelope(res, 404, null, "Group not found");
+          return envelope(res, 200, { id: g.id, name: g.name, states: g.states, providers: [] });
+        }
+        const rows = directoryGroups
+          .filter((g) => directoryVisible(g) && has(g.name))
+          .map((g) => ({ id: g.id, name: g.name, tin: null, states: g.states }));
+        return envelope(res, 200, rows, null, { total: rows.length, page: 1, pageSize: 25 });
       }
-      if (kind === "providers") {
-        const p = PROVIDERS.find((row) => row.id === id && directoryVisible(row));
-        if (!p) return envelope(res, 404, null, "Provider not found");
+      if (id) {
+        const f = FACILITIES.find((row) => row.id === id && directoryVisible(row));
+        if (!f) return envelope(res, 404, null, "Location not found");
         return envelope(res, 200, {
-          id: p.id,
-          firstName: p.firstName,
-          lastName: p.lastName,
-          licenses: [],
-          medicareIds: [],
-          groups: p.groups.map((g) => ({
-            id: g.id,
-            name: g.name,
-            tin: null,
-            isPrimary: g.isPrimary,
-          })),
-          locations: facilitiesOf(p).map((f) => ({
-            id: f.id,
-            name: f.name,
-            city: f.city,
-            state: f.state,
-          })),
+          id: f.id,
+          name: f.name,
+          city: f.city,
+          state: f.state,
+          providers: [],
         });
       }
-      const f = FACILITIES.find((row) => row.id === id && directoryVisible(row));
-      if (!f) return envelope(res, 404, null, "Location not found");
-      return envelope(res, 200, {
-        id: f.id,
-        name: f.name,
-        city: f.city,
-        state: f.state,
-        providers: [],
+      const rows = FACILITIES.filter(
+        (f) => directoryVisible(f) && has(f.name, f.city, groupOf(f)?.name),
+      ).map((f) => {
+        const g = groupOf(f);
+        return {
+          id: f.id,
+          name: f.name,
+          city: f.city,
+          state: f.state,
+          group: g ? { id: g.id, name: g.name } : null,
+        };
       });
+      return envelope(res, 200, rows, null, { total: rows.length, page: 1, pageSize: 25 });
     }
 
     // --- /api/next-best-action (org-scoped ranked queue; S3.3 added items) ---

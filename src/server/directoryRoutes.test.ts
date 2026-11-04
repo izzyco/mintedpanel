@@ -3,38 +3,38 @@ import type { ApiEnvelope } from "./envelope";
 import type { AuthContext, UserContext } from "./guard";
 
 vi.mock("@/services/directory", () => ({
-  searchDirectory: vi.fn(),
+  listDirectoryGroups: vi.fn(),
+  listDirectoryLocations: vi.fn(),
   getDirectoryGroup: vi.fn(),
-  getDirectoryProvider: vi.fn(),
   getDirectoryLocation: vi.fn(),
 }));
 vi.mock("@/services/directoryLayouts", () => ({
-  getDirectoryLayouts: vi.fn(),
+  getDirectoryLayout: vi.fn(),
   putDirectoryLayout: vi.fn(),
 }));
 
 import {
   getDirectoryGroup,
   getDirectoryLocation,
-  getDirectoryProvider,
-  searchDirectory,
+  listDirectoryGroups,
+  listDirectoryLocations,
 } from "@/services/directory";
-import { getDirectoryLayouts, putDirectoryLayout } from "@/services/directoryLayouts";
+import { getDirectoryLayout, putDirectoryLayout } from "@/services/directoryLayouts";
 import { DIRECTORY_CATALOGS } from "@/lib/directory";
 import {
-  handleDirectoryGroup,
-  handleDirectoryLocation,
-  handleDirectoryProvider,
-  handleDirectorySearch,
-  handleGetDirectoryLayouts,
-  handlePutDirectoryLayout,
+  handleGetCardLayout,
+  handleGetGroup,
+  handleGetLocation,
+  handleListGroups,
+  handleListLocations,
+  handlePutCardLayout,
 } from "./directoryRoutes";
 
-const searchMock = vi.mocked(searchDirectory);
+const listGroupsMock = vi.mocked(listDirectoryGroups);
+const listLocationsMock = vi.mocked(listDirectoryLocations);
 const groupMock = vi.mocked(getDirectoryGroup);
-const providerMock = vi.mocked(getDirectoryProvider);
 const locationMock = vi.mocked(getDirectoryLocation);
-const getLayoutsMock = vi.mocked(getDirectoryLayouts);
+const getLayoutMock = vi.mocked(getDirectoryLayout);
 const putLayoutMock = vi.mocked(putDirectoryLayout);
 
 const ID = "10000000-0000-4000-a000-000000000001";
@@ -61,46 +61,57 @@ async function body(res: Response): Promise<ApiEnvelope<unknown>> {
   return (await res.json()) as ApiEnvelope<unknown>;
 }
 
-const url = (q: string | null) =>
-  new URL(`https://x.test/api/directory/search${q == null ? "" : `?q=${encodeURIComponent(q)}`}`);
+const url = (path: string, params: Record<string, string> = {}) => {
+  const u = new URL(`https://x.test${path}`);
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  return u;
+};
 
 beforeEach(() => vi.clearAllMocks());
 
-describe("GET /api/directory/search", () => {
-  it.each([[null], [""], ["a"], [" a "], ["x".repeat(101)]])(
-    "422s q=%j before reading anything",
-    async (q) => {
-      const res = await handleDirectorySearch(url(q), ctx());
-      expect(res.status).toBe(422);
-      expect(searchMock).not.toHaveBeenCalled();
-    },
-  );
-
-  it("reads with the caller's org and answers no-store", async () => {
-    const result = { groups: [], providers: [], locations: [] };
-    searchMock.mockResolvedValue(result);
-    const res = await handleDirectorySearch(url("New Mexico"), ctx({ orgId: "org-A" }));
+describe.each([
+  ["/api/groups", handleListGroups, listGroupsMock],
+  ["/api/locations", handleListLocations, listLocationsMock],
+] as const)("GET %s", (path, handler, mock) => {
+  it("lists everything active with no search, paged like /api/providers", async () => {
+    mock.mockResolvedValue({ rows: [{ id: ID }], total: 1 } as never);
+    const res = await handler(url(path), ctx({ orgId: "org-A" }));
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect((await body(res)).data).toEqual(result);
-    const [svcCtx, query] = searchMock.mock.calls[0];
+    const env = await body(res);
+    expect(env.data).toEqual([{ id: ID }]);
+    expect(env.meta).toEqual({ total: 1, page: 1, pageSize: 25 });
+    const [svcCtx, query, page, pageSize] = mock.mock.calls[0];
     expect(svcCtx).toMatchObject({ orgId: "org-A" });
+    expect([query, page, pageSize]).toEqual([null, 1, 25]);
+  });
+
+  it("parses the search (state names included) and caps pageSize at 100", async () => {
+    mock.mockResolvedValue({ rows: [], total: 0 });
+    await handler(url(path, { search: "New Mexico", pageSize: "500", page: "2" }), ctx());
+    const [, query, page, pageSize] = mock.mock.calls[0];
     expect(query).toEqual({ states: [{ code: "NM", phrase: "new mexico" }], terms: [] });
+    expect([page, pageSize]).toEqual([2, 100]);
+  });
+
+  it("422s a search over 100 characters before reading", async () => {
+    const res = await handler(url(path, { search: "x".repeat(101) }), ctx());
+    expect(res.status).toBe(422);
+    expect(mock).not.toHaveBeenCalled();
   });
 
   it("writes no audit row", async () => {
-    searchMock.mockResolvedValue({ groups: [], providers: [], locations: [] });
+    mock.mockResolvedValue({ rows: [], total: 0 });
     const c = ctx();
-    await handleDirectorySearch(url("sandia"), c);
+    await handler(url(path, { search: "sandia" }), c);
     expect(c.writeAudit).not.toHaveBeenCalled();
   });
 });
 
 describe.each([
-  ["groups", handleDirectoryGroup, groupMock, "Group not found"],
-  ["providers", handleDirectoryProvider, providerMock, "Provider not found"],
-  ["locations", handleDirectoryLocation, locationMock, "Location not found"],
-] as const)("GET /api/directory/%s/:id", (_kind, handler, mock, notFound) => {
+  ["groups", handleGetGroup, groupMock, "Group not found"],
+  ["locations", handleGetLocation, locationMock, "Location not found"],
+] as const)("GET /api/%s/:id", (_kind, handler, mock, notFound) => {
   it("404s a non-UUID id without reading", async () => {
     const res = await handler("not-a-uuid", ctx());
     expect(res.status).toBe(404);
@@ -115,77 +126,65 @@ describe.each([
     const env = await body(res);
     expect(env.data).toBeNull();
     expect(env.error).toBe(notFound);
-    expect(c.writeAudit).not.toHaveBeenCalled();
   });
 
-  it("serves the card no-store, scoped to the caller's org", async () => {
+  it("serves the card no-store, scoped to the caller's org, with no audit row", async () => {
     mock.mockResolvedValue({ id: ID } as never);
-    const res = await handler(ID, ctx({ orgId: "org-A" }));
+    const c = ctx({ orgId: "org-A" });
+    const res = await handler(ID, c);
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(mock.mock.calls[0][0]).toMatchObject({ orgId: "org-A" });
-  });
-});
-
-describe("audit mirrors the profile read", () => {
-  it("writes one READ row per provider card read, never a value", async () => {
-    providerMock.mockResolvedValue({ id: ID, dateOfBirth: "1980-01-01" } as never);
-    const c = ctx();
-    await handleDirectoryProvider(ID, c);
-    expect(c.writeAudit).toHaveBeenCalledTimes(1);
-    const row = vi.mocked(c.writeAudit).mock.calls[0][0];
-    expect(row).toMatchObject({ actionType: "READ", entityType: "provider", entityId: ID });
-    expect(JSON.stringify(row)).not.toContain("1980");
-  });
-
-  it("fails the request when the audit write fails", async () => {
-    providerMock.mockResolvedValue({ id: ID } as never);
-    const c = ctx({ writeAudit: vi.fn().mockRejectedValue(new Error("audit down")) });
-    await expect(handleDirectoryProvider(ID, c)).rejects.toThrow("audit down");
-  });
-
-  it("writes nothing for group and location cards", async () => {
-    groupMock.mockResolvedValue({ id: ID } as never);
-    locationMock.mockResolvedValue({ id: ID } as never);
-    const c = ctx();
-    await handleDirectoryGroup(ID, c);
-    await handleDirectoryLocation(ID, c);
     expect(c.writeAudit).not.toHaveBeenCalled();
   });
 });
 
-describe("GET /api/me/directory-layouts", () => {
-  it("returns the saved layouts and the fixed catalogs, scoped by the JWT user", async () => {
-    const layouts = { group: ["tin"], provider: null, location: null };
-    getLayoutsMock.mockResolvedValue(layouts);
-    const res = await handleGetDirectoryLayouts(userCtx("uA"));
+describe("GET /api/me/view-prefs?card=", () => {
+  it("returns that card's saved fields and its catalog, scoped by the JWT user", async () => {
+    getLayoutMock.mockResolvedValue(["tin"]);
+    const res = await handleGetCardLayout("group", userCtx("uA"));
     expect(res.status).toBe(200);
-    expect((await body(res)).data).toEqual({ layouts, catalogs: DIRECTORY_CATALOGS });
-    expect(getLayoutsMock).toHaveBeenCalledWith(expect.objectContaining({ userId: "uA" }));
+    expect((await body(res)).data).toEqual({ fields: ["tin"], catalog: DIRECTORY_CATALOGS.group });
+    expect(getLayoutMock).toHaveBeenCalledWith(expect.objectContaining({ userId: "uA" }), "group");
+  });
+
+  it("answers fields: null until a layout is saved", async () => {
+    getLayoutMock.mockResolvedValue(null);
+    const res = await handleGetCardLayout("location", userCtx());
+    expect((await body(res)).data).toEqual({
+      fields: null,
+      catalog: DIRECTORY_CATALOGS.location,
+    });
+  });
+
+  it("422s an unknown card before reading", async () => {
+    const res = await handleGetCardLayout("payer", userCtx());
+    expect(res.status).toBe(422);
+    expect(getLayoutMock).not.toHaveBeenCalled();
   });
 });
 
-describe("PUT /api/me/directory-layouts", () => {
+describe("PUT /api/me/view-prefs?card=", () => {
   it.each([
-    ["null body", null],
-    ["array body", []],
-    ["unknown type", { type: "payer", fields: [] }],
-    ["fields not an array", { type: "group", fields: "tin" }],
-    ["unknown key", { type: "group", fields: ["ssn"] }],
-    ["another type's key", { type: "location", fields: ["npi"] }],
-    ["duplicate key", { type: "provider", fields: ["npi", "npi"] }],
-  ])("422s a %s before writing", async (_name, badBody) => {
-    const res = await handlePutDirectoryLayout(badBody, userCtx());
+    ["an unknown card", "payer", { fields: [] }],
+    ["a null body", "group", null],
+    ["an array body", "group", []],
+    ["fields not an array", "group", { fields: "tin" }],
+    ["an unknown key", "group", { fields: ["ssn"] }],
+    ["another card's key", "location", { fields: ["npi"] }],
+    ["a duplicate key", "provider", { fields: ["npi", "npi"] }],
+  ])("422s %s before writing", async (_name, card, badBody) => {
+    const res = await handlePutCardLayout(card, badBody, userCtx());
     expect(res.status).toBe(422);
     expect(putLayoutMock).not.toHaveBeenCalled();
   });
 
-  it("saves a valid layout under the JWT user and echoes it", async () => {
+  it("saves a valid layout under the JWT user and answers { fields }", async () => {
     putLayoutMock.mockResolvedValue(undefined);
     const fields = ["list.providers", "tin", "ptan"];
-    const res = await handlePutDirectoryLayout({ type: "group", fields }, userCtx("uB"));
+    const res = await handlePutCardLayout("group", { fields }, userCtx("uB"));
     expect(res.status).toBe(200);
-    expect((await body(res)).data).toEqual({ type: "group", fields });
+    expect((await body(res)).data).toEqual({ fields });
     expect(putLayoutMock).toHaveBeenCalledWith(
       expect.objectContaining({ userId: "uB" }),
       "group",
@@ -195,7 +194,7 @@ describe("PUT /api/me/directory-layouts", () => {
 
   it("ignores a body-supplied user id", async () => {
     putLayoutMock.mockResolvedValue(undefined);
-    await handlePutDirectoryLayout({ type: "group", fields: [], userId: "evil" }, userCtx("uB"));
+    await handlePutCardLayout("group", { fields: [], userId: "evil" }, userCtx("uB"));
     expect(putLayoutMock.mock.calls[0][0]).toMatchObject({ userId: "uB" });
   });
 });

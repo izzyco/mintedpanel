@@ -2107,129 +2107,118 @@ function looksLikeVercelGate(r) {
     );
   }
 
-  // 39. Workbench directory (Nov 4, 2026): read-only cards and search, any
-  //     role, org-guarded. Kansas reads its own provider card and, through
-  //     the ids on it, its own location and group cards and a search for the
-  //     provider's own name — positives that keep the negatives below from
-  //     passing against a dead route. No key anywhere in the card names an
-  //     SSN (keys only, so a surname like "Rossner" is not a false alarm).
-  const hasSsnKey = (value) =>
-    Array.isArray(value)
-      ? value.some(hasSsnKey)
-      : value !== null && typeof value === "object"
-        ? Object.entries(value).some(([k, v]) => /ssn/i.test(k) || hasSsnKey(v))
-        : false;
-  const ownDirectoryCard = await apiGet(`/api/directory/providers/${env.KANSAS_PROVIDER_ID}`, {
+  // 39. Workbench directory (Nov 4, 2026): GET /api/providers/:id adds the
+  //     card's related lists, and GET /api/groups and /api/locations are new
+  //     read-only lists and cards, any role, org-guarded. Kansas reads its own
+  //     provider card and, through the ids on it, its own location and group
+  //     cards, and finds both in the lists — positives that keep the
+  //     negatives below from passing against a dead route.
+  const ownProvider = await apiGet(`/api/providers/${env.KANSAS_PROVIDER_ID}`, {
     token: kansasTok,
   });
-  const ownCard = ownDirectoryCard.body?.data;
+  const ownCard = ownProvider.body?.data;
   check(
-    "39. Kansas reads its own provider directory card, with no SSN field",
-    ownDirectoryCard.status === 200 &&
+    "39. Kansas reads its own provider by id, with the directory card's related lists",
+    ownProvider.status === 200 &&
       ownCard?.id === env.KANSAS_PROVIDER_ID &&
-      !hasSsnKey(ownDirectoryCard.body),
-    `status=${ownDirectoryCard.status}`,
+      ["licenses", "medicareIds", "groups", "locations"].every((k) => Array.isArray(ownCard?.[k])),
+    `status=${ownProvider.status}`,
   );
   const ownLocationId = ownCard?.locations?.[0]?.id;
   if (ownLocationId) {
-    const ownLocation = await apiGet(`/api/directory/locations/${ownLocationId}`, {
-      token: kansasTok,
-    });
+    const ownLocation = await apiGet(`/api/locations/${ownLocationId}`, { token: kansasTok });
     check(
-      "39f. Kansas reads its own location's directory card",
+      "39f. Kansas reads its own location card",
       ownLocation.status === 200 && ownLocation.body?.data?.id === ownLocationId,
       `status=${ownLocation.status}`,
     );
   } else {
-    console.log("SKIP  39f. own directory location — the Kansas provider lists no location");
+    console.log("SKIP  39f. own location card — the Kansas provider lists no location");
   }
   const ownGroupId = ownCard?.groups?.[0]?.id;
   if (ownGroupId) {
-    const ownGroup = await apiGet(`/api/directory/groups/${ownGroupId}`, { token: kansasTok });
+    const ownGroup = await apiGet(`/api/groups/${ownGroupId}`, { token: kansasTok });
     check(
-      "39g. Kansas reads its own group's directory card",
+      "39g. Kansas reads its own group card",
       ownGroup.status === 200 && ownGroup.body?.data?.id === ownGroupId,
       `status=${ownGroup.status}`,
     );
   } else {
-    console.log("SKIP  39g. own directory group — the Kansas provider lists no group");
+    console.log("SKIP  39g. own group card — the Kansas provider lists no group");
   }
-  const ownName = typeof ownCard?.lastName === "string" ? ownCard.lastName.trim() : "";
-  if (ownName.length >= 2) {
-    const ownSearch = await apiGet(`/api/directory/search?q=${encodeURIComponent(ownName)}`, {
-      token: kansasTok,
-    });
-    check(
-      "39h. Kansas directory search for its own provider's name finds that provider",
-      ownSearch.status === 200 &&
-        Array.isArray(ownSearch.body?.data?.providers) &&
-        ownSearch.body.data.providers.some((p) => p.id === env.KANSAS_PROVIDER_ID),
-      `status=${ownSearch.status}`,
-    );
-  } else {
-    console.log("SKIP  39h. own directory search — the Kansas provider card has no last name");
-  }
-  // Any role reads the directory: the South Park caller is billing.
-  const billingCard = await apiGet(`/api/directory/providers/${env.SOUTHPARK_PROVIDER_ID}`, {
-    token: spTok,
-  });
+  //     The unfiltered lists: Kansas sees its own group and location, and no
+  //     South Park row.
+  const kansasGroups = await apiGet("/api/groups?pageSize=100", { token: kansasTok });
+  const kansasLocations = await apiGet("/api/locations?pageSize=100", { token: kansasTok });
+  const groupIds = Array.isArray(kansasGroups.body?.data)
+    ? kansasGroups.body.data.map((g) => g.id)
+    : [];
+  const locationIds = Array.isArray(kansasLocations.body?.data)
+    ? kansasLocations.body.data.map((l) => l.id)
+    : [];
   check(
-    "39i. A billing member reads its own org's provider directory card",
-    billingCard.status === 200 && billingCard.body?.data?.id === env.SOUTHPARK_PROVIDER_ID,
-    `status=${billingCard.status}`,
+    "39h. Kansas's group and location lists include its own group and location",
+    kansasGroups.status === 200 &&
+      kansasLocations.status === 200 &&
+      (!ownGroupId || groupIds.includes(ownGroupId)) &&
+      (!ownLocationId || locationIds.includes(ownLocationId)),
+    `status=${kansasGroups.status}/${kansasLocations.status}`,
   );
-  //     ...while another org's provider, location and group are a 404 with no
-  //     data...
-  const xDirectoryProvider = await apiGet(`/api/directory/providers/${env.SOUTHPARK_PROVIDER_ID}`, {
-    token: kansasTok,
-  });
+  // Any role reads the directory: the South Park caller is billing.
+  const billingGroups = await apiGet("/api/groups", { token: spTok });
   check(
-    "39b. Kansas GET directory card of a South Park provider -> 404, no data",
-    xDirectoryProvider.status === 404 && xDirectoryProvider.body?.data == null,
-    `status=${xDirectoryProvider.status} (expect 404)`,
+    "39i. A billing member lists its own org's groups",
+    billingGroups.status === 200 && Array.isArray(billingGroups.body?.data),
+    `status=${billingGroups.status}`,
+  );
+  const southParkIds = [env.SOUTHPARK_GROUP_ID, env.SOUTHPARK_FACILITY_ID].filter(Boolean);
+  const listLeaks = [...groupIds, ...locationIds].filter((id) => southParkIds.includes(id));
+  check(
+    "39b. Kansas's group and location lists hold no South Park row",
+    kansasGroups.status === 200 && kansasLocations.status === 200 && listLeaks.length === 0,
+    `status=${kansasGroups.status}/${kansasLocations.status} leaked=${listLeaks.length}`,
     { leak: true },
   );
-  const xDirectoryLocation = await apiGet(`/api/directory/locations/${env.SOUTHPARK_FACILITY_ID}`, {
+  //     ...another org's location and group cards are a 404 with no data...
+  const xLocation = await apiGet(`/api/locations/${env.SOUTHPARK_FACILITY_ID}`, {
     token: kansasTok,
   });
   check(
-    "39c. Kansas GET directory card of a South Park location -> 404, no data",
-    xDirectoryLocation.status === 404 && xDirectoryLocation.body?.data == null,
-    `status=${xDirectoryLocation.status} (expect 404)`,
+    "39c. Kansas GET a South Park location card -> 404, no data",
+    xLocation.status === 404 && xLocation.body?.data == null,
+    `status=${xLocation.status} (expect 404)`,
     { leak: true },
   );
   if (env.SOUTHPARK_GROUP_ID) {
-    const xDirectoryGroup = await apiGet(`/api/directory/groups/${env.SOUTHPARK_GROUP_ID}`, {
-      token: kansasTok,
-    });
+    const xGroup = await apiGet(`/api/groups/${env.SOUTHPARK_GROUP_ID}`, { token: kansasTok });
     check(
-      "39d. Kansas GET directory card of a South Park group -> 404, no data",
-      xDirectoryGroup.status === 404 && xDirectoryGroup.body?.data == null,
-      `status=${xDirectoryGroup.status} (expect 404)`,
+      "39d. Kansas GET a South Park group card -> 404, no data",
+      xGroup.status === 404 && xGroup.body?.data == null,
+      `status=${xGroup.status} (expect 404)`,
       { leak: true },
     );
   } else {
-    console.log("SKIP  39d. cross-org directory group — SOUTHPARK_GROUP_ID not set");
+    console.log("SKIP  39d. cross-org group card — SOUTHPARK_GROUP_ID not set");
   }
-  //     ...and a search for South Park's name finds nothing for Kansas (the
-  //     same SEARCH_LEAK_QUERY as 15b, which matches no Kansas record).
+  //     ...and searching the group and location lists for South Park's name
+  //     finds nothing for Kansas (the same SEARCH_LEAK_QUERY as 15b, which
+  //     matches no Kansas record).
   const directoryLeakQuery = env.SEARCH_LEAK_QUERY ?? "South Park";
-  const xDirectorySearch = await apiGet(
-    `/api/directory/search?q=${encodeURIComponent(directoryLeakQuery)}`,
-    { token: kansasTok },
+  const searches = await Promise.all(
+    ["groups", "locations"].map((kind) =>
+      apiGet(`/api/${kind}?search=${encodeURIComponent(directoryLeakQuery)}&pageSize=10`, {
+        token: kansasTok,
+      }),
+    ),
   );
-  const directoryHits = ["groups", "providers", "locations"].reduce(
-    (n, key) =>
-      n +
-      (Array.isArray(xDirectorySearch.body?.data?.[key])
-        ? xDirectorySearch.body.data[key].length
-        : 0),
+  const searchHits = searches.reduce(
+    (n, r) => n + (Array.isArray(r.body?.data) ? r.body.data.length : 0),
     0,
   );
   check(
-    `39e. Kansas directory search "${directoryLeakQuery}" -> 200, no South Park record`,
-    xDirectorySearch.status === 200 && directoryHits === 0,
-    `status=${xDirectorySearch.status} hits=${directoryHits} (expect 0)`,
+    `39e. Kansas group and location search "${directoryLeakQuery}" -> 200, no South Park record`,
+    searches.every((r) => r.status === 200) && searchHits === 0,
+    `status=${searches.map((r) => r.status).join("/")} hits=${searchHits} (expect 0)`,
     { leak: true },
   );
 
