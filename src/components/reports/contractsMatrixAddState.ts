@@ -73,3 +73,57 @@ export async function saveAddedState<C extends ContractsMatrixContract>({
     };
   }
 }
+
+export const CONTRACTS_MATRIX_ADDED_COLUMNS_STORAGE_PREFIX =
+  "minted:contracts-matrix:added-columns:";
+
+export function addedColumnsStorageKey(orgId: string | null | undefined): string | null {
+  if (!orgId) return null;
+  return `${CONTRACTS_MATRIX_ADDED_COLUMNS_STORAGE_PREFIX}${orgId}`;
+}
+
+export function loadAddedColumns(
+  orgId: string | null | undefined,
+  storage: Pick<Storage, "getItem"> | null = typeof window !== "undefined"
+    ? window.localStorage
+    : null,
+): ContractsMatrixAddedColumn[] {
+  const key = addedColumnsStorageKey(orgId);
+  if (!key || !storage) return [];
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (c): c is ContractsMatrixAddedColumn =>
+        Boolean(c) &&
+        typeof c === "object" &&
+        typeof c.specialty === "string" &&
+        typeof c.groupId === "string" &&
+        typeof c.state === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function saveAddedColumns(
+  orgId: string | null | undefined,
+  columns: readonly ContractsMatrixAddedColumn[],
+  storage: Pick<Storage, "setItem" | "removeItem"> | null = typeof window !== "undefined"
+    ? window.localStorage
+    : null,
+): void {
+  const key = addedColumnsStorageKey(orgId);
+  if (!key || !storage) return;
+  try {
+    if (columns.length === 0) {
+      storage.removeItem(key);
+    } else {
+      storage.setItem(key, JSON.stringify(columns));
+    }
+  } catch {
+    // ignore quota or availability errors
+  }
+}
