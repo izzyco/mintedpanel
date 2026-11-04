@@ -1,11 +1,17 @@
 name: Playwright Full E2E
 
 on:
-  # Manual dispatch only — run on-demand for batch release testing to avoid unexpected auto-runs
+  # Nightly on main (GitHub runs schedules on the default branch only), plus
+  # manual dispatch for batch release testing. PR runs get the smoke subset in
+  # ci.yml; this is the only automatic run of the full suite.
+  schedule:
+    - cron: "17 8 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # event_name keeps the nightly and a manual dispatch on main in separate
+  # groups; otherwise, on the same ref, one cancels the other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
