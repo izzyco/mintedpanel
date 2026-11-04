@@ -154,8 +154,8 @@ export function AddStateDialog({
           <DialogTitle>Add a {specialtyLabel} state</DialogTitle>
           <DialogDescription>
             Adds a {specialtyLabel} column for a group and state before any {specialtyLabel}{" "}
-            provider works there, so contracting can start early. Payer cells remain blank
-            (no contract record) by default.
+            provider works there, so contracting can start early. Payer cells remain blank (no
+            contract record) by default.
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -229,4 +229,3 @@ export function AddStateDialog({
     </Dialog>
   );
 }
-
