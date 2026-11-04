@@ -8,7 +8,12 @@ import type { Contract } from "@/types";
 vi.mock("@/integrations/supabase/externalClient", () => ({ supabase: {} }));
 
 import { ContractFollowUpWriteError } from "@/services/contracts";
-import { saveAddedState } from "./contractsMatrixAddState";
+import {
+  addedColumnsStorageKey,
+  loadAddedColumns,
+  saveAddedColumns,
+  saveAddedState,
+} from "./contractsMatrixAddState";
 
 function record(
   id: string,
@@ -157,5 +162,93 @@ describe("saveAddedState", () => {
       tone: "error",
       text: `${WHERE} shows for this visit only. Its Not started records were not saved. Permission denied.`,
     });
+  });
+});
+
+describe("addedColumns storage", () => {
+  function makeMockStorage(initial: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(initial));
+    return {
+      getItem: vi.fn((key: string) => store.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => {
+        store.set(key, value);
+      }),
+      removeItem: vi.fn((key: string) => {
+        store.delete(key);
+      }),
+      store,
+    };
+  }
+
+  it("produces null key for null/empty orgId", () => {
+    expect(addedColumnsStorageKey(null)).toBeNull();
+    expect(addedColumnsStorageKey(undefined)).toBeNull();
+    expect(addedColumnsStorageKey("")).toBeNull();
+    expect(addedColumnsStorageKey("org-123")).toBe("minted:contracts-matrix:added-columns:org-123");
+  });
+
+  it("returns empty array when orgId is null or storage is missing", () => {
+    expect(loadAddedColumns(null)).toEqual([]);
+    expect(loadAddedColumns(undefined)).toEqual([]);
+    expect(loadAddedColumns("org-123", null)).toEqual([]);
+  });
+
+  it("saves and loads added columns for an organization", () => {
+    const storage = makeMockStorage();
+    const columns = [
+      { specialty: "pt" as const, groupId: "g1", state: "MO" },
+      { specialty: "nutrition" as const, groupId: "g2", state: "LA" },
+    ];
+    saveAddedColumns("org-1", columns, storage);
+    expect(storage.setItem).toHaveBeenCalledWith(
+      "minted:contracts-matrix:added-columns:org-1",
+      JSON.stringify(columns),
+    );
+
+    const loaded = loadAddedColumns("org-1", storage);
+    expect(loaded).toEqual(columns);
+  });
+
+  it("isolates columns between different organizations", () => {
+    const storage = makeMockStorage();
+    const colsA = [{ specialty: "nutrition" as const, groupId: "g1", state: "LA" }];
+    const colsB = [{ specialty: "pt" as const, groupId: "g2", state: "CO" }];
+
+    saveAddedColumns("org-a", colsA, storage);
+    saveAddedColumns("org-b", colsB, storage);
+
+    expect(loadAddedColumns("org-a", storage)).toEqual(colsA);
+    expect(loadAddedColumns("org-b", storage)).toEqual(colsB);
+  });
+
+  it("removes storage key when saving empty columns", () => {
+    const storage = makeMockStorage();
+    saveAddedColumns(
+      "org-1",
+      [{ specialty: "nutrition" as const, groupId: "g1", state: "LA" }],
+      storage,
+    );
+    expect(loadAddedColumns("org-1", storage)).toHaveLength(1);
+
+    saveAddedColumns("org-1", [], storage);
+    expect(storage.removeItem).toHaveBeenCalledWith("minted:contracts-matrix:added-columns:org-1");
+    expect(loadAddedColumns("org-1", storage)).toEqual([]);
+  });
+
+  it("safely handles corrupted or invalid JSON in storage", () => {
+    const storage = makeMockStorage({
+      "minted:contracts-matrix:added-columns:org-corrupt": "not-json-{{{",
+      "minted:contracts-matrix:added-columns:org-invalid-array": JSON.stringify([
+        { specialty: "pt" }, // missing groupId, state
+        null,
+        "string",
+        { specialty: "nutrition", groupId: "g1", state: "LA" },
+      ]),
+    });
+
+    expect(loadAddedColumns("org-corrupt", storage)).toEqual([]);
+    expect(loadAddedColumns("org-invalid-array", storage)).toEqual([
+      { specialty: "nutrition", groupId: "g1", state: "LA" },
+    ]);
   });
 });

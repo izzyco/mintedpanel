@@ -59,6 +59,9 @@ vi.mock("@/hooks/useAdmin", () => ({
   usePayers: () => ({ data: mockState.payers, isLoading: false, isError: false }),
   useSops: () => ({ data: mockState.templates, isLoading: false, isError: false }),
 }));
+vi.mock("@/hooks/usePayerNetworkTargets", () => ({
+  usePayerNetworkTargets: () => ({ data: [], isLoading: false, isError: false }),
+}));
 vi.mock("@/hooks/usePayerForms", () => ({
   useTemplatePayerForms: () => ({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
 }));

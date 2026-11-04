@@ -1383,11 +1383,15 @@ export interface CaseGenerationRunRow {
 export type ContractingStatusLabel =
   | "Not Started"
   | "Application Submitted"
+  | "Contract Received / Awaiting Signature"
   | "In Progress (Contract Signed)"
+  | "In Progress"
+  | "Contracted"
   | "In-Network"
   | "Denied"
   | "Denied - Appealed"
   | "Denied - Reapplied"
+  | "Terminated"
   | "Out of Network";
 
 /** The specialty a contract record covers (`contracts.specialty_key`). `all` is

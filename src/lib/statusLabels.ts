@@ -37,6 +37,8 @@ export const CONTRACT_SIGNED_LABEL = "In Progress (Contract Signed)";
 export const DENIED_APPEALED_LABEL = "Denied - Appealed";
 export const DENIED_REAPPLIED_LABEL = "Denied - Reapplied";
 export const OUT_OF_NETWORK_LABEL = "Out of Network";
+export const TERMINATED_LABEL = "Terminated";
+export const CONTRACT_RECEIVED_LABEL = "Contract Received / Awaiting Signature";
 
 // --- Location-track (launch) status labels. ---
 export const PROSPECT_LABEL = "Prospect";

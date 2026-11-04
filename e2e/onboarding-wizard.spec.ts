@@ -545,13 +545,12 @@ test("F1.0.4: sidebar shows the approved white mark and conformed rail text alph
   await expect(logo).toHaveCSS("background-color", "rgb(255, 255, 255)");
 
   // Rail text conformance (TE-8 semantic white-alpha values, not a blanket
-  // brightening): section headings white/35, inactive nav items white/60.
+  // brightening): inactive nav items white/60.
   // .first() — the Sidebar renders in both the desktop rail and mobile drawer.
   // Tailwind v4 computes white-alpha as oklab(…white… / alpha) — assert the
   // white channel and the exact alpha.
-  const sectionLabel = page.locator("aside").getByText("Workspace", { exact: true }).first();
-  await expect(sectionLabel).toHaveCSS("color", /^oklab\(0\.99\d* [\d.e-]+ [\d.e-]+ \/ 0\.35\)$/);
-  const inactiveNav = page.locator("aside").getByRole("link", { name: "Reporting Center" }).first();
+  // (Option B, 2026-11-02, has no section headings on the rail.)
+  const inactiveNav = page.locator("aside").getByRole("link", { name: "Reports" }).first();
   await expect(inactiveNav).toHaveCSS("color", /^oklab\(0\.99\d* [\d.e-]+ [\d.e-]+ \/ 0\.6\)$/);
 
   // E0.9 TS-24 focus-ring conformance not regressed: white-alpha outline on

@@ -283,7 +283,6 @@ async function installMatrix(page: Page, role: "admin" | "billing" = "admin") {
     const wantsObject = (request.headers()["accept"] ?? "").includes("vnd.pgrst.object");
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
-
     if (path.startsWith("rpc/")) return json(path === "rpc/claim_invites" ? 0 : []);
     const table = path;
     if (method === "HEAD") {
@@ -660,6 +659,9 @@ async function addNutritionLa(page: Page, buttonLabel: string, beforeSave?: () =
   await page.getByRole("option", { name: "Group Name 3", exact: true }).click();
   await dialog.getByRole("combobox", { name: "State" }).click();
   await page.getByRole("option", { name: "LA", exact: true }).click();
+  if (buttonLabel.includes("Not started") || buttonLabel.includes("this visit")) {
+    await dialog.locator("#contracts-matrix-init-not-started").check();
+  }
   const save = dialog.getByRole("button", { name: buttonLabel, exact: true });
   await expect(save).toBeEnabled();
   beforeSave?.();
@@ -747,6 +749,56 @@ test("+ Add state saves Not started records, so the planned column persists", as
     page.getByText(/Added LA for Group Name 3 \(Nutrition\) for this visit only/),
   ).toBeVisible();
   expect(contractPosts).toHaveLength(1);
+});
+
+test("+ Add state with blank cells persists column across navigation and reload without creating contract records", async ({
+  page,
+}) => {
+  const { fixtures, writes } = await installMatrix(page);
+  await page.goto("/reporting/contracts-matrix");
+
+  // Initial Nutrition column headers
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "NE"]);
+
+  // Add LA for Group Name 3 without initializing Not started contracts
+  await addNutritionLa(page, "Add column");
+
+  // Toast confirms addition with blank cells
+  await expect(
+    page.getByText("Added LA for Group Name 3 (Nutrition) column with blank contract cells."),
+  ).toBeVisible();
+
+  // Column LA is now visible in the Nutrition table
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "LA", "NE"]);
+
+  // Cell shows "No contract record" with blank / em-dash display
+  const nutritionBlankCell = region(page, "Nutrition").getByRole("button", {
+    name: "Payer 1, Nutrition, Group Name 3, LA: No contract record",
+  });
+  await expect(nutritionBlankCell).toBeVisible();
+  await expect(nutritionBlankCell).toContainText("—");
+
+  // Verify zero contract records were created in the database
+  const contractWritesBeforeReload = writes.filter((w) => w.table === "contracts");
+  expect(contractWritesBeforeReload).toHaveLength(0);
+
+  // Reload the page: the blank column must persist via storage
+  await page.reload();
+
+  // Column LA is still visible in the Nutrition table
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "LA", "NE"]);
+  await expect(
+    region(page, "Nutrition").getByRole("button", {
+      name: "Payer 1, Nutrition, Group Name 3, LA: No contract record",
+    }),
+  ).toBeVisible();
+
+  // Still zero contract writes after reload
+  const contractWritesAfterReload = writes.filter((w) => w.table === "contracts");
+  expect(contractWritesAfterReload).toHaveLength(0);
+  expect(
+    fixtures.contracts.filter((row) => row.group_id === GROUP_3 && row.state === "LA"),
+  ).toHaveLength(0);
 });
 
 test("+ Add state counts records saved by someone else, when it opens and when it saves", async ({

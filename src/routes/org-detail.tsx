@@ -28,7 +28,7 @@ export const Route = createFileRoute("/org-detail")({
 function OrgDetailPage() {
   return (
     <div className="space-y-6">
-      <PageHeader title="Org Detail" />
+      <PageHeader title="Organization settings" />
       {/* F6.1.5: shown until the one-time wizard completes, then never again. */}
       <FinishSetupBanner />
       {/* Read-only ORG-IDENTITY summary (name + organization address). Since

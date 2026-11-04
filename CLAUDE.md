@@ -732,6 +732,15 @@ would go stale.
 `/cases` as an escape hatch). Starter cases and launch-driven creation are
 retired; `src/lib/oneDoor.test.ts` greps the source tree to keep it that way.
 
+`ManualCaseModal`'s payer picker opens on the picked group's network (active
+`payer_network_targets` via `alreadyAttachedPayerIds`) with a visible "Show all
+payers (new contracting)" escape; a zero-network group, a failed targets read,
+no group yet, and Contract all show the full `manualCasePayers` list
+(`src/lib/manualCasePayerOptions.ts`). It only shapes the list: SOP resolution,
+dedupe and creation read the pick exactly as before, and a pick that falls
+outside a newly chosen group's network stays picked with an "Out of network"
+tag. The State picker is unfiltered.
+
 The Cases Matrix respects this: a gap cell `<Link>`s to `/generation`
 pre-scoped (`?provider=&payer=&group=`) rather than creating anything. Creating
 inline would ship a case without its payer forms and execution types, which only
@@ -1050,6 +1059,12 @@ does **not** typecheck.
 **Read `docs/VERIFY.md`** for the bootstrap one-liner, the verification tier
 table (what to run for a given diff), measured costs, and the route→spec map.
 
+**PR bodies say functionally what we did.** Open with **What changes for
+you** (plain language: who sees what, where, step by step), then a
+**Walkthrough** of numbered screenshots for any change a person can see or
+click, then the technical sections. Capture locally against the mock harness
+and publish to the `pr-media` branch — see the **`pr-demo`** skill.
+
 **Cloud sandboxes block egress to `*.supabase.co`.** Database work goes through
 the Supabase MCP tools; browser verification goes through the Playwright mock
 harness — see the **`e2e-harness`** skill.
@@ -1062,6 +1077,8 @@ harness — see the **`e2e-harness`** skill.
   verification; read before adding a resource route.
 - **`e2e-harness`** — Playwright + Supabase-mock harness for browser
   verification in cloud sandboxes.
+- **`pr-demo`** — PR body shape (functional summary first) and the screenshot
+  walkthrough: local capture, publish to `pr-media`.
 - **`adhd`** — ADHD-friendly response shaping (next action first, numbered
   steps, concrete estimates, visible wins).
 - **`minted-m3-audit`** — Lean 3M (Muda/Mura/Muri) health-check audit of a

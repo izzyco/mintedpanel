@@ -123,7 +123,7 @@ describe("+ Add state on the contracts matrix (GCM-33)", () => {
     expect(createIfMissing).not.toHaveBeenCalled();
   });
 
-  it("says the column is kept for all of the table's payers, with no confirm step", () => {
+  it("leaves payer cells blank by default, with an optional Not started initialization", () => {
     const countFor = vi.fn(() => 12);
     const html = renderToStaticMarkup(
       <AddStateDialog
@@ -136,8 +136,9 @@ describe("+ Add state on the contracts matrix (GCM-33)", () => {
     );
     expect(html).toContain("Add a Nutrition state");
     expect(html).toContain(
-      "Every payer in the Nutrition table, across all groups and whatever the filters show, that serves the state and has no record there gets a Not started record, so the column stays for everyone.",
+      "Adds a Nutrition column for a group and state before any Nutrition provider works there, so contracting can start early. Payer cells remain blank (no contract record) by default.",
     );
+    expect(html).toContain("Initialize payer work as Not started");
     // No state chosen yet: no count to show, and nothing computed.
     expect(html).toContain(">Add column<");
     expect(countFor).not.toHaveBeenCalled();
