@@ -12,6 +12,22 @@ Epic lifecycle: [`docs/redesign/README.md`](docs/redesign/README.md).
 - **`staging` is a deployment pointer only**: `staging` is exclusively an ancestry-enforced fast-forward pointer tracking admitted `main` commits.
 - **Merge execution**: Autonomous agent self-merging is prohibited; merge to `main` only when explicitly authorized by the PM after required CI passes.
 
+## CI and release protocol (Preserving GitHub runner minutes)
+
+- **Always open PRs as Draft**: While developing, testing, or iterating, all PRs **must** be created as drafts (`gh pr create --draft`). Draft PRs skip CI entirely (`!github.event.pull_request.draft`), consuming **0 runner minutes**.
+- **Consolidated Batch Release Pattern**: Do NOT merge individual feature PRs one-by-one into `main`. When a set of features or tickets is ready, group them into a single consolidated release branch (`release/vYYYY.MM-<topic>`) branched from `main`. Merge the feature branches into the release branch, resolve any conflicts, and open a single batch PR to `main`. This collapses 10+ redundant CI runs into one single ~7-minute cycle.
+- **Local Pre-flight Before Marking Ready**: Before undrafting or creating a release PR, always run all checks locally to guarantee first-run green CI:
+  ```bash
+  npm run check:migrations
+  npx tsc --noEmit
+  npm run lint
+  npm run lint:epics
+  npm run test:migrations
+  npm run test:release
+  npm test
+  ```
+- **Heavy test suites are manual-only**: Never re-introduce automatic triggers, cron schedules, or PR runs for the 413-spec Playwright regression (`e2e-full.yml`), the 3,500-provider seed rehearsal (`luna-scale-rehearsal.yml`), or background ticks (`followup-digest-tick.yml`). They must remain isolated to manual `workflow_dispatch` only.
+
 ## Project overview
 
 Minted Panel is a credentialing operations SaaS for medical groups, tracking providers, payers, cases, tasks, touches, and contracts across states. The stack is React 19 + TypeScript + Tailwind v4 + shadcn/ui on **TanStack Start** (file-based routing on a nitro server, SSR-capable — not a plain Vite SPA), with Zustand for auth/org state, TanStack Query for server state, and Supabase for database, auth, and RLS. The product is feature-complete; most work is incremental UI, bug fixes, and additive backend tables.
