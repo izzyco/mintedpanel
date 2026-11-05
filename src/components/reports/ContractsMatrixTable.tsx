@@ -157,7 +157,10 @@ function MatrixGrid({
                     ) : null}
                   </>
                 ) : (
-                  <span className="block text-center" title={`${segment.state} (${countLabel(segment.groupCount, "group")})`}>
+                  <span
+                    className="block text-center"
+                    title={`${segment.state} (${countLabel(segment.groupCount, "group")})`}
+                  >
                     <span className="block text-[13px] font-semibold text-[var(--mp-ink)]">
                       {segment.state}
                     </span>

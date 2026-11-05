@@ -367,9 +367,7 @@ export function GroupContractsMatrix({
     }
   }, [hasIdlePending, queries]);
 
-  const isLoading = queries.some(
-    (query) => query.isLoading || (query.isPending && !query.isError),
-  );
+  const isLoading = queries.some((query) => query.isLoading || (query.isPending && !query.isError));
   const isError = queries.some((query) => query.isError);
 
   if (isLoading) {

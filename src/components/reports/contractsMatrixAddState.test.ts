@@ -223,7 +223,11 @@ describe("addedColumns storage", () => {
 
   it("removes storage key when saving empty columns", () => {
     const storage = makeMockStorage();
-    saveAddedColumns("org-1", [{ specialty: "nutrition" as const, groupId: "g1", state: "LA" }], storage);
+    saveAddedColumns(
+      "org-1",
+      [{ specialty: "nutrition" as const, groupId: "g1", state: "LA" }],
+      storage,
+    );
     expect(loadAddedColumns("org-1", storage)).toHaveLength(1);
 
     saveAddedColumns("org-1", [], storage);

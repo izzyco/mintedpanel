@@ -796,7 +796,9 @@ test("+ Add state with blank cells persists column across navigation and reload 
   // Still zero contract writes after reload
   const contractWritesAfterReload = writes.filter((w) => w.table === "contracts");
   expect(contractWritesAfterReload).toHaveLength(0);
-  expect(fixtures.contracts.filter((row) => row.group_id === GROUP_3 && row.state === "LA")).toHaveLength(0);
+  expect(
+    fixtures.contracts.filter((row) => row.group_id === GROUP_3 && row.state === "LA"),
+  ).toHaveLength(0);
 });
 
 test("+ Add state counts records saved by someone else, when it opens and when it saves", async ({
