@@ -50,13 +50,15 @@ export function useCreateContract() {
 }
 
 /** Creates the records whose 4-part key holds none yet, in one insert, and
- * skips the rest (GCM-33 "+ Add state"). Every contract list is invalidated. */
+ * skips the rest (GCM-33 "+ Add state"). Every contract list is invalidated
+ * when it settles, not only on success: the insert can commit and a later
+ * history or audit write still fail (ContractFollowUpWriteError). */
 export function useCreateContractsIfMissing() {
   const qc = useQueryClient();
   const orgId = useActiveOrgId() ?? "no-org";
   return useMutation({
     mutationFn: (inputs: readonly ContractInput[]) => createContractsIfMissing(inputs),
-    onSuccess: () => {
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ["contracts", orgId] });
       qc.invalidateQueries({ queryKey: ["contract", orgId] });
       qc.invalidateQueries({ queryKey: ["audit-log", orgId] });

@@ -771,7 +771,7 @@ describe("one table per specialty (US-12 to US-15, GCM-28 to 36)", () => {
 
     it("gives every payer row with an open cell a Not started record of that specialty", () => {
       const w = specialties();
-      const records = notStartedRecordsForAddedState(w.input, {}, NUTRITION_LA);
+      const records = notStartedRecordsForAddedState(w.input, NUTRITION_LA);
       expect(records).toEqual(
         ["p1", "p2", "p3", "p4", "p5"].map((payerId) => ({
           groupId: "g3",
@@ -796,7 +796,7 @@ describe("one table per specialty (US-12 to US-15, GCM-28 to 36)", () => {
       expect(saved.kind === "record" && saved.shared).toBe(false);
       expect(table(matrix, "pt").columns.filter((c) => c.groupId === "g3")).toHaveLength(2);
       // Nothing left to add: a second add of the same state saves nothing.
-      expect(notStartedRecordsForAddedState(w.input, {}, NUTRITION_LA)).toEqual([]);
+      expect(notStartedRecordsForAddedState(w.input, NUTRITION_LA)).toEqual([]);
     });
 
     it("never duplicates or covers a record, and skips states the plan does not serve", () => {
@@ -807,35 +807,49 @@ describe("one table per specialty (US-12 to US-15, GCM-28 to 36)", () => {
         .record("g3", "p1", "LA", IN_NETWORK_LABEL, { specialtyKey: "all" })
         // Nutrition's own record already exists here.
         .record("g3", "p2", "LA", APPLICATION_SUBMITTED_LABEL, { specialtyKey: "nutrition" });
-      const records = notStartedRecordsForAddedState(w.input, {}, NUTRITION_LA);
+      const records = notStartedRecordsForAddedState(w.input, NUTRITION_LA);
       expect(records.map((record) => record.payerId)).toEqual(["p3", "p4", "p5"]);
     });
 
-    it("ignores the payer search, Status and States filters but follows the Groups filter", () => {
+    it("is the same whatever the Groups filter shows: it reads the default table", () => {
       const w = specialties();
-      const filtered = notStartedRecordsForAddedState(
-        w.input,
-        { payerSearch: "Payer 1", statusFilter: IN_NETWORK_LABEL, selectedStates: ["KS"] },
-        NUTRITION_LA,
+      const all = ["p1", "p2", "p3", "p4", "p5"];
+      // Narrowed to the planned group, the view's Nutrition table has no payer
+      // rows (Group Name 3 has no targets or records), and with Group Name 2
+      // cleared away the column's group is not even shown...
+      const narrowed = build(w, { selectedGroupIds: ["g3"], addedColumns: [NUTRITION_LA] });
+      expect(table(narrowed, "nutrition").rows).toEqual([]);
+      const cleared = build(w, { selectedGroupIds: ["g2"], addedColumns: [NUTRITION_LA] });
+      expect(table(cleared, "nutrition").columns.map((c) => c.groupId)).not.toContain("g3");
+      // ...yet the saved set is every group's payer rows, as with no filter.
+      expect(notStartedRecordsForAddedState(w.input, NUTRITION_LA).map((r) => r.payerId)).toEqual(
+        all,
       );
-      expect(filtered.map((record) => record.payerId)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
+
+      // An inactive group, shown only once picked in the Groups filter, can
+      // be planned too.
+      w.group("g9", "Group Name 9 Planned", false);
+      const inactive = notStartedRecordsForAddedState(w.input, {
+        specialty: "nutrition",
+        groupId: "g9",
+        state: "LA",
+      });
+      expect(inactive.map((r) => [r.groupId, r.payerId])).toEqual(all.map((p) => ["g9", p]));
       expect(
-        notStartedRecordsForAddedState(w.input, { selectedGroupIds: ["g2"] }, NUTRITION_LA),
+        notStartedRecordsForAddedState(w.input, { ...NUTRITION_LA, groupId: "no-such-group" }),
       ).toEqual([]);
     });
 
-    it("includes a payer added this session, and saves no status when the org has no Not Started", () => {
+    it("saves no status when the org has no Not Started; a payer added only this session gets none", () => {
+      // Payer 7 is in no default table (no target, no record): a row it gets
+      // from "+ Add payer" is view state, so it is not given a record.
       const w = specialties().payer("p7", "Payer 7 Added", ["LA"]);
       const input = {
         ...w.input,
         statuses: w.input.statuses.filter((status) => status.id !== STATUS_IDS[NOT_STARTED_LABEL]),
       };
-      const records = notStartedRecordsForAddedState(
-        input,
-        { addedPayerIds: ["p7"] },
-        NUTRITION_LA,
-      );
-      expect(records.map((record) => record.payerId)).toContain("p7");
+      const records = notStartedRecordsForAddedState(input, NUTRITION_LA);
+      expect(records.map((record) => record.payerId)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
       expect(records.every((record) => record.contractingStatusId === null)).toBe(true);
     });
   });
