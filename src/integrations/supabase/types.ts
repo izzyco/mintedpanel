@@ -624,6 +624,7 @@ export type Database = {
           generation_run_id: string | null;
           group_id: string | null;
           id: string;
+          locations_cleared: boolean;
           mso_id: string | null;
           org_id: string;
           payer_group_provider_id: string | null;
@@ -656,6 +657,7 @@ export type Database = {
           generation_run_id?: string | null;
           group_id?: string | null;
           id?: string;
+          locations_cleared?: boolean;
           mso_id?: string | null;
           org_id: string;
           payer_group_provider_id?: string | null;
@@ -688,6 +690,7 @@ export type Database = {
           generation_run_id?: string | null;
           group_id?: string | null;
           id?: string;
+          locations_cleared?: boolean;
           mso_id?: string | null;
           org_id?: string;
           payer_group_provider_id?: string | null;
@@ -2872,6 +2875,7 @@ export type Database = {
           group_id: string | null;
           id: string;
           org_id: string;
+          payer_id: string | null;
           provider_id: string | null;
           supersedes_document_id: string | null;
           uploaded_by: string | null;
@@ -2889,6 +2893,7 @@ export type Database = {
           group_id?: string | null;
           id?: string;
           org_id: string;
+          payer_id?: string | null;
           provider_id?: string | null;
           supersedes_document_id?: string | null;
           uploaded_by?: string | null;
@@ -2906,6 +2911,7 @@ export type Database = {
           group_id?: string | null;
           id?: string;
           org_id?: string;
+          payer_id?: string | null;
           provider_id?: string | null;
           supersedes_document_id?: string | null;
           uploaded_by?: string | null;
@@ -2931,6 +2937,13 @@ export type Database = {
             columns: ["org_id"];
             isOneToOne: false;
             referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_documents_payer_id_fkey";
+            columns: ["payer_id"];
+            isOneToOne: false;
+            referencedRelation: "payers";
             referencedColumns: ["id"];
           },
           {
