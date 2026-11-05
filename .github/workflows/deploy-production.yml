@@ -15,7 +15,7 @@ concurrency:
 jobs:
   deploy:
     name: Build and deploy to Vercel Production
-    if: github.ref == 'refs/heads/main' && inputs.confirm == 'deploy'
+    if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && inputs.confirm == 'deploy'
     runs-on: ubuntu-latest
     environment: Production
     steps:
