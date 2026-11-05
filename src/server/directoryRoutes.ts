@@ -1,8 +1,7 @@
 // Workbench directory routes (Nov 4, 2026): the extension's read-only lookup
 // of groups and locations, and the directory card layouts. Providers are
 // served by the existing /api/providers routes (providerRoutes.ts), which
-// borrow this module's matching and related lists. Spec: the vault note
-// "2026-11-04 - Minted Extension - Directory Search Spec". Same composition as
+// borrow this module's matching and related lists. Same composition as
 // extensionRoutes.ts — inject the authenticated ctx into the service layer,
 // never query here.
 //

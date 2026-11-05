@@ -149,9 +149,9 @@ describe("parseDirectoryQuery", () => {
 
   it("takes a full state name as one state term", () => {
     expect(q("New Mexico")).toEqual({ states: [{ code: "NM", phrase: "new mexico" }], terms: [] });
-    expect(q("sandia   new   mexico")).toEqual({
+    expect(q("sample   new   mexico")).toEqual({
       states: [{ code: "NM", phrase: "new mexico" }],
-      terms: ["sandia"],
+      terms: ["sample"],
     });
   });
 
@@ -186,13 +186,13 @@ describe("parseDirectoryQuery", () => {
 
 describe("matchesDirectoryQuery", () => {
   const group: DirectorySearchable = {
-    text: ["Sandia Physical Therapy"],
+    text: ["Sample Physical Therapy"],
     ids: ["12-3456789", "1234567890"],
     states: ["NM", "CO"],
   };
 
   it("matches a name substring, case-insensitively", () => {
-    expect(matchesDirectoryQuery(group, q("sandia"))).toBe(true);
+    expect(matchesDirectoryQuery(group, q("sample"))).toBe(true);
     expect(matchesDirectoryQuery(group, q("PHYSICAL"))).toBe(true);
   });
 
@@ -219,9 +219,9 @@ describe("matchesDirectoryQuery", () => {
   });
 
   it("needs every term to match somewhere", () => {
-    expect(matchesDirectoryQuery(group, q("sandia New Mexico"))).toBe(true);
-    expect(matchesDirectoryQuery(group, q("sandia Kansas"))).toBe(false);
-    expect(matchesDirectoryQuery(group, q("sandia acme"))).toBe(false);
+    expect(matchesDirectoryQuery(group, q("sample New Mexico"))).toBe(true);
+    expect(matchesDirectoryQuery(group, q("sample Kansas"))).toBe(false);
+    expect(matchesDirectoryQuery(group, q("sample acme"))).toBe(false);
   });
 
   it("matches a state name inside a record's own name", () => {

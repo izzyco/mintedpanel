@@ -131,8 +131,8 @@ describe("provider route handlers", () => {
     getProviderMock.mockResolvedValue(row as never);
     const extras = {
       licenses: [{ state: "NM", licenseNumber: "NM-1", expirationDate: null }],
-      medicareIds: [{ groupId: "g1", groupName: "Sandia", medicareId: "MCR-1" }],
-      groups: [{ id: "g1", name: "Sandia", tin: "12-3456789", isPrimary: true }],
+      medicareIds: [{ groupId: "g1", groupName: "Sample", medicareId: "MCR-1" }],
+      groups: [{ id: "g1", name: "Sample", tin: "12-3456789", isPrimary: true }],
       locations: [{ id: "f1", name: "Uptown", city: "Albuquerque", state: "NM" }],
     };
     extrasMock.mockResolvedValue(extras);

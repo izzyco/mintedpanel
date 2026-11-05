@@ -1,8 +1,7 @@
 // Workbench directory (Nov 4, 2026): the pure half of the read-only lookup of
 // groups, providers and locations behind GET /api/groups, /api/locations,
 // the extended /api/providers search and card, and the directory card layouts
-// on /api/me/view-prefs?card=. Spec: the vault note "2026-11-04 - Minted
-// Extension - Directory Search Spec".
+// on /api/me/view-prefs?card=.
 //
 // Owns the card field catalogs (keys, labels, sections and defaults match the
 // approved mocks), the layout PUT validator, the search query parser (state

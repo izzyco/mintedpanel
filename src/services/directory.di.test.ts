@@ -114,7 +114,7 @@ function fixture(): Record<string, Row[]> {
         id: G1,
         org_id: ORG,
         is_active: true,
-        name: "Sandia Physical Therapy",
+        name: "Sample Physical Therapy",
         tin: "12-3456789",
         npi_type2: "1999999999",
         states: ["NM"],
@@ -124,8 +124,8 @@ function fixture(): Record<string, Row[]> {
         correspondence_zip: "87110",
         ...contact,
       },
-      { id: G2, org_id: ORG, is_active: false, name: "Sandia Closed Group", states: ["NM"] },
-      { id: G3, org_id: OTHER, is_active: true, name: "Sandia Elsewhere", states: ["NM"] },
+      { id: G2, org_id: ORG, is_active: false, name: "Sample Closed Group", states: ["NM"] },
+      { id: G3, org_id: OTHER, is_active: true, name: "Sample Elsewhere", states: ["NM"] },
       { id: G4, org_id: ORG, is_active: true, name: "Front Range Rehab", states: ["CO"] },
     ],
     providers: [
@@ -361,7 +361,7 @@ describe("listDirectoryGroups", () => {
     const page = await listDirectoryGroups(ctx, null, 1, 25);
     expect(page.rows).toEqual([
       { id: G4, name: "Front Range Rehab", tin: null, states: ["CO"] },
-      { id: G1, name: "Sandia Physical Therapy", tin: "12-3456789", states: ["NM"] },
+      { id: G1, name: "Sample Physical Therapy", tin: "12-3456789", states: ["NM"] },
     ]);
     expect(page.total).toBe(2);
     expect(unscoped).toEqual([]);
@@ -369,14 +369,14 @@ describe("listDirectoryGroups", () => {
 
   it("matches name, TIN with or without the dash, Group NPI, and state code or name", async () => {
     const { ctx } = setup();
-    for (const raw of ["sandia", "123456789", "12-3456789", "1999999999", "NM", "New Mexico"]) {
+    for (const raw of ["sample", "123456789", "12-3456789", "1999999999", "NM", "New Mexico"]) {
       expect(ids(await listDirectoryGroups(ctx, q(raw), 1, 25))).toEqual([G1]);
     }
   });
 
   it("never returns another org's or an inactive group", async () => {
     const { ctx } = setup();
-    expect(ids(await listDirectoryGroups(ctx, q("sandia"), 1, 25))).toEqual([G1]);
+    expect(ids(await listDirectoryGroups(ctx, q("sample"), 1, 25))).toEqual([G1]);
   });
 
   it("pages A→Z with an exact total", async () => {
@@ -423,7 +423,7 @@ describe("listDirectoryLocations", () => {
           name: "Albuquerque – Uptown",
           city: "Albuquerque",
           state: "NM",
-          group: { id: G1, name: "Sandia Physical Therapy" },
+          group: { id: G1, name: "Sample Physical Therapy" },
         },
       ],
       total: 1,
@@ -440,7 +440,7 @@ describe("listDirectoryLocations", () => {
       "87110",
       "NM",
       "New Mexico",
-      "sandia",
+      "sample",
     ]) {
       expect(ids(await listDirectoryLocations(ctx, q(raw), 1, 25))).toEqual([F1]);
     }
@@ -496,7 +496,7 @@ describe("filterProvidersBySearch", () => {
       expect(rows.map((p) => p.id)).toEqual([P1]);
     }
     // P4's only assignment ended; the inactive group never matches.
-    expect(await match("sandia")).toEqual([P1]);
+    expect(await match("sample")).toEqual([P1]);
     expect(await match("closed")).toEqual([]);
   });
 
@@ -514,8 +514,8 @@ describe("filterProvidersBySearch", () => {
   });
 
   it("needs every term to match, so a name plus a group narrows", async () => {
-    expect(await match("ada sandia")).toEqual([P1]);
-    expect(await match("ben sandia")).toEqual([]);
+    expect(await match("ada sample")).toEqual([P1]);
+    expect(await match("ben sample")).toEqual([]);
   });
 
   it("keeps the caller's order and scopes every read to the org", async () => {
@@ -532,7 +532,7 @@ describe("getDirectoryGroup", () => {
     const group = await getDirectoryGroup(ctx, G1);
     expect(group).toMatchObject({
       id: G1,
-      name: "Sandia Physical Therapy",
+      name: "Sample Physical Therapy",
       legalName: null,
       tin: "12-3456789",
       npiType2: "1999999999",
@@ -600,10 +600,10 @@ describe("getProviderDirectoryExtras", () => {
     ]);
     // Only the live Medicare fact under an active group.
     expect(extras.medicareIds).toEqual([
-      { groupId: G1, groupName: "Sandia Physical Therapy", medicareId: "MCR-1" },
+      { groupId: G1, groupName: "Sample Physical Therapy", medicareId: "MCR-1" },
     ]);
     expect(extras.groups).toEqual([
-      { id: G1, name: "Sandia Physical Therapy", tin: "12-3456789", isPrimary: true },
+      { id: G1, name: "Sample Physical Therapy", tin: "12-3456789", isPrimary: true },
       { id: G4, name: "Front Range Rehab", tin: null, isPrimary: false },
     ]);
     expect(extras.locations).toEqual([
@@ -643,7 +643,7 @@ describe("getDirectoryLocation", () => {
       fax: "(505) 555-0198",
       placeOfService: null,
       hours: null,
-      group: { id: G1, name: "Sandia Physical Therapy", tin: "12-3456789", npiType2: "1999999999" },
+      group: { id: G1, name: "Sample Physical Therapy", tin: "12-3456789", npiType2: "1999999999" },
     });
     expect(loc?.providers.map((p) => p.id)).toEqual([P1]);
     expect(unscoped).toEqual([]);
