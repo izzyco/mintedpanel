@@ -29,15 +29,19 @@ import type {
 } from "./providerFootprint";
 import {
   APPLICATION_SUBMITTED_LABEL,
+  CONTRACT_RECEIVED_LABEL,
   CONTRACT_SIGNED_LABEL,
+  CONTRACTED_LABEL,
   DENIED_APPEALED_LABEL,
   DENIED_LABEL,
   DENIED_REAPPLIED_LABEL,
   IN_NETWORK_LABEL,
+  IN_PROGRESS_LABEL,
   NOT_STARTED_LABEL,
   OON_LABEL,
   OUT_OF_NETWORK_LABEL,
   PRE_CRED_PAYER_NAME,
+  TERMINATED_LABEL,
 } from "./statusLabels";
 import type { ContractSpecialty } from "./contractSpecialty";
 import type { ContractSpecialtyKey, ContractingStatusLabel } from "@/types";
@@ -50,11 +54,15 @@ const OT_CODE = "225X00000X";
 const STATUS_IDS: Record<ContractingStatusLabel, string> = {
   [NOT_STARTED_LABEL]: "st-not-started",
   [APPLICATION_SUBMITTED_LABEL]: "st-submitted",
+  [CONTRACT_RECEIVED_LABEL]: "st-received",
+  [IN_PROGRESS_LABEL]: "st-in-progress",
   [CONTRACT_SIGNED_LABEL]: "st-signed",
+  [CONTRACTED_LABEL]: "st-contracted",
   [IN_NETWORK_LABEL]: "st-in-network",
   [DENIED_LABEL]: "st-denied",
   [DENIED_APPEALED_LABEL]: "st-appealed",
   [DENIED_REAPPLIED_LABEL]: "st-reapplied",
+  [TERMINATED_LABEL]: "st-terminated",
   [OUT_OF_NETWORK_LABEL]: "st-oon",
 };
 const LEGACY_OON_ID = "st-legacy-oon";
@@ -1081,14 +1089,18 @@ describe("which providers add columns (GCM-30)", () => {
 });
 
 describe("status display", () => {
-  it("has a short label for each of the 8 governed statuses, in legend order", () => {
+  it("has a short label for each governed status, in legend order", () => {
     expect(MATRIX_STATUS_ORDER.map((label) => CONTRACT_STATUS_SHORT_LABELS[label])).toEqual([
       "In network",
       "Signed",
+      "Received",
+      "In progress",
       "Submitted",
       "Appealed",
       "Reapplied",
       "Denied",
+      "Terminated",
+      "Contracted",
       "Out of network",
       "Not started",
     ]);
@@ -1097,8 +1109,14 @@ describe("status display", () => {
   it("shows a legacy or missing status in full with the neutral tone", () => {
     expect(contractStatusDisplay(OON_LABEL)).toEqual({
       label: OON_LABEL,
+      canonical: OUT_OF_NETWORK_LABEL,
+      shortLabel: "Out of network",
+      tone: "out-of-network",
+    });
+    expect(contractStatusDisplay("Legacy Unknown")).toEqual({
+      label: "Legacy Unknown",
       canonical: null,
-      shortLabel: OON_LABEL,
+      shortLabel: "Legacy Unknown",
       tone: "other",
     });
     expect(contractStatusDisplay(null)).toMatchObject({ label: null, shortLabel: "No status" });
@@ -1109,15 +1127,52 @@ describe("status display", () => {
       .record("g3", "blank", "TX", null);
     const pt = table(build(w), "pt");
     expect(cell(pt, "Legacy Payer", "g3", "TX")).toMatchObject({
-      shortLabel: "OON",
-      tone: "other",
+      shortLabel: "Out of network",
+      tone: "out-of-network",
     });
     expect(cell(pt, "Blank Payer", "g3", "TX").ariaLabel).toBe(
       "Blank Payer, Physical therapy, Group Name 3, TX: No status",
     );
     expect(
       table(build(w, { statusFilter: OUT_OF_NETWORK_LABEL }), "pt").rows.map((r) => r.payerName),
-    ).toEqual(["Payer 3"]);
+    ).toEqual(["Legacy Payer", "Payer 3"]);
+  });
+
+  it("distinguishes Terminated from Denied while both use red outcome treatment", () => {
+    const denied = contractStatusDisplay(DENIED_LABEL);
+    const terminated = contractStatusDisplay(TERMINATED_LABEL);
+    expect(denied).toEqual({
+      label: DENIED_LABEL,
+      canonical: DENIED_LABEL,
+      shortLabel: "Denied",
+      tone: "denied",
+    });
+    expect(terminated).toEqual({
+      label: TERMINATED_LABEL,
+      canonical: TERMINATED_LABEL,
+      shortLabel: "Terminated",
+      tone: "terminated",
+    });
+  });
+
+  it("distinguishes In Progress, Received, Signed, and Contracted from Effective", () => {
+    const inProgress = contractStatusDisplay(IN_PROGRESS_LABEL);
+    const received = contractStatusDisplay(CONTRACT_RECEIVED_LABEL);
+    const signed = contractStatusDisplay(CONTRACT_SIGNED_LABEL);
+    const contracted = contractStatusDisplay(CONTRACTED_LABEL);
+    const inNetwork = contractStatusDisplay(IN_NETWORK_LABEL);
+
+    expect(inProgress.shortLabel).toBe("In progress");
+    expect(received.shortLabel).toBe("Received");
+    expect(signed.shortLabel).toBe("Signed");
+    expect(contracted.shortLabel).toBe("Contracted");
+    expect(inNetwork.shortLabel).toBe("In network");
+
+    // Only In-Network is effective
+    expect(inProgress.canonical).not.toBe(IN_NETWORK_LABEL);
+    expect(received.canonical).not.toBe(IN_NETWORK_LABEL);
+    expect(signed.canonical).not.toBe(IN_NETWORK_LABEL);
+    expect(contracted.canonical).not.toBe(IN_NETWORK_LABEL);
   });
 
   it("writes one date line per GCM-8", () => {

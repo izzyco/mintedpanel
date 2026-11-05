@@ -144,7 +144,10 @@ function MatrixGrid({
               >
                 {segment.kind === "group" ? (
                   <>
-                    <span className="block truncate text-[13px] font-semibold text-[var(--mp-ink)]">
+                    <span
+                      className="block truncate text-[13px] font-semibold text-[var(--mp-ink)]"
+                      title={segment.groupName}
+                    >
                       {segment.groupName}
                     </span>
                     {segment.groupTin ? (
@@ -154,7 +157,7 @@ function MatrixGrid({
                     ) : null}
                   </>
                 ) : (
-                  <span className="block text-center">
+                  <span className="block text-center" title={`${segment.state} (${countLabel(segment.groupCount, "group")})`}>
                     <span className="block text-[13px] font-semibold text-[var(--mp-ink)]">
                       {segment.state}
                     </span>
@@ -180,7 +183,7 @@ function MatrixGrid({
               <th
                 key={column.key}
                 scope="col"
-                title={byState ? undefined : `${column.groupName} · ${column.state}`}
+                title={`${column.groupName}${column.groupTin ? ` (TIN ${column.groupTin})` : ""} · ${column.state}`}
                 className={cn(
                   "sticky z-20 h-9 w-[132px] min-w-[132px] max-w-[132px] border-b border-[var(--mp-border)] bg-[var(--mp-muted)] px-2 text-center font-semibold text-[var(--mp-ink)]",
                   HEADER_SECOND_ROW_TOP,

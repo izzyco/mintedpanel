@@ -7,6 +7,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -112,9 +113,7 @@ export function AddPayerDialog({
 }
 
 /** The save button's label: how many Not started records "Add column" will
- * save, so the count shows before the click (contract records cannot be
- * deleted). Null before a group and state are chosen, or while the
- * contracts are being refetched. */
+ * save when initialization is requested. */
 function addStateButtonLabel(count: number | null): string {
   if (count === null) return "Add column";
   if (count === 0) return "Add column for this visit";
@@ -137,11 +136,12 @@ export function AddStateDialog({
   /** The contracts are being refetched (opening the dialog starts it): the
    * button shows no count, and waits, until they are fresh. */
   counting?: boolean;
-  onAdd: (groupId: string, state: string) => void;
+  onAdd: (groupId: string, state: string, initializeNotStarted?: boolean) => void;
   onClose: () => void;
 }) {
   const [groupId, setGroupId] = useState(groups.length === 1 ? groups[0].id : "");
   const [state, setState] = useState("");
+  const [initializeNotStarted, setInitializeNotStarted] = useState(false);
   const count = useMemo(
     () => (!counting && groupId && state ? countFor(groupId, state) : null),
     [countFor, counting, groupId, state],
@@ -154,10 +154,8 @@ export function AddStateDialog({
           <DialogTitle>Add a {specialtyLabel} state</DialogTitle>
           <DialogDescription>
             Adds a {specialtyLabel} column for a group and state before any {specialtyLabel}{" "}
-            provider works there, so contracting can start early. Every payer in the{" "}
-            {specialtyLabel} table, across all groups and whatever the filters show, that serves the
-            state and has no record there gets a Not started record, so the column stays for
-            everyone.
+            provider works there, so contracting can start early. Payer cells remain blank
+            (no contract record) by default.
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -188,6 +186,29 @@ export function AddStateDialog({
             />
           </div>
         </div>
+
+        <div className="space-y-2 rounded-md border border-[var(--mp-border)] bg-[var(--mp-muted)] p-3">
+          <label
+            htmlFor="contracts-matrix-init-not-started"
+            className="flex items-start gap-2 text-[13px] text-[var(--mp-ink)] cursor-pointer"
+          >
+            <Checkbox
+              id="contracts-matrix-init-not-started"
+              className="mt-0.5"
+              checked={initializeNotStarted}
+              onCheckedChange={(checked) => setInitializeNotStarted(checked === true)}
+            />
+            <div>
+              <span className="font-medium">Initialize payer work as Not started</span>
+              <p className="text-[12px] text-[var(--mp-ink-secondary)]">
+                {count !== null && count > 0
+                  ? `Will create ${countLabel(count, "Not started record")} across eligible payers serving ${state || "the state"}. Leave unchecked to keep cells blank/no record.`
+                  : "When checked, saves Not started records for eligible payers. Leave unchecked to keep cells blank/no record."}
+              </p>
+            </div>
+          </label>
+        </div>
+
         <DialogFooter className="gap-2 sm:gap-0">
           <Button variant="outline" size="sm" onClick={onClose}>
             Cancel
@@ -196,15 +217,16 @@ export function AddStateDialog({
             size="sm"
             disabled={!groupId || !state || counting}
             onClick={() => {
-              onAdd(groupId, state);
+              onAdd(groupId, state, initializeNotStarted);
               onClose();
             }}
             className="bg-[var(--mp-primary)] text-white hover:bg-[var(--mp-primary-hover)]"
           >
-            {addStateButtonLabel(count)}
+            {initializeNotStarted ? addStateButtonLabel(count) : "Add column"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
+
