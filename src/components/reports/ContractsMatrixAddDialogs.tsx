@@ -1,6 +1,8 @@
 // "+ Add payer" (GCM-6) and "+ Add state" (GCM-33) for the Group Contracts
-// Matrix. Both are session-local: they add an empty row or column to the view,
-// and the row or column stays once a contract record is saved in it.
+// Matrix. "+ Add payer" is session-local: it adds an empty row, which stays
+// once a contract record is saved in it. "+ Add state" adds a column and saves
+// a Not started record for each payer with an open cell in it (MINT-143), so
+// the column stays for everyone.
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -128,8 +130,9 @@ export function AddStateDialog({
           <DialogTitle>Add a {specialtyLabel} state</DialogTitle>
           <DialogDescription>
             Adds a {specialtyLabel} column for a group and state before any {specialtyLabel}{" "}
-            provider works there, so contracting can start early. The column stays once you save a
-            contract in it.
+            provider works there, so contracting can start early. Each payer in the table that
+            serves the state and has no record there gets a Not started record, so the column stays
+            for everyone.
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

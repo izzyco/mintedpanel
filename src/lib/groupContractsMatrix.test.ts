@@ -7,6 +7,7 @@ import {
   contractDateLine,
   contractStatusDisplay,
   locateMatrixCell,
+  notStartedRecordsForAddedState,
   payerServesState,
   specialtiesShowingContract,
   type ContractsMatrix,
@@ -763,6 +764,80 @@ describe("one table per specialty (US-12 to US-15, GCM-28 to 36)", () => {
     ]);
     expect(cell(table(matrix, "nutrition"), "Payer 1", "g3", "LA").kind).toBe("empty");
     expect(table(matrix, "pt").columns.filter((c) => c.groupId === "g3")).toHaveLength(2);
+  });
+
+  describe("+ Add state saves Not started records (GCM-33, MINT-143)", () => {
+    const NUTRITION_LA = { specialty: "nutrition", groupId: "g3", state: "la" } as const;
+
+    it("gives every payer row with an open cell a Not started record of that specialty", () => {
+      const w = specialties();
+      const records = notStartedRecordsForAddedState(w.input, {}, NUTRITION_LA);
+      expect(records).toEqual(
+        ["p1", "p2", "p3", "p4", "p5"].map((payerId) => ({
+          groupId: "g3",
+          payerId,
+          state: "LA",
+          specialtyKey: "nutrition",
+          contractingStatusId: STATUS_IDS[NOT_STARTED_LABEL],
+        })),
+      );
+
+      // Saved, they are ordinary records: the column persists with no session
+      // column, in the Nutrition table only, showing Not started.
+      for (const record of records) {
+        w.record(record.groupId, record.payerId, record.state, NOT_STARTED_LABEL, {
+          specialtyKey: record.specialtyKey,
+        });
+      }
+      const matrix = build(w);
+      expect(table(matrix, "nutrition").columns.map((c) => c.key)).toContain("g3|LA");
+      const saved = cell(table(matrix, "nutrition"), "Payer 1", "g3", "LA");
+      expect(saved.kind === "record" && saved.shortLabel).toBe("Not started");
+      expect(saved.kind === "record" && saved.shared).toBe(false);
+      expect(table(matrix, "pt").columns.filter((c) => c.groupId === "g3")).toHaveLength(2);
+      // Nothing left to add: a second add of the same state saves nothing.
+      expect(notStartedRecordsForAddedState(w.input, {}, NUTRITION_LA)).toEqual([]);
+    });
+
+    it("never duplicates or covers a record, and skips states the plan does not serve", () => {
+      const w = specialties()
+        .payer("p6", "Payer 6 Kansas Only", ["KS"])
+        .target("g2", "p6", "KS")
+        // The group's all-specialties agreement already covers Nutrition here.
+        .record("g3", "p1", "LA", IN_NETWORK_LABEL, { specialtyKey: "all" })
+        // Nutrition's own record already exists here.
+        .record("g3", "p2", "LA", APPLICATION_SUBMITTED_LABEL, { specialtyKey: "nutrition" });
+      const records = notStartedRecordsForAddedState(w.input, {}, NUTRITION_LA);
+      expect(records.map((record) => record.payerId)).toEqual(["p3", "p4", "p5"]);
+    });
+
+    it("ignores the payer search, Status and States filters but follows the Groups filter", () => {
+      const w = specialties();
+      const filtered = notStartedRecordsForAddedState(
+        w.input,
+        { payerSearch: "Payer 1", statusFilter: IN_NETWORK_LABEL, selectedStates: ["KS"] },
+        NUTRITION_LA,
+      );
+      expect(filtered.map((record) => record.payerId)).toEqual(["p1", "p2", "p3", "p4", "p5"]);
+      expect(
+        notStartedRecordsForAddedState(w.input, { selectedGroupIds: ["g2"] }, NUTRITION_LA),
+      ).toEqual([]);
+    });
+
+    it("includes a payer added this session, and saves no status when the org has no Not Started", () => {
+      const w = specialties().payer("p7", "Payer 7 Added", ["LA"]);
+      const input = {
+        ...w.input,
+        statuses: w.input.statuses.filter((status) => status.id !== STATUS_IDS[NOT_STARTED_LABEL]),
+      };
+      const records = notStartedRecordsForAddedState(
+        input,
+        { addedPayerIds: ["p7"] },
+        NUTRITION_LA,
+      );
+      expect(records.map((record) => record.payerId)).toContain("p7");
+      expect(records.every((record) => record.contractingStatusId === null)).toBe(true);
+    });
   });
 
   it("omits a specialty with no columns", () => {

@@ -5,12 +5,13 @@
 // buildContractsMatrix (src/lib/groupContractsMatrix.ts); this component wires
 // the hooks, holds the view's choices, and renders the result.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/EmptyState";
 import { AddButton } from "@/components/providers/RecordSectionCard";
-import { useContracts } from "@/hooks/useContracts";
+import { useContracts, useCreateContractsIfMissing } from "@/hooks/useContracts";
 import { usePayers, useStatusConfigs } from "@/hooks/useAdmin";
 import { localTodayIso, useProviderReadinessFacts } from "@/hooks/useEnrollmentReadiness";
 import { useFacilities, useOrgStateLicenses, useProviderGroups } from "@/hooks/useLookups";
@@ -27,10 +28,13 @@ import {
 import {
   buildContractsMatrix,
   locateMatrixCell,
+  notStartedRecordsForAddedState,
   specialtiesShowingContract,
   type ContractsMatrixAddedColumn,
   type ContractsMatrixArrangement,
   type ContractsMatrixCell,
+  type ContractsMatrixInput,
+  type ContractsMatrixOptions,
   type ContractsMatrixRow,
   type ContractsMatrixStatusFilter,
   type ContractsMatrixTable as MatrixTable,
@@ -128,36 +132,20 @@ export function GroupContractsMatrix({
     [providerFactsQ.data],
   );
 
-  const matrix = useMemo(
-    () =>
-      buildContractsMatrix<Contract>(
-        {
-          today,
-          groups: groupsQ.data ?? [],
-          payers: payersQ.data ?? [],
-          contracts,
-          targets: targetsQ.data ?? [],
-          statuses: statusesQ.data ?? [],
-          facilities: facilitiesQ.data ?? [],
-          facilityAssignments: facilityAssignmentsQ.data ?? [],
-          licenses: licensesQ.data ?? [],
-          providers,
-          groupAssignments: groupAssignmentsQ.data ?? [],
-        },
-        {
-          specialties,
-          selectedGroupIds,
-          selectedStates,
-          statusFilter,
-          payerSearch,
-          arrange,
-          addedPayerIds,
-          addedColumns,
-          // GCM-20: a case link's group is shown even when inactive; the link
-          // never narrows the selection.
-          contextGroupId: initialContext?.groupId ?? null,
-        },
-      ),
+  const matrixInput = useMemo<ContractsMatrixInput<Contract>>(
+    () => ({
+      today,
+      groups: groupsQ.data ?? [],
+      payers: payersQ.data ?? [],
+      contracts,
+      targets: targetsQ.data ?? [],
+      statuses: statusesQ.data ?? [],
+      facilities: facilitiesQ.data ?? [],
+      facilityAssignments: facilityAssignmentsQ.data ?? [],
+      licenses: licensesQ.data ?? [],
+      providers,
+      groupAssignments: groupAssignmentsQ.data ?? [],
+    }),
     [
       today,
       groupsQ.data,
@@ -170,6 +158,23 @@ export function GroupContractsMatrix({
       licensesQ.data,
       providers,
       groupAssignmentsQ.data,
+    ],
+  );
+  const matrixOptions = useMemo<ContractsMatrixOptions>(
+    () => ({
+      specialties,
+      selectedGroupIds,
+      selectedStates,
+      statusFilter,
+      payerSearch,
+      arrange,
+      addedPayerIds,
+      addedColumns,
+      // GCM-20: a case link's group is shown even when inactive; the link
+      // never narrows the selection.
+      contextGroupId: initialContext?.groupId ?? null,
+    }),
+    [
       specialties,
       selectedGroupIds,
       selectedStates,
@@ -180,6 +185,43 @@ export function GroupContractsMatrix({
       addedColumns,
       initialContext?.groupId,
     ],
+  );
+  const matrix = useMemo(
+    () => buildContractsMatrix(matrixInput, matrixOptions),
+    [matrixInput, matrixOptions],
+  );
+
+  // GCM-33: "+ Add state" shows the column at once and saves a Not started
+  // record for each payer row with an empty cell in it, as one insert that
+  // skips any record that already exists, so the column persists for
+  // everyone. With no such payer the column shows for this visit only.
+  const { mutateAsync: createIfMissing } = useCreateContractsIfMissing();
+  const handleAddState = useCallback(
+    async (specialty: ContractSpecialty, groupId: string, state: string) => {
+      if (!canWrite) return;
+      const column: ContractsMatrixAddedColumn = { specialty, groupId, state };
+      setAddedColumns((current) => [...current, column]);
+      const records = notStartedRecordsForAddedState(matrixInput, matrixOptions, column);
+      const groupName = matrixInput.groups.find((group) => group.id === groupId)?.name ?? "";
+      const where = `${state.toUpperCase()} for ${groupName} (${CONTRACT_SPECIALTY_LABELS[specialty]})`;
+      if (records.length === 0) {
+        toast.message(
+          `Added ${where} for this visit only. No payer in the table has an open cell there, so no records were saved.`,
+        );
+        return;
+      }
+      try {
+        const created = await createIfMissing(records);
+        toast.success(`Added ${where}: ${countLabel(created.length, "Not started record")}.`);
+      } catch (error) {
+        toast.error(
+          `${where} shows for this visit only. Its Not started records were not saved.${
+            error instanceof Error && error.message ? ` ${error.message}` : ""
+          }`,
+        );
+      }
+    },
+    [canWrite, createIfMissing, matrixInput, matrixOptions],
   );
 
   // GCM-20: a case link opens the full view and only highlights its cell.
@@ -597,9 +639,7 @@ export function GroupContractsMatrix({
           <AddStateDialog
             specialtyLabel={CONTRACT_SPECIALTY_LABELS[addStateFor]}
             groups={selectedGroups}
-            onAdd={(groupId, state) =>
-              setAddedColumns((current) => [...current, { specialty: addStateFor, groupId, state }])
-            }
+            onAdd={(groupId, state) => void handleAddState(addStateFor, groupId, state)}
             onClose={() => setAddStateFor(null)}
           />
         ) : null}

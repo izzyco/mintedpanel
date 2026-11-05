@@ -4,6 +4,7 @@ import { useActiveOrgId } from "@/lib/auth-store";
 import { queryKeys } from "@/hooks/queryKeys";
 import {
   createContract,
+  createContractsIfMissing,
   getContract,
   listContracts,
   updateContract,
@@ -44,6 +45,21 @@ export function useCreateContract() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["contracts", orgId] });
       qc.invalidateQueries({ queryKey: ["contract", orgId] });
+    },
+  });
+}
+
+/** Creates the records whose 4-part key holds none yet, in one insert, and
+ * skips the rest (GCM-33 "+ Add state"). Every contract list is invalidated. */
+export function useCreateContractsIfMissing() {
+  const qc = useQueryClient();
+  const orgId = useActiveOrgId() ?? "no-org";
+  return useMutation({
+    mutationFn: (inputs: readonly ContractInput[]) => createContractsIfMissing(inputs),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["contracts", orgId] });
+      qc.invalidateQueries({ queryKey: ["contract", orgId] });
+      qc.invalidateQueries({ queryKey: ["audit-log", orgId] });
     },
   });
 }

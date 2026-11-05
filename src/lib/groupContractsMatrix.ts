@@ -15,9 +15,11 @@
 // footprint (providerFootprint.ts — an active assigned clinic of that group in
 // the state, or a license on file), plus the states where the group holds a
 // record keyed to that specialty, plus columns the operator added this
-// session. An `all` record that would show in no table (no column, or every
-// column holds that specialty's own record for the payer) adds its column to
-// each table without an own record, so no saved record is hidden.
+// session (which "+ Add state" then keeps with Not started records — see
+// notStartedRecordsForAddedState). An `all` record that would show in no
+// table (no column, or every column holds that specialty's own record for the
+// payer) adds its column to each table without an own record, so no saved
+// record is hidden.
 //
 // Rows (GCM-6, GCM-26): payers with an active network target in a group shown
 // in the table, payers with a record that resolves into one of its columns,
@@ -270,7 +272,8 @@ export const NO_RECORD_FILTER = "none";
 /** One governed label, "No record", or null for every status. */
 export type ContractsMatrixStatusFilter = ContractingStatusLabel | typeof NO_RECORD_FILTER | null;
 
-/** A column added with "+ Add state" this session (GCM-33). */
+/** A column added with "+ Add state" (GCM-33). It shows at once; the Not
+ * started records it saves (notStartedRecordsForAddedState) keep it. */
 export interface ContractsMatrixAddedColumn {
   specialty: ContractSpecialty;
   groupId: string;
@@ -1004,6 +1007,58 @@ export function locateMatrixCell<C>(
     if (found) return found;
   }
   return null;
+}
+
+/** A Not started record that "+ Add state" saves (GCM-33). Shaped like the
+ * contract service's create input. */
+export interface ContractsMatrixNotStartedRecord {
+  groupId: string;
+  payerId: string;
+  state: string;
+  specialtyKey: ContractSpecialty;
+  /** The org's Not Started contracting status (matched by label, never by
+   * id), or null when it has none, as a new record in the dialog. */
+  contractingStatusId: string | null;
+}
+
+/** GCM-33: the records "+ Add state" saves when a writer adds (group, state)
+ * to a specialty's table, so the planned column persists for everyone. One
+ * Not started record of that specialty for every payer row the table shows
+ * with the column, whatever the payer search, Status and States filters,
+ * whose cell there is empty. A payer whose plan does not serve the state gets
+ * none, and so does one that already has a record there (the specialty's own
+ * or the group's all-specialties record): nothing is duplicated or covered
+ * over. Payer rows A–Z. Empty when the group is not shown. */
+export function notStartedRecordsForAddedState<C extends ContractsMatrixContract>(
+  input: ContractsMatrixInput<C>,
+  options: ContractsMatrixOptions,
+  column: ContractsMatrixAddedColumn,
+): ContractsMatrixNotStartedRecord[] {
+  const matrix = buildContractsMatrix(input, {
+    ...options,
+    specialties: [column.specialty],
+    selectedStates: null,
+    statusFilter: null,
+    payerSearch: "",
+    addedColumns: [...(options.addedColumns ?? []), column],
+  });
+  const table = matrix.tables.find((candidate) => candidate.specialty === column.specialty);
+  const columnKey = matrixColumnKey(column.groupId, column.state);
+  const statusId =
+    input.statuses.find((status) => canonicalLabel(status.label) === NOT_STARTED_LABEL)?.id ?? null;
+  return (table?.rows ?? []).flatMap((row) =>
+    row.cells.some((cell) => cell.columnKey === columnKey && cell.kind === "empty")
+      ? [
+          {
+            groupId: column.groupId,
+            payerId: row.payerId,
+            state: normState(column.state),
+            specialtyKey: column.specialty,
+            contractingStatusId: statusId,
+          },
+        ]
+      : [],
+  );
 }
 
 /** The specialties whose table currently shows this record in some cell, in

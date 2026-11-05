@@ -648,6 +648,87 @@ test("Also apply into a shared state records the specialty separately", async ({
   ).toBeVisible();
 });
 
+test("+ Add state saves Not started records, so the planned column persists", async ({ page }) => {
+  const { fixtures, writes } = await installMatrix(page);
+  const contractPosts: { url: string; prefer: string }[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/rest/v1/contracts")) {
+      contractPosts.push({ url: request.url(), prefer: request.headers()["prefer"] ?? "" });
+    }
+  });
+  await page.goto("/reporting/contracts-matrix");
+
+  // US-15: plan Nutrition in LA for Group Name 3 before a dietitian starts.
+  async function addNutritionLa() {
+    await region(page, "Nutrition").getByRole("button", { name: "+ Add state" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("heading", { name: "Add a Nutrition state" })).toBeVisible();
+    await dialog.getByRole("combobox", { name: "Group" }).click();
+    await page.getByRole("option", { name: "Group Name 3", exact: true }).click();
+    await dialog.getByRole("combobox", { name: "State" }).click();
+    await page.getByRole("option", { name: "LA", exact: true }).click();
+    // No confirm step: Add column saves.
+    await dialog.getByRole("button", { name: "Add column" }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  }
+  await addNutritionLa();
+
+  // One insert that skips existing keys: a Not started Nutrition record for
+  // each payer serving LA. Blue KC serves only KS and MO, so it gets none.
+  await expect(
+    page.getByText("Added LA for Group Name 3 (Nutrition): 2 Not started records."),
+  ).toBeVisible();
+  expect(contractPosts).toHaveLength(1);
+  expect(contractPosts[0].url).toContain("on_conflict=group_id%2Cpayer_id%2Cstate%2Cspecialty_key");
+  expect(contractPosts[0].prefer).toContain("resolution=ignore-duplicates");
+  const contractWrites = writes.filter((write) => write.table === "contracts");
+  expect(contractWrites.map((write) => write.body)).toEqual(
+    [PAYER_1, PAYER_2].map((payerId) =>
+      expect.objectContaining({
+        org_id: ORG_ID,
+        group_id: GROUP_3,
+        payer_id: payerId,
+        state: "LA",
+        specialty_key: "nutrition",
+        contracting_status_id: STATUS.notStarted,
+      }),
+    ),
+  );
+  expect(contractWrites[0].body).not.toHaveProperty("specialty");
+  // Each record carries its own status history and audit row, as any create.
+  await expect.poll(() => writes.filter((w) => w.table === "status_history").length).toBe(2);
+  await expect.poll(() => writes.filter((w) => w.table === "audit_log").length).toBe(2);
+
+  const nutritionLa = (payer: string, status: string) =>
+    region(page, "Nutrition").getByRole("button", {
+      name: `${payer}, Nutrition, Group Name 3, LA: ${status}`,
+    });
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "LA", "NE"]);
+  await expect(nutritionLa("Payer 1", "Not Started")).toContainText("Not started");
+  await expect(nutritionLa("Payer 2", "Not Started")).toBeVisible();
+
+  // Ordinary contract rows: after a reload (no session state), the column is
+  // still there for everyone, and the PT table is untouched.
+  await page.reload();
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "LA", "NE"]);
+  await expect(nutritionLa("Payer 1", "Not Started")).toBeVisible();
+  await expect(
+    region(page, "Physical therapy").getByRole("button", {
+      name: "Payer 1, Physical therapy, Group Name 3, LA: No contract record",
+    }),
+  ).toBeVisible();
+  expect(
+    fixtures.contracts.filter((row) => row.group_id === GROUP_3 && row.state === "LA"),
+  ).toHaveLength(2);
+
+  // Adding the same state again saves nothing: no record is duplicated.
+  await addNutritionLa();
+  await expect(
+    page.getByText(/Added LA for Group Name 3 \(Nutrition\) for this visit only/),
+  ).toBeVisible();
+  expect(contractPosts).toHaveLength(1);
+});
+
 test("a billing user gets a read-only dialog and no add affordances", async ({ page }) => {
   await installMatrix(page, "billing");
   await page.goto("/reporting/contracts-matrix");
