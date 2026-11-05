@@ -37,7 +37,7 @@ Epic lifecycle: [`docs/redesign/README.md`](docs/redesign/README.md).
   npm run test:e2e:smoke # when UI, routes, or auth changed
   ```
 - **Scheduled and heavy workflows**: Do not add, remove, or change the triggers on these without explicit PM approval.
-  - `e2e-full.yml` (413-spec Playwright regression): nightly on `main` (08:17 UTC) plus manual `workflow_dispatch`. PRs get the smoke subset in `ci.yml`. Never add PR or push triggers.
+  - `e2e-full.yml` (413-spec Playwright regression): weekly Sunday on `main` (08:17 UTC) plus manual `workflow_dispatch`. PRs get the smoke subset in `ci.yml`. Never add PR or push triggers.
   - `luna-scale-rehearsal.yml` (3,500-provider seed rehearsal): manual `workflow_dispatch` only.
   - `followup-digest-tick.yml`: manual `workflow_dispatch` only. The hourly schedule is disabled to save runner minutes. The Vercel cron in `vercel.json` calls the follow-up digest once daily (18:00 UTC), which is the accepted cadence.
 

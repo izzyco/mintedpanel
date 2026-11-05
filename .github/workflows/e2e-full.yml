@@ -1,11 +1,11 @@
 name: Playwright Full E2E
 
 on:
-  # Nightly on main (GitHub runs schedules on the default branch only), plus
-  # manual dispatch for batch release testing. PR runs get the smoke subset in
-  # ci.yml; this is the only automatic run of the full suite.
+  # Weekly Sunday regression on main (GitHub runs schedules on the default branch only),
+  # plus manual dispatch for batch release testing. Kept to weekly Sunday (08:17 UTC)
+  # to preserve GitHub runner minute budgets while catching end-to-end regressions.
   schedule:
-    - cron: "17 8 * * *"
+    - cron: "17 8 * * 0"
   workflow_dispatch:
 
 concurrency:
