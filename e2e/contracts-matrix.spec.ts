@@ -751,6 +751,54 @@ test("+ Add state saves Not started records, so the planned column persists", as
   expect(contractPosts).toHaveLength(1);
 });
 
+test("+ Add state with blank cells persists column across navigation and reload without creating contract records", async ({
+  page,
+}) => {
+  const { fixtures, writes } = await installMatrix(page);
+  await page.goto("/reporting/contracts-matrix");
+
+  // Initial Nutrition column headers
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "NE"]);
+
+  // Add LA for Group Name 3 without initializing Not started contracts
+  await addNutritionLa(page, "Add column");
+
+  // Toast confirms addition with blank cells
+  await expect(
+    page.getByText("Added LA for Group Name 3 (Nutrition) column with blank contract cells."),
+  ).toBeVisible();
+
+  // Column LA is now visible in the Nutrition table
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "LA", "NE"]);
+
+  // Cell shows "No contract record" with blank / em-dash display
+  const nutritionBlankCell = region(page, "Nutrition").getByRole("button", {
+    name: "Payer 1, Nutrition, Group Name 3, LA: No contract record",
+  });
+  await expect(nutritionBlankCell).toBeVisible();
+  await expect(nutritionBlankCell).toContainText("—");
+
+  // Verify zero contract records were created in the database
+  const contractWritesBeforeReload = writes.filter((w) => w.table === "contracts");
+  expect(contractWritesBeforeReload).toHaveLength(0);
+
+  // Reload the page: the blank column must persist via storage
+  await page.reload();
+
+  // Column LA is still visible in the Nutrition table
+  await expect(columnHeaders(page, "Nutrition")).toHaveText(["Payer", "KS", "MO", "LA", "NE"]);
+  await expect(
+    region(page, "Nutrition").getByRole("button", {
+      name: "Payer 1, Nutrition, Group Name 3, LA: No contract record",
+    }),
+  ).toBeVisible();
+
+  // Still zero contract writes after reload
+  const contractWritesAfterReload = writes.filter((w) => w.table === "contracts");
+  expect(contractWritesAfterReload).toHaveLength(0);
+  expect(fixtures.contracts.filter((row) => row.group_id === GROUP_3 && row.state === "LA")).toHaveLength(0);
+});
+
 test("+ Add state counts records saved by someone else, when it opens and when it saves", async ({
   page,
 }) => {

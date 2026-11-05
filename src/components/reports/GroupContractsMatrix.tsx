@@ -47,7 +47,7 @@ import { SharedTag } from "./ContractsMatrixCell";
 import { ContractsMatrixFilters } from "./ContractsMatrixFilters";
 import { ContractsMatrixTable } from "./ContractsMatrixTable";
 import type { AlsoApplyTarget } from "./contractDetailPlan";
-import { saveAddedState } from "./contractsMatrixAddState";
+import { loadAddedColumns, saveAddedColumns, saveAddedState } from "./contractsMatrixAddState";
 import { contractsMatrixCellDomId, countLabel } from "./contractsMatrixView";
 
 interface ContractsMatrixContext {
@@ -95,18 +95,32 @@ export function GroupContractsMatrix({
   const licensesQ = useOrgStateLicenses();
   const groupAssignmentsQ = useProviderGroupAssignments();
   const providerFactsQ = useProviderReadinessFacts();
-  const queries = [
-    groupsQ,
-    payersQ,
-    contractsQ,
-    statusesQ,
-    facilitiesQ,
-    targetsQ,
-    facilityAssignmentsQ,
-    licensesQ,
-    groupAssignmentsQ,
-    providerFactsQ,
-  ];
+  const queries = useMemo(
+    () => [
+      groupsQ,
+      payersQ,
+      contractsQ,
+      statusesQ,
+      facilitiesQ,
+      targetsQ,
+      facilityAssignmentsQ,
+      licensesQ,
+      groupAssignmentsQ,
+      providerFactsQ,
+    ],
+    [
+      groupsQ,
+      payersQ,
+      contractsQ,
+      statusesQ,
+      facilitiesQ,
+      targetsQ,
+      facilityAssignmentsQ,
+      licensesQ,
+      groupAssignmentsQ,
+      providerFactsQ,
+    ],
+  );
 
   const [specialties, setSpecialties] = useState<ContractSpecialty[]>([...MATRIX_SPECIALTIES]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[] | null>(null);
@@ -115,10 +129,17 @@ export function GroupContractsMatrix({
   const [payerSearch, setPayerSearch] = useState("");
   const [arrange, setArrange] = useState<ContractsMatrixArrangement>("group");
   const [addedPayerIds, setAddedPayerIds] = useState<string[]>([]);
-  const [addedColumns, setAddedColumns] = useState<ContractsMatrixAddedColumn[]>([]);
+  const orgId = membership?.orgId ?? null;
+  const [addedColumns, setAddedColumns] = useState<ContractsMatrixAddedColumn[]>(() =>
+    loadAddedColumns(orgId),
+  );
   const [openCell, setOpenCell] = useState<OpenCell | null>(null);
   const [addPayerOpen, setAddPayerOpen] = useState(false);
   const [addStateFor, setAddStateFor] = useState<ContractSpecialty | null>(null);
+
+  useEffect(() => {
+    setAddedColumns(loadAddedColumns(orgId));
+  }, [orgId]);
 
   // Date-only, read once per mount; the derivation never reads a clock.
   const today = useMemo(() => localTodayIso(), []);
@@ -221,15 +242,18 @@ export function GroupContractsMatrix({
       initializeNotStarted: boolean = false,
     ) => {
       if (!canWrite) return;
-      const column: ContractsMatrixAddedColumn = { specialty, groupId, state };
+      const normalizedState = state.trim().toUpperCase();
+      const column: ContractsMatrixAddedColumn = { specialty, groupId, state: normalizedState };
       setAddedColumns((current) => {
         const exists = current.some(
           (c) =>
             c.specialty === specialty &&
             c.groupId === groupId &&
-            c.state.toUpperCase() === state.toUpperCase(),
+            c.state.toUpperCase() === normalizedState,
         );
-        return exists ? current : [...current, column];
+        const next = exists ? current : [...current, column];
+        saveAddedColumns(orgId, next);
+        return next;
       });
       if (initializeNotStarted) {
         const outcome = await saveAddedState({
@@ -241,11 +265,11 @@ export function GroupContractsMatrix({
         toast[outcome.tone](outcome.text);
       } else {
         const groupName = matrixInput.groups.find((group) => group.id === groupId)?.name ?? "";
-        const where = `${state.toUpperCase()} for ${groupName} (${CONTRACT_SPECIALTY_LABELS[specialty]})`;
+        const where = `${normalizedState} for ${groupName} (${CONTRACT_SPECIALTY_LABELS[specialty]})`;
         toast.success(`Added ${where} column with blank contract cells.`);
       }
     },
-    [canWrite, createIfMissing, matrixInput, refetchContracts],
+    [canWrite, createIfMissing, matrixInput, orgId, refetchContracts],
   );
 
   // GCM-20: a case link opens the full view and only highlights its cell.
