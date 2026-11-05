@@ -43,6 +43,7 @@ const loadRosterRoutes = () => import("./rosterRoutes");
 const loadProviderIntakeRoutes = () => import("./providerIntakeRoutes");
 const loadNpiRegistryRoutes = () => import("./npiRegistryRoutes");
 const loadJobRoutes = () => import("./jobs/route");
+const loadDirectoryRoutes = () => import("./directoryRoutes");
 
 // `/api/providers/:id/profile` — must be matched before the generic :id route.
 const PROVIDER_PROFILE_ROUTE = /^\/api\/providers\/([^/]+)\/profile\/?$/;
@@ -114,6 +115,10 @@ const NPI_REGISTRY_ROUTE = /^\/api\/npi-registry\/(search|lookup)\/?$/;
 const NPI_REGISTRY_BATCH_ROUTE = /^\/api\/npi-registry\/verify-batch\/?$/;
 // MINT-110 PR 3: a save that used a registry answer stores it as source data.
 const NPI_REGISTRY_PULLS_ROUTE = /^\/api\/npi-registry\/pulls\/?$/;
+// Workbench directory (Nov 4, 2026): read-only group and location lists and
+// cards. Providers use the /api/providers routes above.
+const GROUPS_ROUTE = /^\/api\/groups(?:\/([^/]+))?\/?$/;
+const LOCATIONS_ROUTE = /^\/api\/locations(?:\/([^/]+))?\/?$/;
 
 // Keep verified user context request-scoped. Legacy routes retain one auth
 // call while the additive context-revision header reuses that actor after
@@ -501,6 +506,8 @@ async function routeApiRequest(request: Request): Promise<Response> {
   const npiRegistryMatch = pathname.match(NPI_REGISTRY_ROUTE);
   const isNpiRegistryBatch = NPI_REGISTRY_BATCH_ROUTE.test(pathname);
   const isNpiRegistryPulls = NPI_REGISTRY_PULLS_ROUTE.test(pathname);
+  const groupsMatch = pathname.match(GROUPS_ROUTE);
+  const locationsMatch = pathname.match(LOCATIONS_ROUTE);
   if (
     !profileMatch &&
     !ssnReleaseMatch &&
@@ -540,7 +547,9 @@ async function routeApiRequest(request: Request): Promise<Response> {
     !providerInviteResendMatch &&
     !npiRegistryMatch &&
     !isNpiRegistryBatch &&
-    !isNpiRegistryPulls
+    !isNpiRegistryPulls &&
+    !groupsMatch &&
+    !locationsMatch
   ) {
     return fail(404, "Not found");
   }
@@ -564,6 +573,19 @@ async function routeApiRequest(request: Request): Promise<Response> {
     if (method !== "GET" && method !== "PUT") return fail(405, "Method not allowed");
     try {
       const user = await authenticateUserForRequest(request);
+      // ?card= selects a Workbench directory card layout (group, provider,
+      // location). Without it this is the quick-card layout, unchanged.
+      const card = url.searchParams.get("card");
+      if (card !== null) {
+        const directory = await loadDirectoryRoutes();
+        return method === "GET"
+          ? await directory.handleGetCardLayout(card, user)
+          : await directory.handlePutCardLayout(
+              card,
+              await readBoundedJsonBody(request, 4096),
+              user,
+            );
+      }
       const routes = await loadExtensionRoutes();
       return method === "GET"
         ? await routes.handleGetViewPrefs(user)
@@ -896,6 +918,18 @@ async function routeApiRequest(request: Request): Promise<Response> {
       if (method !== "POST") return fail(405, "Method not allowed");
       const routes = await loadPayerFormRoutes();
       return await routes.handleFinalizePayerForm(await readJsonBody(request), ctx);
+    }
+    if (groupsMatch || locationsMatch) {
+      if (method !== "GET") return noStore(fail(405, "Method not allowed"));
+      const routes = await loadDirectoryRoutes();
+      if (groupsMatch) {
+        return groupsMatch[1]
+          ? await routes.handleGetGroup(groupsMatch[1], ctx)
+          : await routes.handleListGroups(url, ctx);
+      }
+      return locationsMatch?.[1]
+        ? await routes.handleGetLocation(locationsMatch[1], ctx)
+        : await routes.handleListLocations(url, ctx);
     }
     if (payerFormDownloadMatch) {
       if (method !== "GET") return fail(405, "Method not allowed");

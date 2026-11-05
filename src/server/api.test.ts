@@ -29,7 +29,24 @@ vi.mock("./extensionRoutes", () => ({
   handlePutViewPrefs: vi.fn(),
 }));
 
+vi.mock("./directoryRoutes", () => ({
+  handleListGroups: vi.fn(),
+  handleListLocations: vi.fn(),
+  handleGetGroup: vi.fn(),
+  handleGetLocation: vi.fn(),
+  handleGetCardLayout: vi.fn(),
+  handlePutCardLayout: vi.fn(),
+}));
+
 import { authenticate, authenticateUser, GuardError } from "./guard";
+import {
+  handleListGroups,
+  handleListLocations,
+  handleGetGroup,
+  handleGetLocation,
+  handleGetCardLayout,
+  handlePutCardLayout,
+} from "./directoryRoutes";
 import { handleListProviders, handleGetProvider } from "./providerRoutes";
 import {
   handleProviderProfile,
@@ -330,6 +347,120 @@ describe("handleApiRequest — /api/me/view-prefs (user-scoped auth, no org reso
     expect(res.status).toBe(405);
     expect(getViewPrefsMock).not.toHaveBeenCalled();
     expect(putViewPrefsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleApiRequest — /api/me/view-prefs?card= (directory card layouts)", () => {
+  const okResponse = () => new Response('{"data":{},"error":null,"meta":null}', { status: 200 });
+
+  it("GET with ?card= runs on authenticateUser and never reaches the quick-card handler", async () => {
+    authenticateUserMock.mockResolvedValue({ userId: "u1" } as never);
+    vi.mocked(handleGetCardLayout).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(GET("/api/me/view-prefs?card=group"));
+    expect(res.status).toBe(200);
+    expect(authenticateMock).not.toHaveBeenCalled();
+    expect(getViewPrefsMock).not.toHaveBeenCalled();
+    expect(vi.mocked(handleGetCardLayout)).toHaveBeenCalledWith(
+      "group",
+      expect.objectContaining({ userId: "u1" }),
+    );
+  });
+
+  it("PUT with ?card= passes the card and the parsed body", async () => {
+    authenticateUserMock.mockResolvedValue({ userId: "u1" } as never);
+    vi.mocked(handlePutCardLayout).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(
+      new Request("https://x.test/api/me/view-prefs?card=provider", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fields: ["npi"] }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(putViewPrefsMock).not.toHaveBeenCalled();
+    expect(vi.mocked(handlePutCardLayout)).toHaveBeenCalledWith(
+      "provider",
+      { fields: ["npi"] },
+      expect.objectContaining({ userId: "u1" }),
+    );
+  });
+
+  it("without ?card= the quick-card handlers run, never the card ones", async () => {
+    authenticateUserMock.mockResolvedValue({ userId: "u1" } as never);
+    getViewPrefsMock.mockResolvedValue(okResponse());
+    await handleApiRequest(GET("/api/me/view-prefs"));
+    expect(getViewPrefsMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleGetCardLayout)).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleApiRequest — /api/groups and /api/locations (org-guarded, read-only)", () => {
+  const okResponse = () => new Response('{"data":[],"error":null,"meta":null}', { status: 200 });
+
+  it.each([
+    ["/api/groups", handleListGroups],
+    ["/api/locations", handleListLocations],
+  ] as const)("GET %s lists on the org guard with the header org", async (path, handler) => {
+    authenticateMock.mockResolvedValue({ orgId: "org-1", role: "billing" } as never);
+    vi.mocked(handler).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(
+      new Request(`https://x.test${path}?search=nm&pageSize=10`, {
+        method: "GET",
+        headers: { "x-org-id": "org-1" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(authenticateMock).toHaveBeenCalledWith(expect.any(Request), "org-1");
+    expect(vi.mocked(handler)).toHaveBeenCalledWith(
+      expect.any(URL),
+      expect.objectContaining({ orgId: "org-1" }),
+    );
+  });
+
+  it.each([
+    ["groups", handleGetGroup],
+    ["locations", handleGetLocation],
+  ] as const)("GET /api/%s/:id dispatches the card with the org ctx", async (kind, handler) => {
+    authenticateMock.mockResolvedValue({ orgId: "org-1", role: "specialist" } as never);
+    vi.mocked(handler).mockResolvedValue(okResponse());
+    const res = await handleApiRequest(GET(`/api/${kind}/abc`));
+    expect(res.status).toBe(200);
+    expect(vi.mocked(handler)).toHaveBeenCalledWith(
+      "abc",
+      expect.objectContaining({ orgId: "org-1" }),
+    );
+  });
+
+  it("a guard failure never reaches a handler", async () => {
+    authenticateMock.mockRejectedValue(new GuardError(401, "Missing bearer token"));
+    const res = await handleApiRequest(GET("/api/groups/abc"));
+    expect(res.status).toBe(401);
+    expect(vi.mocked(handleGetGroup)).not.toHaveBeenCalled();
+  });
+
+  it.each([["POST"], ["PUT"], ["PATCH"], ["DELETE"]])("%s is 405 and no-store", async (method) => {
+    authenticateMock.mockResolvedValue({ orgId: "org-1", role: "admin" } as never);
+    const list = await handleApiRequest(new Request("https://x.test/api/locations", { method }));
+    const card = await handleApiRequest(new Request("https://x.test/api/groups/abc", { method }));
+    expect(list.status).toBe(405);
+    expect(card.status).toBe(405);
+    expect(list.headers.get("cache-control")).toContain("no-store");
+    expect(vi.mocked(handleListLocations)).not.toHaveBeenCalled();
+    expect(vi.mocked(handleGetGroup)).not.toHaveBeenCalled();
+  });
+
+  it("the retired /api/directory/* paths are a JSON 404", async () => {
+    for (const path of ["/api/directory/search?q=nm", "/api/directory/providers/abc"]) {
+      const res = await handleApiRequest(GET(path));
+      expect(res.status).toBe(404);
+    }
+    expect(authenticateMock).not.toHaveBeenCalled();
+  });
+
+  it("a nested path under /api/groups/:id is a JSON 404", async () => {
+    const res = await handleApiRequest(GET("/api/groups/abc/providers"));
+    expect(res.status).toBe(404);
+    expect(authenticateMock).not.toHaveBeenCalled();
   });
 });
 

@@ -2107,6 +2107,177 @@ function looksLikeVercelGate(r) {
     );
   }
 
+  // 39. Workbench directory (Nov 4, 2026): GET /api/providers/:id adds the
+  //     card's related lists, and GET /api/groups and /api/locations are new
+  //     read-only lists and cards, any role, org-guarded. Kansas reads its own
+  //     provider card and, through the ids on it, its own location and group
+  //     cards, and finds both in the lists — positives that keep the
+  //     negatives below from passing against a dead route.
+  const ownProvider = await apiGet(`/api/providers/${env.KANSAS_PROVIDER_ID}`, {
+    token: kansasTok,
+  });
+  const ownCard = ownProvider.body?.data;
+  check(
+    "39. Kansas reads its own provider by id, with the directory card's related lists",
+    ownProvider.status === 200 &&
+      ownCard?.id === env.KANSAS_PROVIDER_ID &&
+      ["licenses", "medicareIds", "groups", "locations"].every((k) => Array.isArray(ownCard?.[k])),
+    `status=${ownProvider.status}`,
+  );
+  //     The card's lists are read from the provider's own org only: no South
+  //     Park group, location or provider id anywhere on it.
+  const southParkAnyIds = [
+    env.SOUTHPARK_PROVIDER_ID,
+    env.SOUTHPARK_GROUP_ID,
+    env.SOUTHPARK_FACILITY_ID,
+  ].filter(Boolean);
+  const cardListIds = ["medicareIds", "groups", "locations"].flatMap((k) =>
+    Array.isArray(ownCard?.[k]) ? ownCard[k].flatMap((x) => [x?.id, x?.groupId]) : [],
+  );
+  const cardLeaks = cardListIds.filter((id) => southParkAnyIds.includes(id));
+  check(
+    "39j. Kansas's provider card lists no South Park group, location or provider",
+    ownProvider.status === 200 && cardLeaks.length === 0,
+    `leaked=${cardLeaks.length}`,
+    { leak: true },
+  );
+  const ownLocationId = ownCard?.locations?.[0]?.id;
+  if (ownLocationId) {
+    const ownLocation = await apiGet(`/api/locations/${ownLocationId}`, { token: kansasTok });
+    check(
+      "39f. Kansas reads its own location card",
+      ownLocation.status === 200 && ownLocation.body?.data?.id === ownLocationId,
+      `status=${ownLocation.status}`,
+    );
+  } else {
+    console.log("SKIP  39f. own location card — the Kansas provider lists no location");
+  }
+  const ownGroupId = ownCard?.groups?.[0]?.id;
+  if (ownGroupId) {
+    const ownGroup = await apiGet(`/api/groups/${ownGroupId}`, { token: kansasTok });
+    check(
+      "39g. Kansas reads its own group card",
+      ownGroup.status === 200 && ownGroup.body?.data?.id === ownGroupId,
+      `status=${ownGroup.status}`,
+    );
+  } else {
+    console.log("SKIP  39g. own group card — the Kansas provider lists no group");
+  }
+  //     The unfiltered lists: Kansas sees its own group and location, and no
+  //     South Park row.
+  const kansasGroups = await apiGet("/api/groups?pageSize=100", { token: kansasTok });
+  const kansasLocations = await apiGet("/api/locations?pageSize=100", { token: kansasTok });
+  const groupIds = Array.isArray(kansasGroups.body?.data)
+    ? kansasGroups.body.data.map((g) => g.id)
+    : [];
+  const locationIds = Array.isArray(kansasLocations.body?.data)
+    ? kansasLocations.body.data.map((l) => l.id)
+    : [];
+  check(
+    "39h. Kansas's group and location lists include its own group and location",
+    kansasGroups.status === 200 &&
+      kansasLocations.status === 200 &&
+      (!ownGroupId || groupIds.includes(ownGroupId)) &&
+      (!ownLocationId || locationIds.includes(ownLocationId)),
+    `status=${kansasGroups.status}/${kansasLocations.status}`,
+  );
+  // Any role reads the directory: the South Park caller is billing.
+  const billingGroups = await apiGet("/api/groups", { token: spTok });
+  check(
+    "39i. A billing member lists its own org's groups",
+    billingGroups.status === 200 && Array.isArray(billingGroups.body?.data),
+    `status=${billingGroups.status}`,
+  );
+  const southParkIds = [env.SOUTHPARK_GROUP_ID, env.SOUTHPARK_FACILITY_ID].filter(Boolean);
+  const listLeaks = [...groupIds, ...locationIds].filter((id) => southParkIds.includes(id));
+  check(
+    "39b. Kansas's group and location lists hold no South Park row",
+    kansasGroups.status === 200 && kansasLocations.status === 200 && listLeaks.length === 0,
+    `status=${kansasGroups.status}/${kansasLocations.status} leaked=${listLeaks.length}`,
+    { leak: true },
+  );
+  //     ...another org's location and group cards are a 404 with no data...
+  const xLocation = await apiGet(`/api/locations/${env.SOUTHPARK_FACILITY_ID}`, {
+    token: kansasTok,
+  });
+  check(
+    "39c. Kansas GET a South Park location card -> 404, no data",
+    xLocation.status === 404 && xLocation.body?.data == null,
+    `status=${xLocation.status} (expect 404)`,
+    { leak: true },
+  );
+  if (env.SOUTHPARK_GROUP_ID) {
+    const xGroup = await apiGet(`/api/groups/${env.SOUTHPARK_GROUP_ID}`, { token: kansasTok });
+    check(
+      "39d. Kansas GET a South Park group card -> 404, no data",
+      xGroup.status === 404 && xGroup.body?.data == null,
+      `status=${xGroup.status} (expect 404)`,
+      { leak: true },
+    );
+  } else {
+    console.log("SKIP  39d. cross-org group card — SOUTHPARK_GROUP_ID not set");
+  }
+  //     ...and searching the group and location lists for South Park's name
+  //     finds nothing for Kansas (the same SEARCH_LEAK_QUERY as 15b, which
+  //     matches no Kansas record).
+  const directoryLeakQuery = env.SEARCH_LEAK_QUERY ?? "South Park";
+  const searches = await Promise.all(
+    ["groups", "locations"].map((kind) =>
+      apiGet(`/api/${kind}?search=${encodeURIComponent(directoryLeakQuery)}&pageSize=10`, {
+        token: kansasTok,
+      }),
+    ),
+  );
+  const searchHits = searches.reduce(
+    (n, r) => n + (Array.isArray(r.body?.data) ? r.body.data.length : 0),
+    0,
+  );
+  check(
+    `39e. Kansas group and location search "${directoryLeakQuery}" -> 200, no South Park record`,
+    searches.every((r) => r.status === 200) && searchHits === 0,
+    `status=${searches.map((r) => r.status).join("/")} hits=${searchHits} (expect 0)`,
+    { leak: true },
+  );
+  //     ...nor does the extended provider search, which now also matches group
+  //     names and TINs: no South Park provider, and no South Park group on any
+  //     row it returns.
+  const xProviderSearch = await apiGet(
+    `/api/providers?search=${encodeURIComponent(directoryLeakQuery)}&pageSize=10`,
+    { token: kansasTok },
+  );
+  const providerSearchRows = Array.isArray(xProviderSearch.body?.data)
+    ? xProviderSearch.body.data
+    : [];
+  const providerSearchLeaks = providerSearchRows.filter(
+    (p) =>
+      p?.id === env.SOUTHPARK_PROVIDER_ID ||
+      (p?.groups ?? []).some((g) => g?.id === env.SOUTHPARK_GROUP_ID),
+  ).length;
+  check(
+    `39k. Kansas provider search "${directoryLeakQuery}" -> 200, no South Park provider or group`,
+    xProviderSearch.status === 200 && providerSearchLeaks === 0,
+    `status=${xProviderSearch.status} leaked=${providerSearchLeaks}`,
+    { leak: true },
+  );
+  //     The positive that keeps 39e honest: a search for Kansas's own group
+  //     name finds that group.
+  const ownGroupName = typeof ownCard?.groups?.[0]?.name === "string" ? ownCard.groups[0].name : "";
+  if (ownGroupId && ownGroupName) {
+    const ownGroupSearch = await apiGet(
+      `/api/groups?search=${encodeURIComponent(ownGroupName)}&pageSize=10`,
+      { token: kansasTok },
+    );
+    check(
+      "39l. Kansas group search for its own group's name finds that group",
+      ownGroupSearch.status === 200 &&
+        Array.isArray(ownGroupSearch.body?.data) &&
+        ownGroupSearch.body.data.some((g) => g.id === ownGroupId),
+      `status=${ownGroupSearch.status}`,
+    );
+  } else {
+    console.log("SKIP  39l. own group search — the Kansas provider lists no group");
+  }
+
   // ---- Pass/fail table ----
   const w = Math.max(...rows.map((r) => r.name.length));
   const line = "+" + "-".repeat(w + 2) + "+--------+";

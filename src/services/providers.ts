@@ -211,7 +211,7 @@ export async function listProviders(
  * fetched, with the group's name resolved by embed. Org-scoped on BOTH sides —
  * the assignment row and (via the embed filter) its group — because the API
  * route runs this under the service-role client, where RLS is not the wall. */
-async function attachGroupsToProviders(
+export async function attachGroupsToProviders(
   ctx: ProviderServiceCtx,
   rows: Provider[],
 ): Promise<Provider[]> {

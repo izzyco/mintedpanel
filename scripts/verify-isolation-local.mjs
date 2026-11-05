@@ -104,9 +104,10 @@ function runGate(baseUrl) {
 // assertions expected to fail — any extra or missing failure is a harness bug.
 const EXPECTED_FAILS = {
   // The "providers" leak also lets a cross-org PATCH land (assertion 12), and
-  // the leaked rows drag their own groups with them, so 27 reddens too. The
-  // list is sorted lexicographically to match failedAssertions()'s .sort().
-  providers: ["1", "12", "19", "1b", "27", "2c", "3"],
+  // the leaked rows drag their own groups with them, so 27 reddens too, and
+  // the provider search returns them (39k). The list is sorted
+  // lexicographically to match failedAssertions()'s .sort().
+  providers: ["1", "12", "19", "1b", "27", "2c", "3", "39k"],
   spoof: ["4"],
   // The field-map leak breaks both the shared-catalog reads and the
   // propose-only write's org scoping (20a).
@@ -150,8 +151,9 @@ const EXPECTED_FAILS = {
   // endpoints — a signed upload target (25b) and a finalized metadata insert
   // (26) — instead of 404ing before anything is signed or written.
   documentupload: ["25b", "26"],
-  // The unscoped group join names another tenant's group on every row.
-  providergroups: ["27"],
+  // The unscoped group join names another tenant's group on every row,
+  // including the rows the provider search returns (39k).
+  providergroups: ["27", "39k"],
   // Payer PDF: payer_forms rows are GLOBAL, so the wall is ROLE, not tenancy —
   // this leak lets a non-admin mint a signed target (28b) and finalize a row
   // (28c) for a form every org depends on.
@@ -161,6 +163,10 @@ const EXPECTED_FAILS = {
   providerinvites: ["35b", "35c"],
   // A provider intake session reads another org's provider (35d).
   intakesession: ["35d"],
+  // Workbench directory: another org's groups and locations in the lists
+  // (39b), its location (39c) and group (39d) cards, its records in the list
+  // search (39e), and on a provider card's related lists (39j).
+  directory: ["39b", "39c", "39d", "39e", "39j"],
   // MINT-110: the NPI Registry proxy serves an anonymous caller (36b) and a
   // read-only billing member (36c). The anonymous leak opens the whole
   // /api/npi-registry/ prefix, so the batch and pulls routes' anonymous checks

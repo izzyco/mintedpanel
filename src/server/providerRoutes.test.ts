@@ -4,13 +4,25 @@ import type { AuthContext } from "./guard";
 
 vi.mock("@/services/fieldVerifications", () => ({ recordFieldVerifications: vi.fn() }));
 vi.mock("@/services/providers", () => ({
+  attachGroupsToProviders: vi.fn(),
   listProviders: vi.fn(),
   getProvider: vi.fn(),
   createProvider: vi.fn(),
   updateProvider: vi.fn(),
 }));
+vi.mock("@/services/directory", () => ({
+  filterProvidersBySearch: vi.fn(),
+  getProviderDirectoryExtras: vi.fn(),
+}));
 
-import { listProviders, getProvider, createProvider, updateProvider } from "@/services/providers";
+import {
+  attachGroupsToProviders,
+  listProviders,
+  getProvider,
+  createProvider,
+  updateProvider,
+} from "@/services/providers";
+import { filterProvidersBySearch, getProviderDirectoryExtras } from "@/services/directory";
 import { recordFieldVerifications } from "@/services/fieldVerifications";
 import { CAQH_CURRENT_DAYS } from "@/lib/enrollmentReadiness";
 import {
@@ -26,6 +38,10 @@ const getProviderMock = vi.mocked(getProvider);
 const createProviderMock = vi.mocked(createProvider);
 const updateProviderMock = vi.mocked(updateProvider);
 const recordVerificationsMock = vi.mocked(recordFieldVerifications);
+const attachGroupsMock = vi.mocked(attachGroupsToProviders);
+const filterMock = vi.mocked(filterProvidersBySearch);
+const extrasMock = vi.mocked(getProviderDirectoryExtras);
+const NO_EXTRAS = { licenses: [], medicareIds: [], groups: [], locations: [] };
 
 function ctx(role: AuthContext["role"] = "specialist"): AuthContext {
   return {
@@ -102,11 +118,81 @@ describe("provider route handlers", () => {
     expect((await body(res)).error).toBe("Provider not found");
   });
 
-  it("get returns 200 with the provider", async () => {
+  it("get returns 200 with the provider row and the card's related lists", async () => {
     getProviderMock.mockResolvedValue({ id: "p1" } as never);
+    extrasMock.mockResolvedValue(NO_EXTRAS);
     const res = await handleGetProvider("p1", ctx());
     expect(res.status).toBe(200);
-    expect((await body(res)).data).toEqual({ id: "p1" });
+    expect((await body(res)).data).toEqual({ id: "p1", ...NO_EXTRAS });
+  });
+
+  it("get keeps every field of the row as it was, ssnLast4 included, and only adds", async () => {
+    const row = { id: "p1", firstName: "Ada", ssnLast4: "4321", dateOfBirth: "1980-01-02" };
+    getProviderMock.mockResolvedValue(row as never);
+    const extras = {
+      licenses: [{ state: "NM", licenseNumber: "NM-1", expirationDate: null }],
+      medicareIds: [{ groupId: "g1", groupName: "Sample", medicareId: "MCR-1" }],
+      groups: [{ id: "g1", name: "Sample", tin: "12-3456789", isPrimary: true }],
+      locations: [{ id: "f1", name: "Uptown", city: "Albuquerque", state: "NM" }],
+    };
+    extrasMock.mockResolvedValue(extras);
+    const c = ctx("billing");
+    const res = await handleGetProvider("p1", c);
+    expect((await body(res)).data).toEqual({ ...row, ...extras });
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(extrasMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: "org-1" }), "p1");
+    // The route audits nothing today, and still does not.
+    expect(c.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("get reads no related lists for a missing provider", async () => {
+    getProviderMock.mockResolvedValue(null);
+    await handleGetProvider("nope", ctx());
+    expect(extrasMock).not.toHaveBeenCalled();
+  });
+
+  it("list with ?search= reads the filtered set in full, matches, then pages", async () => {
+    const all = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    listProvidersMock.mockResolvedValue({ rows: all as never, total: 3 });
+    filterMock.mockResolvedValue(all as never);
+    attachGroupsMock.mockImplementation(async (_c, rows) =>
+      rows.map((r) => ({ ...r, groups: [] })),
+    );
+    const res = await handleListProviders(
+      new URL("https://x.test/api/providers?search=New%20Mexico&page=2&pageSize=2&groupId=g1"),
+      ctx(),
+    );
+    const b = await body(res);
+    expect(b.data).toEqual([{ id: "c", groups: [] }]);
+    expect(b.meta).toEqual({ total: 3, page: 2, pageSize: 2 });
+    // Unpaged, no SQL search, the other filters and terminated exclusion kept.
+    const [, filters, options] = listProvidersMock.mock.calls[0];
+    expect(filters).toMatchObject({
+      groupId: "g1",
+      excludeStatus: "terminated",
+      search: undefined,
+    });
+    expect(options).toEqual({ sortColumn: undefined, sortAscending: true });
+    expect(filterMock.mock.calls[0][2]).toEqual({
+      states: [{ code: "NM", phrase: "new mexico" }],
+      terms: [],
+    });
+    expect(attachGroupsMock.mock.calls[0][1]).toEqual([{ id: "c" }]);
+  });
+
+  it("list with a blank or over-long ?search= keeps the plain SQL path", async () => {
+    listProvidersMock.mockResolvedValue({ rows: [], total: 0 });
+    await handleListProviders(new URL("https://x.test/api/providers?search=%20%20"), ctx());
+    await handleListProviders(
+      new URL(`https://x.test/api/providers?search=${"x".repeat(101)}`),
+      ctx(),
+    );
+    expect(filterMock).not.toHaveBeenCalled();
+    expect(listProvidersMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ search: "x".repeat(101) }),
+      expect.objectContaining({ page: 1, withGroups: true }),
+    );
   });
 
   it("create rejects a billing (read-only) role with 403", async () => {
