@@ -15,7 +15,7 @@ import {
   TooManyTries,
 } from "@/components/intake/IntakeScreens";
 import { FormStep, ReviewNote } from "@/components/intake/IntakeForm";
-import { isReview, setField, withLoginOnFile } from "@/lib/intakeForm";
+import { canContinue, isReview, setField, withLoginOnFile } from "@/lib/intakeForm";
 import { DocumentsStep } from "@/components/intake/IntakeDocuments";
 import { HelpNotSent, HelpSent, ThankYou } from "@/components/intake/IntakeDone";
 import { useDraftAutosave, type SaveStatus } from "@/components/intake/useDraftAutosave";
@@ -25,19 +25,12 @@ import {
   answersFromDraft,
   draftFromState,
   resumeFrom,
-  type IntakeAnswers,
+  type IntakeEnded,
+  type IntakeGateway,
   type IntakePortal,
   type IntakeState,
   type IntakeUpload,
-  type RemoveDocumentResult,
-  type RequestHelpResult,
-  type SaveDraftResult,
-  type SaveLoginResult,
   type SaveSsnResult,
-  type SetDocumentExpiryResult,
-  type SignConsentResult,
-  type SubmitIntakeResult,
-  type UploadDocumentResult,
 } from "@/lib/intakeAnswers";
 import {
   CODE_MAX_WRONG,
@@ -48,44 +41,7 @@ import {
   type HelpReason,
 } from "@/lib/intakeFlow";
 import { slotUploads } from "@/lib/intakeUploads";
-import { canContinue } from "@/lib/providerOnboarding";
 import type { DocumentSlot, IntakeDraft } from "@/types/providerOnboarding";
-
-export interface IntakeGateway {
-  practiceName: string;
-  email: string;
-  requestCode: () => Promise<void>;
-  /** "wrong" for any wrong, expired or used code. Throws on a server or network failure. */
-  checkCode: (code: string) => Promise<"ok" | "wrong">;
-  signOut: () => Promise<void>;
-  /** Null when no session is live for this link. Throws on a server or network failure. */
-  loadState: () => Promise<IntakeState | null>;
-  /** Throws on a server or network failure. */
-  saveDraft: (answers: IntakeAnswers, step: DraftStep, version: number) => Promise<SaveDraftResult>;
-  /** Throws on a server or network failure. */
-  signConsent: (typedName: string) => Promise<SignConsentResult>;
-  /** The full SSN, straight from its input to the vault. Throws on a server or network failure. */
-  saveSsn: (full: string) => Promise<SaveSsnResult>;
-  /** Throws on a server or network failure. */
-  saveLogin: (portal: IntakePortal, username: string, password: string) => Promise<SaveLoginResult>;
-  /** The file goes from her device to the holding area. Throws on a server or network failure. */
-  uploadDocument: (
-    slot: Pick<DocumentSlot, "key" | "kind">,
-    file: File,
-    expiresOn?: string | null,
-  ) => Promise<UploadDocumentResult>;
-  /** Throws on a server or network failure. */
-  removeDocument: (uploadId: string) => Promise<RemoveDocumentResult>;
-  /** Throws on a server or network failure. */
-  setDocumentExpiry: (
-    uploadId: string,
-    expiresOn: string | null,
-  ) => Promise<SetDocumentExpiryResult>;
-  /** With the draft version the page last saved. Throws on a server or network failure. */
-  submit: (version: number) => Promise<SubmitIntakeResult>;
-  /** Throws on a server or network failure. */
-  requestHelp: (reason: HelpReason) => Promise<RequestHelpResult>;
-}
 
 const SUBMIT_FAILED = "We couldn't send your form just now. Please try again.";
 const SUBMIT_RELOADED =
@@ -145,19 +101,25 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
   // Submit found a form answer missing: the form opens showing what.
   const [formMissing, setFormMissing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const gatewayRef = useRef(gateway);
-  gatewayRef.current = gateway;
   const { screen } = flow;
 
+  // Her form is no longer hers to edit: she signed out, the server found no
+  // session, or the journey closed. Messages from this session go with it.
+  function ended(how: IntakeEnded | { kind: "signed_out" }) {
+    setError(null);
+    setSubmitError(null);
+    setFormMissing(false);
+    dispatch({ type: how.kind });
+  }
+
   const autosave = useDraftAutosave({
-    save: (answers, step, version) => gatewayRef.current.saveDraft(answers, step, version),
+    save: gateway.saveDraft,
     reload: async () => {
-      const state = await gatewayRef.current.loadState();
+      const state = await gateway.loadState();
       if (state) open(state);
-      else dispatch({ type: "session_ended" });
+      else ended({ kind: "session_ended" });
     },
-    signedOut: () => dispatch({ type: "session_ended" }),
-    closed: () => dispatch({ type: "closed" }),
+    ended,
   });
 
   // Shows her saved state and makes it the autosave's starting point.
@@ -179,7 +141,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
   // Opening the link with a session that is still live goes straight back in.
   useEffect(() => {
     let current = true;
-    gatewayRef.current
+    gateway
       .loadState()
       .then((state) => {
         if (current && state) dispatch({ type: "resumed", resume: open(state) });
@@ -188,7 +150,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
     return () => {
       current = false;
     };
-  }, [open]);
+  }, [gateway, open]);
 
   useEffect(() => {
     if (screen.kind !== "too_many_tries") return;
@@ -201,7 +163,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
     try {
       const state = await gateway.loadState();
       if (state) dispatch({ type: "resumed", resume: open(state) });
-      else dispatch({ type: "session_ended" });
+      else ended({ kind: "session_ended" });
     } catch {
       dispatch({ type: "open_failed" });
     } finally {
@@ -262,8 +224,8 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
     setBusy(true);
     try {
       const result = await gateway.signConsent(typedName);
-      if (result === "signed") dispatch({ type: "consent_signed" });
-      else dispatch({ type: result === "closed" ? "closed" : "session_ended" });
+      if (result.kind === "signed") dispatch({ type: "consent_signed" });
+      else ended(result);
     } catch {
       setError("We couldn't save your signature just now. Please try again.");
     } finally {
@@ -292,7 +254,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
         if (result.kind === "stored") {
           apply((d) => setField(d, ["identity", "ssn"], result.ssnLast4, localTodayIso()));
         } else if (result.kind !== "locked") {
-          dispatch({ type: result.kind === "closed" ? "closed" : "session_ended" });
+          ended(result);
         }
         return result;
       }),
@@ -302,8 +264,8 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
   function saveLogin(portal: IntakePortal, username: string, password: string) {
     return track(
       gateway.saveLogin(portal, username, password).then((result) => {
-        if (result === "stored") apply((d) => withLoginOnFile(d, portal));
-        else dispatch({ type: result === "closed" ? "closed" : "session_ended" });
+        if (result.kind === "stored") apply((d) => withLoginOnFile(d, portal));
+        else ended(result);
         return result;
       }),
     );
@@ -322,7 +284,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
             return;
           }
           dispatchUpload({ type: "failed", slotKey, attempt });
-          dispatch({ type: result.kind === "closed" ? "closed" : "session_ended" });
+          ended(result);
         },
         () => dispatchUpload({ type: "failed", slotKey, attempt }),
       ),
@@ -332,8 +294,8 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
   async function removeDocument(slot: DocumentSlot, upload: IntakeUpload): Promise<boolean> {
     try {
       const result = await track(gateway.removeDocument(upload.id));
-      if (result === "removed") dispatchUpload({ type: "removed", slotKey: slot.key });
-      else dispatch({ type: result === "closed" ? "closed" : "session_ended" });
+      if (result.kind === "removed") dispatchUpload({ type: "removed", slotKey: slot.key });
+      else ended(result);
       return true;
     } catch {
       return false;
@@ -351,7 +313,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
     expirySaves.current = save.catch(() => undefined);
     try {
       const result = await track(save);
-      if (result !== "saved") dispatch({ type: result === "closed" ? "closed" : "session_ended" });
+      if (result.kind !== "saved") ended(result);
       return true;
     } catch {
       // Editing the date passes through an incomplete one, which differs from
@@ -365,7 +327,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
   async function signOut() {
     await savesSettled();
     if (!(await autosave.flush())) return;
-    dispatch({ type: "signed_out" });
+    ended({ kind: "signed_out" });
     await gateway.signOut().catch(() => undefined);
   }
 
@@ -391,7 +353,7 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
   // Her state from the server, after Submit found the page out of date.
   async function reopen(): Promise<boolean> {
     const state = await gateway.loadState();
-    if (!state) dispatch({ type: "session_ended" });
+    if (!state) ended({ kind: "session_ended" });
     else open(state);
     return state !== null;
   }
@@ -423,11 +385,9 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
         case "npi_in_use":
           setSubmitError(npiInUse(gateway.practiceName));
           return true;
+        case "session_ended":
         case "closed":
-          dispatch({ type: "closed" });
-          return true;
-        case "signed_out":
-          dispatch({ type: "session_ended" });
+          ended(result);
           return true;
       }
     } catch {
@@ -443,8 +403,8 @@ export function IntakeFlow({ gateway }: { gateway: IntakeGateway }) {
     dispatch({ type: "help_requested", reason });
     try {
       const result = await gateway.requestHelp(reason);
-      if (result === "sent") dispatch({ type: "help_sent" });
-      else dispatch({ type: result === "closed" ? "closed" : "session_ended" });
+      if (result.kind === "sent") dispatch({ type: "help_sent" });
+      else ended(result);
     } catch {
       dispatch({ type: "help_failed" });
     }

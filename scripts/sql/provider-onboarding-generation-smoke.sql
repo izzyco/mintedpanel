@@ -1,7 +1,6 @@
 -- Smoke test for 20261107020000_cases_wait_for_onboarding_admit.sql. Run it
 -- after the migration is applied, as the postgres user (on a local
--- `supabase start`, or the SQL editor on staging), with both Vault secrets
--- (ssn_vault_key and portal_credentials_key) provisioned:
+-- `supabase start`, or the SQL editor on staging):
 --
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/provider-onboarding-generation-smoke.sql
 --

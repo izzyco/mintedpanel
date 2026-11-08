@@ -1,4 +1,4 @@
--- Provider onboarding R1, cycle 2: her answers and consent persist, and
+-- Provider onboarding: her answers and consent persist, and
 -- signing in resumes where she was.
 --
 --   provider_intake_drafts    one row per journey: what she has typed so far
@@ -8,10 +8,9 @@
 --                             text version, her typed name, the server time
 --                             and the session that signed
 --   _intake_session_context   private: a live session bound to THIS link,
---                             resolved to its invite, journey, provider and
---                             org. Every RPC below starts from it, so none
---                             takes an id from the browser.
---   read_intake_state         what the form opens with
+--                             resolved to its invite, inviter, journey,
+--                             provider and org. Every RPC below starts from
+--                             it, so none takes an id from the browser.
 --   save_intake_draft         one save, version-checked
 --   sign_intake_consent       one signature
 --
@@ -23,8 +22,9 @@
 --   SELECT to_regclass('public.provider_intake_drafts'),
 --          to_regclass('public.provider_intake_consents');          -- non-null
 --   SELECT count(*) FROM pg_proc WHERE proname IN ('_intake_session_context',
---     'read_intake_state', 'save_intake_draft', 'sign_intake_consent'); -- 4
---   then run scripts/sql/provider-intake-drafts-smoke.sql.
+--     'save_intake_draft', 'sign_intake_consent');                  -- 3
+--   then, once 20261106233000 (read_intake_state) is applied too, run
+--   scripts/sql/provider-intake-drafts-smoke.sql.
 
 -- The (org_id, onboarding_id) keys below need it: a draft or a signature
 -- can't carry an org other than its journey's.
@@ -73,20 +73,23 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.provider_intake_drafts TO s
 GRANT SELECT, INSERT ON TABLE public.provider_intake_consents TO service_role;
 
 -- ---------------------------------------------------------------------------
--- _intake_session_context: the session, invite, journey, provider and org for
--- a session cookie opened under THIS link (a shared browser can't act under
--- another provider's link). No row when the session is expired or revoked,
--- its invite was revoked (a resend, an email change, termination) or its
--- journey was cancelled. The same binding as read_intake_session.
+-- _intake_session_context: the session, invite, journey, provider, org and
+-- inviter (whoever sent the invite) for a session cookie opened under THIS
+-- link (a shared browser can't act under another provider's link). No row
+-- when the session is expired or revoked, its invite was revoked (a resend,
+-- an email change, termination) or its journey was cancelled.
 -- Private: only the SECURITY DEFINER RPCs call it.
 -- ---------------------------------------------------------------------------
+-- DROP first: CREATE OR REPLACE can't change the columns a function returns.
+DROP FUNCTION IF EXISTS public._intake_session_context(text, text);
 CREATE OR REPLACE FUNCTION public._intake_session_context(p_session_hash text, p_token_hash text)
-RETURNS TABLE (session_id uuid, invite_id uuid, onboarding_id uuid, provider_id uuid, org_id uuid)
+RETURNS TABLE (session_id uuid, invite_id uuid, onboarding_id uuid, provider_id uuid, org_id uuid,
+               inviter_id uuid)
 LANGUAGE sql
 STABLE
 SET search_path = public
 AS $$
-  SELECT s.id, i.id, o.id, i.provider_id, i.org_id
+  SELECT s.id, i.id, o.id, i.provider_id, i.org_id, i.created_by
     FROM public.provider_intake_sessions s
     JOIN public.provider_intake_invites i ON i.id = s.invite_id
     JOIN public.provider_onboardings o ON o.id = i.onboarding_id
@@ -96,66 +99,6 @@ AS $$
      AND s.expires_at > now()
      AND i.revoked_at IS NULL
      AND o.cancelled_at IS NULL;
-$$;
-
--- ---------------------------------------------------------------------------
--- read_intake_state: what the form opens with. Null when the session is not
--- live under this link. `record` is her provider record in the answers shape
--- (the columns the form shows, and every state license); `draft` is her saved
--- answers, or null before her first save. Never the full SSN: ssn_last4 only.
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.read_intake_state(p_session_hash text, p_token_hash text)
-RETURNS jsonb
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
-  SELECT jsonb_build_object(
-           'practice_name', org.name,
-           'email', i.email,
-           'record', jsonb_build_object(
-             'firstName', p.first_name,
-             'lastName', p.last_name,
-             'npi', p.npi,
-             'taxonomyCode', p.taxonomy_code,
-             'dateOfBirth', p.date_of_birth,
-             'caqhId', p.caqh_id,
-             'mobile', p.phone,
-             'homeStreet', p.home_street,
-             'homeCity', p.home_city,
-             'homeState', p.home_state,
-             'homeZip', p.home_zip,
-             'licenses', coalesce((
-               SELECT jsonb_agg(jsonb_build_object(
-                        'state', l.state,
-                        'number', l.license_number,
-                        'expiresOn', l.expiration_date)
-                      ORDER BY l.state, l.created_at, l.id)
-                 FROM public.state_licenses l
-                WHERE l.provider_id = p.id AND l.org_id = c.org_id), '[]'::jsonb)),
-           'locked_fields', to_jsonb(o.locked_fields),
-           'ssn_last4', p.ssn_last4,
-           'consented', o.consented_at IS NOT NULL,
-           'consent_text_version', (
-             SELECT k.text_version FROM public.provider_intake_consents k
-              WHERE k.onboarding_id = o.id
-              ORDER BY k.signed_at DESC, k.id DESC
-              LIMIT 1),
-           'draft', (
-             SELECT jsonb_build_object(
-                      'answers', d.answers,
-                      'step', d.step,
-                      'version', d.version,
-                      'updated_at', d.updated_at)
-               FROM public.provider_intake_drafts d
-              WHERE d.onboarding_id = o.id),
-           'submitted', o.submitted_at IS NOT NULL)
-    FROM public._intake_session_context(p_session_hash, p_token_hash) c
-    JOIN public.provider_intake_invites i ON i.id = c.invite_id
-    JOIN public.provider_onboardings o ON o.id = c.onboarding_id
-    JOIN public.providers p ON p.id = c.provider_id
-    JOIN public.organizations org ON org.id = c.org_id;
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -198,8 +141,7 @@ BEGIN
   -- One save per journey at a time, so two windows can't both pass the
   -- version check. Read again under the lock: a cancel may have landed.
   SELECT * INTO v_journey FROM public.provider_onboardings WHERE id = v_journey_id FOR UPDATE;
-  IF v_journey.submitted_at IS NOT NULL OR v_journey.admitted_at IS NOT NULL
-     OR v_journey.cancelled_at IS NOT NULL THEN
+  IF public._intake_form_closed(v_journey) THEN
     RETURN jsonb_build_object('result', 'closed');
   END IF;
 
@@ -262,8 +204,7 @@ BEGIN
   END IF;
 
   SELECT * INTO v_journey FROM public.provider_onboardings WHERE id = v_ctx.onboarding_id FOR UPDATE;
-  IF v_journey.submitted_at IS NOT NULL OR v_journey.admitted_at IS NOT NULL
-     OR v_journey.cancelled_at IS NOT NULL THEN
+  IF public._intake_form_closed(v_journey) THEN
     RETURN jsonb_build_object('result', 'closed');
   END IF;
 
@@ -283,11 +224,9 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public._intake_session_context(text, text) FROM public, anon, authenticated, service_role;
-REVOKE ALL ON FUNCTION public.read_intake_state(text, text) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.save_intake_draft(text, text, jsonb, text, int) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.sign_intake_consent(text, text, text, int) FROM public, anon, authenticated;
 
-GRANT EXECUTE ON FUNCTION public.read_intake_state(text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.save_intake_draft(text, text, jsonb, text, int) TO service_role;
 GRANT EXECUTE ON FUNCTION public.sign_intake_consent(text, text, text, int) TO service_role;
 

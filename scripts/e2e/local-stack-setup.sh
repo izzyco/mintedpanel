@@ -185,6 +185,8 @@ GRANT SELECT ON auth.users TO service_role;
 SQL
 echo "The local auth grants are in place."
 
+RUNNER="bash scripts/e2e/onboarding-local-stack.sh"
+[ "$DIR" = "$HOME/.minted-local-supabase" ] || RUNNER="SUPABASE_WORKDIR=$DIR $RUNNER"
 cat <<EOF
 
 The local stack is ready.
@@ -194,7 +196,7 @@ The local stack is ready.
   Log     $LOG
 
 Next, start the app on it with a sample practice and a staff login:
-  SUPABASE_WORKDIR=$DIR bash scripts/e2e/onboarding-local-stack.sh --serve
+  $RUNNER --serve
 Or run the real-stack test:
-  SUPABASE_WORKDIR=$DIR bash scripts/e2e/onboarding-local-stack.sh
+  $RUNNER
 EOF

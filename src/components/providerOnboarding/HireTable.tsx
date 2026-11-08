@@ -7,42 +7,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { fmtDate } from "@/lib/format";
-import { canResend, deriveStage, deriveWaitingOn, isBeforeSubmit } from "@/lib/providerOnboarding";
+import { deriveStage, deriveWaitingOn, isBeforeSubmit } from "@/lib/providerOnboarding";
 import { cn } from "@/lib/utils";
 import type { OnboardingHire } from "@/types/providerOnboarding";
 import { STAGE_STEPS, WAITING_ON_INK, waitingOnLine } from "./hireCopy";
+import { ResendButton } from "./ResendButton";
 import { StageTracker } from "./StageTracker";
 
 export type HireCommand = "resend" | "mark_contacted" | "fix_email" | "cancel" | "start_date";
-
-// Disabled, but its text keeps full contrast: the dashed border says "not now".
-export const SENT_LOOK =
-  "border-dashed border-[var(--mp-border-dashed)] text-muted-foreground disabled:opacity-100";
-
-export function ResendButton({
-  hire,
-  now,
-  onResend,
-  className,
-}: {
-  hire: OnboardingHire;
-  now: Date;
-  onResend: () => void;
-  className?: string;
-}) {
-  if (canResend(hire.events, now)) {
-    return (
-      <Button variant="outline" className={className} onClick={onResend}>
-        Resend
-      </Button>
-    );
-  }
-  return (
-    <Button variant="outline" disabled className={cn(SENT_LOOK, className)}>
-      Sent · resend in 10 min
-    </Button>
-  );
-}
 
 function HireLine({ hire, onAddStartDate }: { hire: OnboardingHire; onAddStartDate: () => void }) {
   const states = hire.states.join(", ");
@@ -160,7 +132,7 @@ function RowActions({
   return (
     <>
       <ResendButton
-        hire={hire}
+        events={hire.events}
         now={now}
         className={small}
         onResend={() => onCommand("resend", hire)}

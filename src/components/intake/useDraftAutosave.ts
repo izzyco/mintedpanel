@@ -2,7 +2,7 @@
 // before Continue, Back and Finish later. One save runs at a time, each with
 // the version the last one returned, so the page never conflicts with itself.
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { IntakeAnswers, SaveDraftResult } from "@/lib/intakeAnswers";
+import type { IntakeAnswers, IntakeEnded, SaveDraftResult } from "@/lib/intakeAnswers";
 import type { DraftStep } from "@/lib/intakeFlow";
 
 export const AUTOSAVE_DELAY_MS = 1000;
@@ -18,8 +18,7 @@ export interface AutosaveHandlers {
   save: (answers: IntakeAnswers, step: DraftStep, version: number) => Promise<SaveDraftResult>;
   /** Another window saved first: read her state again. */
   reload: () => Promise<void>;
-  signedOut: () => void;
-  closed: () => void;
+  ended: (result: IntakeEnded) => void;
 }
 
 function keyOf(pending: Pending): string {
@@ -47,6 +46,7 @@ export function useDraftAutosave(handlers: AutosaveHandlers) {
     cancelTimer();
     latest.current = pending;
     saved.current = { key: keyOf(pending), version };
+    setStatus("idle");
   }, []);
 
   /** Resolves true once the server holds what the page holds. */
@@ -81,14 +81,13 @@ export function useDraftAutosave(handlers: AutosaveHandlers) {
             setStatus("failed");
           }
           return false;
-        case "signed_out":
-          handlersRef.current.signedOut();
-          return false;
+        case "session_ended":
         case "closed":
-          handlersRef.current.closed();
+          handlersRef.current.ended(result);
           return false;
       }
     };
+    // Both arms, so a run that ever rejects cannot stop every later save.
     queue.current = queue.current.then(run, run);
     return queue.current;
   }, []);

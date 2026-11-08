@@ -18,7 +18,8 @@
 # it and stops when something is missing.
 #
 # Settings (all optional):
-#   SUPABASE_WORKDIR    where `supabase status` runs (default: this repo)
+#   SUPABASE_WORKDIR    where `supabase status` runs (default:
+#                       ~/.minted-local-supabase, the setup script's default)
 #   APP_PORT            the vite dev server (default 8091)
 #   MAIL_PORT           the mail capture server (default 8092)
 #   E2E_SCREENSHOT_DIR  screenshots (default test-results/onboarding-local-stack/screens)
@@ -36,7 +37,7 @@ if [ "${1:-}" = "--serve" ]; then
   SERVE=1
   shift
 fi
-WORKDIR="${SUPABASE_WORKDIR:-$ROOT}"
+WORKDIR="${SUPABASE_WORKDIR:-$HOME/.minted-local-supabase}"
 APP_PORT="${APP_PORT:-8091}"
 MAIL_PORT="${MAIL_PORT:-8092}"
 OUT="$ROOT/test-results/onboarding-local-stack"
@@ -51,6 +52,7 @@ for name in API_URL ANON_KEY SERVICE_ROLE_KEY DB_URL; do
     exit 1
   fi
 done
+echo "Target database: $DB_URL (supabase workdir $WORKDIR)"
 case "$API_URL" in
   http://127.0.0.1:* | http://localhost:*) ;;
   *) echo "Refusing to run: the API URL is not on this machine." >&2 && exit 1 ;;

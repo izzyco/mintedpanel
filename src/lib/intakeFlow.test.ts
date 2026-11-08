@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   CODE_WINDOW_MS,
+  LOCKED_FIELD_COLUMN,
   canRequestCode,
   initialIntakeFlow,
   intakeFlow,
+  isLockedField,
+  lockedFieldOfColumn,
   type IntakeEvent,
   type IntakeFlowState,
   type IntakeResume,
@@ -157,5 +160,17 @@ describe("intakeFlow after sign-in", () => {
       kind: "identify",
     });
     expect(run([{ type: "open_failed" }]).screen).toEqual({ kind: "identify" });
+  });
+});
+
+describe("locked field names", () => {
+  it("reads each stored column back as its field, and accepts no other spelling", () => {
+    for (const field of ["npi", "dateOfBirth", "ssn"] as const) {
+      expect(lockedFieldOfColumn(LOCKED_FIELD_COLUMN[field])).toBe(field);
+    }
+    expect(lockedFieldOfColumn("date_of_birth")).toBe("dateOfBirth");
+    expect(lockedFieldOfColumn("dateOfBirth")).toBeNull();
+    expect(isLockedField("dateOfBirth")).toBe(true);
+    expect(isLockedField("date_of_birth")).toBe(false);
   });
 });

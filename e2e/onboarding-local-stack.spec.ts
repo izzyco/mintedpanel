@@ -4,22 +4,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-// Provider onboarding end to end against a real LOCAL Supabase stack, in a
-// real browser, with no mocks: the staff invite, the emailed link and code,
-// consent, the form with autosave, the SSN and logins in their vaults, the
-// documents in the holding bucket, Submit, the staff Onboarding card, Admit &
-// assign and generation; then Cancel and a help request on two more invites.
-// Every step is checked on the screen and in the database.
-//
-// Run it only through the runner, which starts the servers and sets the env:
-//
-//   bash scripts/e2e/onboarding-local-stack.sh
-//
-// Without E2E_LOCAL_STACK=1 every test here is skipped, so CI and the mock
-// suite never run it. Each run makes its own org, staff user, group,
-// location and payer under a fresh tag, so runs never collide and nothing
-// needs cleaning up. Mail goes to scripts/e2e/mail-capture.mjs, which this
-// spec reads for the invite link and the sign-in codes.
+// Provider onboarding end to end against a real local Supabase stack, with no
+// mocks. Run it through `bash scripts/e2e/onboarding-local-stack.sh`, which
+// starts the servers and sets the env; without E2E_LOCAL_STACK=1 every test
+// here is skipped.
 
 test.skip(
   process.env.E2E_LOCAL_STACK !== "1",
@@ -41,7 +29,6 @@ const STAFF = {
   email: `staff.${RUN}@example.test`,
   password: `Pw-${randomBytes(12).toString("hex")}`,
 };
-// The ids come back from the fixture.
 const GROUP = { id: "", name: `Local Group ${RUN}` };
 const FACILITY = { id: "", name: `Charlotte Clinic ${RUN}`, city: "Charlotte" };
 const PAYER = { id: "", name: `Local Payer ${RUN}` };
@@ -49,8 +36,7 @@ const OPS = "ops@example.test";
 const ANITA = { first: "Anita", last: "Rao", email: `anita.${RUN}@example.test` };
 const BEN = { first: "Ben", last: "Cole", email: `ben.${RUN}@example.test` };
 const CARA = { first: "Cara", last: "Diaz", email: `cara.${RUN}@example.test` };
-// Passes the NPI check digit.
-const NPI = "1987654328";
+const VALID_NPI = "1987654328";
 const CAQH = { username: "anita.caqh", password: `Caqh-${randomBytes(6).toString("hex")}` };
 const PECOS = { username: "ARAO77", password: `Pecos-${randomBytes(6).toString("hex")}` };
 
@@ -114,7 +100,6 @@ function textOf(mail: Mail): string {
   return mail.body.content.find((c) => c.type === "text/plain")?.value ?? "";
 }
 
-// The `count`th mail of that template to that address, once it has arrived.
 async function nthMail(to: string, template: string, count: number): Promise<Mail> {
   await expect.poll(async () => (await mailFor(to, template)).length).toBe(count);
   return (await mailFor(to, template))[count - 1];
@@ -366,7 +351,7 @@ test("2. she signs in with the emailed code, signs consent, and fills the form; 
   await signConsent(provider, "Anita Rao");
 
   await expect(provider.getByLabel("First name")).toHaveValue("Anita");
-  await provider.locator("#intake-identity-npi").fill(NPI);
+  await provider.locator("#intake-identity-npi").fill(VALID_NPI);
   await provider.getByRole("combobox", { name: "Specialty" }).click();
   await provider.getByLabel("Search specialties").fill("Physical Therapist");
   await provider.getByRole("option").filter({ hasText: "225100000X" }).click();
@@ -419,7 +404,7 @@ test("2. she signs in with the emailed code, signs consent, and fills the form; 
                 from public.provider_intake_drafts where onboarding_id = ${lit(anitaJourney)}`),
       { message: "the draft holds her latest answers" },
     )
-    .toEqual([{ npi: NPI, caqh: "12345678", zip: "28203" }]);
+    .toEqual([{ npi: VALID_NPI, caqh: "12345678", zip: "28203" }]);
   const draftText = one<{ answers: string }>(
     `select answers::text as answers from public.provider_intake_drafts
       where onboarding_id = ${lit(anitaJourney)}`,
@@ -460,7 +445,7 @@ test("3. Finish later, then a new code: her answers, SSN and logins come back fr
   const code = await requestCode(provider, ANITA.email, 2);
   await provider.getByLabel("6-digit code").fill(code);
   await expect(provider.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
-  await expect(provider.locator("#intake-identity-npi")).toHaveValue(NPI);
+  await expect(provider.locator("#intake-identity-npi")).toHaveValue(VALID_NPI);
   await expect(provider.locator("#intake-identity-dateOfBirth")).toHaveValue("04/01/1990");
   await expect(provider.locator("#intake-identity-caqhId")).toHaveValue("12345678");
   await expect(provider.getByLabel("Mobile phone")).toHaveValue("(704) 555-0100");
@@ -520,7 +505,7 @@ test("4. she uploads her documents, takes one back, and submits; it all lands on
   ).toEqual({
     first_name: "Anita",
     last_name: "Rao",
-    npi: NPI,
+    npi: VALID_NPI,
     taxonomy_code: "225100000X",
     dob: "1990-04-01",
     caqh_id: "12345678",
@@ -568,11 +553,13 @@ test("4. she uploads her documents, takes one back, and submits; it all lands on
   ).toEqual({ submitted: true, submitted_email_delivery: "sent" });
 
   const confirmation = await nthMail(ANITA.email, "intake_submitted", 1);
-  expect(textOf(confirmation)).not.toContain(NPI);
+  expect(textOf(confirmation)).not.toContain(VALID_NPI);
   const alerts = await mailFor(OPS, "onboarding_ops_alert");
   expect(alerts.filter((m) => textOf(m).includes(`/providers/${anitaId}`))).toHaveLength(1);
-  // The reload above read her state again; nothing was sent twice.
-  expect(await mailFor(ANITA.email, "intake_submitted")).toHaveLength(1);
+  expect(
+    await mailFor(ANITA.email, "intake_submitted"),
+    "the reload read her state again and sent nothing twice",
+  ).toHaveLength(1);
   await provider.context().close();
 });
 

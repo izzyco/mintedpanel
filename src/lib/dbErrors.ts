@@ -228,12 +228,7 @@ export function errorMessage(error: unknown, fallback: string): string {
  * one-record-per-group/payer/state world that database still has. Any other
  * error (network, permission, 5xx) is NOT this and must propagate. */
 export function isMissingContractSpecialtyKeyError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const row = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
-  const namesColumn = [row.message, row.details, row.hint].some(
-    (value) => typeof value === "string" && value.includes("specialty_key"),
-  );
-  return namesColumn && (row.code === "42703" || row.code === "PGRST204");
+  return isMissingSchemaObjectError(error, /specialty_key/, ["42703", "PGRST204"]);
 }
 
 /** Deploy-order safety for READS: true when PostgREST says a
@@ -246,12 +241,7 @@ export function isMissingContractSpecialtyKeyError(error: unknown): boolean {
  * yet instead of showing a load error. Any other error (network, permission,
  * a different table) is NOT this and must propagate. */
 export function isMissingNotificationSequenceTablesError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const row = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
-  const namesTable = [row.message, row.details, row.hint].some(
-    (value) => typeof value === "string" && value.includes("notification_sequence"),
-  );
-  return namesTable && (row.code === "PGRST205" || row.code === "42P01");
+  return isMissingSchemaObjectError(error, /notification_sequence/, ["PGRST205", "42P01"]);
 }
 
 /** Deploy-order safety for READS: true when PostgREST says
@@ -260,10 +250,18 @@ export function isMissingNotificationSequenceTablesError(error: unknown): boolea
  * 42P01). With no table there is no open journey, so nothing is held and the
  * reader returns an empty list. Any other error must propagate. */
 export function isMissingProviderOnboardingsError(error: unknown): boolean {
+  return isMissingSchemaObjectError(error, /\bprovider_onboardings\b/, ["PGRST205", "42P01"]);
+}
+
+function isMissingSchemaObjectError(
+  error: unknown,
+  names: RegExp,
+  codes: readonly string[],
+): boolean {
   if (!error || typeof error !== "object") return false;
   const row = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
-  const namesTable = [row.message, row.details, row.hint].some(
-    (value) => typeof value === "string" && /\bprovider_onboardings\b/.test(value),
+  const namesObject = [row.message, row.details, row.hint].some(
+    (value) => typeof value === "string" && names.test(value),
   );
-  return namesTable && (row.code === "PGRST205" || row.code === "42P01");
+  return namesObject && codes.some((code) => code === row.code);
 }

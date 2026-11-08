@@ -1,6 +1,7 @@
 // Which provider intake screen shows, as one reducer (canvas Stage 1, boards
 // 3 through 5c). The live /intake route and the /dev preview both drive it;
 // only where the events come from differs. Pure: every time arrives on the event.
+import type { ProviderOnboardingLockedField } from "@/types";
 
 // Mirrors the server's code rules (20261025120000_provider_intake_invites.sql):
 // five wrong tries kill a code, and three codes per ten minutes per invite.
@@ -9,6 +10,25 @@ export const CODE_MAX_SENDS = 3;
 export const CODE_WINDOW_MS = 10 * 60 * 1000;
 
 export type LockedField = "npi" | "dateOfBirth" | "ssn";
+/** The providers column each locked field is stored as
+ * (provider_onboardings.locked_fields, request_intake_help's p_field). */
+export const LOCKED_FIELD_COLUMN = {
+  npi: "npi",
+  dateOfBirth: "date_of_birth",
+  ssn: "ssn",
+} as const satisfies Record<LockedField, ProviderOnboardingLockedField>;
+
+export function isLockedField(value: unknown): value is LockedField {
+  return typeof value === "string" && Object.hasOwn(LOCKED_FIELD_COLUMN, value);
+}
+
+const LOCKED_FIELDS = Object.keys(LOCKED_FIELD_COLUMN).filter(isLockedField);
+
+/** The locked field a stored column name stands for, or null for any other string. */
+export function lockedFieldOfColumn(column: string): LockedField | null {
+  return LOCKED_FIELDS.find((field) => LOCKED_FIELD_COLUMN[field] === column) ?? null;
+}
+
 export type HelpReason = { kind: "help" } | { kind: "fix"; field: LockedField };
 /** The saved step of her form (provider_intake_drafts.step). */
 export type DraftStep = "form" | "documents";

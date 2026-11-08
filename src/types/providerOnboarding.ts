@@ -1,7 +1,8 @@
 // Provider onboarding R1 view shapes (docs/provider-onboarding/r1-ui-spec.md §5).
 // Not table rows: these are what the screens render. The preview feeds them
 // from fixtures; the real backend will feed the same shapes.
-import type { DocumentKind } from "@/types";
+import type { IntakePortal } from "@/lib/intakeAnswers";
+import type { DocumentKind, ProviderOnboardingCheck } from "@/types";
 
 export type OnboardingStage = "invited" | "started" | "submitted" | "ready" | "in_credentialing";
 export type WaitingOn = "provider" | "practice" | "minted";
@@ -108,16 +109,32 @@ export interface DocumentSlot {
   file: { name: string; sizeBytes: number; expiresOn: string | null } | null;
 }
 
-export interface VerificationCheck {
+export type CheckSection = "identity" | "licenses" | "documents";
+
+interface CheckBase {
   key: string;
   label: string;
   status: "confirmed" | "pending" | "problem";
-  method: "auto" | "person";
-  confirmedBy: string | null; // person checks only: who recorded the latest answer
-  action: "test_login" | "confirm" | null;
   /** One line under the label: what is missing, the record's value, or a problem note. */
-  detail?: string | null;
-  checkedAt?: string | null; // person checks only
-  /** The record tab where an automatic check is fixed. */
-  section?: "identity" | "licenses" | "documents";
+  detail: string | null;
 }
+
+export type VerificationCheck =
+  | (CheckBase & {
+      method: "auto";
+      /** The record tab where an automatic check is fixed. */
+      section: CheckSection | null;
+    })
+  | PersonCheck;
+
+/** A check a person answers; its answers are provider_onboarding_checks rows. */
+export type PersonCheck = CheckBase & {
+  method: "person";
+  key: ProviderOnboardingCheck["checkKey"];
+  /** The portal whose saved login this check tests; null for the attestation. */
+  portal: { key: IntakePortal; name: string } | null;
+  action: "test_login" | "confirm";
+  /** Who recorded the latest answer, and when. */
+  confirmedBy: string | null;
+  checkedAt: string | null;
+};

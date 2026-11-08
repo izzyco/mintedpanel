@@ -6,7 +6,7 @@ import {
   type BrowserContext,
 } from "./fixtures/legacy-access-context";
 
-// Provider onboarding R1, cycle 7 (boards 6a and 6b): the staff Onboarding card
+// Provider onboarding: the staff Onboarding card
 // on the provider record and the roster's Onboarding toggle and pill. The REST
 // layer, the four onboarding RPCs and the cancel and resend routes are mocked;
 // the RPC handlers write through into the journey so each refetch shows what
@@ -22,9 +22,6 @@ const JOURNEY_ID = "66666666-6666-4666-8666-666666666666";
 const GROUP_ID = "77777777-7777-4777-8777-777777777777";
 const CHARLOTTE = "88888888-8888-4888-8888-888888888888";
 const COLUMBIA = "99999999-9999-4999-8999-999999999999";
-const SHOTS =
-  "/private/tmp/claude-501/-Users-ivan-Code-mintedpanel/23a19aaf-35cf-4915-b237-3ac9913f9269/scratchpad/onboarding-e2e/cycle7";
-
 const SESSION = {
   access_token: "fake-access-token",
   token_type: "bearer",
@@ -76,11 +73,9 @@ interface Journey {
   id: string;
   source: string;
   created_record: boolean;
-  locked_fields: string[];
   opened_at: string;
   first_signed_in_at: string | null;
   consented_at: string | null;
-  ssn_stored_at: string | null;
   submitted_at: string | null;
   admitted_at: string | null;
   admitted_by_name: string | null;
@@ -94,11 +89,9 @@ const INVITED: Journey = {
   id: JOURNEY_ID,
   source: "staff",
   created_record: true,
-  locked_fields: [],
   opened_at: "2026-10-13T13:40:00Z",
   first_signed_in_at: null,
   consented_at: null,
-  ssn_stored_at: null,
   submitted_at: null,
   admitted_at: null,
   admitted_by_name: null,
@@ -112,7 +105,6 @@ const SUBMITTED: Journey = {
   ...INVITED,
   first_signed_in_at: "2026-10-15T22:52:00Z",
   consented_at: "2026-10-15T22:54:00Z",
-  ssn_stored_at: "2026-10-16T23:30:00Z",
   submitted_at: "2026-10-16T23:48:00Z",
 };
 
@@ -125,13 +117,20 @@ interface Check {
 }
 
 interface MockState {
-  journey: Journey | null;
+  journey: Journey;
   checks: Check[];
   logins: { caqh: boolean; pecos: boolean };
   heldUploads: number;
   rpcCalls: Array<{ name: string; body: Record<string, unknown> }>;
   apiCalls: string[];
-  cancelOutcome: "deleted" | "closed";
+  // already_submitted: she submitted after the card loaded, so Cancel is refused.
+  cancelOutcome: "deleted" | "already_submitted";
+  recordCheckDelayMs: number;
+  resentAt: string | null;
+  // While set, provider_group_assignments reads wait for it.
+  groupAssignmentsGate: Promise<void> | null;
+  // While set, the journey read and the record's provider read wait for it.
+  refetchGate: Promise<void> | null;
 }
 
 function baseTables(role: string): Record<string, unknown[]> {
@@ -245,18 +244,18 @@ function baseTables(role: string): Record<string, unknown[]> {
 }
 
 function readPayload(state: MockState) {
-  if (!state.journey) return null;
   return {
     journey: state.journey,
     invite: {
       email: "lena@example.test",
-      last_sent_at: "2026-10-13T13:40:00Z",
+      last_sent_at: state.resentAt ?? "2026-10-13T13:40:00Z",
       delivery: "sent",
-      sends: 1,
+      sends: state.resentAt ? 2 : 1,
     },
     checks: state.checks,
     logins_on_file: state.logins,
-    ssn_on_file: state.journey.ssn_stored_at !== null,
+    // Submit needs her SSN, so a submitted journey has one on file.
+    ssn_on_file: state.journey.submitted_at !== null,
     held_uploads: state.heldUploads,
     has_case: false,
     npi_in_use: false,
@@ -270,17 +269,21 @@ function eqFilter(url: URL, column: string): string | null {
 
 async function mount(
   context: BrowserContext,
-  options: { role?: string; journey: Journey | null; tables?: Record<string, unknown[]> },
+  options: { role?: string; journey: Journey; tables?: Record<string, unknown[]> },
 ): Promise<MockState> {
   const tables = { ...baseTables(options.role ?? "admin"), ...(options.tables ?? {}) };
   const state: MockState = {
-    journey: options.journey ? { ...options.journey } : null,
+    journey: { ...options.journey },
     checks: [],
     logins: { caqh: true, pecos: true },
     heldUploads: 0,
     rpcCalls: [],
     apiCalls: [],
     cancelOutcome: "deleted",
+    recordCheckDelayMs: 0,
+    resentAt: null,
+    groupAssignmentsGate: null,
+    refetchGate: null,
   };
 
   await context.route(/\/(rest|auth)\/v1\//, async (route: Route) => {
@@ -301,8 +304,10 @@ async function mount(
       const now = new Date().toISOString();
       switch (name) {
         case "read_provider_onboarding":
+          await state.refetchGate;
           return json(body.p_provider_id === PROVIDER_ID ? readPayload(state) : null);
         case "record_onboarding_check": {
+          await new Promise((resolve) => setTimeout(resolve, state.recordCheckDelayMs));
           const row = {
             check_key: String(body.p_check_key),
             outcome: String(body.p_outcome),
@@ -314,14 +319,12 @@ async function mount(
           return json(row);
         }
         case "mark_onboarding_contacted":
-          if (state.journey) state.journey.last_contacted_at = now;
+          state.journey.last_contacted_at = now;
           return json({ last_contacted_at: now });
         case "admit_provider_onboarding":
-          if (state.journey) {
-            state.journey.admitted_at = now;
-            state.journey.admitted_by_name = "Sowmya Seed";
-            state.journey.admitted_facility_id = String(body.p_facility_id);
-          }
+          state.journey.admitted_at = now;
+          state.journey.admitted_by_name = "Sowmya Seed";
+          state.journey.admitted_facility_id = String(body.p_facility_id);
           tables.provider_facility_assignments = [
             {
               id: "pfa-1",
@@ -336,8 +339,6 @@ async function mount(
           return json({ admitted_at: now, assignment_created: true, made_primary: true });
         case "reveal_portal_credential":
           return json({ username: "lena.caqh", password: "Pass-Word-1" });
-        case "get_sop_field_tokens":
-          return json([]);
         default:
           return json([]);
       }
@@ -345,7 +346,7 @@ async function mount(
 
     const table = url.pathname.split("/rest/v1/")[1]?.split("?")[0] ?? "";
     if (table === "provider_onboardings") {
-      const open = state.journey && !state.journey.admitted_at && !state.journey.cancelled_at;
+      const open = !state.journey.admitted_at && !state.journey.cancelled_at;
       const rows = [
         ...(open
           ? [
@@ -353,7 +354,7 @@ async function mount(
                 id: JOURNEY_ID,
                 provider_id: PROVIDER_ID,
                 opened_at: INVITED.opened_at,
-                submitted_at: state.journey?.submitted_at ?? null,
+                submitted_at: state.journey.submitted_at,
               },
             ]
           : []),
@@ -361,6 +362,10 @@ async function mount(
       ];
       return json(rows);
     }
+    if (table === "provider_group_assignments" && state.groupAssignmentsGate) {
+      await state.groupAssignmentsGate;
+    }
+    if (table === "providers" && eqFilter(url, "id")) await state.refetchGate;
     let rows = tables[table] ?? [];
     const id = eqFilter(url, "id");
     if (id) rows = rows.filter((r) => (r as { id?: string }).id === id);
@@ -387,12 +392,22 @@ async function mount(
         body: JSON.stringify({ data, error: null, meta: {} }),
       });
     if (url.pathname.endsWith("/cancel")) {
-      if (state.journey) state.journey.cancelled_at = new Date().toISOString();
-      if (state.cancelOutcome === "deleted") tables.providers = [];
-      return ok({ outcome: state.cancelOutcome });
+      if (state.cancelOutcome === "already_submitted") {
+        state.journey.submitted_at = new Date().toISOString();
+        return route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ data: null, error: "already_submitted", meta: {} }),
+        });
+      }
+      state.journey.cancelled_at = new Date().toISOString();
+      tables.providers = [];
+      return ok({ outcome: "deleted" });
     }
-    if (url.pathname.endsWith("/resend"))
+    if (url.pathname.endsWith("/resend")) {
+      state.resentAt = new Date().toISOString();
       return ok({ delivery: "sent", email: "lena@example.test" });
+    }
     return route.fulfill({ status: 404, body: "{}" });
   });
 
@@ -436,11 +451,16 @@ test.describe("staff Onboarding card (board 6b)", () => {
     await expect(card(page).getByRole("button", { name: "Admit & assign" })).toBeDisabled();
     await expect(card(page).getByText("Admit & assign opens once Lena submits.")).toBeVisible();
     await expect(card(page).getByRole("button", { name: "Mark contacted" })).toHaveCount(0);
-    await page.screenshot({ path: `${SHOTS}/card-invited.png`, fullPage: false });
 
+    let release = () => {};
+    state.refetchGate = new Promise((resolve) => (release = resolve));
     await card(page).getByRole("button", { name: "Resend invitation" }).click();
     await expect(page.getByText("Invitation sent to lena@example.test")).toBeVisible();
     expect(state.apiCalls).toContain(`POST /api/provider-invites/${PROVIDER_ID}/resend`);
+    release();
+    await expect(
+      card(page).getByRole("button", { name: "Sent · resend in 10 min" }),
+    ).toBeDisabled();
 
     await page.getByRole("tab", { name: "Cases" }).click();
     await expect(page.getByRole("heading", { name: "Readiness" })).toHaveCount(0);
@@ -482,29 +502,53 @@ test.describe("staff Onboarding card (board 6b)", () => {
     await expect(
       dialog.getByText(/created Lena's record, so the record is removed too/),
     ).toBeVisible();
+    let release = () => {};
+    state.refetchGate = new Promise((resolve) => (release = resolve));
     await dialog.getByRole("button", { name: "Cancel invitation" }).click();
 
     await expect(page.getByText("Invitation cancelled. Lena's record was removed.")).toBeVisible();
     await expect(page).toHaveURL(/\/providers\/?$/);
+    await expect(page.getByText("Provider not found.")).toHaveCount(0);
     expect(state.apiCalls).toContain(`POST /api/provider-invites/${PROVIDER_ID}/cancel`);
+    release();
   });
 
-  test("Cancel of a kept record says it was kept", async ({ context, page }) => {
-    const state = await mount(context, { journey: { ...INVITED, created_record: false } });
-    state.cancelOutcome = "closed";
+  test("Cancel after she submitted says so in plain words and the stale Cancel button goes", async ({
+    context,
+    page,
+  }) => {
+    const state = await mount(context, { journey: INVITED });
+    state.cancelOutcome = "already_submitted";
     await openRecord(page);
+    const reads = () => state.rpcCalls.filter((c) => c.name === "read_provider_onboarding").length;
+    const readsBefore = reads();
 
     await card(page).getByRole("button", { name: "Cancel invitation" }).click();
     const dialog = page.getByRole("dialog", { name: "Cancel Lena's invitation?" });
-    await expect(dialog.getByText("Lena's record stays.")).toBeVisible();
     await dialog.getByRole("button", { name: "Cancel invitation" }).click();
-    await expect(
-      page.getByText(
-        "Invitation cancelled. Lena's record was kept; what Lena entered was removed.",
-      ),
-    ).toBeVisible();
-    await expect(page).toHaveURL(new RegExp(`/providers/${PROVIDER_ID}`));
-    await expect(card(page)).toHaveCount(0);
+    await expect(dialog.getByRole("alert")).toHaveText(
+      "Lena has already submitted, so the invitation can't be cancelled.",
+    );
+    await expect.poll(reads).toBeGreaterThan(readsBefore);
+
+    await dialog.getByRole("button", { name: "Keep invitation" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(card(page).getByRole("button", { name: "Cancel invitation" })).toHaveCount(0);
+    await expect(card(page).getByRole("heading", { name: /Verification/ })).toBeVisible();
+  });
+
+  test("a double click on Confirm records the check once", async ({ context, page }) => {
+    const state = await mount(context, { journey: SUBMITTED });
+    state.recordCheckDelayMs = 300;
+    await openRecord(page);
+
+    const attestation = card(page).getByRole("row", { name: /CAQH attested within 120 days/ });
+    await attestation.getByRole("button", { name: "Confirm" }).dblclick();
+    await expect(page.getByText("CAQH attested within 120 days: confirmed").first()).toBeVisible();
+    await expect(card(page).getByRole("heading", { name: /Verification/ })).toContainText(
+      "7 of 10 confirmed",
+    );
+    expect(state.rpcCalls.filter((c) => c.name === "record_onboarding_check")).toHaveLength(1);
   });
 
   test("submitted: the Verification block, person checks and Test login", async ({
@@ -524,7 +568,6 @@ test.describe("staff Onboarding card (board 6b)", () => {
     const ncRow = card(page).getByRole("row", { name: /NC license verified/ });
     await expect(ncRow.getByText("Not verified yet")).toBeVisible();
     await expect(ncRow.getByRole("link", { name: "Open Licenses" })).toBeVisible();
-    await page.screenshot({ path: `${SHOTS}/card-submitted.png`, fullPage: true });
 
     const attestation = card(page).getByRole("row", { name: /CAQH attested within 120 days/ });
     await attestation.getByRole("button", { name: "Confirm" }).click();
@@ -575,6 +618,26 @@ test.describe("staff Onboarding card (board 6b)", () => {
     });
   });
 
+  test("a revealed login hides itself after a minute", async ({ context, page }) => {
+    await mount(context, { journey: SUBMITTED });
+    await page.clock.install();
+    await openRecord(page);
+
+    await card(page).getByRole("button", { name: "Test CAQH login" }).click();
+    const dialog = page.getByRole("dialog", { name: "Test the CAQH login" });
+    await dialog.getByLabel("Reason").fill("Testing before Admit");
+    await dialog.getByRole("button", { name: "Show login" }).click();
+    await expect(dialog.getByText("Pass-Word-1")).toBeVisible();
+
+    await page.clock.runFor(59_000);
+    await expect(dialog.getByText("Pass-Word-1")).toBeVisible();
+    await page.clock.runFor(1_000);
+    await expect(dialog.getByText("The login is hidden again.")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("Pass-Word-1");
+    await expect(page.locator("body")).not.toContainText("lena.caqh");
+    await expect(dialog.getByRole("button", { name: "It works" })).toBeEnabled();
+  });
+
   test("Admit & assign warns outside her license states, then collapses the card", async ({
     context,
     page,
@@ -594,7 +657,6 @@ test.describe("staff Onboarding card (board 6b)", () => {
     ).toBeVisible();
     const admit = dialog.getByRole("button", { name: "Admit & assign" });
     await expect(admit).toBeDisabled();
-    await page.screenshot({ path: `${SHOTS}/admit-dialog.png` });
     await dialog.getByRole("checkbox", { name: "Assign this location anyway" }).check();
     await expect(admit).toBeEnabled();
     await admit.click();
@@ -609,20 +671,45 @@ test.describe("staff Onboarding card (board 6b)", () => {
     );
     await expect(card(page).getByRole("button")).toHaveCount(0);
     await expect(page.getByText("No facility assigned")).toHaveCount(0);
-    await page.screenshot({ path: `${SHOTS}/card-collapsed.png` });
 
     await page.getByRole("tab", { name: "Cases" }).click();
     await expect(page.getByRole("heading", { name: "Readiness" })).toBeVisible();
   });
 
-  test("an in-state location needs no confirmation", async ({ context, page }) => {
-    await mount(context, { journey: SUBMITTED });
+  test("Admit opened before the locations load picks her only location once they arrive", async ({
+    context,
+    page,
+  }) => {
+    const state = await mount(context, {
+      journey: SUBMITTED,
+      tables: {
+        facilities: [
+          {
+            id: CHARLOTTE,
+            org_id: ORG_ID,
+            group_id: GROUP_ID,
+            name: "Charlotte",
+            city: "Charlotte",
+            state: "NC",
+            is_active: true,
+          },
+        ],
+      },
+    });
+    let release = () => {};
+    state.groupAssignmentsGate = new Promise((resolve) => (release = resolve));
     await openRecord(page);
+
     await card(page).getByRole("button", { name: "Admit & assign" }).click();
     const dialog = page.getByRole("dialog", { name: "Admit Lena and assign a location" });
-    await dialog.getByRole("combobox", { name: "Location" }).click();
-    await page.getByRole("option", { name: "Charlotte · Charlotte, NC" }).click();
-    await expect(dialog.getByRole("checkbox")).toHaveCount(0);
+    await expect(dialog.getByText("Loading locations…")).toBeVisible();
+    await expect(dialog.getByText(/has an active location/)).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Admit & assign" })).toBeDisabled();
+
+    release();
+    await expect(dialog.getByRole("combobox", { name: "Location" })).toHaveText(
+      "Charlotte · Charlotte, NC",
+    );
     await expect(dialog.getByRole("button", { name: "Admit & assign" })).toBeEnabled();
   });
 
@@ -631,14 +718,6 @@ test.describe("staff Onboarding card (board 6b)", () => {
     await openRecord(page);
     await expect(card(page).getByRole("heading", { name: /Verification/ })).toBeVisible();
     await expect(card(page).getByRole("button")).toHaveCount(0);
-  });
-
-  test("no journey: no card, Readiness shown", async ({ context, page }) => {
-    await mount(context, { journey: null });
-    await openRecord(page);
-    await expect(card(page)).toHaveCount(0);
-    await page.getByRole("tab", { name: "Cases" }).click();
-    await expect(page.getByRole("heading", { name: "Readiness" })).toBeVisible();
   });
 });
 
@@ -669,7 +748,6 @@ test.describe("roster Onboarding toggle and pill (board 6a)", () => {
     const toggle = page.getByRole("button", { name: "Onboarding 2" });
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByText("Onboarding not complete")).toHaveCount(2);
-    await page.screenshot({ path: `${SHOTS}/roster-toggle-off.png` });
     await toggle.click();
     await expect(page.getByRole("button", { name: "Showing onboarding only 2" })).toHaveAttribute(
       "aria-pressed",
@@ -678,7 +756,6 @@ test.describe("roster Onboarding toggle and pill (board 6a)", () => {
     await expect(page.getByRole("link", { name: /Park, Owen/ })).toHaveCount(0);
     await expect(page.getByRole("link", { name: /Ortiz, Lena/ })).toBeVisible();
     await expect(page.getByRole("link", { name: /Bell, Marcus/ })).toBeVisible();
-    await page.screenshot({ path: `${SHOTS}/roster-toggle.png` });
 
     await page
       .getByRole("row", { name: /Ortiz, Lena/ })

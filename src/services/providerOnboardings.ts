@@ -28,7 +28,7 @@ export async function listOpenProviderOnboardings(): Promise<OpenProviderOnboard
   const orgId = requireActiveOrg();
   const query = supabase
     .from("provider_onboardings")
-    .select("id, provider_id, opened_at, submitted_at, created_record", { count: "exact" })
+    .select("provider_id, created_record", { count: "exact" })
     .eq("org_id", orgId)
     .is("admitted_at", null)
     .is("cancelled_at", null)
@@ -37,13 +37,7 @@ export async function listOpenProviderOnboardings(): Promise<OpenProviderOnboard
     const rows = await readCompletePages(async (from, to) => await query.range(from, to), {
       label: "Open onboarding list",
     });
-    return rows.map((r) => ({
-      id: r.id,
-      providerId: r.provider_id,
-      openedAt: r.opened_at,
-      submittedAt: r.submitted_at,
-      createdRecord: r.created_record,
-    }));
+    return rows.map((r) => ({ providerId: r.provider_id, createdRecord: r.created_record }));
   } catch (error) {
     // Generation waits on this read, so a database without the table must
     // still generate: no table, no journey, nobody held.

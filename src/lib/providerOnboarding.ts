@@ -1,11 +1,9 @@
 // Pure provider-onboarding derivations (docs/provider-onboarding/r1-ui-spec.md §6).
-// Stage, waiting-on and progress are computed from events and the draft on
-// every read; nothing here is stored.
+// Stage, waiting-on and document slots are computed from events and the draft
+// on every read; nothing here is stored.
 import type { OpenProviderOnboarding } from "@/types";
 import type {
   DocumentSlot,
-  FieldValue,
-  HomeAddress,
   IntakeDraft,
   InviteMatch,
   KnownPerson,
@@ -17,7 +15,7 @@ import type {
 } from "@/types/providerOnboarding";
 
 export const INTAKE_MAX_BYTES = 10 * 1024 * 1024;
-/** Where her files wait until Submit copies them into the vault (D8). */
+/** Where her files wait until Submit copies them into the vault. */
 export const INTAKE_UPLOAD_BUCKET = "provider-intake-uploads";
 export const RESEND_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -26,7 +24,7 @@ export const RESEND_COOLDOWN_MS = 10 * 60 * 1000;
 export const ONBOARDING_HOLD_MESSAGE =
   "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.";
 
-/** Providers whose cases wait for Admit (PM decision 11, D3): an open journey
+/** Providers whose cases wait for Admit: an open journey
  * whose invite created the record. A gap-fill invite to a provider already on
  * file never pauses her cases. */
 export function onboardingHeldProviderIds(open: readonly OpenProviderOnboarding[]): Set<string> {
@@ -59,14 +57,18 @@ export function isBeforeSubmit(stage: OnboardingStage): boolean {
   return stage === "invited" || stage === "started";
 }
 
-// A help request (either email hatch) stays open until the practice records
-// that it contacted her. Once she has submitted, Minted owns the next step.
-export function needsPractice(events: OnboardingEvent[]): boolean {
-  if (!isBeforeSubmit(deriveStage(events))) return false;
+/** A help request (either email hatch) stays open until the practice records
+ * that it contacted her, before or after Submit. */
+export function helpAwaitsContact(events: OnboardingEvent[]): boolean {
   const help = latestAt(events, ["help_requested", "told_not_needed"]);
   if (help === null) return false;
   const contacted = latestAt(events, ["practice_contacted"]);
   return contacted === null || help > contacted;
+}
+
+// Once she has submitted, Minted owns the next step.
+export function needsPractice(events: OnboardingEvent[]): boolean {
+  return isBeforeSubmit(deriveStage(events)) && helpAwaitsContact(events);
 }
 
 export function deriveWaitingOn(events: OnboardingEvent[]): WaitingOn {
@@ -78,47 +80,6 @@ export function canResend(events: OnboardingEvent[], now: Date): boolean {
   if (!isBeforeSubmit(deriveStage(events))) return false;
   const lastSend = latestAt(events, ["invited", "invitation_resent"]);
   return lastSend === null || now.getTime() - lastSend >= RESEND_COOLDOWN_MS;
-}
-
-// A field counts once the provider (or a named source) has supplied it. A
-// prefilled default with no source, like the Specialty select, does not.
-function provided(field: FieldValue<string>): boolean {
-  return field.source !== null && Boolean(field.value?.trim());
-}
-
-function count(flags: boolean[]): { done: number; total: number } {
-  return { done: flags.filter(Boolean).length, total: flags.length };
-}
-
-function licenseComplete(license: IntakeDraft["licenses"][number]): boolean {
-  return provided(license.state) && provided(license.number) && provided(license.expiresOn);
-}
-
-function addressComplete(address: HomeAddress): boolean {
-  return [address.street, address.city, address.state, address.zip].every(provided);
-}
-
-export function sectionProgress(draft: IntakeDraft) {
-  const { identity, contact, licenses, logins } = draft;
-  return {
-    identity: count([
-      provided(identity.firstName),
-      provided(identity.lastName),
-      provided(identity.npi),
-      provided(identity.taxonomyCode),
-      provided(identity.dateOfBirth),
-      provided(identity.caqhId),
-      provided(identity.ssn),
-    ]),
-    // The email is verified by the sign-in code, so it always counts.
-    contact: count([true, provided(contact.mobile), addressComplete(contact.homeAddress)]),
-    licenses: licenses.length === 0 ? { done: 0, total: 1 } : count(licenses.map(licenseComplete)),
-    logins: count([logins.caqhOnFile, logins.pecosOnFile]),
-  };
-}
-
-export function canContinue(draft: IntakeDraft): boolean {
-  return Object.values(sectionProgress(draft)).every((s) => s.done === s.total);
 }
 
 type SlotFile = DocumentSlot["file"];
@@ -150,6 +111,25 @@ const OPTIONAL_SLOTS: Omit<DocumentSlot, "file">[] = [
   { key: "other", kind: "other", label: "Something else", required: false, needsExpiration: false },
 ];
 
+/** What her documents step requires: a CV, then one license copy per license
+ * state. The staff card checks the record against this same list. */
+export function requiredDocumentSlots(
+  licenseStates: readonly string[],
+): Omit<DocumentSlot, "file">[] {
+  return [
+    CV_SLOT,
+    // The license copy takes its expiration date from the form.
+    ...licenseStates.map((state) => ({
+      key: `license:${state}`,
+      kind: "state_license" as const,
+      label: `${state} license copy`,
+      required: true,
+      licenseState: state,
+      needsExpiration: false,
+    })),
+  ];
+}
+
 // Slots are rebuilt from the draft each time, so removing a license removes
 // its slot and the upload attached to it.
 export function documentSlots(draft: IntakeDraft, files: Record<string, SlotFile>): DocumentSlot[] {
@@ -160,20 +140,10 @@ export function documentSlots(draft: IntakeDraft, files: Record<string, SlotFile
         .filter((s): s is string => Boolean(s)),
     ),
   ];
-  const slots: Omit<DocumentSlot, "file">[] = [
-    CV_SLOT,
-    // The license copy takes its expiration date from the form.
-    ...states.map((state) => ({
-      key: `license:${state}`,
-      kind: "state_license" as const,
-      label: `${state} license copy`,
-      required: true,
-      licenseState: state,
-      needsExpiration: false,
-    })),
-    ...OPTIONAL_SLOTS,
-  ];
-  return slots.map((slot) => ({ ...slot, file: files[slot.key] ?? null }));
+  return [...requiredDocumentSlots(states), ...OPTIONAL_SLOTS].map((slot) => ({
+    ...slot,
+    file: files[slot.key] ?? null,
+  }));
 }
 
 const LICENSE_SLOT_KEY = /^license:[A-Z]{2}$/;

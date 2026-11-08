@@ -6,15 +6,26 @@
 // leaves the record's value alone and a later staff edit isn't overwritten by
 // a stale copy. The SSN and passwords are never answers. A license row's
 // state is the exception: it is kept even when it came from the record,
-// because licenses are matched on state (D6).
+// because licenses are matched on state.
 import { format } from "date-fns";
 import { ENTERED, missingDocuments, missingFields } from "@/lib/intakeForm";
-import type { DraftStep, IntakeResume, LockedField } from "@/lib/intakeFlow";
+import {
+  isLockedField,
+  type DraftStep,
+  type HelpReason,
+  type IntakeResume,
+  type LockedField,
+} from "@/lib/intakeFlow";
 import { heldFiles, slotUploads } from "@/lib/intakeUploads";
 import { isIsoDate, isValidNpi } from "@/lib/providerIdentity";
 import { documentSlots } from "@/lib/providerOnboarding";
 import type { DocumentKind } from "@/types";
-import type { FieldValue, IntakeDraft, IntakeLicense } from "@/types/providerOnboarding";
+import type {
+  DocumentSlot,
+  FieldValue,
+  IntakeDraft,
+  IntakeLicense,
+} from "@/types/providerOnboarding";
 
 export const INTAKE_ANSWER_MAX_LENGTH = 100;
 export const INTAKE_MAX_LICENSES = 60;
@@ -39,11 +50,17 @@ const LICENSE_KEYS = ["state", "number", "expiresOn"] as const;
 export type IntakeLicenseAnswer = Record<(typeof LICENSE_KEYS)[number], string | null>;
 export type IntakeAnswers = Record<AnswerKey, string | null> & { licenses: IntakeLicenseAnswer[] };
 
+export const NO_INTAKE_ANSWERS: IntakeAnswers = {
+  ...(Object.fromEntries(ANSWER_KEYS.map((key) => [key, null])) as Record<AnswerKey, null>),
+  licenses: [],
+};
+
 /** The portals whose logins she saves (provider_portal_credentials.portal). */
 export const INTAKE_PORTALS = ["caqh", "pecos"] as const;
 export type IntakePortal = (typeof INTAKE_PORTALS)[number];
 export const INTAKE_USERNAME_MAX_LENGTH = 100;
 export const INTAKE_PASSWORD_MAX_LENGTH = 200;
+export const INTAKE_TYPED_NAME_MAX_LENGTH = 200;
 
 export function isIntakePortal(value: unknown): value is IntakePortal {
   return (INTAKE_PORTALS as readonly unknown[]).includes(value);
@@ -75,31 +92,27 @@ export interface IntakeState {
   submitted: boolean;
 }
 
+/** How any action on her journey can end it: her session is gone, or the
+ * journey was submitted, admitted or cancelled while she had it open. */
+export type IntakeEnded = { kind: "session_ended" } | { kind: "closed" };
+
 /** One draft save, as the form sees it. A conflict means another window saved first. */
 export type SaveDraftResult =
-  | { kind: "saved"; version: number }
-  | { kind: "conflict" }
-  | { kind: "signed_out" }
-  | { kind: "closed" };
+  { kind: "saved"; version: number } | { kind: "conflict" } | IntakeEnded;
 
-export type SignConsentResult = "signed" | "signed_out" | "closed";
+export type SignConsentResult = { kind: "signed" } | IntakeEnded;
 
 /** One SSN save. Locked: an SSN was on file when her onboarding opened. */
-export type SaveSsnResult =
-  | { kind: "stored"; ssnLast4: string }
-  | { kind: "locked" }
-  | { kind: "signed_out" }
-  | { kind: "closed" };
+export type SaveSsnResult = { kind: "stored"; ssnLast4: string } | { kind: "locked" } | IntakeEnded;
 
-export type SaveLoginResult = "stored" | "signed_out" | "closed";
+export type SaveLoginResult = { kind: "stored" } | IntakeEnded;
 
-export type UploadDocumentResult =
-  { kind: "uploaded"; upload: IntakeUpload } | { kind: "signed_out" } | { kind: "closed" };
+export type UploadDocumentResult = { kind: "uploaded"; upload: IntakeUpload } | IntakeEnded;
 
 /** Removed also when it was already gone, say from another window. */
-export type RemoveDocumentResult = "removed" | "signed_out" | "closed";
+export type RemoveDocumentResult = { kind: "removed" } | IntakeEnded;
 
-export type SetDocumentExpiryResult = "saved" | "signed_out" | "closed";
+export type SetDocumentExpiryResult = { kind: "saved" } | IntakeEnded;
 
 /** One Submit. Incomplete names the form's summary keys still missing;
  * npi_in_use means the NPI she entered is on another provider's record. */
@@ -108,10 +121,40 @@ export type SubmitIntakeResult =
   | { kind: "incomplete"; missing: string[] }
   | { kind: "npi_in_use" }
   | { kind: "conflict" }
-  | { kind: "signed_out" }
-  | { kind: "closed" };
+  | IntakeEnded;
 
-export type RequestHelpResult = "sent" | "signed_out" | "closed";
+export type RequestHelpResult = { kind: "sent" } | IntakeEnded;
+
+// IntakeFlow reads her saved state on mount and again whenever the gateway
+// changes, so pass the same object on every render.
+export interface IntakeGateway {
+  practiceName: string;
+  email: string;
+  requestCode: () => Promise<void>;
+  /** "wrong" for any wrong, expired or used code. Throws on a server or network failure. */
+  checkCode: (code: string) => Promise<"ok" | "wrong">;
+  signOut: () => Promise<void>;
+  /** Null when no session is live for this link. Throws on a server or network failure. */
+  loadState: () => Promise<IntakeState | null>;
+  saveDraft: (answers: IntakeAnswers, step: DraftStep, version: number) => Promise<SaveDraftResult>;
+  signConsent: (typedName: string) => Promise<SignConsentResult>;
+  /** The full SSN, straight from its input to the vault. Throws on a server or network failure. */
+  saveSsn: (full: string) => Promise<SaveSsnResult>;
+  saveLogin: (portal: IntakePortal, username: string, password: string) => Promise<SaveLoginResult>;
+  /** The file goes from her device to the holding area. Throws on a server or network failure. */
+  uploadDocument: (
+    slot: Pick<DocumentSlot, "key" | "kind">,
+    file: File,
+  ) => Promise<UploadDocumentResult>;
+  removeDocument: (uploadId: string) => Promise<RemoveDocumentResult>;
+  setDocumentExpiry: (
+    uploadId: string,
+    expiresOn: string | null,
+  ) => Promise<SetDocumentExpiryResult>;
+  /** With the draft version the page last saved. Throws on a server or network failure. */
+  submit: (version: number) => Promise<SubmitIntakeResult>;
+  requestHelp: (reason: HelpReason) => Promise<RequestHelpResult>;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -196,11 +239,6 @@ function onFile(value: string | null): FieldValue<string> {
   return value === null ? EMPTY : { value, source: ON_FILE };
 }
 
-const LOCK_OF: Partial<Record<AnswerKey, LockedField>> = {
-  npi: "npi",
-  dateOfBirth: "dateOfBirth",
-};
-
 export function draftFromState(state: IntakeState): IntakeDraft {
   const { record, draft } = state;
   const answers = draft?.answers ?? null;
@@ -212,8 +250,7 @@ export function draftFromState(state: IntakeState): IntakeDraft {
     answer !== null && mine ? { value: answer, source: mine } : onFile(recorded);
   const locked = (value: string | null): FieldValue<string> => ({ ...onFile(value), locked: true });
   const field = (key: AnswerKey): FieldValue<string> => {
-    const lock = LOCK_OF[key];
-    if (lock && state.lockedFields.includes(lock)) return locked(record[key]);
+    if (isLockedField(key) && state.lockedFields.includes(key)) return locked(record[key]);
     return pick(answers?.[key] ?? null, record[key]);
   };
 
@@ -269,7 +306,6 @@ export function resumeFrom(state: IntakeState): IntakeResume {
   };
 }
 
-// A state as the database checks it (state_licenses, providers.home_state).
 const STATE_CODE = /^[A-Za-z]{2}$/;
 
 // Answers the record can't take: the form's inputs never produce them, so

@@ -20,6 +20,7 @@
 // UNIQUE NULLS NOT DISTINCT 4-part key → 23505 on a duplicate) and records
 // every write so the read-only posture of the grid render is pinned.
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
+import { ONBOARDING_HOLD_MESSAGE } from "../src/lib/providerOnboarding";
 
 const AUTH_KEY = "sb-example-auth-token";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -368,8 +369,7 @@ function makeHandler(
           {
             code: "P0001",
             message: "onboarding_not_admitted",
-            details:
-              "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.",
+            details: ONBOARDING_HOLD_MESSAGE,
             hint: null,
           },
           400,
@@ -865,9 +865,6 @@ const openJourney = (providerId: string, createdRecord: boolean) => ({
   cancelled_at: null,
 });
 
-const HOLD_SENTENCE =
-  "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.";
-
 test("PM decision 11: a provider the invite created waits for Admit; a gap-fill journey holds nothing", async ({
   context,
   page,
@@ -974,6 +971,6 @@ test("PM decision 11 backstop: an invite that lands after the preview loaded is 
   });
   const failed = ledgerRows(writes).filter((r) => r.disposition === "failed");
   expect(failed).toHaveLength(1);
-  expect(failed[0].reason).toBe(HOLD_SENTENCE);
+  expect(failed[0].reason).toBe(ONBOARDING_HOLD_MESSAGE);
   expect(f.credential_cases).toHaveLength(0);
 });

@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { INTAKE_TYPED_NAME_MAX_LENGTH } from "@/lib/intakeAnswers";
 import { consentParagraphs } from "@/lib/intakeConsent";
 import { fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -323,7 +324,7 @@ export function CodeStep({
   );
 }
 
-// Board 5. Signing saves her typed name with this text's version and the
+// Signing saves her typed name with this text's version and the
 // server's time (provider_intake_consents).
 export function ConsentStep({
   practiceName,
@@ -358,7 +359,7 @@ export function ConsentStep({
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoComplete="name"
-          maxLength={200}
+          maxLength={INTAKE_TYPED_NAME_MAX_LENGTH}
           aria-required
           className={cn(FIELD, "h-11 bg-[#FDFDFC] px-3 text-[16px] md:text-[16px]")}
         />
@@ -431,7 +432,7 @@ export function TooManyTries({
   );
 }
 
-// Board 4c. Her answers are saved as she goes, so both say so.
+// Her answers are saved as she goes, so both say so.
 export function SignedOut({
   reason,
   email,

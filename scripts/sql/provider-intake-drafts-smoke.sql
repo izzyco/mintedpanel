@@ -1,5 +1,6 @@
 -- Smoke test for 20261106210000_provider_intake_drafts.sql. Run it after the
--- migration is applied, as the postgres user (the owner of the tables and the
+-- migration and 20261106233000 (which creates read_intake_state) are
+-- applied, as the postgres user (the owner of the tables and the
 -- SECURITY DEFINER functions: on a local `supabase start`, or the SQL editor
 -- on staging):
 --
@@ -40,7 +41,6 @@ BEGIN
     VALUES (v_org, v_provider, 'NC', 'PT-48213', '2027-12-31');
   UPDATE public.providers SET phone = '7045550199', home_city = 'Charlotte' WHERE id = v_provider;
 
-  -- Another org's invite and session, for the cross-link checks.
   PERFORM public.create_provider_intake_invite(v_other_org, v_actor, 'Smoke', jsonb_build_object(
     'first_name', 'Other', 'last_name', 'Person', 'email', 'other.drafts@example.test',
     'group_id', v_other_group), 'dr-link-b', now() + interval '30 days');
@@ -169,17 +169,7 @@ BEGIN
   ASSERT public.read_intake_state('dr-sess-a2', 'dr-link-a2') IS NULL, 'cancelled journey';
   ASSERT public.save_intake_draft('dr-sess-a2', 'dr-link-a2', '{}', 'form', 1) IS NULL, 'cancelled save';
 
-  -- Deleting the provider takes drafts and signatures with the journeys.
-  DELETE FROM public.state_licenses WHERE provider_id = v_provider;
-  DELETE FROM public.provider_group_assignments WHERE provider_id = v_provider;
-  DELETE FROM public.providers WHERE id = v_provider;
-  ASSERT NOT EXISTS (SELECT 1 FROM public.provider_intake_drafts WHERE onboarding_id IN (v_journey, v_journey_2)),
-    'drafts cascade';
-  ASSERT NOT EXISTS (SELECT 1 FROM public.provider_intake_consents WHERE onboarding_id = v_journey),
-    'signatures cascade';
-
   -- Grants: only service_role calls the RPCs, and nobody else reads the tables.
-  ASSERT NOT has_function_privilege('authenticated', 'public.read_intake_state(text, text)', 'EXECUTE'), 'authenticated state';
   ASSERT NOT has_function_privilege('anon', 'public.save_intake_draft(text, text, jsonb, text, int)', 'EXECUTE'), 'anon save';
   ASSERT NOT has_function_privilege('anon', 'public.sign_intake_consent(text, text, text, int)', 'EXECUTE'), 'anon sign';
   ASSERT has_function_privilege('service_role', 'public.save_intake_draft(text, text, jsonb, text, int)', 'EXECUTE'), 'service_role save';

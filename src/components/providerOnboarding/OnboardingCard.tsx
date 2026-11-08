@@ -1,8 +1,8 @@
-// Board 6b: the Onboarding card at the top of the provider record while her
+// The Onboarding card at the top of the provider record while her
 // journey is open, and one line of history after Admit. Every value is derived
 // in src/lib/onboardingCard.ts; this file only renders it and wires the
 // actions.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -24,29 +24,30 @@ import { fmtDate } from "@/lib/format";
 import {
   admitLocations,
   admittedLine,
-  asPersonCheckKey,
-  canAdmit,
   cardPhase,
-  helpOpen,
   inviteLine,
   onboardingEvents,
-  onboardingStage,
   progressItems,
   verificationChecks,
   waitingOnLine,
 } from "@/lib/onboardingCard";
-import { canResend, isBeforeSubmit, verificationSummary } from "@/lib/providerOnboarding";
+import {
+  deriveStage,
+  helpAwaitsContact,
+  isBeforeSubmit,
+  verificationSummary,
+} from "@/lib/providerOnboarding";
 import { cn } from "@/lib/utils";
 import type { Provider, ProviderOnboardingRead } from "@/types";
-import type { VerificationCheck } from "@/types/providerOnboarding";
+import type { CheckSection, PersonCheck, VerificationCheck } from "@/types/providerOnboarding";
 import { WAITING_ON_INK } from "./hireCopy";
-import { SENT_LOOK } from "./HireTable";
 import {
   AdmitDialog,
   CancelOnboardingDialog,
   ProblemNoteDialog,
   TestLoginDialog,
 } from "./OnboardingDialogs";
+import { ResendButton } from "./ResendButton";
 import { StageTracker } from "./StageTracker";
 
 const STATUS_PILL: Record<VerificationCheck["status"], { tone: StatusColor; label: string }> = {
@@ -55,22 +56,17 @@ const STATUS_PILL: Record<VerificationCheck["status"], { tone: StatusColor; labe
   problem: { tone: "red", label: "Problem" },
 };
 
-const SECTION_LABEL: Record<NonNullable<VerificationCheck["section"]>, string> = {
+const SECTION_LABEL: Record<CheckSection, string> = {
   identity: "Provider Info",
   licenses: "Licenses",
   documents: "Documents",
 };
 
-const PORTAL_OF: Partial<Record<string, { portal: "caqh" | "pecos"; name: string }>> = {
-  caqh_login: { portal: "caqh", name: "CAQH" },
-  pecos_login: { portal: "pecos", name: "PECOS" },
-};
-
 type Dialog =
   | { kind: "cancel" }
   | { kind: "admit" }
-  | { kind: "test"; check: VerificationCheck }
-  | { kind: "problem"; check: VerificationCheck };
+  | { kind: "test"; check: PersonCheck; portal: NonNullable<PersonCheck["portal"]> }
+  | { kind: "problem"; check: PersonCheck };
 
 export function OnboardingCard({
   provider,
@@ -127,8 +123,9 @@ function OpenOnboardingCard({
 
   const name = provider.firstName;
   const journey = read.journey;
-  const stage = onboardingStage(read);
-  const waiting = waitingOnLine(read, name);
+  const events = onboardingEvents(read);
+  const stage = deriveStage(events);
+  const waiting = waitingOnLine(journey, events, name);
   const beforeSubmit = isBeforeSubmit(stage);
   const licenses = licensesQ.data ?? [];
   const checks = verificationChecks({
@@ -141,7 +138,6 @@ function OpenOnboardingCard({
   const summary = verificationSummary(checks);
   const attention = checks.filter((c) => c.status !== "confirmed");
   const confirmed = checks.filter((c) => c.status === "confirmed");
-  const testPortal = dialog?.kind === "test" ? PORTAL_OF[dialog.check.key] : undefined;
 
   async function onResend() {
     try {
@@ -161,21 +157,20 @@ function OpenOnboardingCard({
     }
   }
 
-  async function record(
-    check: VerificationCheck,
-    outcome: "confirmed" | "problem",
-    note: string | null,
-  ) {
-    const checkKey = asPersonCheckKey(check.key);
-    if (!checkKey) return;
-    await recordCheck.mutateAsync({ onboardingId: journey.id, checkKey, outcome, note });
+  async function record(check: PersonCheck, outcome: "confirmed" | "problem", note: string | null) {
+    await recordCheck.mutateAsync({
+      onboardingId: journey.id,
+      checkKey: check.key,
+      outcome,
+      note,
+    });
     setDialog(null);
     toast.success(
       outcome === "confirmed" ? `${check.label}: confirmed` : `${check.label}: problem noted`,
     );
   }
 
-  async function onConfirmCheck(check: VerificationCheck) {
+  async function onConfirmCheck(check: PersonCheck) {
     try {
       await record(check, "confirmed", null);
     } catch (err) {
@@ -183,26 +178,31 @@ function OpenOnboardingCard({
     }
   }
 
+  const renderActions = (check: VerificationCheck) => (
+    <CheckActions
+      check={check}
+      providerId={provider.id}
+      canWrite={canWrite}
+      isAdmin={isAdmin}
+      onConfirm={onConfirmCheck}
+      onDialog={setDialog}
+    />
+  );
+
   const actions = canWrite ? (
     <div className="flex flex-wrap items-center gap-2">
       {beforeSubmit ? (
-        canResend(onboardingEvents(read), new Date()) ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={onResend}
-            disabled={resend.isPending}
-          >
-            {resend.isPending ? "Sending…" : "Resend invitation"}
-          </Button>
-        ) : (
-          <Button variant="outline" size="sm" disabled className={cn("h-8", SENT_LOOK)}>
-            Sent · resend in 10 min
-          </Button>
-        )
+        <ResendButton
+          events={events}
+          now={new Date()}
+          label="Resend invitation"
+          pending={resend.isPending}
+          size="sm"
+          className="h-8"
+          onResend={onResend}
+        />
       ) : null}
-      {helpOpen(journey) ? (
+      {helpAwaitsContact(events) ? (
         <Button
           variant="outline"
           size="sm"
@@ -273,14 +273,7 @@ function OpenOnboardingCard({
               </span>
             </h3>
             {attention.length > 0 ? (
-              <CheckTable
-                checks={attention}
-                providerId={provider.id}
-                canWrite={canWrite}
-                isAdmin={isAdmin}
-                onConfirm={onConfirmCheck}
-                onDialog={setDialog}
-              />
+              <CheckTable checks={attention} renderActions={renderActions} />
             ) : null}
             {confirmed.length > 0 ? (
               <details className="text-[13px]">
@@ -288,14 +281,7 @@ function OpenOnboardingCard({
                   {confirmed.length} confirmed
                 </summary>
                 <div className="mt-2">
-                  <CheckTable
-                    checks={confirmed}
-                    providerId={provider.id}
-                    canWrite={canWrite}
-                    isAdmin={isAdmin}
-                    onConfirm={onConfirmCheck}
-                    onDialog={setDialog}
-                  />
+                  <CheckTable checks={confirmed} renderActions={renderActions} />
                 </div>
               </details>
             ) : null}
@@ -312,7 +298,7 @@ function OpenOnboardingCard({
             <Button
               size="sm"
               className="h-8"
-              disabled={!canAdmit(read)}
+              disabled={beforeSubmit}
               onClick={() => setDialog({ kind: "admit" })}
             >
               Admit & assign
@@ -343,7 +329,11 @@ function OpenOnboardingCard({
       {dialog?.kind === "admit" ? (
         <AdmitDialog
           firstName={name}
-          locations={admitLocations(facilitiesQ.data ?? [], groupAssignQ.data ?? [], provider.id)}
+          locations={
+            facilitiesQ.isPending || groupAssignQ.isPending
+              ? null
+              : admitLocations(facilitiesQ.data ?? [], groupAssignQ.data ?? [], provider.id)
+          }
           licenseStates={licenses.map((l) => l.state)}
           openChecks={attention.map((c) => c.label)}
           onClose={() => setDialog(null)}
@@ -354,11 +344,11 @@ function OpenOnboardingCard({
           }}
         />
       ) : null}
-      {dialog?.kind === "test" && testPortal ? (
+      {dialog?.kind === "test" ? (
         <TestLoginDialog
           providerId={provider.id}
-          portal={testPortal.portal}
-          portalName={testPortal.name}
+          portal={dialog.portal.key}
+          portalName={dialog.portal.name}
           onClose={() => setDialog(null)}
           onRecord={(outcome, note) => record(dialog.check, outcome, note)}
         />
@@ -376,18 +366,10 @@ function OpenOnboardingCard({
 
 function CheckTable({
   checks,
-  providerId,
-  canWrite,
-  isAdmin,
-  onConfirm,
-  onDialog,
+  renderActions,
 }: {
   checks: VerificationCheck[];
-  providerId: string;
-  canWrite: boolean;
-  isAdmin: boolean;
-  onConfirm: (check: VerificationCheck) => void;
-  onDialog: (dialog: Dialog) => void;
+  renderActions: (check: VerificationCheck) => ReactNode;
 }) {
   return (
     <div className="overflow-x-auto rounded-md border border-[#E8E5E0]">
@@ -425,16 +407,7 @@ function CheckTable({
                     : "—"}
               </td>
               <td className="px-3 py-2">
-                <div className="flex flex-wrap justify-end gap-1.5">
-                  <CheckActions
-                    check={c}
-                    providerId={providerId}
-                    canWrite={canWrite}
-                    isAdmin={isAdmin}
-                    onConfirm={onConfirm}
-                    onDialog={onDialog}
-                  />
-                </div>
+                <div className="flex flex-wrap justify-end gap-1.5">{renderActions(c)}</div>
               </td>
             </tr>
           ))}
@@ -456,10 +429,22 @@ function CheckActions({
   providerId: string;
   canWrite: boolean;
   isAdmin: boolean;
-  onConfirm: (check: VerificationCheck) => void;
+  onConfirm: (check: PersonCheck) => Promise<void>;
   onDialog: (dialog: Dialog) => void;
 }) {
   const small = "h-7 px-2.5 text-[12px] font-normal";
+  // Held from the click itself, so a second click before the write lands
+  // finds the button disabled. The mutation's own pending flag arrives a tick
+  // later, after a double click's second click.
+  const [confirming, setConfirming] = useState(false);
+  async function confirm(person: PersonCheck) {
+    setConfirming(true);
+    try {
+      await onConfirm(person);
+    } finally {
+      setConfirming(false);
+    }
+  }
   if (check.method === "auto") {
     if (check.status === "confirmed" || !check.section) return null;
     return (
@@ -474,20 +459,26 @@ function CheckActions({
     );
   }
   if (!canWrite) return null;
+  const { portal } = check;
   return (
     <>
-      {check.action === "test_login" && isAdmin ? (
+      {check.action === "test_login" && portal && isAdmin ? (
         <Button
           variant="outline"
           className={small}
-          aria-label={`Test ${check.label.replace(" works", "")}`}
-          onClick={() => onDialog({ kind: "test", check })}
+          aria-label={`Test ${portal.name} login`}
+          onClick={() => onDialog({ kind: "test", check, portal })}
         >
           Test…
         </Button>
       ) : null}
       {check.status !== "confirmed" ? (
-        <Button variant="outline" className={small} onClick={() => onConfirm(check)}>
+        <Button
+          variant="outline"
+          className={small}
+          disabled={confirming}
+          onClick={() => void confirm(check)}
+        >
           Confirm
         </Button>
       ) : null}

@@ -5,6 +5,7 @@ import {
   type Page,
   type BrowserContext,
 } from "./fixtures/legacy-access-context";
+import { SSN_NOT_ISSUED_MESSAGE } from "../src/lib/providerIdentity";
 
 // E4.4 Sensitive Identifiers Vault — the full SSN lives ONLY in the server-only
 // vault (no client SELECT grant, encrypted at rest); every app surface renders
@@ -28,8 +29,6 @@ const PROVIDER_ID = "33333333-3333-4333-8333-333333333333";
 const FAKE_SSN = "900556789";
 const TYPED_SSN = "123456789";
 const NOT_ISSUED_SSN = "000123456";
-const SSN_NOT_ISSUED_MESSAGE =
-  "This isn't a valid Social Security number. Check each digit for a typo.";
 
 const SESSION = {
   access_token: "fake-access-token",

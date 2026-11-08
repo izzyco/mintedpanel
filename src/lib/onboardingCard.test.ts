@@ -6,11 +6,9 @@ import {
   admitLocationCheck,
   admitLocations,
   admittedLine,
-  canAdmit,
   cardPhase,
-  helpOpen,
   inviteLine,
-  onboardingStage,
+  onboardingEvents,
   parseOnboardingRead,
   progressItems,
   verificationChecks,
@@ -19,6 +17,7 @@ import {
   type CardLicense,
   type CardProvider,
 } from "./onboardingCard";
+import { canResend, deriveStage, helpAwaitsContact } from "./providerOnboarding";
 import type { ProviderOnboardingRead } from "@/types";
 
 const TODAY = "2026-11-06";
@@ -32,11 +31,9 @@ function read(
       id: "j1",
       source: "staff",
       createdRecord: true,
-      lockedFields: [],
       openedAt: "2026-10-13T13:40:00Z",
       firstSignedInAt: null,
       consentedAt: null,
-      ssnStoredAt: null,
       submittedAt: null,
       admittedAt: null,
       admittedByName: null,
@@ -97,6 +94,10 @@ function doc(
 
 const FULL_DOCS = [doc("cv1", "cv"), doc("lic1", "state_license")];
 
+const stageOf = (r: ProviderOnboardingRead) => deriveStage(onboardingEvents(r));
+const helpOf = (r: ProviderOnboardingRead) => helpAwaitsContact(onboardingEvents(r));
+const lineOf = (r: ProviderOnboardingRead) => waitingOnLine(r.journey, onboardingEvents(r), "Lena");
+
 function byKey(checks: ReturnType<typeof verificationChecks>) {
   return Object.fromEntries(checks.map((c) => [c.key, c]));
 }
@@ -114,44 +115,40 @@ describe("cardPhase", () => {
   });
 });
 
-describe("onboardingStage", () => {
+describe("the card's stage", () => {
   it("follows the journey's timestamps", () => {
-    expect(onboardingStage(read())).toBe("invited");
-    expect(onboardingStage(read({ firstSignedInAt: "2026-10-15T22:52:00Z" }))).toBe("started");
-    expect(onboardingStage(read({ ...SUBMITTED }))).toBe("submitted");
-    expect(onboardingStage(read({ ...SUBMITTED, admittedAt: "2026-11-06T15:00:00Z" }))).toBe(
-      "ready",
-    );
+    expect(stageOf(read())).toBe("invited");
+    expect(stageOf(read({ firstSignedInAt: "2026-10-15T22:52:00Z" }))).toBe("started");
+    expect(stageOf(read({ ...SUBMITTED }))).toBe("submitted");
+    expect(stageOf(read({ ...SUBMITTED, admittedAt: "2026-11-06T15:00:00Z" }))).toBe("ready");
     expect(
-      onboardingStage(
-        read({ ...SUBMITTED, admittedAt: "2026-11-06T15:00:00Z" }, { hasCase: true }),
-      ),
+      stageOf(read({ ...SUBMITTED, admittedAt: "2026-11-06T15:00:00Z" }, { hasCase: true })),
     ).toBe("in_credentialing");
   });
 
   it("ignores a case that predates an open gap-fill journey", () => {
-    expect(
-      onboardingStage(read({ firstSignedInAt: "2026-10-15T22:52:00Z" }, { hasCase: true })),
-    ).toBe("started");
+    expect(stageOf(read({ firstSignedInAt: "2026-10-15T22:52:00Z" }, { hasCase: true }))).toBe(
+      "started",
+    );
   });
 });
 
-describe("waitingOnLine and helpOpen", () => {
+describe("waitingOnLine and helpAwaitsContact", () => {
   it("waits on her until Submit", () => {
-    expect(waitingOnLine(read(), "Lena")).toEqual({
+    expect(lineOf(read())).toEqual({
       who: "provider",
       label: "Lena",
       detail: "invited, hasn't signed in yet",
     });
-    expect(waitingOnLine(read({ firstSignedInAt: "2026-10-15T22:52:00Z" }), "Lena").detail).toBe(
+    expect(lineOf(read({ firstSignedInAt: "2026-10-15T22:52:00Z" })).detail).toBe(
       "signed in, not submitted",
     );
   });
 
   it("waits on the practice while a help request is newer than the last contact", () => {
     const asked = read({ lastHelpAt: "2026-10-17T15:00:00Z" });
-    expect(helpOpen(asked.journey)).toBe(true);
-    expect(waitingOnLine(asked, "Lena")).toEqual({
+    expect(helpOf(asked)).toBe(true);
+    expect(lineOf(asked)).toEqual({
       who: "practice",
       label: "The practice",
       detail: "Lena asked for help Oct 17, 2026",
@@ -160,24 +157,24 @@ describe("waitingOnLine and helpOpen", () => {
       lastHelpAt: "2026-10-17T15:00:00Z",
       lastContactedAt: "2026-10-18T09:00:00Z",
     });
-    expect(helpOpen(contacted.journey)).toBe(false);
-    expect(waitingOnLine(contacted, "Lena").who).toBe("provider");
+    expect(helpOf(contacted)).toBe(false);
+    expect(lineOf(contacted).who).toBe("provider");
     const askedAgain = read({
       lastHelpAt: "2026-10-19T15:00:00Z",
       lastContactedAt: "2026-10-18T09:00:00Z",
     });
-    expect(waitingOnLine(askedAgain, "Lena").who).toBe("practice");
+    expect(lineOf(askedAgain).who).toBe("practice");
   });
 
   it("waits on Minted after Submit, naming an open help request", () => {
-    expect(waitingOnLine(read({ ...SUBMITTED }), "Lena")).toEqual({
+    expect(lineOf(read({ ...SUBMITTED }))).toEqual({
       who: "minted",
       label: "Minted",
       detail: "submitted Oct 16, 2026, ready for review",
     });
     const asked = read({ ...SUBMITTED, lastHelpAt: "2026-10-18T15:00:00Z" });
-    expect(helpOpen(asked.journey)).toBe(true);
-    expect(waitingOnLine(asked, "Lena")).toMatchObject({
+    expect(helpOf(asked)).toBe(true);
+    expect(lineOf(asked)).toMatchObject({
       who: "minted",
       detail: "submitted Oct 16, 2026, ready for review; asked for help Oct 18, 2026",
     });
@@ -238,6 +235,24 @@ describe("inviteLine, progressItems, admittedLine", () => {
   });
 });
 
+describe("canResend from the card's events", () => {
+  it("offers Resend ten minutes after the last send, a resend included", () => {
+    const tenMinutes = 10 * 60 * 1000;
+    const invitedAt = Date.parse(read().journey.openedAt);
+    expect(canResend(onboardingEvents(read()), new Date(invitedAt + tenMinutes - 1))).toBe(false);
+    expect(canResend(onboardingEvents(read()), new Date(invitedAt + tenMinutes))).toBe(true);
+
+    const lastSentAt = "2026-10-15T14:00:00Z";
+    const resent = read(
+      {},
+      { invite: { email: "lena@example.test", lastSentAt, delivery: "sent", sends: 2 } },
+    );
+    const resentAt = Date.parse(lastSentAt);
+    expect(canResend(onboardingEvents(resent), new Date(resentAt + tenMinutes - 1))).toBe(false);
+    expect(canResend(onboardingEvents(resent), new Date(resentAt + tenMinutes))).toBe(true);
+  });
+});
+
 describe("verificationChecks", () => {
   const base = { provider: PROVIDER, licenses: [NC_VERIFIED], documents: FULL_DOCS, today: TODAY };
 
@@ -257,7 +272,12 @@ describe("verificationChecks", () => {
     ]);
     const k = byKey(checks);
     expect(k["caqh_attestation"].detail).toBe("The record says Sep 2, 2026, 65 days ago");
-    expect(k["caqh_login"].action).toBe("test_login");
+    expect(k["caqh_login"]).toMatchObject({
+      action: "test_login",
+      portal: { key: "caqh", name: "CAQH" },
+    });
+    expect(k["pecos_login"]).toMatchObject({ portal: { key: "pecos", name: "PECOS" } });
+    expect(k["caqh_attestation"]).toMatchObject({ portal: null, action: "confirm" });
   });
 
   it("says what is missing and where to fix it", () => {
@@ -358,7 +378,9 @@ describe("verificationChecks", () => {
     expect(k["documents"].detail).toBe("Missing: 1 license copy");
   });
 
-  it("takes each person check from its latest row", () => {
+  // read_provider_onboarding sends one row per key, its newest (DISTINCT ON
+  // ... checked_at DESC). Given more, the lib keeps the last row listed per key.
+  it("shows one person check per key, the last row listed for that key", () => {
     const k = byKey(
       verificationChecks({
         ...base,
@@ -366,6 +388,20 @@ describe("verificationChecks", () => {
           { ...SUBMITTED },
           {
             checks: [
+              {
+                checkKey: "caqh_login",
+                outcome: "confirmed",
+                note: null,
+                checkedByName: "Priya Seed",
+                checkedAt: "2026-11-04T09:00:00Z",
+              },
+              {
+                checkKey: "pecos_login",
+                outcome: "problem",
+                note: "Account locked",
+                checkedByName: "Priya Seed",
+                checkedAt: "2026-11-04T09:05:00Z",
+              },
               {
                 checkKey: "caqh_login",
                 outcome: "problem",
@@ -389,9 +425,11 @@ describe("verificationChecks", () => {
       status: "problem",
       detail: "Password rejected",
       confirmedBy: "Jordan Seed",
+      checkedAt: "2026-11-05T10:00:00Z",
     });
     expect(k["pecos_login"]).toMatchObject({
       status: "confirmed",
+      detail: null,
       confirmedBy: "Jordan Seed",
       checkedAt: "2026-11-05T10:05:00Z",
     });
@@ -449,13 +487,6 @@ describe("Admit & assign", () => {
       licenseStates: [],
     });
   });
-
-  it("opens only after Submit and before the journey ends", () => {
-    expect(canAdmit(read())).toBe(false);
-    expect(canAdmit(read({ firstSignedInAt: "2026-10-15T22:52:00Z" }))).toBe(false);
-    expect(canAdmit(read({ ...SUBMITTED }))).toBe(true);
-    expect(canAdmit(read({ ...SUBMITTED, admittedAt: "2026-11-06T15:00:00Z" }))).toBe(false);
-  });
 });
 
 describe("PERSON_CHECK_KEYS", () => {
@@ -477,11 +508,9 @@ describe("parseOnboardingRead", () => {
           id: "j1",
           source: "staff",
           created_record: true,
-          locked_fields: ["npi", "bogus"],
           opened_at: "2026-10-13T13:40:00Z",
           first_signed_in_at: "2026-10-15T22:52:00Z",
           consented_at: null,
-          ssn_stored_at: null,
           submitted_at: null,
           admitted_at: null,
           admitted_by_name: null,
@@ -515,7 +544,6 @@ describe("parseOnboardingRead", () => {
     ).toEqual({
       journey: expect.objectContaining({
         id: "j1",
-        lockedFields: ["npi"],
         firstSignedInAt: "2026-10-15T22:52:00Z",
       }),
       invite: {

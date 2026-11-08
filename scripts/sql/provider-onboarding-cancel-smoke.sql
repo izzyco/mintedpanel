@@ -161,7 +161,8 @@ BEGIN
     'the new record is the new journey''s';
 
   -- A gap-fill journey on a provider staff added, SSN already on file: the
-  -- journey's logins and held files go, the record and its SSN stay.
+  -- journey's logins go and its uploads are marked removed; the record and
+  -- its SSN stay.
   INSERT INTO public.providers (org_id, first_name, last_name, email, status, group_id)
     VALUES (v_org, 'Gina', 'Gap', 'gina.gap@example.test', 'active', v_group) RETURNING id INTO v_gap;
   INSERT INTO public.provider_group_assignments (org_id, provider_id, group_id, is_primary)
@@ -198,7 +199,9 @@ BEGIN
     'the SSN on file before the journey stays';
   ASSERT NOT EXISTS (SELECT 1 FROM public.provider_portal_credentials WHERE provider_id = v_gap), 'her login gone';
   ASSERT NOT EXISTS (SELECT 1 FROM public.provider_intake_drafts WHERE onboarding_id = v_gap_journey), 'draft gone';
-  ASSERT NOT EXISTS (SELECT 1 FROM public.provider_intake_uploads WHERE onboarding_id = v_gap_journey), 'uploads gone';
+  ASSERT (SELECT count(*) = 1 AND bool_and(removed_at IS NOT NULL)
+            FROM public.provider_intake_uploads WHERE onboarding_id = v_gap_journey),
+    'her upload row stays, marked removed';
   ASSERT (SELECT count(*) FROM public.provider_intake_consents WHERE onboarding_id = v_gap_journey) = 1, 'consent kept';
   ASSERT NOT EXISTS (SELECT 1 FROM public.provider_intake_invites WHERE provider_id = v_gap AND revoked_at IS NULL),
     'invites revoked';
@@ -263,7 +266,7 @@ BEGIN
      AND (SELECT cancelled_at IS NOT NULL FROM public.provider_onboardings WHERE id = v_cased_journey),
     'the record and its case stay; the journey is cancelled';
 
-  -- A record another group joined (decision 4) is closed, not deleted.
+  -- A record another group joined is closed, not deleted.
   r := public.create_provider_intake_invite(v_org, v_actor, 'Smoke', jsonb_build_object(
     'first_name', 'Jo', 'last_name', 'Joined', 'email', 'jo.joined@example.test', 'group_id', v_group),
     'cx-link-j', now() + interval '30 days');

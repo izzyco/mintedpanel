@@ -5,12 +5,13 @@
 // upload URL still works for a while after Cancel or Remove, a best-effort
 // delete can fail, an upload can be abandoned, and a Submit can stop between
 // its vault copies and its RPC. onboarding_orphan_files
-// (supabase/migrations/20261107040000_onboarding_review_fixes.sql) names
+// (supabase/migrations/20261107040000_onboarding_orphan_files.sql) names
 // them, and this job deletes them through Storage:
 //   * provider-intake-uploads files of a removed or missing upload, or of a
 //     journey that is submitted, admitted, cancelled or gone;
 //   * provider-documents files under an upload's vault folder that no
-//     document row has, once that upload's journey has ended.
+//     document row has, once that upload's journey has ended;
+//   * provider-documents files under a provider id no provider row has.
 // Only files older than ORPHAN_MIN_AGE_MS, longer than any signed upload URL
 // lives, so a file on its way is never taken. Any other path is refused
 // before anything is deleted.
@@ -39,6 +40,10 @@ const ONBOARDING_FILE_CLEANUP_COUNT_KEYS = [
   /** Named, but in a delete call that failed; the next run tries again. */
   "remove_failed",
 ] as const;
+type OnboardingFileCleanupCounts = Record<
+  (typeof ONBOARDING_FILE_CLEANUP_COUNT_KEYS)[number],
+  number
+>;
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
@@ -78,7 +83,9 @@ export async function runOnboardingFileCleanup(ctx: JobContext): Promise<JobCoun
   if (error) throw error;
   const byKind = orphanPaths(data);
 
-  const counts = { files_found: 0, holding_removed: 0, vault_removed: 0, remove_failed: 0 };
+  const counts = Object.fromEntries(
+    ONBOARDING_FILE_CLEANUP_COUNT_KEYS.map((key) => [key, 0]),
+  ) as OnboardingFileCleanupCounts;
   for (const [kind, paths] of byKind) {
     counts.files_found += paths.length;
     for (let i = 0; i < paths.length; i += REMOVE_BATCH) {

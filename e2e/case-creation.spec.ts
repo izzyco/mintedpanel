@@ -11,6 +11,7 @@
 //          dedupe, generation_run_id stays NULL, and a repeat attempt at the
 //          key blocks with a link to the existing case.
 import { test, expect, type Route } from "./fixtures/legacy-access-context";
+import { ONBOARDING_HOLD_MESSAGE } from "../src/lib/providerOnboarding";
 
 const AUTH_KEY = "sb-example-auth-token";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -1091,9 +1092,7 @@ test("manual case refuses a provider whose invite created her record until Admit
   await page.goto("/cases");
   await page.getByRole("button", { name: "New case" }).click();
   const dialog = page.getByRole("dialog");
-  const hold = dialog.getByText(
-    "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.",
-  );
+  const hold = dialog.getByText(ONBOARDING_HOLD_MESSAGE);
 
   await dialog.getByRole("combobox", { name: "Provider" }).click();
   await page.getByRole("option", { name: "Nia Brooks" }).click();

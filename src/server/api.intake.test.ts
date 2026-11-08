@@ -15,6 +15,7 @@ vi.mock("./serviceClient", () => ({ getServiceClient: () => ({ rpc }) }));
 import { authenticate, authenticateUser, GuardError } from "./guard";
 import { handleApiRequest } from "./api";
 import * as intakeRoutes from "./providerIntakeRoutes";
+import * as inviteRoutes from "./providerInviteRoutes";
 import { INTAKE_COOKIE } from "./intakeTokens";
 
 function intakePost(action: string, json: unknown) {
@@ -151,7 +152,7 @@ describe("api dispatch for provider onboarding", () => {
     >;
     vi.mocked(authenticate).mockResolvedValue(guarded);
     const spy = vi
-      .spyOn(intakeRoutes, "handleCancelProviderOnboarding")
+      .spyOn(inviteRoutes, "handleCancelProviderOnboarding")
       .mockResolvedValue(
         new Response(JSON.stringify({ data: { outcome: "closed" }, error: null, meta: null })),
       );

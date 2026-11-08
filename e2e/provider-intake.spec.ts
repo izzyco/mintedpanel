@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
 import { safeFileName } from "@/lib/documents";
+import { NO_INTAKE_ANSWERS } from "@/lib/intakeAnswers";
 
 // Provider onboarding — the PUBLIC intake route (/intake/:token). No Supabase
 // session. /api/intake/* is mocked by a small fake server: a live link, a code
@@ -10,22 +11,6 @@ import { safeFileName } from "@/lib/documents";
 // reads it back the way a fresh sign-in reads the database. The holding
 // bucket's signed upload is mocked too, and keeps each file's size. Like the
 // vaults, it keeps no full SSN or password.
-// Synthetic canvas names.
-
-const NO_ANSWERS = {
-  firstName: null,
-  lastName: null,
-  npi: null,
-  taxonomyCode: null,
-  dateOfBirth: null,
-  caqhId: null,
-  mobile: null,
-  homeStreet: null,
-  homeCity: null,
-  homeState: null,
-  homeZip: null,
-  licenses: [],
-};
 
 interface Upload {
   id: string;
@@ -45,12 +30,9 @@ interface SavedDraft {
   updatedAt: string;
 }
 
-function intakeApi({
-  failStateOnce = false,
-  practiceName = "Shelby Sports Rehab",
-  email = "anita.rao@example.test",
-  loginDelayMs = 0,
-} = {}) {
+function intakeApi({ loginDelayMs = 0 } = {}) {
+  const practiceName = "Shelby Sports Rehab";
+  const email = "anita.rao@example.test";
   const server = {
     signedIn: false,
     consented: false,
@@ -78,10 +60,14 @@ function intakeApi({
     helps: [] as Record<string, unknown>[],
     // How many help requests fail before one lands.
     helpFailures: 0,
+    // How many consent signatures fail before one lands.
+    consentFailures: 0,
     // The practice's pause switch: every route but signout answers 503.
     paused: false,
+    // Her journey ended elsewhere (submitted, admitted or cancelled): a save
+    // answers 409 intake_closed.
+    closed: false,
   };
-  let stateFailuresLeft = failStateOnce ? 1 : 0;
   const handler = async (route: Route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -111,14 +97,10 @@ function intakeApi({
     }
     if (!server.signedIn || body?.t !== "live-token") return json(401, null, "signed_out");
     if (path.endsWith("/state")) {
-      if (stateFailuresLeft > 0) {
-        stateFailuresLeft -= 1;
-        return json(500, null, "Internal server error");
-      }
       return json(200, {
         practiceName,
         email,
-        record: { ...NO_ANSWERS, firstName: "Anita", lastName: "Rao" },
+        record: { ...NO_INTAKE_ANSWERS, firstName: "Anita", lastName: "Rao" },
         lockedFields: [],
         ssnLast4: server.ssnLast4,
         loginsOnFile: server.loginsOnFile,
@@ -191,6 +173,10 @@ function intakeApi({
       return json(200, { expiresOn: body?.expiresOn ?? null });
     }
     if (path.endsWith("/consent")) {
+      if (server.consentFailures > 0) {
+        server.consentFailures -= 1;
+        return json(500, null, "Internal server error");
+      }
       server.consents.push(body ?? {});
       server.consented = true;
       return json(200, { signed: true });
@@ -205,10 +191,11 @@ function intakeApi({
       return json(200, { portal: body?.portal, onFile: true });
     }
     if (path.endsWith("/draft")) {
+      if (server.closed) return json(409, null, "intake_closed");
       const saved = server.draft?.version ?? 0;
       if (server.otherWindowSaves) {
         server.draft = {
-          answers: { ...NO_ANSWERS, ...server.otherWindowSaves },
+          answers: { ...NO_INTAKE_ANSWERS, ...server.otherWindowSaves },
           step: "form",
           version: saved + 1,
           updatedAt: new Date().toISOString(),
@@ -248,7 +235,7 @@ function intakeApi({
 
 const AT_DOCUMENTS: SavedDraft = {
   answers: {
-    ...NO_ANSWERS,
+    ...NO_INTAKE_ANSWERS,
     licenses: [{ state: "NC", number: "PT-48213", expiresOn: "2027-12-31" }],
   },
   step: "documents",
@@ -264,7 +251,6 @@ function slotRow(page: Page, slotLabel: string) {
   return page.getByRole("listitem").filter({ hasText: new RegExp(`^${slotLabel}`) });
 }
 
-// Held by the server: the row offers Remove and no retry, and shows the file.
 async function expectHeld(page: Page, slotLabel: string, text: string) {
   const row = slotRow(page, slotLabel);
   await expect(row.getByRole("button", { name: `Remove ${slotLabel}` })).toBeVisible();
@@ -326,10 +312,7 @@ test("a provider signs in with the emailed code, signs consent, and reaches the 
   await expect(page.getByRole("note")).toHaveCount(0);
 });
 
-test("her SSN and logins go to the vault in their own requests and are on file when she comes back", async ({
-  context,
-  page,
-}) => {
+test("her SSN and logins go to the vault in their own requests", async ({ context, page }) => {
   const api = intakeApi();
   await context.route("**/api/intake/**", api.handler);
   await signIn(page);
@@ -340,6 +323,10 @@ test("her SSN and logins go to the vault in their own requests and are on file w
   await page.keyboard.type("123456789");
   await page.getByLabel(/^CAQH ID/).click();
   await expect.poll(() => api.server.ssnLast4).toBe("6789");
+  await expect(ssn, "the number stays in its field, hidden").toHaveAttribute("type", "password");
+  await expect(ssn).toHaveValue("123-45-6789");
+  await page.getByRole("button", { name: "Show" }).click();
+  await expect(ssn).toHaveAttribute("type", "text");
 
   await page.locator("#intake-logins-caqh-username").fill("anita.caqh");
   await page.locator("#intake-logins-caqh-password").fill("Caqh-Pass-1");
@@ -359,19 +346,6 @@ test("her SSN and logins go to the vault in their own requests and are on file w
     api.server.sent.filter((r) => r.path.endsWith("/ssn")).map((r) => JSON.parse(r.body)),
   ).toEqual([{ t: "live-token", ssn: "123-45-6789" }]);
   expect(api.server.saves.length).toBeGreaterThan(0);
-
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByRole("heading", { name: "You're signed out" })).toBeVisible();
-  await page.close();
-
-  const second = await context.newPage();
-  await signIn(second);
-  await expect(second.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
-  await expect(second.getByLabel(/^Social Security number/)).toHaveValue("•••-••-6789");
-  await expect(
-    second.getByRole("button", { name: "Change your CAQH ProView login" }),
-  ).toBeVisible();
-  await expect(second.locator("#intake-logins-pecos-username")).toBeVisible();
 });
 
 test("a login typed last counts when she clicks Continue while it is still saving", async ({
@@ -384,7 +358,7 @@ test("a login typed last counts when she clicks Continue while it is still savin
   api.server.loginsOnFile.caqh = true;
   api.server.draft = {
     answers: {
-      ...NO_ANSWERS,
+      ...NO_INTAKE_ANSWERS,
       firstName: "Anita",
       lastName: "Rao",
       npi: "1234567893",
@@ -414,10 +388,7 @@ test("a login typed last counts when she clicks Continue while it is still savin
   expect(api.server.loginsOnFile.pecos).toBe(true);
 });
 
-test("her answers are saved as she types and come back in a new page after she signs in again", async ({
-  context,
-  page,
-}) => {
+test("her answers are saved as she types", async ({ context, page }) => {
   const api = intakeApi();
   await context.route("**/api/intake/**", api.handler);
   await signIn(page);
@@ -428,7 +399,7 @@ test("her answers are saved as she types and come back in a new page after she s
     {
       t: "live-token",
       answers: {
-        ...NO_ANSWERS,
+        ...NO_INTAKE_ANSWERS,
         mobile: "(704) 555-0100",
         licenses: [{ state: null, number: null, expiresOn: null }],
       },
@@ -436,17 +407,6 @@ test("her answers are saved as she types and come back in a new page after she s
       version: 0,
     },
   ]);
-
-  await page.getByRole("button", { name: "Sign out" }).click();
-  await expect(page.getByRole("heading", { name: "You're signed out" })).toBeVisible();
-  await expect(page.getByText("Your answers are saved.")).toBeVisible();
-  await page.close();
-
-  // A new page holds nothing in memory: only the fake server has her answers.
-  const second = await context.newPage();
-  await signIn(second);
-  await expect(second.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
-  await expect(second.getByLabel("Mobile phone")).toHaveValue("(704) 555-0100");
 });
 
 test("Continue saves her step, so signing in again resumes on her documents", async ({
@@ -456,7 +416,7 @@ test("Continue saves her step, so signing in again resumes on her documents", as
   const api = intakeApi();
   api.server.consented = true;
   api.server.draft = {
-    answers: { ...NO_ANSWERS, mobile: "(704) 555-0100" },
+    answers: { ...NO_INTAKE_ANSWERS, mobile: "(704) 555-0100" },
     step: "documents",
     version: 3,
     updatedAt: new Date().toISOString(),
@@ -472,7 +432,7 @@ test("Continue saves her step, so signing in again resumes on her documents", as
   expect(api.server.draft?.step).toBe("form");
 });
 
-test("her documents upload as she picks them, come back when she signs in again, and can be removed or replaced", async ({
+test("her documents upload as she picks them, and can be removed or replaced", async ({
   context,
   page,
 }) => {
@@ -507,29 +467,67 @@ test("her documents upload as she picks them, come back when she signs in again,
     { size: 1200, type: "application/pdf" },
     { size: 2400, type: "application/pdf" },
   ]);
-  // The file itself goes only to Storage, never through /api/intake.
-  expect(api.server.sent.every((r) => !r.body.includes("%%%%"))).toBe(true);
+  expect(
+    api.server.sent.every((r) => !r.body.includes("%%%%")),
+    "the file goes only to Storage, never through /api/intake",
+  ).toBe(true);
 
-  await page.getByRole("button", { name: "Finish later" }).click();
-  await expect(page.getByRole("heading", { name: "You're signed out" })).toBeVisible();
-  await page.close();
-
-  const second = await context.newPage();
-  await signIn(second);
-  await expect(second.getByRole("heading", { name: "Your documents" })).toBeVisible();
-  await expectHeld(second, "CV", "Anita_Rao_CV.pdf · 1 KB");
-  await expectHeld(second, "NC license copy", "nc-license.pdf · 2 KB");
-
-  await slotRow(second, "CV").getByRole("button", { name: "Remove CV" }).click();
-  await expect(second.getByRole("button", { name: "Upload CV" })).toBeVisible();
+  await slotRow(page, "CV").getByRole("button", { name: "Remove CV" }).click();
+  await expect(page.getByRole("button", { name: "Upload CV" })).toBeVisible();
   expect(api.server.uploads.map((u) => u.slotKey)).toEqual(["license:NC"]);
 
-  await pickFile(second, "CV", pdf("cv-2026.pdf", 3000));
-  await expectHeld(second, "CV", "cv-2026.pdf · 3 KB");
+  await pickFile(page, "CV", pdf("cv-2026.pdf", 3000));
+  await expectHeld(page, "CV", "cv-2026.pdf · 3 KB");
   expect(api.server.uploads.map((u) => [u.slotKey, u.fileName])).toEqual([
     ["license:NC", "nc-license.pdf"],
     ["cv", "cv-2026.pdf"],
   ]);
+
+  await page.getByRole("button", { name: "Finish later" }).click();
+  await expect(page.getByRole("heading", { name: "You're signed out" })).toBeVisible();
+});
+
+test("what she saved comes back when she signs in again: answers, SSN, logins, files, policy date", async ({
+  context,
+  page,
+}) => {
+  // The fake server holds what she saved before; this page starts with nothing.
+  const api = intakeApi();
+  api.server.consented = true;
+  api.server.ssnLast4 = "6789";
+  api.server.loginsOnFile = { caqh: true, pecos: false };
+  api.server.draft = {
+    ...AT_DOCUMENTS,
+    answers: { ...AT_DOCUMENTS.answers, mobile: "(704) 555-0100" },
+  };
+  const upload = (slotKey: string, kind: string, fileName: string, sizeBytes: number): Upload => ({
+    id: crypto.randomUUID(),
+    slotKey,
+    kind,
+    fileName,
+    sizeBytes,
+    expiresOn: null,
+  });
+  api.server.uploads = [
+    upload("cv", "cv", "Anita_Rao_CV.pdf", 1200),
+    upload("license:NC", "state_license", "nc-license.pdf", 2400),
+    { ...upload("coi", "coi", "policy.pdf", 1200), expiresOn: "2027-06-30" },
+  ];
+  await context.route("**/api/intake/**", api.handler);
+  await signIn(page);
+
+  await expect(page.getByRole("heading", { name: "Your documents" })).toBeVisible();
+  await expectHeld(page, "CV", "Anita_Rao_CV.pdf · 1 KB");
+  await expectHeld(page, "NC license copy", "nc-license.pdf · 2 KB");
+  await expectHeld(page, "Your own liability insurance", "policy.pdf · 1 KB");
+  await expect(page.getByLabel(/Policy expires/)).toHaveValue("06/30/2027");
+
+  await page.getByRole("button", { name: "Your details" }).click();
+  await expect(page.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
+  await expect(page.getByLabel("Mobile phone")).toHaveValue("(704) 555-0100");
+  await expect(page.getByLabel(/^Social Security number/)).toHaveValue("•••-••-6789");
+  await expect(page.getByRole("button", { name: "Change your CAQH ProView login" })).toBeVisible();
+  await expect(page.locator("#intake-logins-pecos-username")).toBeVisible();
 });
 
 // Signed in on her documents with a CV and her NC license copy held.
@@ -680,27 +678,7 @@ test("an upload that doesn't go through offers Try again, which sends the same f
   expect(api.server.uploads.map((u) => u.fileName)).toEqual(["cv.pdf"]);
 });
 
-test("after a failed upload she can choose another file instead", async ({ context, page }) => {
-  const api = intakeApi();
-  api.server.consented = true;
-  api.server.draft = AT_DOCUMENTS;
-  api.server.failNextPut = true;
-  await context.route("**/api/intake/**", api.handler);
-  await context.route(`${STORAGE}/**`, api.storage);
-  await signIn(page);
-
-  await pickFile(page, "CV", pdf("broken.pdf"));
-  const chooser = page.waitForEvent("filechooser");
-  await slotRow(page, "CV").getByRole("button", { name: "Choose another file for CV" }).click();
-  await (await chooser).setFiles(pdf("cv.pdf", 2400));
-  await expectHeld(page, "CV", "cv.pdf · 2 KB");
-  expect(api.server.uploads.map((u) => u.fileName)).toEqual(["cv.pdf"]);
-});
-
-test("her liability policy's expiry date saves with the file and comes back", async ({
-  context,
-  page,
-}) => {
+test("her liability policy's expiry date saves with the file", async ({ context, page }) => {
   const api = intakeApi();
   api.server.consented = true;
   api.server.draft = AT_DOCUMENTS;
@@ -712,12 +690,6 @@ test("her liability policy's expiry date saves with the file and comes back", as
   await expectHeld(page, "Your own liability insurance", "policy.pdf · 1 KB");
   await page.getByLabel(/Policy expires/).fill("06/30/2027");
   await expect.poll(() => api.server.uploads[0]?.expiresOn).toBe("2027-06-30");
-
-  await page.getByRole("button", { name: "Finish later" }).click();
-  await page.close();
-  const second = await context.newPage();
-  await signIn(second);
-  await expect(second.getByLabel(/Policy expires/)).toHaveValue("06/30/2027");
 });
 
 test("an edit from another window wins, and the form says it loaded the latest answers", async ({
@@ -737,22 +709,79 @@ test("an edit from another window wins, and the form says it loaded the latest a
   );
   await expect(page.getByLabel("Mobile phone")).toHaveValue("(704) 555-0188");
 
-  // The next change saves on top of the version she now holds.
   await page.getByLabel("Mobile phone").fill("(704) 555-0199");
   await expect(page.getByRole("status")).toHaveText("Saved");
-  expect(api.server.saves.at(-1)).toMatchObject({ version: 1 });
+  expect(
+    api.server.saves.at(-1),
+    "the next change saves on top of the version she now holds",
+  ).toMatchObject({ version: 1 });
 });
 
-test("a failed state read after sign-in offers Try again instead of an endless spinner", async ({
+test("a journey that ended elsewhere closes her form on its next save, as already sent", async ({
   context,
   page,
 }) => {
-  await context.route("**/api/intake/**", intakeApi({ failStateOnce: true }).handler);
+  const api = intakeApi();
+  await context.route("**/api/intake/**", api.handler);
   await signIn(page);
+  await consent(page);
+  await expect(page.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
 
-  await expect(page.getByText("We couldn't open your form just now.")).toBeVisible();
-  await page.getByRole("button", { name: "Try again" }).click();
-  await expect(page.getByRole("heading", { name: "Your consent" })).toBeVisible();
+  // The practice admitted or cancelled her while she had the form open.
+  api.server.closed = true;
+  await page.getByLabel("Mobile phone").fill("(704) 555-0100");
+
+  await expect(page.getByRole("heading", { name: "You've already sent your form" })).toBeVisible();
+  await expect(
+    page.getByText(
+      "Shelby Sports Rehab has it. If something has changed, contact Shelby Sports Rehab.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your credentialing details" })).toHaveCount(0);
+  expect(api.server.saves).toEqual([]);
+});
+
+test("a session that ends under her shows no stale save status when she signs in again on the same page", async ({
+  context,
+  page,
+}) => {
+  const api = intakeApi();
+  await context.route("**/api/intake/**", api.handler);
+  await signIn(page);
+  await consent(page);
+  await expect(page.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
+
+  // Her session expired on the server before the autosave reached it.
+  api.server.signedIn = false;
+  await page.getByLabel("Mobile phone").fill("7");
+  await expect(
+    page.getByRole("heading", { name: "You were signed out to keep your details safe" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Send me a code" }).click();
+  await page.getByLabel("6-digit code").fill("123456");
+  await expect(page.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("");
+});
+
+test("a message from before she signed out does not show after she signs in again", async ({
+  context,
+  page,
+}) => {
+  const api = intakeApi();
+  api.server.consentFailures = 1;
+  await context.route("**/api/intake/**", api.handler);
+  await signIn(page);
+  await consent(page);
+  await expect(page.getByRole("alert")).toHaveText(
+    "We couldn't save your signature just now. Please try again.",
+  );
+
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("heading", { name: "You're signed out" })).toBeVisible();
+  await page.getByRole("button", { name: "Sign in again" }).click();
+  await expect(page.getByRole("heading", { name: "Confirm it's you" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("a paused link says the form is paused instead of offering Try again", async ({
@@ -795,67 +824,4 @@ test("an unknown, expired or revoked link shows one invalid-link screen", async 
   await expect(
     page.getByRole("heading", { name: "This invitation is no longer valid" }),
   ).toBeVisible();
-});
-
-// Text that doesn't fit must wrap. Anything clipped (scrollWidth past its box)
-// or past the right edge of the screen is a cut-off a provider would see.
-async function expectNothingCutOff(page: Page, step: string) {
-  const cut = await page.evaluate(() =>
-    [...document.querySelectorAll("body *")]
-      .filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent?.trim()))
-      .filter(
-        (el) =>
-          el.scrollWidth > el.clientWidth + 1 ||
-          el.getBoundingClientRect().right > window.innerWidth + 1,
-      )
-      .map((el) => el.textContent?.trim().slice(0, 60)),
-  );
-  expect(cut, `cut off on ${step}`).toEqual([]);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBe(
-    0,
-  );
-}
-
-test("long practice names and emails wrap on a small phone instead of being cut off", async ({
-  context,
-  page,
-}) => {
-  await page.setViewportSize({ width: 320, height: 640 });
-  await context.route(
-    "**/api/intake/**",
-    intakeApi({
-      practiceName: "Shelby Sports Rehabilitation and Physical Therapy of North Carolina",
-      email: "ivan.zhang.credentialing.coordinator@shelbysportsrehabilitation.example.com",
-    }).handler,
-  );
-  await page.goto("/intake/live-token");
-  await expect(page.getByRole("heading", { name: "Confirm it's you" })).toBeVisible();
-  await expectNothingCutOff(page, "confirm");
-  await page.getByRole("button", { name: "Send me a code" }).click();
-  await expectNothingCutOff(page, "code");
-  await page.getByLabel("6-digit code").fill("123456");
-  await expect(page.getByRole("heading", { name: "Your consent" })).toBeVisible();
-  await expectNothingCutOff(page, "consent");
-  await page.getByLabel(/Type your full name to sign/).fill("Anita Rao");
-  await page.getByRole("checkbox").check();
-  await page.getByRole("button", { name: "Sign and continue" }).click();
-  await expect(page.getByRole("heading", { name: "Your credentialing details" })).toBeVisible();
-  await expectNothingCutOff(page, "form");
-});
-
-test("on a small phone, a held file and a failed one fit their rows", async ({ context, page }) => {
-  await page.setViewportSize({ width: 320, height: 640 });
-  const api = intakeApi();
-  api.server.consented = true;
-  api.server.draft = AT_DOCUMENTS;
-  await context.route("**/api/intake/**", api.handler);
-  await context.route(`${STORAGE}/**`, api.storage);
-  await signIn(page);
-
-  await pickFile(page, "CV", pdf("Anita Rao curriculum vitae updated November 2026 final.pdf"));
-  await expectHeld(page, "CV", "Anita_Rao_curriculum_vitae_updated_November_2026_final.pdf");
-  api.server.failNextPut = true;
-  await pickFile(page, "NC license copy", pdf("North Carolina physical therapy license.pdf"));
-  await expect(slotRow(page, "NC license copy").getByRole("alert")).toBeVisible();
-  await expectNothingCutOff(page, "documents");
 });

@@ -200,11 +200,13 @@ VITE_MINTED_EXTENSION_ID=abcdefghijklmnopabcdefghijklmnop npm run dev &
 
 The e2e specs above run on mocks. Three more checks cover the database and the
 real stack.
+[`provider-onboarding/local-verification.md`](provider-onboarding/local-verification.md)
+is the runbook for all three, with what a pass looks like.
 
 **SQL smokes.** Each onboarding migration has a smoke in `scripts/sql/`. A
-smoke is one transaction, rolled back, that raises on the first failed check. Run it as the
-`postgres` user after the migration is applied, on a local stack or in the
-staging SQL editor:
+smoke is one transaction, rolled back, that raises on the first failed check.
+Run it as the `postgres` user after the migration is applied, on a local stack
+or in the staging SQL editor:
 
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/<smoke>.sql
@@ -221,12 +223,12 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/<smoke>.sql
 | `20261107000000_cancel_provider_onboarding`      | `provider-onboarding-cancel-smoke.sql`     |
 | `20261107010000_provider_onboarding_staff`       | `provider-onboarding-staff-smoke.sql`      |
 | `20261107020000_cases_wait_for_onboarding_admit` | `provider-onboarding-generation-smoke.sql` |
-| `20261107040000_onboarding_review_fixes`         | `provider-onboarding-cleanup-smoke.sql`    |
+| `20261107040000_onboarding_orphan_files`         | `provider-onboarding-cleanup-smoke.sql`    |
 
-The secrets, cancel, staff and generation smokes need both Vault secrets
+The secrets, cancel and staff smokes need both Vault secrets
 (`ssn_vault_key` and `portal_credentials_key`). Each smoke expects every
-migration in the table to be applied: `20261107040000` changes what the
-secrets, cancel and staff smokes check.
+migration in the table to be applied. The drafts, secrets and uploads smokes
+call `read_intake_state`, which `20261106233000` creates.
 
 **Isolation gate.** A change to `/api/provider-invites*` or `/api/intake/*`
 runs `node scripts/verify-isolation-local.mjs`. Assertions 35 to 35j cover
@@ -234,35 +236,13 @@ them, with leak modes `providerinvites`, `providercancel`, `intakesession`,
 `intakelink`, `intakesecrets`, `intakeuploads` and `intakesubmit`.
 
 **The local-stack run (opt-in).** `e2e/onboarding-local-stack.spec.ts` walks
-onboarding in a real browser against a local Supabase stack: the staff
-invite, her intake, Submit and Admit, plus Cancel and a help request. It
-checks each step on the screen and in the database. Without
-`E2E_LOCAL_STACK=1` every test in it skips, so CI and the mock suite never run
-it. Each run makes its own org, staff user, group, location and payer, so runs
-don't collide and leave nothing to clean up. The runner sets the flag. Build
-the stack once, then run it:
+onboarding in a real browser against a local Supabase stack and checks each
+step in the database. Without `E2E_LOCAL_STACK=1` every test in it skips, so CI
+and the mock suite never run it. Build the stack once, then run it:
 
 ```sh
 bash scripts/e2e/local-stack-setup.sh
-SUPABASE_WORKDIR=~/.minted-local-supabase bash scripts/e2e/onboarding-local-stack.sh
+bash scripts/e2e/onboarding-local-stack.sh
 ```
 
-A plain `supabase start` from this repo fails (CLAUDE.md "Known warts").
-`local-stack-setup.sh` keeps its own project in `~/.minted-local-supabase`
-(Postgres 17, seed off, Studio on), links the repo's migrations in with the
-duplicate version renumbered, creates both Vault secrets, and runs the
-local-only auth grants as `supabase_admin`. Rerun it after new migrations.
-It applies only those. `psql` and the `supabase` CLI must be on `PATH`.
-
-The runner reads the
-stack's URL and keys from `supabase status` and refuses an API or database
-that is not on this machine. It starts `scripts/e2e/mail-capture.mjs` in
-place of SendGrid (through the dev-only `SENDGRID_API_URL`) and `vite dev`,
-then runs Playwright with `playwright.local-stack.config.ts`. Logs and
-screenshots go to `test-results/onboarding-local-stack/`.
-
-With `--serve`, the runner starts the same two servers with a sample practice
-and a fixed staff login and stays up instead of running Playwright.
-[`provider-onboarding/local-verification.md`](provider-onboarding/local-verification.md)
-is the step-by-step runbook: setup, every check in this section, a manual
-walk-through in two browser windows, and a SQL query after each step.
+Each script's header says what it does and what it needs.

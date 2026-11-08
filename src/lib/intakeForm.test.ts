@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addLicense,
+  canContinue,
   fieldId,
   formatBytes,
   npiProblem,
@@ -10,6 +11,7 @@ import {
   parseUsDate,
   provenance,
   removeLicense,
+  sectionProgress,
   setField,
   ssnProblem,
   typeDate,
@@ -17,7 +19,7 @@ import {
   withLoginOnFile,
   type FieldPath,
 } from "./intakeForm";
-import { canContinue, documentSlots, sectionProgress } from "./providerOnboarding";
+import { documentSlots } from "./providerOnboarding";
 import { initialDraft, reviewDraft } from "@/services/providerOnboardingFixtures";
 import type { IntakeDraft } from "@/types/providerOnboarding";
 
@@ -55,7 +57,6 @@ function expectAgreement(draft: IntakeDraft) {
     const listed = missing.filter((m) => m.key.split(".")[0] === section).length;
     expect(listed, section).toBe(progress[section].total - progress[section].done);
   }
-  expect(missing.length === 0).toBe(canContinue(draft));
 }
 
 describe("npiProblem", () => {

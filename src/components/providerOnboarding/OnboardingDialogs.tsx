@@ -1,5 +1,5 @@
-// The staff Onboarding card's dialogs (board 6b): Cancel invitation, Admit &
-// assign, Test login and Mark problem. Each mounts only while open.
+// The staff Onboarding card's dialogs: Cancel invitation, Admit & assign,
+// Test login and Mark problem. Each mounts only while open.
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,7 +20,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { cancelErrorMessage } from "@/components/providers/inviteFeedback";
 import { useRevealPortalCredential } from "@/hooks/usePortalCredentials";
+import { errorMessage } from "@/lib/dbErrors";
 import { admitLocationCheck, type AdmitLocation } from "@/lib/onboardingCard";
 
 const NOTE_MAX = 500;
@@ -34,8 +36,25 @@ function ErrorLine({ message }: { message: string | null }) {
   );
 }
 
-const errorText = (err: unknown, fallback: string) =>
-  err instanceof Error && err.message ? err.message : fallback;
+/** Pending stays on after success: the card closes the dialog then. */
+function useSubmit<A extends unknown[]>(
+  run: (...args: A) => Promise<void>,
+  failure: (err: unknown) => string,
+) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function submit(...args: A) {
+    setPending(true);
+    setError(null);
+    try {
+      await run(...args);
+    } catch (err) {
+      setError(failure(err));
+      setPending(false);
+    }
+  }
+  return { pending, error, submit };
+}
 
 export function CancelOnboardingDialog({
   firstName,
@@ -48,18 +67,9 @@ export function CancelOnboardingDialog({
   onConfirm: () => Promise<void>;
   onClose: () => void;
 }) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  async function confirm() {
-    setPending(true);
-    setError(null);
-    try {
-      await onConfirm();
-    } catch (err) {
-      setError(errorText(err, "The invitation couldn't be cancelled. Try again."));
-      setPending(false);
-    }
-  }
+  const { pending, error, submit } = useSubmit(onConfirm, (err) =>
+    cancelErrorMessage(err, firstName),
+  );
   return (
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -80,7 +90,7 @@ export function CancelOnboardingDialog({
           <Button variant="outline" onClick={onClose} disabled={pending}>
             Keep invitation
           </Button>
-          <Button variant="destructive" onClick={confirm} disabled={pending}>
+          <Button variant="destructive" onClick={() => void submit()} disabled={pending}>
             {pending ? "Cancelling…" : "Cancel invitation"}
           </Button>
         </DialogFooter>
@@ -103,33 +113,27 @@ export function AdmitDialog({
   onClose,
 }: {
   firstName: string;
-  locations: AdmitLocation[];
+  /** Null while the locations are still loading. */
+  locations: AdmitLocation[] | null;
   licenseStates: string[];
   /** Labels of the checks not confirmed yet. Shown, never a block. */
   openChecks: string[];
   onAdmit: (location: AdmitLocation) => Promise<void>;
   onClose: () => void;
 }) {
-  const [pickedId, setPickedId] = useState<string | null>(
-    locations.length === 1 ? locations[0].id : null,
-  );
+  const [chosenId, setChosenId] = useState<string | null>(null);
   const [assignAnyway, setAssignAnyway] = useState(false);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const check = admitLocationCheck(pickedId, locations, licenseStates);
-  const picked = locations.find((l) => l.id === pickedId);
+  const { pending, error, submit } = useSubmit(onAdmit, (err) =>
+    errorMessage(err, `${firstName} couldn't be admitted. Try again.`),
+  );
+  const options = locations ?? [];
+  const pickedId = chosenId ?? (options.length === 1 ? options[0].id : null);
+  const check = admitLocationCheck(pickedId, options, licenseStates);
+  const picked = options.find((l) => l.id === pickedId);
   const ready = check.kind === "ok" || (check.kind === "out_of_state" && assignAnyway);
 
-  async function admit() {
-    if (!picked || !ready) return;
-    setPending(true);
-    setError(null);
-    try {
-      await onAdmit(picked);
-    } catch (err) {
-      setError(errorText(err, `${firstName} couldn't be admitted. Try again.`));
-      setPending(false);
-    }
+  function admit() {
+    if (picked && ready) void submit(picked);
   }
 
   return (
@@ -143,7 +147,9 @@ export function AdmitDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {locations.length === 0 ? (
+        {locations === null ? (
+          <p className="text-[13px] text-muted-foreground">Loading locations…</p>
+        ) : locations.length === 0 ? (
           <p className="text-[13px] text-[var(--mp-danger-ink)]">
             None of {firstName}'s groups has an active location. Add one on the group first.
           </p>
@@ -153,7 +159,7 @@ export function AdmitDialog({
             <Select
               value={pickedId ?? undefined}
               onValueChange={(v) => {
-                setPickedId(v);
+                setChosenId(v);
                 setAssignAnyway(false);
               }}
             >
@@ -215,9 +221,10 @@ export function AdmitDialog({
 // Long enough to type the login into the portal; the values then leave memory.
 const REVEAL_WINDOW_SECONDS = 60;
 
-/** Board 6b's Test… (D13): an admin gives a reason, sees the login for a
+/** Test…: an admin gives a reason, sees the login for a
  * minute, then records whether it worked. The login lives only in this
- * component's state, never in the query cache. */
+ * component's state. The reveal is a plain call, so no query or mutation
+ * cache holds it after the dialog closes. */
 export function TestLoginDialog({
   providerId,
   portal,
@@ -237,8 +244,10 @@ export function TestLoginDialog({
   const [revealedOnce, setRevealedOnce] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [note, setNote] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const { pending, error, submit } = useSubmit(onRecord, (err) =>
+    errorMessage(err, "That couldn't be saved. Try again."),
+  );
 
   useEffect(() => {
     if (!login) return;
@@ -250,26 +259,17 @@ export function TestLoginDialog({
   }, [login, secondsLeft]);
 
   async function onReveal() {
-    setError(null);
+    setRevealError(null);
     try {
-      setLogin(await reveal.mutateAsync({ portal, justification: reason.trim() }));
+      setLogin(await reveal.reveal(portal, reason.trim()));
       setRevealedOnce(true);
       setSecondsLeft(REVEAL_WINDOW_SECONDS);
     } catch (err) {
-      setError(errorText(err, "The login couldn't be shown."));
+      setRevealError(errorMessage(err, "The login couldn't be shown."));
     }
   }
 
-  async function record(outcome: "confirmed" | "problem") {
-    setPending(true);
-    setError(null);
-    try {
-      await onRecord(outcome, note.trim() || null);
-    } catch (err) {
-      setError(errorText(err, "That couldn't be saved. Try again."));
-      setPending(false);
-    }
-  }
+  const record = (outcome: "confirmed" | "problem") => void submit(outcome, note.trim() || null);
 
   return (
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
@@ -324,15 +324,15 @@ export function TestLoginDialog({
           </div>
         )}
 
-        <ErrorLine message={error} />
+        <ErrorLine message={revealError ?? error} />
         <DialogFooter>
           {!revealedOnce ? (
             <>
               <Button variant="outline" onClick={onClose}>
                 Cancel
               </Button>
-              <Button onClick={onReveal} disabled={!reason.trim() || reveal.isPending}>
-                {reveal.isPending ? "Showing…" : "Show login"}
+              <Button onClick={onReveal} disabled={!reason.trim() || reveal.pending}>
+                {reveal.pending ? "Showing…" : "Show login"}
               </Button>
             </>
           ) : (
@@ -361,18 +361,9 @@ export function ProblemNoteDialog({
   onClose: () => void;
 }) {
   const [note, setNote] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  async function save() {
-    setPending(true);
-    setError(null);
-    try {
-      await onSave(note.trim() || null);
-    } catch (err) {
-      setError(errorText(err, "That couldn't be saved. Try again."));
-      setPending(false);
-    }
-  }
+  const { pending, error, submit } = useSubmit(onSave, (err) =>
+    errorMessage(err, "That couldn't be saved. Try again."),
+  );
   return (
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -396,7 +387,7 @@ export function ProblemNoteDialog({
           <Button variant="outline" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={pending}>
+          <Button onClick={() => void submit(note.trim() || null)} disabled={pending}>
             {pending ? "Saving…" : "Mark problem"}
           </Button>
         </DialogFooter>

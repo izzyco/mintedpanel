@@ -2626,11 +2626,9 @@ export interface ProviderOnboardingRead {
     | "id"
     | "source"
     | "createdRecord"
-    | "lockedFields"
     | "openedAt"
     | "firstSignedInAt"
     | "consentedAt"
-    | "ssnStoredAt"
     | "submittedAt"
     | "admittedAt"
     | "admittedFacilityId"
@@ -2657,10 +2655,7 @@ export interface ProviderOnboardingRead {
 
 /** An open journey as the roster reads it under RLS. */
 export interface OpenProviderOnboarding {
-  id: string;
   providerId: string;
-  openedAt: string;
-  submittedAt: string | null;
-  /** The invite created her record, so her cases wait for Admit (D3). */
+  /** The invite created her record, so her cases wait for Admit. */
   createdRecord: boolean;
 }

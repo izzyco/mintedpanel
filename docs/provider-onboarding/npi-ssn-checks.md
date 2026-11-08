@@ -23,7 +23,6 @@ A provider who types a wrong NPI or SSN on the intake form finds out on the spot
 ## Open follow-ups
 
 - The vault RPC (`20260717120000_ssn_vault.sql`) checks length only (`char_length = 9`).
-- The intake form saves nothing yet. When saving ships, the server re-checks both numbers before the vault write.
 - The intake form shows an on-file SSN as `•••-••-1234`, while the rest of the app shows `***--1234` (`maskSsn` in `src/lib/ssnMask.ts`).
 
 ## Later

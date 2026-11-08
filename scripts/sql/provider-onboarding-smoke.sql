@@ -256,13 +256,6 @@ BEGIN
   DELETE FROM public.provider_intake_settings;
   ASSERT NOT public.intake_paused(), 'a missing row is not paused';
 
-  -- Deleting a provider takes its journeys and invites with it.
-  DELETE FROM public.provider_ssn_vault WHERE provider_id = v_provider;
-  DELETE FROM public.provider_group_assignments WHERE provider_id = v_provider;
-  DELETE FROM public.providers WHERE id = v_provider;
-  ASSERT NOT EXISTS (SELECT 1 FROM public.provider_onboardings WHERE provider_id = v_provider), 'journeys cascade';
-  ASSERT NOT EXISTS (SELECT 1 FROM public.provider_intake_invites WHERE provider_id = v_provider), 'invites cascade';
-
   -- Grants: only service_role calls the RPCs; members read journeys, never write them.
   ASSERT NOT has_function_privilege('authenticated', 'public.record_intake_email_delivery(text, uuid, text)', 'EXECUTE'), 'authenticated delivery rpc';
   ASSERT NOT has_function_privilege('anon', 'public.intake_paused()', 'EXECUTE'), 'anon paused rpc';

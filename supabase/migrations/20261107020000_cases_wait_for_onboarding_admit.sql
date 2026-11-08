@@ -1,5 +1,5 @@
--- Provider onboarding R1, cycle 8: no case for a provider the invite created
--- until staff Admit her (PM decision 11, D3, R2).
+-- Provider onboarding: no case for a provider the invite created until staff
+-- Admit her.
 --
 -- Only a journey whose invite created the record holds case creation, from
 -- the invite until Admit or Cancel. A gap-fill invite to a provider already

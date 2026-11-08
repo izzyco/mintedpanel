@@ -26,7 +26,8 @@ import { cn } from "@/lib/utils";
 import type { OnboardingHire } from "@/types/providerOnboarding";
 import { LEGEND, WAITING_ON_RING, firstName, needsYouLine } from "./hireCopy";
 import { CancelInviteDialog, FixEmailDialog, StartDateDialog } from "./HireDialogs";
-import { HireTable, ResendButton, type HireCommand } from "./HireTable";
+import { HireTable, type HireCommand } from "./HireTable";
+import { ResendButton } from "./ResendButton";
 import { PracticeInviteDialog } from "./PracticeInviteDialog";
 
 const ALL_STATES = "all";
@@ -161,7 +162,7 @@ export function NewHiresBoard({
               </div>
               <div className="flex gap-2">
                 <ResendButton
-                  hire={hire}
+                  events={hire.events}
                   now={now}
                   className="h-8 px-3 text-[13px] font-normal"
                   onResend={() => onCommand("resend", hire)}

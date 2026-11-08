@@ -26,7 +26,7 @@ import {
   PRACTICE_HEADER,
   PRACTICE_TITLE,
 } from "./HireDialogs";
-import { SENT_LOOK } from "./HireTable";
+import { SentButton } from "./ResendButton";
 
 type Step =
   | { kind: "form" }
@@ -206,9 +206,7 @@ function Outcome({
                   Resend invitation
                 </Button>
               ) : (
-                <Button variant="outline" disabled className={SENT_LOOK}>
-                  Sent · resend in 10 min
-                </Button>
+                <SentButton />
               )}
             </>
           }

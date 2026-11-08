@@ -5,12 +5,19 @@
 import { currentVersions, type DocumentVersionShape } from "@/lib/documents";
 import { CAQH_CURRENT_DAYS, daysBetween } from "@/lib/enrollmentReadiness";
 import { fmtDate } from "@/lib/format";
+import type { IntakePortal } from "@/lib/intakeAnswers";
 import { isValidNpi } from "@/lib/providerIdentity";
-import { deriveStage, deriveWaitingOn, isBeforeSubmit } from "@/lib/providerOnboarding";
+import {
+  deriveStage,
+  deriveWaitingOn,
+  helpAwaitsContact,
+  requiredDocumentSlots,
+} from "@/lib/providerOnboarding";
 import type { DocumentKind, ProviderOnboardingCheck, ProviderOnboardingRead } from "@/types";
 import type {
+  CheckSection,
   OnboardingEvent,
-  OnboardingStage,
+  PersonCheck,
   VerificationCheck,
   WaitingOn,
 } from "@/types/providerOnboarding";
@@ -25,13 +32,7 @@ export const PERSON_CHECK_KEYS = [
 ] as const satisfies readonly ProviderOnboardingCheck["checkKey"][];
 export type PersonCheckKey = (typeof PERSON_CHECK_KEYS)[number];
 
-export function asPersonCheckKey(key: string): PersonCheckKey | null {
-  return PERSON_CHECK_KEYS.find((k) => k === key) ?? null;
-}
-
 export type OnboardingJourney = ProviderOnboardingRead["journey"];
-
-// ---------- the read RPC's payload ----------
 
 type Raw = Record<string, unknown>;
 const obj = (v: unknown): Raw | null =>
@@ -39,7 +40,6 @@ const obj = (v: unknown): Raw | null =>
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const DELIVERIES = ["sent", "sandbox", "failed"] as const;
 const SOURCES = ["staff", "practice", "api"] as const;
-const LOCKABLE = ["ssn", "npi", "date_of_birth"] as const;
 function oneOf<T extends string>(v: unknown, allowed: readonly T[]): T | null {
   return allowed.find((a) => a === v) ?? null;
 }
@@ -71,13 +71,9 @@ export function parseOnboardingRead(raw: unknown): ProviderOnboardingRead | null
       id,
       source: oneOf(j.source, SOURCES) ?? "staff",
       createdRecord: j.created_record === true,
-      lockedFields: Array.isArray(j.locked_fields)
-        ? j.locked_fields.flatMap((f) => oneOf(f, LOCKABLE) ?? [])
-        : [],
       openedAt,
       firstSignedInAt: str(j.first_signed_in_at),
       consentedAt: str(j.consented_at),
-      ssnStoredAt: str(j.ssn_stored_at),
       submittedAt: str(j.submitted_at),
       admittedAt: str(j.admitted_at),
       admittedByName: str(j.admitted_by_name),
@@ -131,22 +127,11 @@ export function onboardingEvents(read: ProviderOnboardingRead): OnboardingEvent[
   return events;
 }
 
-export function onboardingStage(read: ProviderOnboardingRead): OnboardingStage {
-  return deriveStage(onboardingEvents(read));
-}
-
-/** A help request waits for Mark contacted, before or after Submit. */
-export function helpOpen(journey: OnboardingJourney): boolean {
-  if (!journey.lastHelpAt) return false;
-  return !journey.lastContactedAt || journey.lastHelpAt > journey.lastContactedAt;
-}
-
 export function waitingOnLine(
-  read: ProviderOnboardingRead,
+  j: OnboardingJourney,
+  events: OnboardingEvent[],
   firstName: string,
 ): { who: WaitingOn; label: string; detail: string } {
-  const j = read.journey;
-  const events = onboardingEvents(read);
   const who = deriveWaitingOn(events);
   if (who === "practice") {
     return {
@@ -159,10 +144,13 @@ export function waitingOnLine(
     return {
       who,
       label: firstName,
-      detail: j.firstSignedInAt ? "signed in, not submitted" : "invited, hasn't signed in yet",
+      detail:
+        deriveStage(events) === "started"
+          ? "signed in, not submitted"
+          : "invited, hasn't signed in yet",
     };
   }
-  const help = helpOpen(j) ? `; asked for help ${fmtDate(j.lastHelpAt)}` : "";
+  const help = helpAwaitsContact(events) ? `; asked for help ${fmtDate(j.lastHelpAt)}` : "";
   return {
     who,
     label: "Minted",
@@ -201,8 +189,6 @@ export function admittedLine(read: ProviderOnboardingRead, locationName: string 
   const stage = read.hasCase ? "In credentialing" : "Ready for credentialing";
   return `Admitted ${fmtDate(j.admittedAt)}${by}${where} · ${stage}`;
 }
-
-// ---------- Verification ----------
 
 export interface CardProvider {
   npi: string | null;
@@ -244,10 +230,10 @@ function missing(items: (string | false)[]): Outcome {
 function auto(
   key: string,
   label: string,
-  section: VerificationCheck["section"],
+  section: CheckSection | null,
   outcome: Outcome,
 ): VerificationCheck {
-  return { key, label, method: "auto", confirmedBy: null, action: null, section, ...outcome };
+  return { key, label, method: "auto", section, ...outcome };
 }
 
 function npiOutcome(npi: string | null): Outcome {
@@ -293,24 +279,27 @@ function licenseChecks(licenses: readonly CardLicense[], today: string): Verific
     });
 }
 
-function documentsOutcome(documents: readonly CardDocument[], licenseStates: number): Outcome {
-  const current = currentVersions(documents);
-  const copies = current.filter((d) => d.docType === "state_license").length;
-  const short = licenseStates - copies;
+function documentsOutcome(
+  documents: readonly CardDocument[],
+  licenseStates: readonly string[],
+): Outcome {
+  const held = currentVersions(documents).map((d) => d.docType);
+  const required = requiredDocumentSlots(licenseStates).map((s) => s.kind);
+  const short = (kind: DocumentKind) =>
+    required.filter((k) => k === kind).length - held.filter((k) => k === kind).length;
+  const copies = short("state_license");
   return missing([
-    !current.some((d) => d.docType === "cv") && "CV",
-    short > 0 && `${short} license ${short === 1 ? "copy" : "copies"}`,
+    short("cv") > 0 && "CV",
+    copies > 0 && `${copies} license ${copies === 1 ? "copy" : "copies"}`,
   ]);
 }
 
 function personCheck(
-  key: PersonCheckKey,
-  label: string,
+  check: Pick<PersonCheck, "key" | "label" | "portal" | "action">,
   latest: ProviderOnboardingCheck | undefined,
-  action: VerificationCheck["action"],
   pendingDetail: string | null,
-): VerificationCheck {
-  const base = { key, label, method: "person" as const, action };
+): PersonCheck {
+  const base = { ...check, method: "person" as const };
   if (!latest) {
     return {
       ...base,
@@ -340,13 +329,16 @@ function attestationDetail(attested: string | null, today: string): string {
 export function verificationChecks(input: VerificationInput): VerificationCheck[] {
   const { read, provider, licenses, documents, today } = input;
   const latest = new Map(read.checks.map((c) => [c.checkKey, c]));
-  const licenseStates = new Set(licenses.map((l) => l.state)).size;
-  const loginCheck = (key: "caqh_login" | "pecos_login", portal: "caqh" | "pecos", name: string) =>
+  const licenseStates = [...new Set(licenses.map((l) => l.state))];
+  const loginCheck = (key: "caqh_login" | "pecos_login", portal: IntakePortal, name: string) =>
     personCheck(
-      key,
-      `${name} login works`,
+      {
+        key,
+        label: `${name} login works`,
+        portal: { key: portal, name },
+        action: read.loginsOnFile[portal] ? "test_login" : "confirm",
+      },
       latest.get(key),
-      read.loginsOnFile[portal] ? "test_login" : "confirm",
       read.loginsOnFile[portal] ? null : `No ${name} login on file`,
     );
 
@@ -360,10 +352,13 @@ export function verificationChecks(input: VerificationInput): VerificationCheck[
     ),
     auto("caqh_id", "CAQH ID", "identity", missing([!provider.caqhId && "CAQH ID"])),
     personCheck(
-      "caqh_attestation",
-      `CAQH attested within ${CAQH_CURRENT_DAYS} days`,
+      {
+        key: "caqh_attestation",
+        label: `CAQH attested within ${CAQH_CURRENT_DAYS} days`,
+        portal: null,
+        action: "confirm",
+      },
       latest.get("caqh_attestation"),
-      "confirm",
       attestationDetail(provider.caqhLastAttestedDate, today),
     ),
     ...licenseChecks(licenses, today),
@@ -376,7 +371,7 @@ export function verificationChecks(input: VerificationInput): VerificationCheck[
     auto(
       "logins_on_file",
       "CAQH and PECOS logins on file",
-      undefined,
+      null,
       missing([!read.loginsOnFile.caqh && "CAQH", !read.loginsOnFile.pecos && "PECOS"]),
     ),
     auto(
@@ -389,8 +384,6 @@ export function verificationChecks(input: VerificationInput): VerificationCheck[
     loginCheck("pecos_login", "pecos", "PECOS"),
   ];
 }
-
-// ---------- Admit & assign ----------
 
 export interface AdmitLocation {
   id: string;
@@ -420,7 +413,7 @@ export function admitLocations(
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Q3, inside Admit & assign. A location outside her license states is a
+/** Inside Admit & assign. A location outside her license states is a
  * warning she can confirm past, never a block. */
 export type AdmitLocationCheck =
   | { kind: "pick" }
@@ -437,8 +430,4 @@ export function admitLocationCheck(
   const states = [...new Set(licenseStates)].sort();
   if (picked.state && states.includes(picked.state)) return { kind: "ok" };
   return { kind: "out_of_state", state: picked.state, licenseStates: states };
-}
-
-export function canAdmit(read: ProviderOnboardingRead): boolean {
-  return cardPhase(read) === "open" && !isBeforeSubmit(onboardingStage(read));
 }

@@ -1,8 +1,8 @@
--- Provider onboarding R1, cycle 1: the onboarding record (journey).
+-- Provider onboarding: the onboarding record (journey).
 --
 -- provider_onboardings holds one row per onboarding journey: opened by an
--- invite (or by a resend when no journey is open), ended by Admit or Cancel
--- (later cycles). Every later step hangs off it: drafts, consent, held
+-- invite (or by a resend when no journey is open), ended by Admit or Cancel.
+-- Every later step hangs off it: drafts, consent, held
 -- uploads, Submit. "Onboarding open" lives here, never in providers.status,
 -- which billing reads as "not seeing patients yet".
 --   source / external_ref  who opened it (staff today; practice and an outside
@@ -15,6 +15,11 @@
 -- under RLS; nobody but service_role writes the table directly.
 --
 -- Also here:
+--   _intake_form_closed                    the journey takes no more of her
+--                                          edits (submitted, admitted or
+--                                          cancelled)
+--   _lock_provider_invites,                the advisory lock keys, spelled
+--   _lock_onboarding_npi                   once
 --   provider_intake_invites.onboarding_id  the journey an invite belongs to,
 --                                          backfilled for existing invites
 --   provider_intake_invites.delivery,      what happened to the email
@@ -22,6 +27,11 @@
 --                                          once by record_intake_email_delivery
 --   provider_intake_settings               one row; paused = true makes every
 --                                          intake and invite route answer 503
+--   intake_link_paused                     paused for one intake link: when
+--                                          intake is, or when the link's org
+--                                          is not writable (offboarded), since
+--                                          the write freeze would refuse the
+--                                          sign-in after the code is emailed
 --   _match_onboarding_provider             the one rule for "is this person
 --                                          already in the org"
 --   create/resend_provider_intake_invite   open or reuse the journey; one
@@ -41,8 +51,8 @@
 --    WHERE table_name IN ('provider_intake_invites', 'provider_intake_codes')
 --      AND column_name IN ('onboarding_id', 'delivery');            -- 3
 --   SELECT count(*) FROM pg_proc WHERE proname IN ('intake_paused',
---     'record_intake_email_delivery', '_match_onboarding_provider',
---     'revoke_intake_on_provider_change');                         -- 4
+--     'intake_link_paused', 'record_intake_email_delivery',
+--     '_match_onboarding_provider', 'revoke_intake_on_provider_change'); -- 5
 --   SELECT tgname FROM pg_trigger
 --    WHERE tgrelid = 'public.providers'::regclass
 --      AND tgname = 'revoke_intake_on_provider_change';            -- 1 row
@@ -102,6 +112,48 @@ CREATE POLICY provider_onboardings_select ON public.provider_onboardings
   FOR SELECT TO authenticated
   USING (org_id IN (SELECT public.user_org_ids()));
 
+-- ---------------------------------------------------------------------------
+-- _intake_form_closed: the journey takes no more of her edits, because it is
+-- submitted, admitted or cancelled. Submit and help keep their own checks:
+-- Submit tells already_submitted apart, and help works after Submit.
+-- Private: only the SECURITY DEFINER RPCs call it.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public._intake_form_closed(p_journey public.provider_onboardings)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public
+AS $$
+  SELECT p_journey.submitted_at IS NOT NULL
+      OR p_journey.admitted_at IS NOT NULL
+      OR p_journey.cancelled_at IS NOT NULL;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- The advisory lock keys, spelled once, so the callers that must exclude each
+-- other always take the same lock.
+--   _lock_provider_invites  resend, cancel and admit, per provider
+--   _lock_onboarding_npi    an invite and a Submit naming one NPI, per org
+-- Private: only the SECURITY DEFINER RPCs call them.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public._lock_provider_invites(p_provider_id uuid)
+RETURNS void
+LANGUAGE sql
+VOLATILE
+SET search_path = public
+AS $$
+  SELECT pg_advisory_xact_lock(hashtextextended('provider_intake_invite:' || p_provider_id::text, 0));
+$$;
+
+CREATE OR REPLACE FUNCTION public._lock_onboarding_npi(p_org_id uuid, p_npi text)
+RETURNS void
+LANGUAGE sql
+VOLATILE
+SET search_path = public
+AS $$
+  SELECT pg_advisory_xact_lock(hashtextextended(p_org_id::text || ':npi:' || p_npi, 0));
+$$;
+
 ALTER TABLE public.provider_intake_invites
   ADD COLUMN IF NOT EXISTS onboarding_id uuid NULL REFERENCES public.provider_onboardings (id),
   ADD COLUMN IF NOT EXISTS delivery text NULL
@@ -157,6 +209,23 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
   SELECT coalesce((SELECT paused FROM public.provider_intake_settings WHERE id), false);
+$$;
+
+-- ---------------------------------------------------------------------------
+-- intake_link_paused: true while intake is paused, or while the org of the
+-- invite with this token hash is not writable. Any other hash reads the off
+-- switch alone, so an unknown link still gets its own answer.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.intake_link_paused(p_token_hash text)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT public.intake_paused() OR EXISTS (
+    SELECT 1 FROM public.provider_intake_invites i
+     WHERE i.token_hash = p_token_hash AND NOT public.org_is_writable(i.org_id));
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -259,7 +328,7 @@ BEGIN
   -- first, then NPI, so two invites can't wait on each other.
   PERFORM pg_advisory_xact_lock(hashtextextended(p_org_id::text || ':email:' || v_email, 0));
   IF v_npi IS NOT NULL THEN
-    PERFORM pg_advisory_xact_lock(hashtextextended(p_org_id::text || ':npi:' || v_npi, 0));
+    PERFORM public._lock_onboarding_npi(p_org_id, v_npi);
   END IF;
 
   SELECT m.verdict, m.provider_id INTO v_verdict, v_existing
@@ -361,8 +430,7 @@ BEGIN
   -- first-invite path has both callers miss the open-invite lookup and the
   -- second hits provider_intake_invites_one_open (23505, a 500) instead of
   -- answering cooldown.
-  PERFORM pg_advisory_xact_lock(
-    hashtextextended('provider_intake_invite:' || p_provider_id::text, 0));
+  PERFORM public._lock_provider_invites(p_provider_id);
 
   SELECT lower(nullif(btrim(email), '')), first_name INTO v_email, v_first
     FROM public.providers
@@ -565,7 +633,12 @@ CREATE OR REPLACE TRIGGER revoke_intake_on_provider_change
         OR (NEW.status = 'terminated' AND OLD.status IS DISTINCT FROM 'terminated'))
   EXECUTE FUNCTION public.revoke_intake_on_provider_change();
 
+REVOKE ALL ON FUNCTION public._intake_form_closed(public.provider_onboardings)
+  FROM public, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public._lock_provider_invites(uuid) FROM public, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public._lock_onboarding_npi(uuid, text) FROM public, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION public.intake_paused() FROM public, anon, authenticated;
+REVOKE ALL ON FUNCTION public.intake_link_paused(text) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public._match_onboarding_provider(uuid, text, text, uuid) FROM public, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION public.create_provider_intake_invite(uuid, uuid, text, jsonb, text, timestamptz) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.resend_provider_intake_invite(uuid, uuid, text, uuid, text, timestamptz) FROM public, anon, authenticated;
@@ -574,6 +647,7 @@ REVOKE ALL ON FUNCTION public.record_intake_email_delivery(text, uuid, text) FRO
 REVOKE ALL ON FUNCTION public.revoke_intake_on_provider_change() FROM public, anon, authenticated, service_role;
 
 GRANT EXECUTE ON FUNCTION public.intake_paused() TO service_role;
+GRANT EXECUTE ON FUNCTION public.intake_link_paused(text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.create_provider_intake_invite(uuid, uuid, text, jsonb, text, timestamptz) TO service_role;
 GRANT EXECUTE ON FUNCTION public.resend_provider_intake_invite(uuid, uuid, text, uuid, text, timestamptz) TO service_role;
 GRANT EXECUTE ON FUNCTION public.issue_intake_code(text, text) TO service_role;

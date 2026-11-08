@@ -1,9 +1,9 @@
--- Provider onboarding R1, cycle 4: her documents upload to a holding area and
--- stay removable until Submit (decision D8). The document vault
+-- Provider onboarding: her documents upload to a holding area and stay
+-- removable until Submit. The document vault
 -- (provider_documents and the provider-documents bucket) has no delete by
 -- design, so a file waits here until Submit copies it in.
 --
---   provider-intake-uploads   private Storage bucket, 25 MiB, PDF/PNG/JPEG.
+--   provider-intake-uploads   private Storage bucket, 10 MiB, PDF/PNG/JPEG.
 --                             No storage.objects policy names it, so no
 --                             client role can read or write it: the
 --                             /api/intake routes use the service role, and
@@ -18,7 +18,6 @@
 --   finish_intake_upload      the object checked out, so the upload counts
 --   remove_intake_upload      removed; the route deletes the object
 --   set_intake_upload_expiry  a COI's expiry
---   read_intake_state         also returns her finished uploads
 --
 -- Every RPC resolves the journey from the session and link hashes
 -- (_intake_session_context), never from an id the browser sends; an upload
@@ -30,11 +29,12 @@
 -- 20261106220000. Verify the OBJECTS:
 --   SELECT to_regclass('public.provider_intake_uploads');            -- non-null
 --   SELECT id, public, file_size_limit FROM storage.buckets
---    WHERE id = 'provider-intake-uploads';                 -- f, 26214400
+--    WHERE id = 'provider-intake-uploads';                 -- f, 10485760
 --   SELECT count(*) FROM pg_proc WHERE proname IN ('begin_intake_upload',
 --     'read_intake_upload', 'finish_intake_upload', 'remove_intake_upload',
 --     'set_intake_upload_expiry');                                   -- 5
---   then run scripts/sql/provider-intake-uploads-smoke.sql.
+--   then, once 20261106233000 (read_intake_state) is applied too, run
+--   scripts/sql/provider-intake-uploads-smoke.sql.
 
 DO $$
 BEGIN
@@ -48,7 +48,7 @@ BEGIN
     'provider-intake-uploads',
     'provider-intake-uploads',
     false,
-    26214400,
+    10485760,
     ARRAY['application/pdf', 'image/png', 'image/jpeg']
   )
   ON CONFLICT (id) DO UPDATE SET
@@ -155,8 +155,7 @@ BEGIN
   -- One upload change per journey at a time, so two windows can't both leave
   -- a live upload in one slot.
   SELECT * INTO v_journey FROM public.provider_onboardings WHERE id = v_ctx.onboarding_id FOR UPDATE;
-  IF v_journey.submitted_at IS NOT NULL OR v_journey.admitted_at IS NOT NULL
-     OR v_journey.cancelled_at IS NOT NULL THEN
+  IF public._intake_form_closed(v_journey) THEN
     RETURN jsonb_build_object('result', 'closed');
   END IF;
 
@@ -208,8 +207,7 @@ BEGIN
   END IF;
 
   SELECT * INTO v_journey FROM public.provider_onboardings WHERE id = v_ctx.onboarding_id;
-  IF v_journey.submitted_at IS NOT NULL OR v_journey.admitted_at IS NOT NULL
-     OR v_journey.cancelled_at IS NOT NULL THEN
+  IF public._intake_form_closed(v_journey) THEN
     RETURN jsonb_build_object('result', 'closed');
   END IF;
 
@@ -262,8 +260,7 @@ BEGIN
   END IF;
 
   SELECT * INTO v_journey FROM public.provider_onboardings WHERE id = v_ctx.onboarding_id FOR UPDATE;
-  IF v_journey.submitted_at IS NOT NULL OR v_journey.admitted_at IS NOT NULL
-     OR v_journey.cancelled_at IS NOT NULL THEN
+  IF public._intake_form_closed(v_journey) THEN
     RETURN jsonb_build_object('result', 'closed');
   END IF;
 
@@ -312,8 +309,7 @@ BEGIN
   END IF;
 
   SELECT * INTO v_journey FROM public.provider_onboardings WHERE id = v_ctx.onboarding_id FOR UPDATE;
-  IF v_journey.submitted_at IS NOT NULL OR v_journey.admitted_at IS NOT NULL
-     OR v_journey.cancelled_at IS NOT NULL THEN
+  IF public._intake_form_closed(v_journey) THEN
     RETURN jsonb_build_object('result', 'closed');
   END IF;
 
@@ -355,8 +351,7 @@ BEGIN
   END IF;
 
   SELECT * INTO v_journey FROM public.provider_onboardings WHERE id = v_ctx.onboarding_id FOR UPDATE;
-  IF v_journey.submitted_at IS NOT NULL OR v_journey.admitted_at IS NOT NULL
-     OR v_journey.cancelled_at IS NOT NULL THEN
+  IF public._intake_form_closed(v_journey) THEN
     RETURN jsonb_build_object('result', 'closed');
   END IF;
 
@@ -375,91 +370,12 @@ BEGIN
 END;
 $$;
 
--- ---------------------------------------------------------------------------
--- read_intake_state: as in 20261106220000, plus uploads: her finished uploads
--- that she hasn't removed, oldest first. A pending upload (begun, never
--- finished) is not shown: its file may never have arrived.
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.read_intake_state(p_session_hash text, p_token_hash text)
-RETURNS jsonb
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
-  SELECT jsonb_build_object(
-           'practice_name', org.name,
-           'email', i.email,
-           'record', jsonb_build_object(
-             'firstName', p.first_name,
-             'lastName', p.last_name,
-             'npi', p.npi,
-             'taxonomyCode', p.taxonomy_code,
-             'dateOfBirth', p.date_of_birth,
-             'caqhId', p.caqh_id,
-             'mobile', p.phone,
-             'homeStreet', p.home_street,
-             'homeCity', p.home_city,
-             'homeState', p.home_state,
-             'homeZip', p.home_zip,
-             'licenses', coalesce((
-               SELECT jsonb_agg(jsonb_build_object(
-                        'state', l.state,
-                        'number', l.license_number,
-                        'expiresOn', l.expiration_date)
-                      ORDER BY l.state, l.created_at, l.id)
-                 FROM public.state_licenses l
-                WHERE l.provider_id = p.id AND l.org_id = c.org_id), '[]'::jsonb)),
-           'locked_fields', to_jsonb(o.locked_fields),
-           'ssn_last4', p.ssn_last4,
-           'logins_on_file', jsonb_build_object(
-             'caqh', EXISTS (
-               SELECT 1 FROM public.provider_portal_credentials pc
-                WHERE pc.provider_id = p.id AND pc.org_id = c.org_id AND pc.portal = 'caqh'),
-             'pecos', EXISTS (
-               SELECT 1 FROM public.provider_portal_credentials pc
-                WHERE pc.provider_id = p.id AND pc.org_id = c.org_id AND pc.portal = 'pecos')),
-           'consented', o.consented_at IS NOT NULL,
-           'consent_text_version', (
-             SELECT k.text_version FROM public.provider_intake_consents k
-              WHERE k.onboarding_id = o.id
-              ORDER BY k.signed_at DESC, k.id DESC
-              LIMIT 1),
-           'draft', (
-             SELECT jsonb_build_object(
-                      'answers', d.answers,
-                      'step', d.step,
-                      'version', d.version,
-                      'updated_at', d.updated_at)
-               FROM public.provider_intake_drafts d
-              WHERE d.onboarding_id = o.id),
-           'uploads', coalesce((
-             SELECT jsonb_agg(jsonb_build_object(
-                      'id', u.id,
-                      'slot_key', u.slot_key,
-                      'doc_type', u.doc_type,
-                      'file_name', u.file_name,
-                      'size_bytes', u.size_bytes,
-                      'expires_on', u.expires_on)
-                    ORDER BY u.created_at, u.id)
-               FROM public.provider_intake_uploads u
-              WHERE u.onboarding_id = o.id AND u.removed_at IS NULL AND u.finalized_at IS NOT NULL),
-             '[]'::jsonb),
-           'submitted', o.submitted_at IS NOT NULL)
-    FROM public._intake_session_context(p_session_hash, p_token_hash) c
-    JOIN public.provider_intake_invites i ON i.id = c.invite_id
-    JOIN public.provider_onboardings o ON o.id = c.onboarding_id
-    JOIN public.providers p ON p.id = c.provider_id
-    JOIN public.organizations org ON org.id = c.org_id;
-$$;
-
 REVOKE ALL ON FUNCTION public.begin_intake_upload(text, text, text, text, text, bigint, text, date)
   FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.read_intake_upload(text, text, uuid) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.finish_intake_upload(text, text, uuid, bigint) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.remove_intake_upload(text, text, uuid) FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION public.set_intake_upload_expiry(text, text, uuid, date) FROM public, anon, authenticated;
-REVOKE ALL ON FUNCTION public.read_intake_state(text, text) FROM public, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION public.begin_intake_upload(text, text, text, text, text, bigint, text, date)
   TO service_role;
@@ -467,7 +383,6 @@ GRANT EXECUTE ON FUNCTION public.read_intake_upload(text, text, uuid) TO service
 GRANT EXECUTE ON FUNCTION public.finish_intake_upload(text, text, uuid, bigint) TO service_role;
 GRANT EXECUTE ON FUNCTION public.remove_intake_upload(text, text, uuid) TO service_role;
 GRANT EXECUTE ON FUNCTION public.set_intake_upload_expiry(text, text, uuid, date) TO service_role;
-GRANT EXECUTE ON FUNCTION public.read_intake_state(text, text) TO service_role;
 
 SELECT public.apply_offboarded_write_freeze();
 

@@ -260,23 +260,13 @@ export function GenerationGrid({ scope = {}, defaultPivot = "provider" }: Genera
               <span>
                 {skip.groupName} · {skip.payerName} {skip.state} — {skip.reasonLabel}
               </span>
-              {skip.reason === "no_facility" ? (
-                <Link
-                  to="/providers/$id"
-                  params={{ id: skip.providerId }}
-                  className="ml-auto text-[12px] text-primary underline-offset-2 hover:underline"
-                >
-                  Fix facility
-                </Link>
-              ) : (
-                <Link
-                  to="/providers/$id"
-                  params={{ id: skip.providerId }}
-                  className="ml-auto text-[12px] text-primary underline-offset-2 hover:underline"
-                >
-                  Open provider
-                </Link>
-              )}
+              <Link
+                to="/providers/$id"
+                params={{ id: skip.providerId }}
+                className="ml-auto text-[12px] text-primary underline-offset-2 hover:underline"
+              >
+                {skip.reason === "no_facility" ? "Fix facility" : "Open provider"}
+              </Link>
             </li>
           ))}
         </ul>

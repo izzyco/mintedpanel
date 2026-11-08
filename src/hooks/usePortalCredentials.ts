@@ -1,12 +1,22 @@
-// Staff reveal of a provider's portal login. A mutation, never a query, so the
-// login never enters the query cache (the useRevealSsn posture).
-import { useMutation } from "@tanstack/react-query";
+// Staff reveal of a provider's portal login. A plain callback with its own
+// pending flag, never a useMutation or useQuery, since either cache would keep
+// the login (and the reason) in memory for minutes after the dialog closes.
+import { useCallback, useState } from "react";
 import type { IntakePortal } from "@/lib/intakeAnswers";
 import { revealPortalCredential } from "@/services/portalCredentials";
 
 export function useRevealPortalCredential(providerId: string) {
-  return useMutation({
-    mutationFn: (vars: { portal: IntakePortal; justification: string }) =>
-      revealPortalCredential(providerId, vars.portal, vars.justification),
-  });
+  const [pending, setPending] = useState(false);
+  const reveal = useCallback(
+    async (portal: IntakePortal, justification: string) => {
+      setPending(true);
+      try {
+        return await revealPortalCredential(providerId, portal, justification);
+      } finally {
+        setPending(false);
+      }
+    },
+    [providerId],
+  );
+  return { reveal, pending };
 }

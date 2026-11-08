@@ -1,7 +1,9 @@
--- Provider onboarding R1, cycle 5: Submit puts her answers and documents on
+-- Provider onboarding: Submit puts her answers and documents on
 -- her record, and a help request reaches staff.
 --
---   read_intake_state        also returns org_id, provider_id and
+--   read_intake_state        what the form opens with: her record, draft,
+--                            consent, which logins are on file and her
+--                            finished uploads. Also org_id, provider_id and
 --                            held_object_paths (every object her journey
 --                            put in the holding bucket), which only the
 --                            submit route reads: it builds the vault paths
@@ -11,22 +13,32 @@
 --                            provider_documents, submitted_at, audit rows
 --   request_intake_help      a provider note and last_help_at
 --
--- Both RPCs resolve the journey from the session and link hashes
--- (_intake_session_context), never from an id the browser sends, and are
+-- Every RPC here resolves the journey from the session and link hashes
+-- (_intake_session_context), never from an id the browser sends, and is
 -- EXECUTE-granted to service_role alone. No new table.
 --
 -- Additive and idempotent. Applying to hosted is an OPERATOR task, after
 -- 20261106230000. Verify the OBJECTS:
---   SELECT count(*) FROM pg_proc WHERE proname IN ('submit_provider_intake',
---     'request_intake_help');                                        -- 2
+--   SELECT count(*) FROM pg_proc WHERE proname IN ('read_intake_state',
+--     'submit_provider_intake', 'request_intake_help');              -- 3
 --   SELECT pg_get_functiondef('public.read_intake_state(text, text)'::regprocedure)
 --     LIKE '%held_object_paths%';                                     -- t
 --   then run scripts/sql/provider-intake-submit-smoke.sql.
 
 -- ---------------------------------------------------------------------------
--- read_intake_state: as in 20261106230000, plus org_id, provider_id and
--- held_object_paths: the path of every upload of her journey, removed or
--- not, so a file a failed delete left behind is cleared too.
+-- read_intake_state: what the form opens with. Null when the session is not
+-- live under this link. `record` is her provider record in the answers shape
+-- (the columns the form shows, and every state license); `draft` is her saved
+-- answers, or null before her first save. Never the full SSN: ssn_last4 only.
+--   logins_on_file     { caqh, pecos }: whether a login for that portal is
+--                      on her record
+--   uploads            her finished uploads that she hasn't removed, oldest
+--                      first. A pending upload (begun, never finished) is
+--                      not shown: its file may never have arrived.
+--   org_id, provider_id, held_object_paths
+--                      for the submit route. held_object_paths is the path
+--                      of every upload of her journey, removed or not, so a
+--                      file a failed delete left behind is cleared too.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.read_intake_state(p_session_hash text, p_token_hash text)
 RETURNS jsonb
@@ -111,9 +123,9 @@ $$;
 -- submit_provider_intake: her saved answers and documents onto her record, in
 -- one transaction with the journey row locked. Results:
 --   null               the session is not live under this link
---   submitted          written; first_time is true, and the result carries
---                      what the emails need (practice_name, first_name, the
---                      invited email) plus onboarding_id and provider_id
+--   submitted          written; the result carries what the emails need
+--                      (practice_name, first_name, the invited email) plus
+--                      onboarding_id and provider_id
 --   already_submitted  submitted before; nothing written, nothing to send
 --   conflict           p_expected_version is not the saved draft version (no
 --                      draft is version 0); returns the saved version
@@ -122,9 +134,9 @@ $$;
 --   closed             the journey is admitted or cancelled
 -- A journey without her signed consent raises (the route checks it first).
 --
--- The merge (decision 3, D7, D11): each answer she gave overwrites its
+-- The merge: each answer she gave overwrites its
 -- providers column, except a field locked on the journey. Email and status
--- are never touched; mobile is providers.phone. Licenses (D6), each answer
+-- are never touched; mobile is providers.phone. Licenses, each answer
 -- row as she saw it (her values, else the state's newest license, as
 -- draftFromState shows it): a license with that number in that state takes
 -- the expiry; otherwise the state's newest license, once, takes the number
@@ -221,7 +233,7 @@ BEGIN
   IF v_npi IS NOT NULL AND v_npi IS DISTINCT FROM v_provider.npi THEN
     -- The invite's NPI lock, so an invite with this NPI and this Submit
     -- can't both miss each other.
-    PERFORM pg_advisory_xact_lock(hashtextextended(v_ctx.org_id::text || ':npi:' || v_npi, 0));
+    PERFORM public._lock_onboarding_npi(v_ctx.org_id, v_npi);
     IF EXISTS (
       SELECT 1 FROM public.providers p
        WHERE p.org_id = v_ctx.org_id AND p.npi = v_npi AND p.id <> v_provider.id
@@ -394,7 +406,6 @@ BEGIN
 
   RETURN jsonb_build_object(
     'result', 'submitted',
-    'first_time', true,
     'onboarding_id', v_journey.id,
     'provider_id', v_provider.id,
     'practice_name', (SELECT name FROM public.organizations WHERE id = v_ctx.org_id),

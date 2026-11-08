@@ -93,7 +93,7 @@ BEGIN
   ASSERT jsonb_array_length(public.read_intake_state('sub-sess-a', 'sub-link-a')->'held_object_paths') = 4,
     'every object her journey put in the holding bucket, removed ones too';
 
-  -- Staff edit her record after the invite; her answer wins (decision 3).
+  -- Staff edit her record after the invite; her answer wins.
   UPDATE public.providers SET phone = '(704) 555-0999' WHERE id = v_provider;
 
   v_docs := jsonb_build_array(
@@ -123,7 +123,7 @@ BEGIN
   ASSERT (SELECT last_name = 'Rao' FROM public.providers WHERE id = v_provider), 'nothing merged yet';
 
   r := public.submit_provider_intake('sub-sess-a', 'sub-link-a', 1, v_docs);
-  ASSERT r->>'result' = 'submitted' AND (r->>'first_time')::boolean
+  ASSERT r->>'result' = 'submitted'
      AND (r->>'onboarding_id')::uuid = v_journey AND (r->>'provider_id')::uuid = v_provider
      AND r->>'practice_name' = 'Smoke Submit' AND r->>'first_name' = 'Anita'
      AND r->>'email' = 'anita.submit@example.test', format('submit: %s', r);

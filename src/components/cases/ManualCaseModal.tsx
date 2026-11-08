@@ -11,7 +11,7 @@
 // the existing case; the swapped DB constraint stays the backstop (a 23505
 // race surfaces the TE-4 duplicate message).
 //
-// A provider whose invite created her record waits for Admit (PM decision 11):
+// A provider whose invite created her record waits for Admit:
 // she can be picked, and the modal says why Create stays off. The database
 // refuses the insert too (migration 20261107020000).
 //

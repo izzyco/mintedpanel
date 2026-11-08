@@ -1,5 +1,5 @@
 -- Smoke test for onboarding_orphan_files in
--- 20261107040000_onboarding_review_fixes.sql: which Storage objects the
+-- 20261107040000_onboarding_orphan_files.sql: which Storage objects the
 -- onboarding file cleanup job deletes. Run it after the migration is applied,
 -- as the postgres user (on a local `supabase start`, or the SQL editor on
 -- staging):
@@ -8,8 +8,10 @@
 --
 -- Everything runs in one transaction and is rolled back, so it leaves no rows.
 -- The Storage objects here are catalog rows only (no file behind them): the
--- function reads storage.objects, and the job deletes through Storage. Any
--- failed check raises and stops the script.
+-- function reads storage.objects, and the job deletes through Storage. The
+-- cancelled journeys come from the invite, sign-in, upload and cancel RPCs,
+-- so their rows are the ones Cancel leaves. Hashes are plain strings: the
+-- RPCs only compare them. Any failed check raises and stops the script.
 BEGIN;
 
 CREATE FUNCTION pg_temp.journey(p_org uuid, p_group uuid, p_state text) RETURNS uuid
@@ -20,13 +22,21 @@ DECLARE
 BEGIN
   INSERT INTO public.providers (org_id, first_name, last_name, status, group_id)
     VALUES (p_org, 'Smoke', p_state, 'active', p_group) RETURNING id INTO v_provider;
-  INSERT INTO public.provider_onboardings (org_id, provider_id, created_record, submitted_at, admitted_at, cancelled_at)
+  INSERT INTO public.provider_onboardings (org_id, provider_id, created_record, submitted_at, admitted_at)
     VALUES (p_org, v_provider, true,
             CASE WHEN p_state IN ('submitted', 'admitted') THEN now() END,
-            CASE WHEN p_state = 'admitted' THEN now() END,
-            CASE WHEN p_state = 'cancelled' THEN now() END)
+            CASE WHEN p_state = 'admitted' THEN now() END)
     RETURNING id INTO v_journey;
   RETURN v_journey;
+END;
+$$;
+
+CREATE FUNCTION pg_temp.sign_in(p_link text, p_session text) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  ASSERT (public.issue_intake_code(p_link, p_link || '-code')->>'send')::boolean, 'code for ' || p_link;
+  ASSERT public.verify_intake_code(p_link, p_link || '-code', p_session, now() + interval '2 hours') = 'ok',
+    'session for ' || p_link;
 END;
 $$;
 
@@ -49,13 +59,12 @@ BEGIN
 END;
 $$;
 
--- The holding path of an upload, and the vault path Submit copies it to.
 CREATE FUNCTION pg_temp.held(p_upload uuid) RETURNS text
 LANGUAGE sql AS $$ SELECT object_path FROM public.provider_intake_uploads WHERE id = p_upload $$;
 
 CREATE FUNCTION pg_temp.vault(p_upload uuid) RETURNS text
 LANGUAGE sql AS $$
-  SELECT format('org/%s/provider/%s/%s/1/file.pdf', j.org_id, j.provider_id, u.id)
+  SELECT format('org/%s/provider/%s/%s/1/%s', j.org_id, j.provider_id, u.id, u.file_name)
     FROM public.provider_intake_uploads u JOIN public.provider_onboardings j ON j.id = u.onboarding_id
    WHERE u.id = p_upload
 $$;
@@ -89,10 +98,14 @@ DECLARE
   v_open uuid;
   v_submitted uuid;
   v_admitted uuid;
-  v_cancelled uuid;
   v_other uuid;
   v_up uuid;
   v_kept_doc uuid;
+  v_staff uuid := gen_random_uuid();
+  v_gap uuid;
+  v_vault text;
+  v_gone uuid;
+  v_gone_copy text;
   v_old interval := interval '4 hours';
   v_young interval := interval '1 hour';
   v_cutoff timestamptz := now() - interval '3 hours';
@@ -105,7 +118,6 @@ BEGIN
   v_open := pg_temp.journey(v_org, v_group, 'open');
   v_submitted := pg_temp.journey(v_org, v_group, 'submitted');
   v_admitted := pg_temp.journey(v_org, v_group, 'admitted');
-  v_cancelled := pg_temp.journey(v_org, v_group, 'cancelled');
   v_other := pg_temp.journey(v_org, v_group, 'submitted');
 
   -- Holding bucket. Kept: a live upload of an open journey, finished or
@@ -119,14 +131,13 @@ BEGIN
     format('org/%s/onboarding/%s/not-an-upload/file.pdf', v_org, v_open), v_old);
   -- Deleted: a removed upload's file (a signed URL used after Remove), a file
   -- with no upload row (her journey's rows went with a Cancel), and every
-  -- held file of a submitted, admitted or cancelled journey.
+  -- held file of a submitted or admitted journey.
   v_orphans := v_orphans
     || pg_temp.object('provider-intake-uploads', pg_temp.held(pg_temp.upload(v_open, 'other', 'removed')), v_old)
     || pg_temp.object('provider-intake-uploads',
          format('org/%s/onboarding/%s/%s/file.pdf', v_org, gen_random_uuid(), gen_random_uuid()), v_old)
     || pg_temp.object('provider-intake-uploads', pg_temp.held(pg_temp.upload(v_submitted, 'cv', 'finalized')), v_old)
-    || pg_temp.object('provider-intake-uploads', pg_temp.held(pg_temp.upload(v_admitted, 'cv', 'finalized')), v_old)
-    || pg_temp.object('provider-intake-uploads', pg_temp.held(pg_temp.upload(v_cancelled, 'cv', 'pending')), v_old);
+    || pg_temp.object('provider-intake-uploads', pg_temp.held(pg_temp.upload(v_admitted, 'cv', 'finalized')), v_old);
 
   -- Vault. Kept: a file Submit made a document of; a copy for an open
   -- journey (a Submit may be on its way); a young copy; a staff document; a
@@ -147,13 +158,53 @@ BEGIN
     format('org/%s/provider/%s/%s/1/file.pdf', v_org,
            (SELECT provider_id FROM public.provider_onboardings WHERE id = v_other), v_up), v_old);
   -- Deleted: a copy no document row points at, for a submitted (a removed
-  -- upload, and one whose slot left her form), admitted or cancelled journey.
+  -- upload, and one whose slot left her form) or admitted journey.
   v_up := pg_temp.upload(v_submitted, 'license:NC', 'finalized');
   v_orphans := v_orphans
     || pg_temp.object('provider-documents', pg_temp.vault(pg_temp.upload(v_submitted, 'coi', 'removed')), v_old)
     || pg_temp.object('provider-documents', pg_temp.vault(v_up), v_old)
-    || pg_temp.object('provider-documents', pg_temp.vault(pg_temp.upload(v_admitted, 'other', 'removed')), v_old)
-    || pg_temp.object('provider-documents', pg_temp.vault(pg_temp.upload(v_cancelled, 'coi', 'finalized')), v_old);
+    || pg_temp.object('provider-documents', pg_temp.vault(pg_temp.upload(v_admitted, 'other', 'removed')), v_old);
+
+  -- Cancel closes a gap-fill journey (her record stays). Deleted: her
+  -- finished CV, her COI still on its way, and the vault copy of the CV that
+  -- a refused Submit left and Cancel's Storage delete missed.
+  INSERT INTO public.providers (org_id, first_name, last_name, email, status, group_id)
+    VALUES (v_org, 'Gina', 'Gap', 'gina.cleanup@example.test', 'active', v_group) RETURNING id INTO v_gap;
+  INSERT INTO public.provider_group_assignments (org_id, provider_id, group_id, is_primary)
+    VALUES (v_org, v_gap, v_group, true);
+  r := public.resend_provider_intake_invite(v_org, v_staff, 'Smoke', v_gap, 'cl-link-g', now() + interval '30 days');
+  ASSERT r->>'result' = 'resent', format('gap-fill invite: %s', r);
+  PERFORM pg_temp.sign_in('cl-link-g', 'cl-sess-g');
+  v_up := (public.begin_intake_upload('cl-sess-g', 'cl-link-g', 'cv', 'cv', 'cv.pdf', 100, 'application/pdf', NULL)
+           ->>'upload_id')::uuid;
+  ASSERT public.finish_intake_upload('cl-sess-g', 'cl-link-g', v_up, 100)->>'result' = 'finalized', 'CV finished';
+  v_vault := pg_temp.vault(v_up);
+  v_orphans := v_orphans
+    || pg_temp.object('provider-intake-uploads', pg_temp.held(v_up), v_old)
+    || pg_temp.object('provider-documents', v_vault, v_old);
+  v_up := (public.begin_intake_upload('cl-sess-g', 'cl-link-g', 'coi', 'coi', 'coi.pdf', 100, 'application/pdf', NULL)
+           ->>'upload_id')::uuid;
+  v_orphans := v_orphans || pg_temp.object('provider-intake-uploads', pg_temp.held(v_up), v_old);
+  r := public.cancel_provider_onboarding(v_org, v_staff, 'Staff', v_gap);
+  ASSERT r->>'result' = 'closed', format('gap-fill cancel: %s', r);
+
+  -- Cancel deletes a record the invite created. Deleted: a copy left under
+  -- her vault folder. Kept: a path there the cleanup job would refuse.
+  r := public.create_provider_intake_invite(v_org, v_staff, 'Smoke', jsonb_build_object(
+    'first_name', 'Nia', 'last_name', 'New', 'email', 'nia.cleanup@example.test', 'group_id', v_group),
+    'cl-link-n', now() + interval '30 days');
+  v_gone := (r->>'provider_id')::uuid;
+  v_gone_copy := format('org/%s/provider/%s/%s/1/cv.pdf', v_org, v_gone, gen_random_uuid());
+  v_orphans := v_orphans || pg_temp.object('provider-documents', v_gone_copy, v_old);
+  PERFORM pg_temp.object('provider-documents', format('org/%s/provider/%s/not-a-family/cv.pdf', v_org, v_gone), v_old);
+  r := public.cancel_provider_onboarding(v_org, v_staff, 'Staff', v_gone);
+  ASSERT r->>'result' = 'deleted', format('new hire cancel: %s', r);
+
+  r := public.onboarding_orphan_files(v_cutoff, 1000);
+  ASSERT r @> jsonb_build_array(jsonb_build_object('bucket', 'provider-documents', 'path', v_vault)),
+    'the sweep names the vault copy of a journey Cancel closed';
+  ASSERT r @> jsonb_build_array(jsonb_build_object('bucket', 'provider-documents', 'path', v_gone_copy)),
+    'the sweep names a copy under a record Cancel deleted';
 
   r := pg_temp.mine(public.onboarding_orphan_files(v_cutoff, 1000), v_org);
   ASSERT pg_temp.sorted(r) = pg_temp.sorted(v_orphans),
@@ -193,6 +244,11 @@ BEGIN
   END;
   RESET ROLE;
   ASSERT v_state = 'refused', 'authenticated cannot list orphans';
+
+  -- The gone-provider rule holds only while Cancel is the only delete of a provider.
+  ASSERT NOT EXISTS (SELECT 1 FROM pg_policies
+                      WHERE schemaname = 'public' AND tablename = 'providers' AND cmd IN ('DELETE', 'ALL')),
+    'no policy lets a client delete a provider';
 
   RAISE NOTICE 'provider onboarding cleanup smoke: all checks passed';
 END;

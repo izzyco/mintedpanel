@@ -1,5 +1,5 @@
-// Sample data for the /dev/provider-onboarding preview (r1-ui-spec decision
-// 18) and the onboarding derivation tests.
+// Sample data for the /dev/provider-onboarding preview and the onboarding
+// derivation tests.
 // Synthetic canvas names only, no real PHI. Every count a screen shows is
 // computed from these rows, never typed in separately.
 import type {
@@ -10,7 +10,7 @@ import type {
   VerificationCheck,
 } from "@/types/providerOnboarding";
 import { deriveStage } from "@/lib/providerOnboarding";
-import type { IntakeAnswers, IntakeState } from "@/lib/intakeAnswers";
+import { NO_INTAKE_ANSWERS, type IntakeState } from "@/lib/intakeAnswers";
 export { CONSENT } from "@/lib/intakeConsent";
 
 export const PRACTICE = {
@@ -163,26 +163,11 @@ export function reviewDraft(email: string): IntakeDraft {
   };
 }
 
-const NO_ANSWERS: IntakeAnswers = {
-  firstName: null,
-  lastName: null,
-  npi: null,
-  taxonomyCode: null,
-  dateOfBirth: null,
-  caqhId: null,
-  mobile: null,
-  homeStreet: null,
-  homeCity: null,
-  homeState: null,
-  homeZip: null,
-  licenses: [],
-};
-
 function intakeState(email: string, patch: Partial<IntakeState>): IntakeState {
   return {
     practiceName: PRACTICE.name,
     email,
-    record: NO_ANSWERS,
+    record: NO_INTAKE_ANSWERS,
     lockedFields: [],
     ssnLast4: null,
     loginsOnFile: { caqh: false, pecos: false },
@@ -198,13 +183,15 @@ function intakeState(email: string, patch: Partial<IntakeState>): IntakeState {
 // start: Anita's record holds only her invited name; Priya's is a full record
 // whose SSN, NPI and date of birth lock.
 export function newHireState(email: string): IntakeState {
-  return intakeState(email, { record: { ...NO_ANSWERS, firstName: "Anita", lastName: "Rao" } });
+  return intakeState(email, {
+    record: { ...NO_INTAKE_ANSWERS, firstName: "Anita", lastName: "Rao" },
+  });
 }
 
 export function reviewState(email: string): IntakeState {
   return intakeState(email, {
     record: {
-      ...NO_ANSWERS,
+      ...NO_INTAKE_ANSWERS,
       firstName: "Priya",
       lastName: "Shah",
       npi: "1730195835",
@@ -261,9 +248,9 @@ const auto = (key: string, label: string): VerificationCheck => ({
   key,
   label,
   status: "confirmed",
+  detail: null,
   method: "auto",
-  confirmedBy: null,
-  action: null,
+  section: null,
 });
 
 // Lena's Verification block (board 6b): ten automatic checks, three for a person.
@@ -272,29 +259,38 @@ export const VERIFICATION_CHECKS: VerificationCheck[] = [
     key: "caqh_login",
     label: "CAQH login",
     status: "pending",
+    detail: null,
     method: "person",
+    portal: { key: "caqh", name: "CAQH" },
     confirmedBy: null,
+    checkedAt: null,
     action: "test_login",
   },
   {
     key: "pecos_login",
     label: "PECOS login",
     status: "pending",
+    detail: null,
     method: "person",
+    portal: { key: "pecos", name: "PECOS" },
     confirmedBy: null,
+    checkedAt: null,
     action: "test_login",
   },
   {
-    key: "license_nc",
-    label: "NC PTA license",
+    key: "caqh_attestation",
+    label: "CAQH attested within 120 days",
     status: "pending",
+    detail: null,
     method: "person",
+    portal: null,
     confirmedBy: null,
+    checkedAt: null,
     action: "confirm",
   },
   auto("npi", "NPI"),
   auto("caqh_id", "CAQH ID"),
-  auto("caqh_attested", "CAQH attested within 120 days"),
+  auto("license_nc", "NC license verified"),
   auto("license_per_state", "License per target state · NC"),
   auto("dob_ssn", "Date of birth and SSN on file"),
   auto("logins_on_file", "CAQH and PECOS logins on file"),

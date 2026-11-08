@@ -367,7 +367,7 @@ export function checkDocumentFile(file: {
 
 export type StoredObjectProblem = "missing" | "size_limit" | "size_mismatch" | "type_mismatch";
 
-/** The finalize check on an object Storage listed (TE-4): it exists, its
+/** The finalize check on an object Storage listed: it exists, its
  * size is inside the cap, and it has the declared type. With `sizeBytes`
  * its size must also be exactly that. Other metadata Storage leaves out is
  * not held against the object. */

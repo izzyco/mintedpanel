@@ -5,8 +5,8 @@ Admit. Built from the code as of migration `20261107040000`. Every row here
 is built. CLAUDE.md lists the routes and RPCs in brief (The routes › Provider
 onboarding, and Key RPCs). SCHEMA.md describes the tables (Provider
 onboarding). `r1-operator-steps.md` holds the apply steps.
-`local-verification.md` walks the flow on a local stack and shows each datum
-landing with a SQL query.
+`local-verification.md` walks the flow on a local stack and points back at
+the rows here.
 
 ## The journey
 
@@ -127,7 +127,7 @@ shows the login for a minute and then records whether it worked.
 ## Documents
 
 Each file uploads as she picks it, into the private `provider-intake-uploads`
-bucket (service role only, 25 MiB, PDF, PNG or JPEG), and waits there with a
+bucket (service role only, 10 MiB, PDF, PNG or JPEG), and waits there with a
 `provider_intake_uploads` row until Submit copies it into the vault (D8). The
 vault has no delete; the holding area does, so she can take a file back until
 she submits.
@@ -178,24 +178,27 @@ identifiers only and the cleanup job finishes it. The
 the jobs runner's cron bearer, a daily Vercel cron at 18:30 UTC) deletes the
 files no step reads again, through Storage. `onboarding_orphan_files` names
 them, oldest first, 500 a run, only when older than 3 hours (a signed upload
-URL lives 2):
+URL lives 2). It names three kinds of file:
 
-- in `provider-intake-uploads`, a file under
-  `org/<org>/onboarding/<journey>/<upload id>/` whose upload row is missing or
-  removed, or whose journey is submitted, admitted, cancelled or gone. This
-  covers a signed URL used after Remove or Cancel, a failed delete, and an
-  abandoned upload once her journey ends;
-- in `provider-documents`, a file under
-  `org/<org>/provider/<provider>/<upload id>/` where the upload belongs to
-  that org's and provider's journey, the journey is submitted, admitted or
-  cancelled, and no `provider_documents` row has the upload's id.
+1. In `provider-intake-uploads`, a file under
+   `org/<org>/onboarding/<journey>/<upload id>/` whose upload row is missing
+   or removed, or whose journey is submitted, admitted, cancelled or gone.
+   This covers a signed URL used after Remove or Cancel, a failed delete, and
+   an abandoned upload once her journey ends.
+2. In `provider-documents`, a file under
+   `org/<org>/provider/<provider>/<upload id>/` where the upload belongs to
+   that org's and provider's journey, the journey is submitted, admitted or
+   cancelled, and no `provider_documents` row has the upload's id. This
+   covers a vault copy whose delete failed after a refused Submit or a Cancel
+   that closed the journey, because the upload rows stay.
+3. In `provider-documents`, a file under
+   `org/<org>/provider/<provider>/<family>/` whose provider no `providers` row
+   has. Cancel is the only path that deletes a provider, so this covers a
+   vault copy whose delete failed after a Cancel that deleted the record.
 
-No other vault path is ever named, and the job refuses a list that names
-one before it deletes anything. It reports counts only (`files_found`,
-`holding_removed`, `vault_removed`, `remove_failed`). A Cancel deletes her
-upload rows (or her whole record), so a vault copy whose Cancel delete
-failed is not found by the second rule; only a failed delete of the holding
-files is.
+The function names no other vault path. The job refuses a list with a path
+outside its two accepted shapes before it deletes anything. It reports counts
+only (`files_found`, `holding_removed`, `vault_removed`, `remove_failed`).
 
 | Datum                                                                   | Who provides it | Prefilled from              | Where it lands on Submit                                                                     | Locked rule | Outside API at create | Stored where now                                                                                                         |
 | ----------------------------------------------------------------------- | --------------- | --------------------------- | -------------------------------------------------------------------------------------------- | ----------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -318,11 +321,12 @@ and revokes every invite of hers and every session they opened. Then:
   time (never the typed name). Earlier audit rows stay.
 - **Closed** (`outcome: "closed"`): anything else, such as an existing
   provider invited to fill gaps, or a record that now has a case. The
-  journey gets `cancelled_at` and `cancelled_by`. Her draft and upload rows
-  are deleted, and so are the logins this journey wrote (`onboarding_id`).
-  The SSN she stored goes too (the vault row and `ssn_last4`), unless it was
-  locked or staff saved one after hers. Her consent rows stay. One UPDATE
-  audit row on the journey with `logins_removed` and `ssn_removed`.
+  journey gets `cancelled_at` and `cancelled_by`. Her draft is deleted, and
+  so are the logins this journey wrote (`onboarding_id`). Her upload rows
+  stay, marked removed, file names included. The SSN she stored goes too
+  (the vault row and `ssn_last4`), unless it was locked or staff saved one
+  after hers. Her consent rows stay. One UPDATE audit row on the journey with
+  `logins_removed` and `ssn_removed`.
 
 After the commit the route deletes every object under the prefixes the RPC
 names: `org/<org>/onboarding/<journey>/` in `provider-intake-uploads`, and in
@@ -330,8 +334,11 @@ names: `org/<org>/onboarding/<journey>/` in `provider-intake-uploads`, and in
 each held upload's `org/<org>/provider/<provider>/<upload id>/` (closed),
 which only a Submit refused after its copies can have filled. A Storage
 failure is logged with identifiers only and still answers 200. The cleanup
-job later deletes the holding files. It can't find the vault prefixes,
-because Cancel deleted their upload rows. A later invite of the same person
+job later deletes what a failed delete left, on both paths: the holding
+files, and the vault copies. After a close it finds a vault copy through its
+upload row, kept for that. After a delete it names any file under
+`org/<org>/provider/<provider>/<family>/` whose provider no record has; Cancel
+is the only path that deletes a provider. A later invite of the same person
 starts a new journey: a new record after a delete, a resend on the kept
 record after a close.
 

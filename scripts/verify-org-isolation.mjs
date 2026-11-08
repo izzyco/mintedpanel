@@ -63,6 +63,13 @@
 //   SOUTHPARK_GROUP_ID     A South Park provider_groups id for 35b (cross-org
 //                          invite must 404). 35-35c SKIP while the invite routes
 //                          are off; 35d and 35e run against the local mock only.
+//                          35i/35j (cancel) take SOUTHPARK_PROVIDER_ID. Unless
+//                          that provider has an open, unsubmitted onboarding on
+//                          the target, cancel answers not_found for her from
+//                          any org, so 35j proves only "no 200". The route's
+//                          org scoping is pinned by the cancel tests in
+//                          src/server/providerInviteRoutes.test.ts, and the
+//                          RPC's by scripts/sql/provider-onboarding-cancel-smoke.sql.
 //   KANSAS_INTAKE_TOKEN + SOUTHPARK_INTAKE_TOKEN
 //                          Intake link tokens for 35d (a Kansas session reads
 //                          and saves under its own link) and 35e-35h (the same
@@ -1926,7 +1933,9 @@ function looksLikeVercelGate(r) {
   // without a side effect: a GET on the route is a 405 only once the route is
   // deployed, so 35j's 404 can't pass against a dead route. 35j: Kansas
   // cancelling a South Park provider misses before any write, and South Park
-  // still reads its provider afterwards.
+  // still reads its provider afterwards. When that provider has no open
+  // journey on the target, cancel answers not_found from any org, so 35j
+  // proves only "no 200" (see the header).
   const cancelPath = `/api/provider-invites/${env.SOUTHPARK_PROVIDER_ID}/cancel`;
   const cancelProbe = await apiGet(cancelPath, { token: kansasTok });
   if (cancelProbe.status === 404) {

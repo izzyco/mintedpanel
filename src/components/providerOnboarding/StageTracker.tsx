@@ -1,5 +1,5 @@
 // The five-step onboarding tracker, one component for the practice's New hires
-// rows (board 0) and the staff Onboarding card (board 6b).
+// rows and the staff Onboarding card.
 import { cn } from "@/lib/utils";
 import type { OnboardingStage, WaitingOn } from "@/types/providerOnboarding";
 import { STAGE_STEPS, WAITING_ON_RING } from "./hireCopy";

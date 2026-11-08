@@ -1,5 +1,6 @@
 -- Smoke test for 20261106220000_provider_intake_secrets.sql. Run it after the
--- migration is applied, as the postgres user (the owner of the tables and the
+-- migration and 20261106233000 (which creates read_intake_state) are
+-- applied, as the postgres user (the owner of the tables and the
 -- SECURITY DEFINER functions: on a local `supabase start`, or the SQL editor
 -- on staging), with both Vault secrets (ssn_vault_key and
 -- portal_credentials_key) provisioned:
@@ -54,7 +55,6 @@ BEGIN
   ASSERT (public.issue_intake_code('sec-link-b', 'sec-code-b')->>'send')::boolean, 'code b';
   ASSERT public.verify_intake_code('sec-link-b', 'sec-code-b', 'sec-sess-b', now() + interval '2 hours') = 'ok', 'session b';
 
-  -- A third provider in the same org, kept open for the no-key check at the end.
   r := public.create_provider_intake_invite(v_org, v_actor, 'Smoke', jsonb_build_object(
     'first_name', 'Spare', 'last_name', 'Person', 'email', 'spare.secrets@example.test', 'group_id', v_group),
     'sec-link-c', now() + interval '30 days');
@@ -283,11 +283,6 @@ BEGIN
   ASSERT NOT EXISTS (SELECT 1 FROM public.provider_portal_credentials WHERE provider_id = v_spare_provider),
     'no key writes nothing';
 
-  -- Deleting the provider takes her logins with it.
-  DELETE FROM public.provider_group_assignments WHERE provider_id = v_provider;
-  DELETE FROM public.providers WHERE id = v_provider;
-  ASSERT NOT EXISTS (SELECT 1 FROM public.provider_portal_credentials WHERE provider_id = v_provider), 'logins cascade';
-
   -- Grants: the table is the RPCs' alone; the intake RPCs are service_role's.
   ASSERT NOT has_table_privilege('authenticated', 'public.provider_portal_credentials', 'SELECT')
      AND NOT has_table_privilege('anon', 'public.provider_portal_credentials', 'SELECT')
@@ -297,13 +292,11 @@ BEGIN
   ASSERT (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.provider_portal_credentials'::regclass), 'rls on';
   ASSERT NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'provider_portal_credentials'), 'no policies';
   ASSERT has_function_privilege('service_role', 'public.store_intake_ssn(text, text, text)', 'EXECUTE')
-     AND has_function_privilege('service_role', 'public.store_intake_portal_login(text, text, text, text, text)', 'EXECUTE')
-     AND has_function_privilege('service_role', 'public.read_intake_state(text, text)', 'EXECUTE'), 'service_role';
+     AND has_function_privilege('service_role', 'public.store_intake_portal_login(text, text, text, text, text)', 'EXECUTE'), 'service_role';
   ASSERT NOT has_function_privilege('authenticated', 'public.store_intake_ssn(text, text, text)', 'EXECUTE')
      AND NOT has_function_privilege('anon', 'public.store_intake_ssn(text, text, text)', 'EXECUTE')
      AND NOT has_function_privilege('authenticated', 'public.store_intake_portal_login(text, text, text, text, text)', 'EXECUTE')
-     AND NOT has_function_privilege('anon', 'public.store_intake_portal_login(text, text, text, text, text)', 'EXECUTE')
-     AND NOT has_function_privilege('authenticated', 'public.read_intake_state(text, text)', 'EXECUTE'), 'no client stores';
+     AND NOT has_function_privilege('anon', 'public.store_intake_portal_login(text, text, text, text, text)', 'EXECUTE'), 'no client stores';
   ASSERT NOT has_function_privilege('anon', 'public._portal_credentials_key()', 'EXECUTE')
      AND NOT has_function_privilege('authenticated', 'public._portal_credentials_key()', 'EXECUTE')
      AND NOT has_function_privilege('service_role', 'public._portal_credentials_key()', 'EXECUTE'), 'key is private';

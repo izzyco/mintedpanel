@@ -10,13 +10,11 @@ or code. Agents never do them. The step 1 checks are read-only, and an agent
 you direct through the Supabase MCP can run them for you. Step 6 needs a real
 inbox, so you walk it yourself.
 
-`data-map.md` says what each datum is and where it lands. CLAUDE.md
-(Database, repo-only migrations) lists the migrations and their verify
-queries.
+`data-map.md` says what each datum is and where it lands.
 
 ## Order matters
 
-Apply the ten migrations on a database **before** the code that calls them
+Apply the nine migrations on a database **before** the code that calls them
 runs against it. Every invite route calls `intake_paused()` and every intake
 route `intake_link_paused()` before it writes, so code deployed ahead of the
 migrations answers 500 on all of them. The rest of the app keeps working without the migrations. It reads no
@@ -72,7 +70,7 @@ CAQH and PECOS passwords are encrypted under their own key, never the SSN key
 4. Never reuse the SSN key's value. The secrets smoke in step 3 fails if the
    two keys match.
 
-### 3. Apply the ten migrations, in order (PM only)
+### 3. Apply the nine migrations, in order (PM only)
 
 For each file, in this order:
 
@@ -81,13 +79,13 @@ For each file, in this order:
 2. Run its verify queries and compare each result with its comment.
 3. Go on only when they pass.
 
-Then, once all ten are applied, run each file's smoke from `scripts/sql/`, in
+Then, once all nine are applied, run each file's smoke from `scripts/sql/`, in
 the order below, as the `postgres` user. Paste the file into the SQL editor,
 or use `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/<smoke>.sql`.
 Each smoke is one transaction that ends in `ROLLBACK`, so it leaves no rows.
-Any failed check raises and stops it. The smokes wait for the tenth file
-because it changes what the secrets, cancel and staff smokes check, so those
-three fail before it is applied.
+Any failed check raises and stops it. The drafts, secrets and uploads smokes
+call `read_intake_state`, which `20261106233000_provider_intake_submit.sql`
+creates, so those three fail before it is applied.
 
 An MCP apply records its own ledger version, not the filename. Verify the
 objects, not the ledger.
@@ -102,8 +100,8 @@ SELECT count(*) FROM information_schema.columns
  WHERE table_name IN ('provider_intake_invites', 'provider_intake_codes')
    AND column_name IN ('onboarding_id', 'delivery');                         -- 3
 SELECT count(*) FROM pg_proc WHERE proname IN ('intake_paused',
-  'record_intake_email_delivery', '_match_onboarding_provider',
-  'revoke_intake_on_provider_change');                                      -- 4
+  'intake_link_paused', 'record_intake_email_delivery',
+  '_match_onboarding_provider', 'revoke_intake_on_provider_change');        -- 5
 SELECT tgname FROM pg_trigger
  WHERE tgrelid = 'public.providers'::regclass
    AND tgname = 'revoke_intake_on_provider_change';                         -- 1 row
@@ -116,7 +114,7 @@ SELECT tgname FROM pg_trigger
 SELECT to_regclass('public.provider_intake_drafts'),
        to_regclass('public.provider_intake_consents');                       -- both not null
 SELECT count(*) FROM pg_proc WHERE proname IN ('_intake_session_context',
-  'read_intake_state', 'save_intake_draft', 'sign_intake_consent');          -- 4
+  'save_intake_draft', 'sign_intake_consent');                              -- 3
 ```
 
 **`20261106220000_provider_intake_secrets.sql`**, then
@@ -127,6 +125,8 @@ SELECT to_regclass('public.provider_portal_credentials');                   -- n
 SELECT count(*) FROM pg_proc WHERE proname IN ('_portal_credentials_key',
   'store_intake_ssn', 'store_intake_portal_login',
   'reveal_portal_credential');                                              -- 4
+SELECT prosrc LIKE '%user_name%' FROM pg_proc
+ WHERE proname = 'reveal_portal_credential';                                -- true
 ```
 
 **`20261106230000_provider_intake_uploads.sql`**, then
@@ -135,7 +135,7 @@ SELECT count(*) FROM pg_proc WHERE proname IN ('_portal_credentials_key',
 ```sql
 SELECT to_regclass('public.provider_intake_uploads');                       -- not null
 SELECT id, public, file_size_limit FROM storage.buckets
- WHERE id = 'provider-intake-uploads';                                      -- f, 26214400
+ WHERE id = 'provider-intake-uploads';                                      -- f, 10485760
 SELECT count(*) FROM pg_proc WHERE proname IN ('begin_intake_upload',
   'read_intake_upload', 'finish_intake_upload', 'remove_intake_upload',
   'set_intake_upload_expiry');                                              -- 5
@@ -145,8 +145,8 @@ SELECT count(*) FROM pg_proc WHERE proname IN ('begin_intake_upload',
 `provider-intake-submit-smoke.sql`.
 
 ```sql
-SELECT count(*) FROM pg_proc WHERE proname IN ('submit_provider_intake',
-  'request_intake_help');                                                   -- 2
+SELECT count(*) FROM pg_proc WHERE proname IN ('read_intake_state',
+  'submit_provider_intake', 'request_intake_help');                         -- 3
 SELECT pg_get_functiondef('public.read_intake_state(text, text)'::regprocedure)
   LIKE '%held_object_paths%';                                               -- t
 ```
@@ -156,6 +156,8 @@ SELECT pg_get_functiondef('public.read_intake_state(text, text)'::regprocedure)
 
 ```sql
 SELECT count(*) FROM pg_proc WHERE proname = 'cancel_provider_onboarding';  -- 1
+SELECT prosrc LIKE '%consents%' FROM pg_proc
+ WHERE proname = 'cancel_provider_onboarding';                              -- true
 ```
 
 **`20261107010000_provider_onboarding_staff.sql`**, then
@@ -169,13 +171,14 @@ SELECT count(*) FROM information_schema.columns
 SELECT count(*) FROM pg_proc WHERE proname IN ('record_onboarding_check',
   'mark_onboarding_contacted', 'admit_provider_onboarding',
   'read_provider_onboarding', '_onboarding_for_writer');                    -- 5
+SELECT prosrc NOT LIKE '%onboarding_not_found%' FROM pg_proc
+ WHERE proname = 'read_provider_onboarding';                                -- true
 SELECT position('first_signed_in_at' IN prosrc) > 0
   FROM pg_proc WHERE proname = 'verify_intake_code';                        -- true
 ```
 
 **`20261107020000_cases_wait_for_onboarding_admit.sql`**, then
-`provider-onboarding-generation-smoke.sql`. This smoke needs both Vault
-secrets.
+`provider-onboarding-generation-smoke.sql`.
 
 ```sql
 SELECT tgname FROM pg_trigger
@@ -183,28 +186,12 @@ SELECT tgname FROM pg_trigger
    AND tgname = 'block_case_until_onboarding_admitted';                     -- 1 row
 ```
 
-**`20261107030000_read_provider_onboarding_missing_is_null.sql`**, then
-`provider-onboarding-staff-smoke.sql` again. This smoke needs both Vault
-secrets.
+**`20261107040000_onboarding_orphan_files.sql`**, then
+`provider-onboarding-cleanup-smoke.sql`. It adds the list the onboarding file
+cleanup job deletes from.
 
 ```sql
-SELECT prosrc NOT LIKE '%onboarding_not_found%' FROM pg_proc
- WHERE proname = 'read_provider_onboarding';                                -- true
-```
-
-**`20261107040000_onboarding_review_fixes.sql`**, then
-`provider-onboarding-cleanup-smoke.sql`. It pauses an offboarded org's intake
-links, keeps the consent evidence on a Cancel that deletes the record, names
-the admin on a login reveal, and adds the list the onboarding file cleanup
-job deletes from.
-
-```sql
-SELECT count(*) FROM pg_proc WHERE proname IN ('intake_link_paused',
-  'onboarding_orphan_files');                                               -- 2
-SELECT prosrc LIKE '%consents%' FROM pg_proc
- WHERE proname = 'cancel_provider_onboarding';                              -- true
-SELECT prosrc LIKE '%user_name%' FROM pg_proc
- WHERE proname = 'reveal_portal_credential';                                -- true
+SELECT count(*) FROM pg_proc WHERE proname = 'onboarding_orphan_files';     -- 1
 ```
 
 After the last file, confirm that every new tenant table is under the
@@ -281,13 +268,28 @@ last four are not `0000`.
     `intake_paused`, and the page shows **This form is paused for now**. Set
     `paused` back to `false`.
 
+### 7. Capture the Storage error for a copy onto an existing object (engineering, once)
+
+Submit copies each held file into the vault and counts a copy that is already
+there as done (`isAlreadyThere` in `src/server/providerIntakeRoutes.ts`). It
+accepts every shape `data-map.md` › Documents lists, because only local
+Storage's answer has been seen.
+
+1. On staging, with the service-role key, copy any object onto a
+   `provider-documents` path that already holds one, the way Submit does
+   (`storage.from(bucket).copy(from, to, { destinationBucket: "provider-documents" })`).
+   Use a path from the step 6 walk.
+2. Record the error's `statusCode`, `status`, `error` and `message`. Record no
+   path, because a path names her journey.
+3. Narrow `isAlreadyThere` to that shape, with a route test for it.
+
 ## Production, later
 
 Production waits until the PM signs off the decisions R1 rests on. They are
 still pending in the PM decisions doc, and `data-map.md` lists them. Then:
 
 1. **PM only.** Apply slice 1 (`20261025120000`), Mission Control M1 and M3,
-   and the ten R1 files on production (`fkvuhfsqcmujywzgczmc`), in that
+   and the nine R1 files on production (`fkvuhfsqcmujywzgczmc`), in that
    order. None of them is verified on production yet. Run the step 1
    prerequisite checks and each file's verify queries there.
 2. The smokes are written for a local stack and staging. They insert

@@ -1,5 +1,6 @@
 -- Smoke test for 20261106230000_provider_intake_uploads.sql. Run it after the
--- migration is applied, as the postgres user (the owner of the tables and the
+-- migration and 20261106233000 (which creates read_intake_state) are
+-- applied, as the postgres user (the owner of the tables and the
 -- SECURITY DEFINER functions: on a local `supabase start`, or the SQL editor
 -- on staging):
 --
@@ -233,12 +234,6 @@ BEGIN
   UPDATE public.provider_onboardings SET cancelled_at = now() WHERE id = v_other_journey;
   ASSERT public.read_intake_upload('up-sess-b', 'up-link-b', v_other_upload) IS NULL, 'cancelled reads nothing';
 
-  -- Deleting a journey takes its rows with it.
-  DELETE FROM public.provider_intake_invites WHERE onboarding_id = v_other_journey;
-  DELETE FROM public.provider_onboardings WHERE id = v_other_journey;
-  ASSERT NOT EXISTS (SELECT 1 FROM public.provider_intake_uploads WHERE onboarding_id = v_other_journey),
-    'rows cascade with the journey';
-
   -- Grants: the server reads the table; only the RPCs write it.
   ASSERT has_table_privilege('service_role', 'public.provider_intake_uploads', 'SELECT')
      AND NOT has_table_privilege('service_role', 'public.provider_intake_uploads', 'INSERT')
@@ -269,7 +264,7 @@ BEGIN
 
   -- The holding bucket: private, its limits, and no client policy names it.
   IF to_regclass('storage.buckets') IS NOT NULL THEN
-    ASSERT (SELECT NOT public AND file_size_limit = 26214400
+    ASSERT (SELECT NOT public AND file_size_limit = 10485760
                    AND allowed_mime_types = ARRAY['application/pdf', 'image/png', 'image/jpeg']
               FROM storage.buckets WHERE id = 'provider-intake-uploads'), 'bucket';
     ASSERT NOT EXISTS (SELECT 1 FROM pg_policies

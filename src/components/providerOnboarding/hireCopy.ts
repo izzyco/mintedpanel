@@ -15,7 +15,6 @@ export function shortGroupName(groupName: string, practiceName: string): string 
   return groupName.startsWith(prefix) ? groupName.slice(prefix.length) : groupName;
 }
 
-// The five tracker steps, shared by board 0 and board 6b.
 export const STAGE_STEPS: { stage: OnboardingStage; label: string }[] = [
   { stage: "invited", label: "Invited" },
   { stage: "started", label: "Started" },

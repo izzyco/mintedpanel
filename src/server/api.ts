@@ -40,6 +40,7 @@ const loadExtensionRoutes = () => import("./extensionRoutes");
 const loadDocumentRoutes = () => import("./documentRoutes");
 const loadPayerFormRoutes = () => import("./payerFormRoutes");
 const loadRosterRoutes = () => import("./rosterRoutes");
+const loadProviderInviteRoutes = () => import("./providerInviteRoutes");
 const loadProviderIntakeRoutes = () => import("./providerIntakeRoutes");
 const loadNpiRegistryRoutes = () => import("./npiRegistryRoutes");
 const loadJobRoutes = () => import("./jobs/route");
@@ -106,7 +107,6 @@ const PAYER_FORM_UPLOAD_INTENT_ROUTE = /^\/api\/payer-forms\/upload-intent\/?$/;
 const PAYER_FORM_FINALIZE_ROUTE = /^\/api\/payer-forms\/finalize\/?$/;
 const PAYER_FORM_DOWNLOAD_ROUTE = /^\/api\/payer-forms\/([^/]+)\/download\/?$/;
 const ROSTER_ROUTE = /^\/api\/rosters(?:\/.*)?\/?$/;
-// Provider onboarding: staff create, resend and cancel provider invites.
 const PROVIDER_INVITES_ROUTE = /^\/api\/provider-invites\/?$/;
 const PROVIDER_INVITE_RESEND_ROUTE = /^\/api\/provider-invites\/([^/]+)\/resend\/?$/;
 const PROVIDER_INVITE_CANCEL_ROUTE = /^\/api\/provider-invites\/([^/]+)\/cancel\/?$/;
@@ -875,17 +875,17 @@ async function routeApiRequest(request: Request): Promise<Response> {
     }
     if (isProviderInvites) {
       if (method !== "POST") return fail(405, "Method not allowed");
-      const routes = await loadProviderIntakeRoutes();
+      const routes = await loadProviderInviteRoutes();
       return await routes.handleCreateProviderInvite(await readBoundedJsonBody(request, 4096), ctx);
     }
     if (providerInviteResendMatch) {
       if (method !== "POST") return fail(405, "Method not allowed");
-      const routes = await loadProviderIntakeRoutes();
+      const routes = await loadProviderInviteRoutes();
       return await routes.handleResendProviderInvite(providerInviteResendMatch[1], ctx);
     }
     if (providerInviteCancelMatch) {
       if (method !== "POST") return fail(405, "Method not allowed");
-      const routes = await loadProviderIntakeRoutes();
+      const routes = await loadProviderInviteRoutes();
       return await routes.handleCancelProviderOnboarding(providerInviteCancelMatch[1], ctx);
     }
     if (npiRegistryMatch) {

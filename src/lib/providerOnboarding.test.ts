@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   INTAKE_MAX_BYTES,
-  canContinue,
   canResend,
   classifyInvite,
   deriveStage,
   deriveWaitingOn,
   documentSlots,
+  helpAwaitsContact,
   intakeSlotRule,
   needsPractice,
   onboardingHeldProviderIds,
-  sectionProgress,
   validateUpload,
   verificationSummary,
 } from "./providerOnboarding";
+import { canContinue, sectionProgress } from "./intakeForm";
 import { HIRES, VERIFICATION_CHECKS, initialDraft } from "@/services/providerOnboardingFixtures";
 import type {
   FieldValue,
@@ -113,7 +113,7 @@ describe("deriveWaitingOn and needsPractice", () => {
     expect(needsPractice([...started, ev("told_not_needed", "15T09:00:00Z")])).toBe(true);
   });
 
-  it("does not ask the practice once she has submitted", () => {
+  it("does not ask the practice once she has submitted, though the request still awaits contact", () => {
     const events = [
       ...started,
       ev("help_requested", "15T09:00:00Z"),
@@ -121,6 +121,8 @@ describe("deriveWaitingOn and needsPractice", () => {
     ];
     expect(needsPractice(events)).toBe(false);
     expect(deriveWaitingOn(events)).toBe("minted");
+    expect(helpAwaitsContact(events)).toBe(true);
+    expect(helpAwaitsContact([...events, ev("practice_contacted", "17T09:00:00Z")])).toBe(false);
   });
 });
 
@@ -261,9 +263,9 @@ describe("verificationSummary", () => {
       key,
       label: key,
       status,
-      method: status === "confirmed" ? "auto" : "person",
-      confirmedBy: null,
-      action: null,
+      detail: null,
+      method: "auto",
+      section: null,
     });
     expect(
       verificationSummary([

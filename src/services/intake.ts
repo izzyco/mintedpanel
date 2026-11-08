@@ -4,6 +4,7 @@
 // cookie the browser sends on same-origin requests; nothing here stores it.
 import type {
   IntakeAnswers,
+  IntakeEnded,
   IntakePortal,
   IntakeState,
   IntakeUpload,
@@ -41,6 +42,15 @@ async function intakeFetch<T>(
 
 function post(body: unknown): RequestInit {
   return { method: "POST", body: JSON.stringify(body) };
+}
+
+// What every journey action answers when it isn't done: no live session for
+// this link (401), or the journey was submitted, admitted or cancelled (409).
+// Anything else throws with the server's code as the message.
+function sessionEnd(status: number, body: Envelope<unknown>): IntakeEnded {
+  if (status === 401) return { kind: "session_ended" };
+  if (status === 409 && body.error === "intake_closed") return { kind: "closed" };
+  throw new Error(body.error ?? `Request failed (${status})`);
 }
 
 export interface IntakeLink {
@@ -92,10 +102,8 @@ export async function saveIntakeDraft(
     post({ t: token, answers, step, version }),
   );
   if (status === 200 && body.data) return { kind: "saved", version: body.data.version };
-  if (status === 401) return { kind: "signed_out" };
   if (status === 409 && body.error === "draft_conflict") return { kind: "conflict" };
-  if (status === 409 && body.error === "intake_closed") return { kind: "closed" };
-  throw new Error(body.error ?? `Request failed (${status})`);
+  return sessionEnd(status, body);
 }
 
 export async function signIntakeConsent(
@@ -106,10 +114,8 @@ export async function signIntakeConsent(
     "consent",
     post({ t: token, typedName, version: CONSENT.version }),
   );
-  if (status === 200 && body.data) return "signed";
-  if (status === 401) return "signed_out";
-  if (status === 409 && body.error === "intake_closed") return "closed";
-  throw new Error(body.error ?? `Request failed (${status})`);
+  if (status === 200 && body.data) return { kind: "signed" };
+  return sessionEnd(status, body);
 }
 
 // The full SSN and a password go into one request body and are not kept here.
@@ -118,10 +124,8 @@ export async function signIntakeConsent(
 export async function saveIntakeSsn(token: string, ssn: string): Promise<SaveSsnResult> {
   const { status, body } = await intakeFetch<{ ssnLast4: string }>("ssn", post({ t: token, ssn }));
   if (status === 200 && body.data) return { kind: "stored", ssnLast4: body.data.ssnLast4 };
-  if (status === 401) return { kind: "signed_out" };
   if (status === 409 && body.error === "field_locked") return { kind: "locked" };
-  if (status === 409 && body.error === "intake_closed") return { kind: "closed" };
-  throw new Error(body.error ?? `Request failed (${status})`);
+  return sessionEnd(status, body);
 }
 
 export async function saveIntakeLogin(
@@ -134,10 +138,8 @@ export async function saveIntakeLogin(
     "login",
     post({ t: token, portal, username, password }),
   );
-  if (status === 200 && body.data) return "stored";
-  if (status === 401) return "signed_out";
-  if (status === 409 && body.error === "intake_closed") return "closed";
-  throw new Error(body.error ?? `Request failed (${status})`);
+  if (status === 200 && body.data) return { kind: "stored" };
+  return sessionEnd(status, body);
 }
 
 // A document goes in three steps: the server records it and signs an upload
@@ -148,7 +150,6 @@ export async function uploadIntakeDocument(
   token: string,
   slot: { key: string; kind: string },
   file: File,
-  expiresOn: string | null = null,
 ): Promise<UploadDocumentResult> {
   const intent = await intakeFetch<{ uploadId: string; uploadUrl: string }>(
     "upload-intent",
@@ -159,12 +160,12 @@ export async function uploadIntakeDocument(
       fileName: file.name,
       sizeBytes: file.size,
       contentType: file.type,
-      expiresOn,
+      expiresOn: null,
     }),
   );
-  if (intent.status === 401) return { kind: "signed_out" };
-  if (intent.status === 409 && intent.body.error === "intake_closed") return { kind: "closed" };
-  if (!intent.body.data) throw new Error(intent.body.error ?? `Request failed (${intent.status})`);
+  if (intent.status !== 200 || !intent.body.data) {
+    return sessionEnd(intent.status, intent.body);
+  }
 
   const put = await fetch(intent.body.data.uploadUrl, {
     method: "PUT",
@@ -178,9 +179,7 @@ export async function uploadIntakeDocument(
     post({ t: token, uploadId: intent.body.data.uploadId }),
   );
   if (status === 200 && body.data) return { kind: "uploaded", upload: body.data.upload };
-  if (status === 401) return { kind: "signed_out" };
-  if (status === 409 && body.error === "intake_closed") return { kind: "closed" };
-  throw new Error(body.error ?? `Request failed (${status})`);
+  return sessionEnd(status, body);
 }
 
 export async function removeIntakeDocument(
@@ -191,10 +190,8 @@ export async function removeIntakeDocument(
     "upload-remove",
     post({ t: token, uploadId }),
   );
-  if ((status === 200 && body.data) || status === 404) return "removed";
-  if (status === 401) return "signed_out";
-  if (status === 409 && body.error === "intake_closed") return "closed";
-  throw new Error(body.error ?? `Request failed (${status})`);
+  if ((status === 200 && body.data) || status === 404) return { kind: "removed" };
+  return sessionEnd(status, body);
 }
 
 export async function setIntakeDocumentExpiry(
@@ -206,10 +203,8 @@ export async function setIntakeDocumentExpiry(
     "upload-expiry",
     post({ t: token, uploadId, expiresOn }),
   );
-  if (status === 200 && body.data) return "saved";
-  if (status === 401) return "signed_out";
-  if (status === 409 && body.error === "intake_closed") return "closed";
-  throw new Error(body.error ?? `Request failed (${status})`);
+  if (status === 200 && body.data) return { kind: "saved" };
+  return sessionEnd(status, body);
 }
 
 /** `version` is the draft version her page last saved. Throws on any other
@@ -220,14 +215,12 @@ export async function submitIntake(token: string, version: number): Promise<Subm
     post({ t: token, version }),
   );
   if (status === 200 && body.data) return { kind: "submitted" };
-  if (status === 401) return { kind: "signed_out" };
   if (status === 422 && body.error === "intake_incomplete") {
     return { kind: "incomplete", missing: body.meta?.missing ?? [] };
   }
   if (status === 409 && body.error === "npi_in_use") return { kind: "npi_in_use" };
   if (status === 409 && body.error === "draft_conflict") return { kind: "conflict" };
-  if (status === 409 && body.error === "intake_closed") return { kind: "closed" };
-  throw new Error(body.error ?? `Request failed (${status})`);
+  return sessionEnd(status, body);
 }
 
 export async function requestIntakeHelp(
@@ -235,10 +228,8 @@ export async function requestIntakeHelp(
   reason: HelpReason,
 ): Promise<RequestHelpResult> {
   const { status, body } = await intakeFetch<{ sent: boolean }>("help", post({ t: token, reason }));
-  if (status === 200 && body.data) return "sent";
-  if (status === 401) return "signed_out";
-  if (status === 409 && body.error === "intake_closed") return "closed";
-  throw new Error(body.error ?? `Request failed (${status})`);
+  if (status === 200 && body.data) return { kind: "sent" };
+  return sessionEnd(status, body);
 }
 
 export async function signOutIntake(): Promise<void> {

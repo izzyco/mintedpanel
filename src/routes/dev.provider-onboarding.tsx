@@ -7,13 +7,18 @@
 // vaults it keeps an SSN only as its last 4 and a login only as on file. A
 // file is kept as its name and size, never its contents; nothing is sent.
 import { createFileRoute, notFound } from "@tanstack/react-router";
-import { useRef, useState } from "react";
-import { IntakeFlow, type IntakeGateway } from "@/components/intake/IntakeFlow";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { IntakeFlow } from "@/components/intake/IntakeFlow";
 import { InvalidLink, TryAgain } from "@/components/intake/IntakeScreens";
 import { NewHiresPreview } from "@/components/providerOnboarding/NewHiresPreview";
 import { Button } from "@/components/ui/button";
 import { CONSENT } from "@/lib/intakeConsent";
-import { intakeSubmission, parseIntakeAnswers, type IntakeState } from "@/lib/intakeAnswers";
+import {
+  intakeSubmission,
+  parseIntakeAnswers,
+  type IntakeGateway,
+  type IntakeState,
+} from "@/lib/intakeAnswers";
 import { safeFileName } from "@/lib/documents";
 import { PRACTICE, newHireState, reviewState } from "@/services/providerOnboardingFixtures";
 
@@ -103,113 +108,120 @@ function ProviderOnboardingPreview() {
   );
 }
 
+function savedVersion(state: IntakeState): number {
+  return state.draft?.version ?? 0;
+}
+
 function ProviderRun({ scenario }: { scenario: "new_hire" | "review" }) {
   const { email, state } = SCENARIOS[scenario];
-  // The fake server: her journey's state and whether her session is live.
+  // The fake server: her journey's state and whether her session is live. The
+  // gateway reads `live` here; the state copy re-renders the buttons below.
   const server = useRef<{ state: IntakeState; live: boolean }>({
     state: state(email),
     live: false,
   });
   const [live, setLive] = useState(false);
-  const signedIn = (on: boolean) => {
+  const signedIn = useCallback((on: boolean) => {
     server.current.live = on;
     setLive(on);
-  };
-  const saved = () => server.current.state.draft?.version ?? 0;
-  const gateway: IntakeGateway = {
-    practiceName: PRACTICE.name,
-    email,
-    requestCode: () => new Promise((resolve) => setTimeout(resolve, 300)),
-    checkCode: async (code) => {
-      if (code !== PREVIEW_CODE) return "wrong";
-      signedIn(true);
-      return "ok";
-    },
-    signOut: async () => signedIn(false),
-    loadState: async () => (server.current.live ? structuredClone(server.current.state) : null),
-    saveDraft: async (answers, step, version) => {
-      if (!server.current.live) return { kind: "signed_out" };
-      if (version !== saved()) return { kind: "conflict" };
-      const draft = { answers, step, version: version + 1, updatedAt: new Date().toISOString() };
-      server.current.state = { ...server.current.state, draft };
-      return { kind: "saved", version: draft.version };
-    },
-    signConsent: async () => {
-      if (!server.current.live) return "signed_out";
-      server.current.state = {
-        ...server.current.state,
-        consent: { signed: true, textVersion: CONSENT.version },
-      };
-      return "signed";
-    },
-    saveSsn: async (full) => {
-      if (!server.current.live) return { kind: "signed_out" };
-      if (server.current.state.lockedFields.includes("ssn")) return { kind: "locked" };
-      const ssnLast4 = full.replace(/\D/g, "").slice(-4);
-      server.current.state = { ...server.current.state, ssnLast4 };
-      return { kind: "stored", ssnLast4 };
-    },
-    saveLogin: async (portal) => {
-      if (!server.current.live) return "signed_out";
-      const current = server.current.state;
-      server.current.state = {
-        ...current,
-        loginsOnFile: { ...current.loginsOnFile, [portal]: true },
-      };
-      return "stored";
-    },
-    uploadDocument: async (slot, file, expiresOn) => {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      if (!server.current.live) return { kind: "signed_out" };
-      const upload = {
-        id: crypto.randomUUID(),
-        slotKey: slot.key,
-        kind: slot.kind,
-        fileName: safeFileName(file.name),
-        sizeBytes: file.size,
-        expiresOn: expiresOn ?? null,
-      };
-      const current = server.current.state;
-      server.current.state = {
-        ...current,
-        uploads: [...current.uploads.filter((u) => u.slotKey !== slot.key), upload],
-      };
-      return { kind: "uploaded", upload };
-    },
-    removeDocument: async (uploadId) => {
-      if (!server.current.live) return "signed_out";
-      const current = server.current.state;
-      server.current.state = {
-        ...current,
-        uploads: current.uploads.filter((u) => u.id !== uploadId),
-      };
-      return "removed";
-    },
-    setDocumentExpiry: async (uploadId, expiresOn) => {
-      if (!server.current.live) return "signed_out";
-      const current = server.current.state;
-      server.current.state = {
-        ...current,
-        uploads: current.uploads.map((u) => (u.id === uploadId ? { ...u, expiresOn } : u)),
-      };
-      return "saved";
-    },
-    submit: async (version) => {
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      if (!server.current.live) return { kind: "signed_out" };
-      const current = server.current.state;
-      if (current.submitted) return { kind: "submitted" };
-      if (version !== saved()) return { kind: "conflict" };
-      const { missing } = intakeSubmission(current);
-      if (missing.length > 0) return { kind: "incomplete", missing };
-      server.current.state = { ...current, submitted: true };
-      return { kind: "submitted" };
-    },
-    requestHelp: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      return server.current.live ? "sent" : "signed_out";
-    },
-  };
+  }, []);
+  const gateway = useMemo(
+    (): IntakeGateway => ({
+      practiceName: PRACTICE.name,
+      email,
+      requestCode: () => new Promise((resolve) => setTimeout(resolve, 300)),
+      checkCode: async (code) => {
+        if (code !== PREVIEW_CODE) return "wrong";
+        signedIn(true);
+        return "ok";
+      },
+      signOut: async () => signedIn(false),
+      loadState: async () => (server.current.live ? structuredClone(server.current.state) : null),
+      saveDraft: async (answers, step, version) => {
+        if (!server.current.live) return { kind: "session_ended" };
+        if (version !== savedVersion(server.current.state)) return { kind: "conflict" };
+        const draft = { answers, step, version: version + 1, updatedAt: new Date().toISOString() };
+        server.current.state = { ...server.current.state, draft };
+        return { kind: "saved", version: draft.version };
+      },
+      signConsent: async () => {
+        if (!server.current.live) return { kind: "session_ended" };
+        server.current.state = {
+          ...server.current.state,
+          consent: { signed: true, textVersion: CONSENT.version },
+        };
+        return { kind: "signed" };
+      },
+      saveSsn: async (full) => {
+        if (!server.current.live) return { kind: "session_ended" };
+        if (server.current.state.lockedFields.includes("ssn")) return { kind: "locked" };
+        const ssnLast4 = full.replace(/\D/g, "").slice(-4);
+        server.current.state = { ...server.current.state, ssnLast4 };
+        return { kind: "stored", ssnLast4 };
+      },
+      saveLogin: async (portal) => {
+        if (!server.current.live) return { kind: "session_ended" };
+        const current = server.current.state;
+        server.current.state = {
+          ...current,
+          loginsOnFile: { ...current.loginsOnFile, [portal]: true },
+        };
+        return { kind: "stored" };
+      },
+      uploadDocument: async (slot, file) => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        if (!server.current.live) return { kind: "session_ended" };
+        const upload = {
+          id: crypto.randomUUID(),
+          slotKey: slot.key,
+          kind: slot.kind,
+          fileName: safeFileName(file.name),
+          sizeBytes: file.size,
+          expiresOn: null,
+        };
+        const current = server.current.state;
+        server.current.state = {
+          ...current,
+          uploads: [...current.uploads.filter((u) => u.slotKey !== slot.key), upload],
+        };
+        return { kind: "uploaded", upload };
+      },
+      removeDocument: async (uploadId) => {
+        if (!server.current.live) return { kind: "session_ended" };
+        const current = server.current.state;
+        server.current.state = {
+          ...current,
+          uploads: current.uploads.filter((u) => u.id !== uploadId),
+        };
+        return { kind: "removed" };
+      },
+      setDocumentExpiry: async (uploadId, expiresOn) => {
+        if (!server.current.live) return { kind: "session_ended" };
+        const current = server.current.state;
+        server.current.state = {
+          ...current,
+          uploads: current.uploads.map((u) => (u.id === uploadId ? { ...u, expiresOn } : u)),
+        };
+        return { kind: "saved" };
+      },
+      submit: async (version) => {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (!server.current.live) return { kind: "session_ended" };
+        const current = server.current.state;
+        if (current.submitted) return { kind: "submitted" };
+        if (version !== savedVersion(current)) return { kind: "conflict" };
+        const { missing } = intakeSubmission(current);
+        if (missing.length > 0) return { kind: "incomplete", missing };
+        server.current.state = { ...current, submitted: true };
+        return { kind: "submitted" };
+      },
+      requestHelp: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return server.current.live ? { kind: "sent" } : { kind: "session_ended" };
+      },
+    }),
+    [email, signedIn],
+  );
   // Another window saves a new mobile number first: her next save conflicts
   // and the form reloads.
   const editElsewhere = () => {
@@ -225,7 +237,7 @@ function ProviderRun({ scenario }: { scenario: "new_hire" | "review" }) {
       draft: {
         answers,
         step: current.draft?.step ?? "form",
-        version: saved() + 1,
+        version: savedVersion(current) + 1,
         updatedAt: new Date().toISOString(),
       },
     };

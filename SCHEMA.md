@@ -1259,7 +1259,7 @@ predates this.
 
 ## Provider onboarding (repository-only)
 
-Slice 1 is `20261025120000` (applied on staging). R1 is ten migrations,
+Slice 1 is `20261025120000` (applied on staging). R1 is nine migrations,
 `20261106200000` through `20261107040000`, repo-only until an operator applies
 them in filename order after Mission Control M3
 (`docs/provider-onboarding/r1-operator-steps.md`). Each file's header holds
@@ -1370,8 +1370,8 @@ saves during intake.
 
 ### provider_intake_uploads and the provider-intake-uploads bucket
 
-The bucket `provider-intake-uploads` is private, 25 MiB
-(`file_size_limit` 26214400), PDF, PNG and JPEG only. No `storage.objects`
+The bucket `provider-intake-uploads` is private, 10 MiB
+(`file_size_limit` 10485760), PDF, PNG and JPEG only. No `storage.objects`
 policy names it, so only the service role reaches it.
 
 `id, org_id, onboarding_id, slot_key, doc_type, file_name, size_bytes,
@@ -1389,16 +1389,15 @@ One row per file she sent before Submit.
 - At most one live (not removed) row per `(onboarding_id, slot_key)`. Removed
   rows stay as the trail.
 - service_role SELECT only. Written by `begin_intake_upload`,
-  `finish_intake_upload`, `remove_intake_upload` and
-  `set_intake_upload_expiry`; read by `read_intake_upload` and
+  `finish_intake_upload`, `remove_intake_upload`,
+  `set_intake_upload_expiry` and `cancel_provider_onboarding` (which marks
+  the rows of a closed journey removed); read by `read_intake_upload` and
   `read_intake_state`. No audit row per upload.
 - The rows cascade with the journey, but the objects don't. Whoever deletes a
   journey deletes its prefix first.
-
-Submit copies each finished upload into `provider-documents` at
-`org/<org>/provider/<provider>/<upload id>/1/<file_name>` and inserts its
-`provider_documents` row with the upload id as the document id and the family
-id (version 1), so a retried Submit converges.
+- At Submit, each finished upload's id becomes the id and family id of its
+  `provider_documents` row (version 1). `data-map.md` › Documents has the copy
+  path and how a retried Submit converges.
 
 ### provider_onboarding_checks
 
@@ -1413,12 +1412,12 @@ written only by `record_onboarding_check`.
 ### RPCs and triggers
 
 - **Invite RPCs** are granted to service_role, and the route passes the org
-  and actor. `create_provider_intake_invite` and
-  `resend_provider_intake_invite` both run the match rule
-  `_match_onboarding_provider`. `record_intake_email_delivery` stores a send
+  and actor. `create_provider_intake_invite` runs the match rule
+  `_match_onboarding_provider`. `resend_provider_intake_invite` takes the
+  provider id and runs no match. `record_intake_email_delivery` stores a send
   outcome, and `intake_paused()` reads the off switch.
-  `intake_link_paused(p_token_hash)` adds the link's org: true while that org
-  is not writable, so an offboarded org's link sends no code.
+  `intake_link_paused(p_token_hash)` adds the link's org. It is true while that
+  org is not writable, so an offboarded org's link sends no code.
 - **Sign-in RPCs** are granted to service_role and start from the link hash.
   They are `read_intake_link`, `issue_intake_code`, `verify_intake_code` (it
   also sets `first_signed_in_at` once) and `revoke_intake_session`.
@@ -1439,22 +1438,22 @@ written only by `record_onboarding_check`.
     one transaction. It never writes a locked field, `email` or `status`.
   - `request_intake_help` writes a provider note and `last_help_at`.
 - **`cancel_provider_onboarding(p_org_id, p_actor_id, p_actor_name, p_provider_id)`**
-  is granted to service_role and works before Submit only. It revokes her
-  invites and sessions. Then it deletes a record the invite created with nothing
-  else on it, or closes the journey and removes what it wrote. It returns the
-  Storage prefixes the route deletes. The DELETE audit row of a deleted record
-  keeps each consent's `text_version` and `signed_at`, never the typed name.
+  is granted to service_role. What it deletes, keeps and returns is in
+  `data-map.md` › Cancel.
 - **`onboarding_orphan_files(p_cutoff, p_limit)`** is granted to service_role
   and read by the `onboarding-file-cleanup` job. It reads `storage.objects`
   and names, oldest first, the onboarding files older than the cutoff that no
-  step reads again: holding-bucket files of a removed or missing upload or an
-  ended journey, and vault files under an ended journey's upload folder with
-  no `provider_documents` row of that upload's id.
+  step reads again. There are three kinds:
+  - holding-bucket files of a removed or missing upload, or of an ended
+    journey
+  - vault files under an ended journey's upload folder with no
+    `provider_documents` row of that upload's id
+  - vault files under a provider id that no `providers` row has
 - **Staff RPCs** are granted to authenticated.
   `read_provider_onboarding(p_provider_id)` answers any member of her org,
   with booleans and counts only, never a secret. It returns NULL for a
   provider with no journey, a missing provider, or one outside the caller's
-  orgs (`20261107030000`). `record_onboarding_check`,
+  orgs (`20261107010000`). `record_onboarding_check`,
   `mark_onboarding_contacted` and `admit_provider_onboarding` need an admin
   or specialist of the journey's org, checked NULL-safe by
   `_onboarding_for_writer`. A non-member gets `onboarding_not_found` from

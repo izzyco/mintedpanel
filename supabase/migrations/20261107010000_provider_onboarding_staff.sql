@@ -1,11 +1,11 @@
--- Provider onboarding R1, cycle 7: staff see and finish an onboarding on the
--- provider's page (boards 6a and 6b).
+-- Provider onboarding: staff see and finish an onboarding on the provider's
+-- page.
 --
 --   provider_onboardings.first_signed_in_at  her first sign-in on the journey,
 --                                           the tracker's Started step. Set
 --                                           once by verify_intake_code and
 --                                           backfilled from her sessions
---   provider_onboarding_checks              person checks (D12): append-only,
+--   provider_onboarding_checks              person checks: append-only,
 --                                           the latest row per check_key is
 --                                           the answer. The keys mirror
 --                                           PERSON_CHECK_KEYS in
@@ -20,14 +20,16 @@
 --                                           (primary when she has none),
 --                                           admitted_*, and her invite link
 --                                           and sessions revoked. Never
---                                           touches providers.status (D1, D2)
+--                                           touches providers.status
 --   read_provider_onboarding                any member: her latest journey,
 --                                           its checks, the invite it went
 --                                           to, and which secrets, uploads
 --                                           and cases exist, as booleans and
---                                           counts. Never a secret
+--                                           counts. Never a secret. Null for
+--                                           no journey, a missing provider
+--                                           or one outside the caller's orgs
 --
--- The three writes are authenticated SECURITY DEFINER RPCs (R4): the caller
+-- The three writes are authenticated SECURITY DEFINER RPCs: the caller
 -- must be an admin or specialist of the journey's org, checked NULL-safe
 -- (20260918172142), and each writes one audit row. A non-member is told the
 -- journey does not exist.
@@ -41,6 +43,8 @@
 --   SELECT count(*) FROM pg_proc WHERE proname IN ('record_onboarding_check',
 --     'mark_onboarding_contacted', 'admit_provider_onboarding',
 --     'read_provider_onboarding', '_onboarding_for_writer');           -- 5
+--   SELECT prosrc NOT LIKE '%onboarding_not_found%' FROM pg_proc
+--    WHERE proname = 'read_provider_onboarding';                       -- true
 --   SELECT position('first_signed_in_at' IN prosrc) > 0
 --     FROM pg_proc WHERE proname = 'verify_intake_code';               -- true
 --   then run scripts/sql/provider-onboarding-staff-smoke.sql.
@@ -91,10 +95,6 @@ CREATE POLICY provider_onboarding_checks_select ON public.provider_onboarding_ch
   FOR SELECT TO authenticated
   USING (org_id IN (SELECT public.user_org_ids()));
 
--- ---------------------------------------------------------------------------
--- verify_intake_code: the body of 20261025120000, plus the journey's
--- first_signed_in_at on its first successful sign-in.
--- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.verify_intake_code(
   p_token_hash text,
   p_code_hash text,
@@ -315,8 +315,7 @@ BEGIN
   -- ending.
   SELECT provider_id INTO v_provider FROM public.provider_onboardings WHERE id = p_onboarding_id;
   IF v_provider IS NOT NULL THEN
-    PERFORM pg_advisory_xact_lock(
-      hashtextextended('provider_intake_invite:' || v_provider::text, 0));
+    PERFORM public._lock_provider_invites(v_provider);
   END IF;
 
   v_journey := public._onboarding_for_writer(p_onboarding_id);
@@ -396,7 +395,9 @@ $$;
 --                   copies them into the vault
 --   has_case        she has any credentialing case
 --   npi_in_use      another provider in the org has her NPI
--- A non-member gets P0002 onboarding_not_found, as for a missing provider.
+-- A missing provider, or one outside the caller's orgs, reads null too: a
+-- non-member learns nothing, and the card's refetch after Cancel deletes her
+-- record is not an error (PostgREST answers a raised P0002 with HTTP 500).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.read_provider_onboarding(p_provider_id uuid)
 RETURNS jsonb
@@ -415,7 +416,7 @@ BEGIN
   END IF;
   SELECT org_id, npi INTO v_org, v_npi FROM public.providers WHERE id = p_provider_id;
   IF v_org IS NULL OR public.user_role(v_org) IS NULL THEN
-    RAISE EXCEPTION USING ERRCODE = 'P0002', MESSAGE = 'onboarding_not_found';
+    RETURN NULL;
   END IF;
 
   SELECT * INTO v_journey
@@ -432,11 +433,9 @@ BEGIN
       'id', v_journey.id,
       'source', v_journey.source,
       'created_record', v_journey.created_record,
-      'locked_fields', to_jsonb(v_journey.locked_fields),
       'opened_at', v_journey.opened_at,
       'first_signed_in_at', v_journey.first_signed_in_at,
       'consented_at', v_journey.consented_at,
-      'ssn_stored_at', v_journey.ssn_stored_at,
       'submitted_at', v_journey.submitted_at,
       'admitted_at', v_journey.admitted_at,
       'admitted_by_name', (SELECT coalesce(nullif(btrim(p.full_name), ''), p.email)

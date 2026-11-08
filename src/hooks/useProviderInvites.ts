@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useActiveOrgId } from "@/lib/auth-store";
 import { queryKeys } from "@/hooks/queryKeys";
+import { useOnboardingWrite } from "@/hooks/useProviderOnboardings";
 import {
   cancelProviderOnboarding,
   createProviderInvite,
@@ -27,7 +28,7 @@ export function useResendProviderInvite() {
   const qc = useQueryClient();
   const orgId = useActiveOrgId() ?? "no-org";
   return useMutation({
-    mutationFn: (providerId: string) => resendProviderInvite(providerId),
+    mutationFn: resendProviderInvite,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.providerOnboardings(orgId) });
       qc.invalidateQueries({ queryKey: ["audit-log", orgId] });
@@ -36,17 +37,15 @@ export function useResendProviderInvite() {
 }
 
 export function useCancelProviderOnboarding() {
-  const qc = useQueryClient();
-  const orgId = useActiveOrgId() ?? "no-org";
-  return useMutation({
-    mutationFn: (providerId: string) => cancelProviderOnboarding(providerId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["providers", orgId] });
-      qc.invalidateQueries({ queryKey: ["provider", orgId] });
-      qc.invalidateQueries({ queryKey: queryKeys.providerOnboardings(orgId) });
-      qc.invalidateQueries({ queryKey: queryKeys.onboardingFunnel(orgId) });
-      qc.invalidateQueries({ queryKey: queryKeys.providerGroupAssignments(orgId) });
-      qc.invalidateQueries({ queryKey: ["audit-log", orgId] });
-    },
+  return useOnboardingWrite(cancelProviderOnboarding, {
+    alsoInvalidate: (orgId) => [
+      ["providers", orgId],
+      ["provider", orgId],
+      queryKeys.providerGroupAssignments(orgId),
+      queryKeys.onboardingFunnel(orgId),
+    ],
+    // On error too, since a 409 means she submitted after the card loaded and
+    // the refetched card drops its Cancel button.
+    refreshOnError: true,
   });
 }

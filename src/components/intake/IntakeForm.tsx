@@ -44,8 +44,8 @@ import {
   errorOf,
   thingsLeft,
   type FieldError,
+  sectionProgress,
 } from "@/lib/intakeForm";
-import { sectionProgress } from "@/lib/providerOnboarding";
 import { PROVIDER_TAXONOMY_OPTIONS, taxonomyLabel } from "@/lib/providerTaxonomy";
 import { US_STATES } from "@/lib/usStates";
 import { cn } from "@/lib/utils";
@@ -80,9 +80,7 @@ export function FormStep({
   onContinue: () => Promise<boolean>;
   onFinishLater: () => void;
   onHelp: (reason: HelpReason) => void;
-  /** Throws on a server or network failure. */
   onSaveSsn: (full: string) => Promise<SaveSsnResult>;
-  /** Throws on a server or network failure. */
   onSaveLogin: (
     portal: IntakePortal,
     username: string,
@@ -945,7 +943,7 @@ function LoginFields({
     const username = user.value.trim();
     if (username && pass.value) {
       try {
-        if ((await onSave(login.key, username, pass.value)) === "stored") {
+        if ((await onSave(login.key, username, pass.value)).kind === "stored") {
           user.value = "";
           pass.value = "";
           setProblem(null);

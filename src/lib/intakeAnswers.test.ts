@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INTAKE_ANSWER_MAX_LENGTH,
   INTAKE_MAX_LICENSES,
+  NO_INTAKE_ANSWERS,
   answersFromDraft,
   draftFromState,
   intakeSubmission,
@@ -77,6 +78,10 @@ describe("parseIntakeAnswers", () => {
 
   it("reads missing licenses as none", () => {
     expect(parseIntakeAnswers({})).toEqual(NOTHING);
+  });
+
+  it("names every answer, unprovided, in the shared empty value", () => {
+    expect(NO_INTAKE_ANSWERS).toEqual(NOTHING);
   });
 
   it("refuses anything that isn't the answers shape", () => {

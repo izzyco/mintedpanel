@@ -73,6 +73,8 @@ export function fieldId(...parts: (string | number)[]): string {
   return `intake-${parts.join("-")}`.replace(/[^\w-]/g, "-");
 }
 
+// A field counts once the provider (or a named source) has supplied it. A
+// prefilled default with no source, like the Specialty select, does not.
 function provided(field: FieldValue<string>): boolean {
   return field.source !== null && Boolean(field.value?.trim());
 }
@@ -205,6 +207,29 @@ function gaps<K extends string>(
   };
 }
 
+function count(flags: boolean[]): { done: number; total: number } {
+  return { done: flags.filter(Boolean).length, total: flags.length };
+}
+
+function complete<K extends string>(parts: [K, string][], fields: Record<K, FieldValue<string>>) {
+  return parts.every(([key]) => provided(fields[key]));
+}
+
+/** The progress chips, one count per section, from the same tables as missingFields. */
+export function sectionProgress(draft: IntakeDraft) {
+  const { identity, contact, licenses, logins } = draft;
+  return {
+    identity: count(IDENTITY.map(([key]) => provided(identity[key]))),
+    // The email is verified by the sign-in code, so it always counts.
+    contact: count([true, provided(contact.mobile), complete(ADDRESS_PARTS, contact.homeAddress)]),
+    licenses:
+      licenses.length === 0
+        ? { done: 0, total: 1 }
+        : count(licenses.map((row) => complete(LICENSE_PARTS, row))),
+    logins: count(LOGINS.map((login) => logins[login.flag])),
+  };
+}
+
 export function missingFields(draft: IntakeDraft): MissingField[] {
   const missing: MissingField[] = [];
   for (const [key, label, message] of IDENTITY) {
@@ -257,6 +282,10 @@ export function missingFields(draft: IntakeDraft): MissingField[] {
     });
   }
   return missing;
+}
+
+export function canContinue(draft: IntakeDraft): boolean {
+  return missingFields(draft).length === 0;
 }
 
 export function errorOf(item: MissingField | undefined): FieldError | null {

@@ -111,7 +111,7 @@ import {
   type SendEmailResult,
 } from "../email/sendgrid";
 import type { TemplateKey } from "../email/templates";
-import { resolveAppBaseUrl } from "../providerIntakeRoutes";
+import { resolveAppBaseUrl } from "../intakeShared";
 import {
   FOLLOWUP_DIGEST_COUNT_KEYS,
   FOLLOWUP_DIGEST_JOB_NAME,
