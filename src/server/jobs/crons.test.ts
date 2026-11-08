@@ -36,12 +36,16 @@ describe("vercel.json crons and the job registry agree", () => {
     }
   });
 
-  it("keeps one daily Vercel cron for the follow-up digest, a backup after every US 8 am", () => {
+  it("keeps one daily Vercel cron per job: the digest's backup after every US 8 am, and the file cleanup", () => {
     // Production is on Vercel Hobby: one run a day per cron entry at most, and
-    // a more frequent schedule fails the deploy. The hourly tick is the GitHub
-    // Actions workflow below. 18:00 UTC is 8 am in Hawaii and later in every
-    // other US zone, so the backup only ever catches up ("at or after").
-    expect(crons).toEqual([{ path: "/api/jobs/followup-digest", schedule: "0 18 * * *" }]);
+    // a more frequent schedule fails the deploy. The digest's hourly tick is
+    // the GitHub Actions workflow below. 18:00 UTC is 8 am in Hawaii and later
+    // in every other US zone, so the backup only ever catches up ("at or
+    // after"). The onboarding file cleanup needs no more than daily.
+    expect(crons).toEqual([
+      { path: "/api/jobs/followup-digest", schedule: "0 18 * * *" },
+      { path: "/api/jobs/onboarding-file-cleanup", schedule: "30 18 * * *" },
+    ]);
     for (const cron of crons) {
       const [minute, hour] = cron.schedule.split(" ");
       expect(/^\d+$/.test(minute) && /^\d+$/.test(hour), `${cron.path} runs once a day`).toBe(true);

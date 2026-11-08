@@ -145,8 +145,8 @@ describe("validateJobCounts", () => {
 });
 
 describe("registry", () => {
-  it("ships the follow-up digest (MINT-108)", () => {
-    expect([...JOB_REGISTRY.keys()]).toEqual(["followup-digest"]);
+  it("ships the follow-up digest (MINT-108) and the onboarding file cleanup", () => {
+    expect([...JOB_REGISTRY.keys()]).toEqual(["followup-digest", "onboarding-file-cleanup"]);
   });
 
   const noop = async () => ({});

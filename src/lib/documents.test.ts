@@ -8,6 +8,7 @@ import {
   UPLOAD_INTENT_TTL_MS,
   caseDocumentStatus,
   checkDocumentFile,
+  checkStoredObject,
   classifyExpiration,
   currentGroupReadinessDocuments,
   currentVersions,
@@ -333,6 +334,51 @@ describe("file + path validation (TE-4/TE-2)", () => {
     expect(
       documentFamilyPrefix({ orgId: "o", ownerType: "group", ownerId: "g", familyId: "f" }),
     ).toBe("org/o/group/g/f");
+  });
+});
+
+describe("checkStoredObject (TE-4)", () => {
+  const pdf = { maxBytes: 1000, mimeType: "application/pdf" };
+  const object = (metadata: Record<string, unknown> | null) => ({ metadata });
+
+  it("passes an object inside the cap with the declared type, and reports its size", () => {
+    expect(checkStoredObject(object({ size: 1000, mimetype: "application/pdf" }), pdf)).toEqual({
+      ok: true,
+      size: 1000,
+    });
+  });
+
+  it("names what is wrong with a missing, oversized, empty or mistyped object", () => {
+    const problem = (o: Parameters<typeof checkStoredObject>[0]) => {
+      const checked = checkStoredObject(o, pdf);
+      return checked.ok ? null : checked.problem;
+    };
+    expect(problem(undefined)).toBe("missing");
+    expect(problem(object({ size: 1001, mimetype: "application/pdf" }))).toBe("size_limit");
+    expect(problem(object({ size: 0, mimetype: "application/pdf" }))).toBe("size_limit");
+    expect(problem(object({ size: 10, mimetype: "image/png" }))).toBe("type_mismatch");
+  });
+
+  it("does not hold metadata Storage left out against the object", () => {
+    expect(checkStoredObject(object(null), pdf)).toEqual({ ok: true, size: null });
+    expect(checkStoredObject(object({ size: 10 }), pdf)).toEqual({ ok: true, size: 10 });
+  });
+
+  it("with a declared size, needs exactly that size, reported or not", () => {
+    const declared = { ...pdf, sizeBytes: 10 };
+    expect(checkStoredObject(object({ size: 10, mimetype: "application/pdf" }), declared)).toEqual({
+      ok: true,
+      size: 10,
+    });
+    for (const metadata of [
+      { size: 11, mimetype: "application/pdf" },
+      { mimetype: "application/pdf" },
+    ]) {
+      expect(checkStoredObject(object(metadata), declared)).toEqual({
+        ok: false,
+        problem: "size_mismatch",
+      });
+    }
   });
 });
 

@@ -62,7 +62,15 @@
 //                          verifies a Kansas caller cannot download its bytes.
 //   SOUTHPARK_GROUP_ID     A South Park provider_groups id for 35b (cross-org
 //                          invite must 404). 35-35c SKIP while the invite routes
-//                          are off; 35d runs against the local mock only.
+//                          are off; 35d and 35e run against the local mock only.
+//   KANSAS_INTAKE_TOKEN + SOUTHPARK_INTAKE_TOKEN
+//                          Intake link tokens for 35d (a Kansas session reads
+//                          and saves under its own link) and 35e-35h (the same
+//                          session reads, saves, stores no SSN or login,
+//                          begins, finishes and removes no upload, and submits
+//                          and asks for help under none of South Park's
+//                          link). Local mock only: a real token is
+//                          emailed, never stored.
 //   SEARCH_QUERY           Case search query for assertion 15 (default "a").
 //   SEARCH_LEAK_QUERY      Case search query for 15b (default "South Park"). It
 //                          must match NO Kansas case (provider name, payer
@@ -1914,7 +1922,35 @@ function looksLikeVercelGate(r) {
     );
   }
 
-  // 35d — a provider intake session reads only its own invite's provider.
+  // 35i/35j — staff cancel of an onboarding. 35i is the positive control
+  // without a side effect: a GET on the route is a 405 only once the route is
+  // deployed, so 35j's 404 can't pass against a dead route. 35j: Kansas
+  // cancelling a South Park provider misses before any write, and South Park
+  // still reads its provider afterwards.
+  const cancelPath = `/api/provider-invites/${env.SOUTHPARK_PROVIDER_ID}/cancel`;
+  const cancelProbe = await apiGet(cancelPath, { token: kansasTok });
+  if (cancelProbe.status === 404) {
+    console.log("SKIP  35i/35j. onboarding cancel — route not deployed");
+  } else {
+    check(
+      "35i. Kansas GET on the cancel route -> 405 (route is live)",
+      cancelProbe.status === 405,
+      `status=${cancelProbe.status} (expect 405)`,
+    );
+    const xCancel = await apiPost(cancelPath, {}, { token: kansasTok });
+    const spStill = await apiGet(`/api/providers/${env.SOUTHPARK_PROVIDER_ID}`, { token: spTok });
+    check(
+      "35j. Kansas cancel for a South Park provider -> 404, South Park's provider untouched",
+      xCancel.status === 404 && xCancel.body?.data == null && spStill.status === 200,
+      `status=${xCancel.status} (expect 404) dataPresent=${xCancel.body?.data != null} ` +
+        `southParkRead=${spStill.status} (expect 200)`,
+      { leak: true },
+    );
+  }
+
+  // 35d/35e — a provider intake session reads and saves only under its own
+  // invite's link. 35d is the positive control (her own link reads her state
+  // and saves her draft), so 35e's 401s can't pass against a dead route.
   // Needs an emailed code, so it runs against the local mock only. Node's
   // fetch keeps no cookie jar; the session cookie is forwarded by hand.
   if (IS_LOCAL_MOCK_API && env.KANSAS_INTAKE_TOKEN) {
@@ -1927,21 +1963,157 @@ function looksLikeVercelGate(r) {
       .getSetCookie()
       .map((c) => c.split(";")[0])
       .join("; ");
-    const me = await apiPost(
-      "/api/intake/me",
-      { t: env.KANSAS_INTAKE_TOKEN },
-      { extraHeaders: { cookie } },
-    );
+    const asKansas = { extraHeaders: { cookie } };
+    const draft = (t) => ({ t, answers: { mobile: "5555550100" }, step: "form", version: 0 });
+    const state = await apiPost("/api/intake/state", { t: env.KANSAS_INTAKE_TOKEN }, asKansas);
+    const saved = await apiPost("/api/intake/draft", draft(env.KANSAS_INTAKE_TOKEN), asKansas);
     check(
-      "35d. A Kansas intake session reads only its own invite's provider",
+      "35d. A Kansas intake session reads and saves only its own invite's provider",
       signIn.status === 200 &&
-        me.status === 200 &&
-        me.body?.data?.practiceName === "Kansas Fitness Physio",
-      `session=${signIn.status} me=${me.status} practice=${me.body?.data?.practiceName}`,
+        state.status === 200 &&
+        state.body?.data?.practiceName === "Kansas Fitness Physio" &&
+        saved.status === 200,
+      `session=${signIn.status} state=${state.status} practice=${state.body?.data?.practiceName} draft=${saved.status}`,
       { leak: true },
     );
+    if (env.SOUTHPARK_INTAKE_TOKEN) {
+      const xState = await apiPost(
+        "/api/intake/state",
+        { t: env.SOUTHPARK_INTAKE_TOKEN },
+        asKansas,
+      );
+      const xDraft = await apiPost(
+        "/api/intake/draft",
+        draft(env.SOUTHPARK_INTAKE_TOKEN),
+        asKansas,
+      );
+      check(
+        "35e. A Kansas intake session under a South Park link -> 401, nothing read or saved",
+        xState.status === 401 &&
+          xState.body?.data == null &&
+          xDraft.status === 401 &&
+          xDraft.body?.data == null,
+        `state=${xState.status} draft=${xDraft.status} statePresent=${xState.body?.data != null}`,
+        { leak: true },
+      );
+
+      // 35f — the vault writes are bound the same way. Its own link stores
+      // (the positive control), South Park's link stores nothing.
+      const ssn = (t) => ({ t, ssn: "123-45-6789" });
+      const login = (t) => ({ t, portal: "caqh", username: "gate.user", password: "Gate-Pass-1" });
+      const ownSsn = await apiPost("/api/intake/ssn", ssn(env.KANSAS_INTAKE_TOKEN), asKansas);
+      const ownLogin = await apiPost("/api/intake/login", login(env.KANSAS_INTAKE_TOKEN), asKansas);
+      const xSsn = await apiPost("/api/intake/ssn", ssn(env.SOUTHPARK_INTAKE_TOKEN), asKansas);
+      const xLogin = await apiPost(
+        "/api/intake/login",
+        login(env.SOUTHPARK_INTAKE_TOKEN),
+        asKansas,
+      );
+      check(
+        "35f. A Kansas intake session stores an SSN and a login only under its own link",
+        ownSsn.status === 200 &&
+          ownLogin.status === 200 &&
+          xSsn.status === 401 &&
+          xSsn.body?.data == null &&
+          xLogin.status === 401 &&
+          xLogin.body?.data == null,
+        `own ssn=${ownSsn.status} login=${ownLogin.status}; south park ssn=${xSsn.status} login=${xLogin.status}`,
+        { leak: true },
+      );
+
+      // 35g: her documents are bound the same way. Its own link begins,
+      // finishes and removes an upload (the positive control); South Park's
+      // link does none of the three, even with an upload id in hand.
+      const begin = (t) => ({
+        t,
+        slotKey: "cv",
+        kind: "cv",
+        fileName: "gate.pdf",
+        sizeBytes: 1024,
+        contentType: "application/pdf",
+      });
+      const ownBegin = await apiPost(
+        "/api/intake/upload-intent",
+        begin(env.KANSAS_INTAKE_TOKEN),
+        asKansas,
+      );
+      const uploadId = ownBegin.body?.data?.uploadId;
+      const upload = (t) => ({ t, uploadId });
+      const ownFinish = await apiPost(
+        "/api/intake/upload-finalize",
+        upload(env.KANSAS_INTAKE_TOKEN),
+        asKansas,
+      );
+      const xBegin = await apiPost(
+        "/api/intake/upload-intent",
+        begin(env.SOUTHPARK_INTAKE_TOKEN),
+        asKansas,
+      );
+      const xFinish = await apiPost(
+        "/api/intake/upload-finalize",
+        upload(env.SOUTHPARK_INTAKE_TOKEN),
+        asKansas,
+      );
+      const xRemove = await apiPost(
+        "/api/intake/upload-remove",
+        upload(env.SOUTHPARK_INTAKE_TOKEN),
+        asKansas,
+      );
+      const ownRemove = await apiPost(
+        "/api/intake/upload-remove",
+        upload(env.KANSAS_INTAKE_TOKEN),
+        asKansas,
+      );
+      const refused = [xBegin, xFinish, xRemove];
+      check(
+        "35g. A Kansas intake session begins, finishes and removes an upload only under its own link",
+        ownBegin.status === 200 &&
+          typeof uploadId === "string" &&
+          ownFinish.status === 200 &&
+          ownRemove.status === 200 &&
+          refused.every((r) => r.status === 401 && r.body?.data == null),
+        `own begin=${ownBegin.status} finish=${ownFinish.status} remove=${ownRemove.status}; ` +
+          `south park begin=${xBegin.status} finish=${xFinish.status} remove=${xRemove.status}`,
+        { leak: true },
+      );
+
+      // 35h: Submit and help are bound the same way. South Park's link is
+      // refused first, so the positive control's Submit can't close the
+      // journey under test before it is asked.
+      const xSubmit = await apiPost(
+        "/api/intake/submit",
+        { t: env.SOUTHPARK_INTAKE_TOKEN, version: 1 },
+        asKansas,
+      );
+      const xHelp = await apiPost(
+        "/api/intake/help",
+        { t: env.SOUTHPARK_INTAKE_TOKEN, reason: { kind: "help" } },
+        asKansas,
+      );
+      const ownHelp = await apiPost(
+        "/api/intake/help",
+        { t: env.KANSAS_INTAKE_TOKEN, reason: { kind: "help" } },
+        asKansas,
+      );
+      const ownSubmit = await apiPost(
+        "/api/intake/submit",
+        { t: env.KANSAS_INTAKE_TOKEN, version: 1 },
+        asKansas,
+      );
+      check(
+        "35h. A Kansas intake session submits and asks for help only under its own link",
+        ownSubmit.status === 200 &&
+          ownHelp.status === 200 &&
+          [xSubmit, xHelp].every((r) => r.status === 401 && r.body?.data == null),
+        `own submit=${ownSubmit.status} help=${ownHelp.status}; ` +
+          `south park submit=${xSubmit.status} help=${xHelp.status}`,
+        { leak: true },
+      );
+    } else {
+      console.log("SKIP  35e-35h. intake link binding — SOUTHPARK_INTAKE_TOKEN not set");
+    }
   } else {
-    console.log("SKIP  35d. intake session scope — local mock only (needs an emailed code)");
+    console.log("SKIP  35d-35h. intake session scope — local mock only (needs an emailed code)");
   }
 
   // 36-36c — MINT-110 NPI Registry lookup. These routes read no org data (the

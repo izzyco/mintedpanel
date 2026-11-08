@@ -1,19 +1,34 @@
 // Provider intake (docs/provider-onboarding/slice-1-invite-to-form.md, canvas
 // Stage 1). Public and chromeless (listed in __root.tsx). The link token is the
 // door; the emailed code is the key. The session that follows is an HttpOnly
-// cookie, so nothing here stores a token. Answers are not saved in this build.
+// cookie, so nothing here stores a token. Her consent and answers are saved
+// through /api/intake/* and read back when she signs in; her SSN and logins go
+// to the vaults, and her documents to a holding area until Submit puts them
+// and her answers on her record. A help request reaches her practice.
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import { IntakeFlow, type IntakeGateway } from "@/components/intake/IntakeFlow";
-import { IntakeShell, InvalidLink, TryAgain } from "@/components/intake/IntakeScreens";
 import {
+  IntakePaused,
+  IntakeShell,
+  InvalidLink,
+  TryAgain,
+} from "@/components/intake/IntakeScreens";
+import {
+  useIntakeDocuments,
   useIntakeLink,
-  useIntakeMe,
+  useLoadIntakeState,
   useOpenIntakeSession,
   useRequestIntakeCode,
+  useRequestIntakeHelp,
+  useSaveIntakeDraft,
+  useSaveIntakeSecrets,
+  useSignIntakeConsent,
   useSignOutIntake,
+  useSubmitIntake,
 } from "@/hooks/useIntake";
-import { draftFromInvitation } from "@/lib/providerOnboarding";
+import type { IntakeAnswers } from "@/lib/intakeAnswers";
+import { isIntakePaused, type DraftStep, type HelpReason } from "@/lib/intakeFlow";
 
 export const Route = createFileRoute("/intake/$token")({
   head: () => ({
@@ -28,13 +43,30 @@ export const Route = createFileRoute("/intake/$token")({
 
 function IntakePage() {
   const { token } = Route.useParams();
-  const qc = useQueryClient();
   const link = useIntakeLink(token);
-  const me = useIntakeMe(token, link.data != null);
+  const loadState = useLoadIntakeState(token);
   const requestCode = useRequestIntakeCode();
   const openSession = useOpenIntakeSession();
+  const saveDraft = useSaveIntakeDraft();
+  const signConsent = useSignIntakeConsent();
+  const secrets = useSaveIntakeSecrets(token);
+  const documents = useIntakeDocuments(token);
+  const submit = useSubmitIntake();
+  const requestHelp = useRequestIntakeHelp();
   const signOut = useSignOutIntake();
+  const [paused, setPaused] = useState(false);
 
+  // Intake can be paused while she has the form open. Any call that comes
+  // back paused swaps the whole flow for the paused notice.
+  function pauseAware<A extends unknown[], R>(call: (...args: A) => Promise<R>) {
+    return (...args: A) =>
+      call(...args).catch((error: unknown) => {
+        if (isIntakePaused(error)) setPaused(true);
+        throw error;
+      });
+  }
+
+  if (paused || (link.isError && isIntakePaused(link.error))) return <IntakePaused />;
   if (link.isLoading) {
     return (
       <IntakeShell practiceName={null}>
@@ -45,34 +77,27 @@ function IntakePage() {
   if (link.isError) return <TryAgain onRetry={() => void link.refetch()} />;
   if (!link.data) return <InvalidLink />;
 
-  const meKey = ["intake-me", token];
   const gateway: IntakeGateway = {
     practiceName: link.data.practiceName,
     email: link.data.email,
-    requestCode: () => requestCode.mutateAsync(token),
-    checkCode: async (code) => {
-      if (!(await openSession.mutateAsync({ token, code }))) return "wrong";
-      await qc.invalidateQueries({ queryKey: meKey });
-      return "ok";
-    },
-    signOut: async () => {
-      await signOut.mutateAsync();
-      qc.setQueryData(meKey, null);
-    },
+    requestCode: pauseAware(() => requestCode.mutateAsync(token)),
+    checkCode: pauseAware(async (code: string) =>
+      (await openSession.mutateAsync({ token, code })) ? "ok" : "wrong",
+    ),
+    signOut: () => signOut.mutateAsync(),
+    loadState: pauseAware(loadState),
+    saveDraft: pauseAware((answers: IntakeAnswers, step: DraftStep, version: number) =>
+      saveDraft.mutateAsync({ token, answers, step, version }),
+    ),
+    signConsent: pauseAware((typedName: string) => signConsent.mutateAsync({ token, typedName })),
+    saveSsn: pauseAware(secrets.saveSsn),
+    saveLogin: pauseAware(secrets.saveLogin),
+    uploadDocument: pauseAware(documents.uploadDocument),
+    removeDocument: pauseAware(documents.removeDocument),
+    setDocumentExpiry: pauseAware(documents.setDocumentExpiry),
+    submit: pauseAware((version: number) => submit.mutateAsync({ token, version })),
+    requestHelp: pauseAware((reason: HelpReason) => requestHelp.mutateAsync({ token, reason })),
   };
 
-  return (
-    <IntakeFlow
-      gateway={gateway}
-      session={me.isSuccess ? (me.data ? "live" : "none") : null}
-      startingDraft={me.data ? draftFromInvitation(me.data) : null}
-      onRetryProfile={me.isError ? () => void me.refetch() : undefined}
-      notice={
-        <p role="note" className="rounded-md bg-amber-50 px-3 py-2 text-[13px] text-amber-900">
-          This form isn't connected yet. Your answers stay on this page only, nothing is sent to
-          your practice, and they're gone if you close or reload it.
-        </p>
-      }
-    />
-  );
+  return <IntakeFlow gateway={gateway} />;
 }

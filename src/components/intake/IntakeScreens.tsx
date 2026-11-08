@@ -166,6 +166,16 @@ export function TryAgain({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+// Intake is paused (provider_intake_settings.paused). Her link and what she
+// saved are still good.
+export function IntakePaused() {
+  return (
+    <IntakeShell practiceName={null}>
+      <Intro title="This form is paused for now">Try again later, or contact your practice.</Intro>
+    </IntakeShell>
+  );
+}
+
 // Board 3. The code always goes to the invited address (slice 1, S6).
 export function IdentifyStep({
   email,
@@ -313,19 +323,24 @@ export function CodeStep({
   );
 }
 
-// Board 5. The signature is not saved yet in slice 1 (r1-ui-spec Q2).
+// Board 5. Signing saves her typed name with this text's version and the
+// server's time (provider_intake_consents).
 export function ConsentStep({
   practiceName,
+  signing,
+  error,
   onSign,
   onHelp,
 }: {
   practiceName: string;
+  signing: boolean;
+  error: string | null;
   onSign: (typedName: string) => void;
   onHelp: () => void;
 }) {
   const [name, setName] = useState("");
   const [agreed, setAgreed] = useState(false);
-  const ready = name.trim().length > 1 && agreed;
+  const ready = name.trim().length > 1 && agreed && !signing;
   return (
     <>
       <Intro title="Your consent">Please read and sign before you start your details.</Intro>
@@ -343,6 +358,7 @@ export function ConsentStep({
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoComplete="name"
+          maxLength={200}
           aria-required
           className={cn(FIELD, "h-11 bg-[#FDFDFC] px-3 text-[16px] md:text-[16px]")}
         />
@@ -370,8 +386,9 @@ export function ConsentStep({
         Your typed name, the date and this exact text are saved together as your signature on your
         file at {practiceName}.
       </p>
+      <ErrorLine id="consent-error" message={error} />
       <Button className={PRIMARY} disabled={!ready} onClick={() => onSign(name.trim())}>
-        Sign and continue
+        {signing ? "Signing…" : "Sign and continue"}
       </Button>
       <Helper>
         Questions about this?{" "}
@@ -414,8 +431,7 @@ export function TooManyTries({
   );
 }
 
-// Board 4c. Answers live only in the open page in this build, so neither
-// state may say they are saved.
+// Board 4c. Her answers are saved as she goes, so both say so.
 export function SignedOut({
   reason,
   email,
@@ -432,7 +448,7 @@ export function SignedOut({
           icon={<CircleCheck className="h-6 w-6 text-[var(--mp-ok-ink)]" aria-hidden />}
           title="You're signed out"
         >
-          Your answers stay on this page until you close it. Sign in again to keep going.
+          Your answers are saved. Sign in again to keep going.
         </Intro>
         <Button variant="outline" className={SECONDARY} onClick={onContinue}>
           Sign in again
@@ -446,7 +462,7 @@ export function SignedOut({
         icon={<Clock className="h-6 w-6 text-muted-foreground" aria-hidden />}
         title="You were signed out to keep your details safe"
       >
-        Your answers are still on this page. We'll send a new code to <Email>{email}</Email>.
+        Your answers are saved. We'll send a new code to <Email>{email}</Email>.
       </Intro>
       <Button className={PRIMARY} onClick={onContinue}>
         Send me a code

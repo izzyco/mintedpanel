@@ -39,6 +39,12 @@ export const queryKeys = {
   orgCaseFacilityLinks: (orgId: string) => ["cases", orgId, "facility-links"] as const,
   providerReadinessFacts: (orgId: string) => ["provider-readiness-facts", orgId] as const,
   onboardingFunnel: (orgId: string) => ["onboarding-funnel", orgId] as const,
+  // provider_onboardings journeys. Invalidate this prefix after any onboarding
+  // write: it covers the roster's open list and every provider's card read.
+  providerOnboardings: (orgId: string) => ["provider-onboardings", orgId] as const,
+  openProviderOnboardings: (orgId: string) => ["provider-onboardings", orgId, "open"] as const,
+  providerOnboarding: (orgId: string, providerId: string) =>
+    ["provider-onboardings", orgId, "provider", providerId] as const,
   groupReadinessDocuments: (orgId: string) => ["group-readiness-documents", orgId] as const,
   groupInsurancePolicies: (orgId: string) => ["group-insurance-policies", orgId] as const,
   templates: (orgId: string) => ["templates", orgId] as const,

@@ -241,15 +241,60 @@ export function GenerationGrid({ scope = {}, defaultPivot = "provider" }: Genera
     });
   };
 
+  // Shown even when nothing is left to review: a group whose only members are
+  // all skipped (waiting for Admit, say) must still say why.
+  const skipList =
+    skips.length > 0 ? (
+      <div className="rounded-md border border-[#E8E5E0] bg-[#FAFAF9] p-3">
+        <p className="text-[13px] font-medium text-foreground">
+          {skips.length} provider × target{skips.length === 1 ? "" : "s"} not generating — reason
+          shown (not a missing profile attribute).
+        </p>
+        <ul className="mt-2 space-y-2">
+          {skips.map((skip) => (
+            <li
+              key={generationSkipKey(skip)}
+              className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground"
+            >
+              <span className="font-medium text-foreground">{skip.providerName}</span>
+              <span>
+                {skip.groupName} · {skip.payerName} {skip.state} — {skip.reasonLabel}
+              </span>
+              {skip.reason === "no_facility" ? (
+                <Link
+                  to="/providers/$id"
+                  params={{ id: skip.providerId }}
+                  className="ml-auto text-[12px] text-primary underline-offset-2 hover:underline"
+                >
+                  Fix facility
+                </Link>
+              ) : (
+                <Link
+                  to="/providers/$id"
+                  params={{ id: skip.providerId }}
+                  className="ml-auto text-[12px] text-primary underline-offset-2 hover:underline"
+                >
+                  Open provider
+                </Link>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
   if (gridRows.length === 0) {
     return (
-      <div className="rounded-md border border-[#E8E5E0] p-4">
-        <p className="text-[13px] font-medium">Nothing to review here yet</p>
-        <p className="mt-1 text-[13px] text-muted-foreground">
-          Candidates derive from the group&apos;s active payer targets × providers with a clinic
-          assignment under the group, minus enrollment facts, existing cases, and standing
-          exclusions. Attach payers and add providers on the group&apos;s pages to see rows.
-        </p>
+      <div className="space-y-4">
+        <div className="rounded-md border border-[#E8E5E0] p-4">
+          <p className="text-[13px] font-medium">Nothing to review here yet</p>
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            Candidates derive from the group&apos;s active payer targets × providers with a clinic
+            assignment under the group, minus enrollment facts, existing cases, and standing
+            exclusions. Attach payers and add providers on the group&apos;s pages to see rows.
+          </p>
+        </div>
+        {skipList}
       </div>
     );
   }
@@ -380,44 +425,7 @@ export function GenerationGrid({ scope = {}, defaultPivot = "provider" }: Genera
         </div>
       ) : null}
 
-      {skips.length > 0 ? (
-        <div className="rounded-md border border-[#E8E5E0] bg-[#FAFAF9] p-3">
-          <p className="text-[13px] font-medium text-foreground">
-            {skips.length} provider × target{skips.length === 1 ? "" : "s"} not generating — reason
-            shown (not a missing profile attribute).
-          </p>
-          <ul className="mt-2 space-y-2">
-            {skips.map((skip) => (
-              <li
-                key={generationSkipKey(skip)}
-                className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground"
-              >
-                <span className="font-medium text-foreground">{skip.providerName}</span>
-                <span>
-                  {skip.groupName} · {skip.payerName} {skip.state} — {skip.reasonLabel}
-                </span>
-                {skip.reason === "no_facility" ? (
-                  <Link
-                    to="/providers/$id"
-                    params={{ id: skip.providerId }}
-                    className="ml-auto text-[12px] text-primary underline-offset-2 hover:underline"
-                  >
-                    Fix facility
-                  </Link>
-                ) : (
-                  <Link
-                    to="/providers/$id"
-                    params={{ id: skip.providerId }}
-                    className="ml-auto text-[12px] text-primary underline-offset-2 hover:underline"
-                  >
-                    Open provider
-                  </Link>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      {skipList}
 
       {releasedFallbackCount > 0 ? (
         <div className="rounded-md border border-[#FDE68A] bg-[#FEF3C7] p-3" role="alert">

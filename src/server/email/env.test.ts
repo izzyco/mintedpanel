@@ -20,4 +20,12 @@ describe("resolveEmailEnv", () => {
     vi.stubEnv("SENDGRID_FROM_EMAIL", "  ");
     expect(resolveEmailEnv()).toMatchObject({ apiKey: "SG.key", fromEmail: undefined });
   });
+
+  it("points mail at SENDGRID_API_URL under vite dev only", () => {
+    vi.stubEnv("SENDGRID_API_URL", " http://127.0.0.1:8092/v3/mail/send ");
+    vi.stubEnv("DEV", true);
+    expect(resolveEmailEnv().apiUrl).toBe("http://127.0.0.1:8092/v3/mail/send");
+    vi.stubEnv("DEV", false);
+    expect(resolveEmailEnv().apiUrl).toBeUndefined();
+  });
 });

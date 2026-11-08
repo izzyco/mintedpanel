@@ -87,8 +87,9 @@ test("a re-invited provider sees SSN, NPI and date of birth locked, with a fix r
     page.getByText("Shelby Sports Rehab asked you to review your details."),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Tell us your .* is wrong/ })).toHaveCount(3);
+  // Her mobile and both logins: the sample review has no login on file.
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByText("2 things left before you can continue")).toBeVisible();
+  await expect(page.getByText("3 things left before you can continue")).toBeVisible();
 
   await page.getByRole("button", { name: "Tell us your NPI is wrong" }).click();
   await expect(
@@ -147,4 +148,15 @@ test("the SSN stays in its field while she is on the form, and Show reveals it",
   await page.getByRole("button", { name: "Show" }).click();
   await expect(ssn).toHaveAttribute("type", "text");
   await expect(ssn).toHaveValue("123-12-3123");
+});
+
+test("an edit from another window reloads her form with the latest answers", async ({ page }) => {
+  await openPreview(page, "Provider");
+  await signInAndConsent(page);
+  await page.getByRole("button", { name: "Edit in another window" }).click();
+  await page.getByLabel("Mobile phone").fill("7045550100");
+  await expect(page.getByRole("status")).toHaveText(
+    "Your form was changed in another window, so we've loaded the latest answers.",
+  );
+  await expect(page.getByLabel("Mobile phone")).toHaveValue("7045550188");
 });

@@ -61,6 +61,8 @@ import {
 } from "@/services/generationConfirm";
 import { useProviders } from "@/hooks/useProviders";
 import { useSops } from "@/hooks/useAdmin";
+import { useOpenProviderOnboardings } from "@/hooks/useProviderOnboardings";
+import { onboardingHeldProviderIds } from "@/lib/providerOnboarding";
 import type { CaseGenerationExclusion } from "@/types";
 
 export function useCaseGenerationExclusions() {
@@ -166,6 +168,7 @@ export function useGenerationPreview(scope?: GenerationScope): GenerationPreview
   const contractsQ = useGenerationContractRows();
   const exclusionsQ = useCaseGenerationExclusions();
   const templatesQ = useSops();
+  const onboardingsQ = useOpenProviderOnboardings();
 
   const sources = [
     targetsQ,
@@ -184,6 +187,7 @@ export function useGenerationPreview(scope?: GenerationScope): GenerationPreview
     contractsQ,
     exclusionsQ,
     templatesQ,
+    onboardingsQ,
   ];
   const resolved = sources.every((q) => q.data !== undefined);
   const today = localTodayIso();
@@ -234,6 +238,7 @@ export function useGenerationPreview(scope?: GenerationScope): GenerationPreview
       payers: (payersQ.data ?? []).map((p) => ({ id: p.id, name: p.name })),
       existingCases,
       exclusions: exclusionsQ.data ?? [],
+      onboardingHeldProviderIds: onboardingHeldProviderIds(onboardingsQ.data ?? []),
     };
 
     const allRows = buildGenerationPreview(previewInput);
@@ -328,6 +333,7 @@ export function useGenerationPreview(scope?: GenerationScope): GenerationPreview
     contractsQ.data,
     exclusionsQ.data,
     templatesQ.data,
+    onboardingsQ.data,
   ]);
 
   return {

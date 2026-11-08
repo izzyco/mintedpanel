@@ -75,7 +75,10 @@ import { useEnrollmentReadiness } from "@/hooks/useEnrollmentReadiness";
 import { AddTouchDialog, type TouchCaseCandidate } from "@/components/cases/AddTouchDialog";
 import { usePayers } from "@/hooks/useAdmin";
 import { useIdentityValidationRules } from "@/hooks/useIdentityValidationRules";
-import { useCanWrite } from "@/lib/permissions";
+import { useCanWrite, useIsAdmin } from "@/lib/permissions";
+import { OnboardingCard } from "@/components/providerOnboarding/OnboardingCard";
+import { useProviderOnboarding } from "@/hooks/useProviderOnboardings";
+import { cardPhase } from "@/lib/onboardingCard";
 import { isValidEmail } from "@/lib/contactValidation";
 import {
   NPI_CHECK_DIGIT_MESSAGE,
@@ -139,6 +142,8 @@ function ProviderRecordPage() {
   const { id } = Route.useParams();
   const providerQ = useProvider(id);
   const canWrite = useCanWrite();
+  const isAdmin = useIsAdmin();
+  const onboardingQ = useProviderOnboarding(id);
   const location = useLocation();
   const navigate = useNavigate();
   // Warm the Cases-tab caches on landing. Radix unmounts inactive tab
@@ -193,11 +198,21 @@ function ProviderRecordPage() {
   if (!provider) {
     return <p className="text-[13px] text-muted-foreground">Provider not found.</p>;
   }
+  const onboarding = onboardingQ.data ?? null;
+  const onboardingPhase = cardPhase(onboarding);
 
   return (
     <TooltipProvider>
       <div className="space-y-4">
         <RecordHeader provider={provider} canWrite={canWrite} />
+        {onboarding && onboardingPhase !== "none" ? (
+          <OnboardingCard
+            provider={provider}
+            read={onboarding}
+            canWrite={canWrite}
+            isAdmin={isAdmin}
+          />
+        ) : null}
 
         <TabsPrimitive.Root value={activeTab} onValueChange={onTabChange} className="space-y-4">
           <TabsPrimitive.List
@@ -235,10 +250,13 @@ function ProviderRecordPage() {
             <div className="space-y-4">
               <CasesSection providerId={provider.id} />
               {/* Readiness lives on the Cases tab (user ask): the pre-flight
-                  matrix right beside the casework it precedes. */}
-              <RecordSectionCard id="readiness" title="Readiness">
-                <ProviderReadinessSection providerId={provider.id} />
-              </RecordSectionCard>
+                  matrix right beside the casework it precedes. Hidden while
+                  her onboarding is open (PM decision 5). */}
+              {onboardingPhase === "open" ? null : (
+                <RecordSectionCard id="readiness" title="Readiness">
+                  <ProviderReadinessSection providerId={provider.id} />
+                </RecordSectionCard>
+              )}
             </div>
           </TabsPrimitive.Content>
 

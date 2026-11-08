@@ -9,7 +9,7 @@ import { EmailError, sendEmail } from "../../src/server/email/sendgrid.ts";
 import type { TemplateDataMap, TemplateKey } from "../../src/server/email/templates.ts";
 
 const USAGE =
-  'usage: npm run email:send-test -- --to <address> [--template test|provider_invitation|intake_code|followup_digest_daily] [--reply-to <address>] [--practice "<name>"] [--live]\n';
+  'usage: npm run email:send-test -- --to <address> [--template test|provider_invitation|intake_code|intake_submitted|onboarding_ops_alert|followup_digest_daily] [--reply-to <address>] [--practice "<name>"] [--live]\n';
 
 let values;
 try {
@@ -46,6 +46,12 @@ const SAMPLES: { [K in TemplateKey]: TemplateDataMap[K] } = {
     link: "https://example.invalid/intake/sample-token",
   },
   intake_code: { practiceName, code: "123456" },
+  intake_submitted: { practiceName, firstName: "Anita" },
+  onboarding_ops_alert: {
+    practiceName,
+    kind: "submitted",
+    link: "https://example.invalid/providers/sample-provider",
+  },
   // Synthetic rows: no real provider, payer or case.
   followup_digest_daily: {
     practiceName,

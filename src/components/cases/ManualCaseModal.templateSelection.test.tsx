@@ -65,6 +65,9 @@ vi.mock("@/hooks/usePayerNetworkTargets", () => ({
 vi.mock("@/hooks/usePayerForms", () => ({
   useTemplatePayerForms: () => ({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
 }));
+vi.mock("@/hooks/useProviderOnboardings", () => ({
+  useOpenProviderOnboardings: () => ({ data: [], isLoading: false, isError: false }),
+}));
 vi.mock("@/hooks/useCases", () => ({
   useCases: () => ({ data: mockState.cases, isLoading: false, isError: false }),
   useCreateCase: () => ({ mutate: vi.fn(), isPending: false }),

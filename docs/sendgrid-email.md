@@ -123,16 +123,33 @@ npm script: `"email:send-test": "node --env-file-if-exists=.env scripts/email/se
 - Forces sandbox unless `--live` is passed, whatever `SENDGRID_SANDBOX` says.
 - Prints only `sandbox: on|off`, `status: <actual>` and `x-message-id: …`. On failure prints `error: <kind> [status]` and exits 1. Uses `process.stdout.write`.
 
+## Templates in the registry
+
+| Key                     | To                               | Sent by                                               | Carries                                                                                                 |
+| ----------------------- | -------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `test`                  | The CLI's `--to`                 | `scripts/email/send-test.ts`                          | The practice name                                                                                       |
+| `provider_invitation`   | The invited provider             | `POST /api/provider-invites` and its resend           | Practice, her first name, the intake link                                                               |
+| `intake_code`           | The invite's address             | `POST /api/intake/code`                               | Practice, the 6-digit code (never in the subject)                                                       |
+| `intake_submitted`      | The invite's address             | `POST /api/intake/submit`, once per journey           | Practice and her first name only: nothing she entered is echoed                                         |
+| `onboarding_ops_alert`  | `ONBOARDING_OPS_EMAIL`, when set | `POST /api/intake/submit` and `POST /api/intake/help` | Practice, the kind (`submitted` or `help`) and a link to `/providers/<id>`; never her name or an answer |
+| `followup_digest_daily` | One coordinator                  | The follow-up digest job (MINT-108)                   | Her own follow-up rows                                                                                  |
+
+The Submit confirmation's outcome is kept in
+`provider_onboardings.submitted_email_delivery`. A retried Submit never sends
+it again. The ops alert is not recorded, and a failed alert never fails the
+request that triggered it.
+
 ## Environment
 
 Local keys go in the root `.env`, which is gitignored. Non-`VITE_` variables are never baked into the browser bundle (`vite.config.ts` loads only the `VITE_` prefix).
 
-| Variable              | Required | Notes                                                            |
-| --------------------- | -------- | ---------------------------------------------------------------- |
-| `SENDGRID_API_KEY`    | yes      | Restricted key, Mail Send only                                   |
-| `SENDGRID_FROM_EMAIL` | yes      | On Minted's authenticated domain                                 |
-| `SENDGRID_FROM_NAME`  | no       | Default `Minted Panel`                                           |
-| `SENDGRID_SANDBOX`    | no       | Only `true` validates without delivering; anything else delivers |
+| Variable               | Required | Notes                                                                                                                                  |
+| ---------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `SENDGRID_API_KEY`     | yes      | Restricted key, Mail Send only                                                                                                         |
+| `SENDGRID_FROM_EMAIL`  | yes      | On Minted's authenticated domain                                                                                                       |
+| `SENDGRID_FROM_NAME`   | no       | Default `Minted Panel`                                                                                                                 |
+| `SENDGRID_SANDBOX`     | no       | Only `true` validates without delivering; anything else delivers                                                                       |
+| `ONBOARDING_OPS_EMAIL` | no       | The inbox told when a provider submits onboarding or asks for help. Unset, no alert goes out. Needs `APP_BASE_URL` for the record link |
 
 Deployed: Vercel env vars per project, staging first. An operator sets these; the PR doesn't.
 

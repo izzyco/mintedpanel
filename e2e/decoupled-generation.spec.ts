@@ -12,6 +12,10 @@
 //           the code-level oneDoor.test.ts — not re-covered here.
 //   MINT-97 A candidate with no matching SOP is a visible blocked bucket in
 //           the reconciliation (2 of 2), not silently left out (1 of 1).
+//   PM decision 11  A provider the invite created waits for Admit: never a
+//           candidate, named in the not-generating list; a gap-fill journey
+//           holds nothing; the database backstop's refusal reaches the ledger
+//           as the plain sentence.
 // The harness write-throughs the create_case_with_tasks RPC (enforcing the
 // UNIQUE NULLS NOT DISTINCT 4-part key → 23505 on a duplicate) and records
 // every write so the read-only posture of the grid render is pinned.
@@ -320,6 +324,8 @@ interface HandlerOptions {
   duplicatePayerIds?: string[];
   /** RPC payer_ids that hard-fail (non-unique error) — the honest-failure path. */
   failPayerIds?: string[];
+  /** RPC provider_ids the credential_cases backstop refuses (onboarding_not_admitted). */
+  heldProviderIds?: string[];
 }
 
 const caseKey = (c: Record<string, unknown>) =>
@@ -333,6 +339,7 @@ function makeHandler(
   let seq = 0;
   const duplicates = new Set(opts.duplicatePayerIds ?? []);
   const hardFails = new Set(opts.failPayerIds ?? []);
+  const held = new Set(opts.heldProviderIds ?? []);
 
   const handler = async (route: Route) => {
     const req = route.request();
@@ -355,6 +362,18 @@ function makeHandler(
       const payerId = String(input.payer_id);
       if (hardFails.has(payerId)) {
         return json({ code: "XX000", message: "insert failed" }, 500);
+      }
+      if (held.has(String(input.provider_id))) {
+        return json(
+          {
+            code: "P0001",
+            message: "onboarding_not_admitted",
+            details:
+              "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.",
+            hint: null,
+          },
+          400,
+        );
       }
       if (
         duplicates.has(payerId) ||
@@ -833,4 +852,128 @@ test("MINT-97: a candidate with no matching SOP is its own blocked bucket — 2 
   );
   await expect(page.getByRole("button", { name: "Confirm & create 0 cases" })).toBeDisabled();
   expect(writes.filter((w) => w.method === "POST" || w.method === "PATCH")).toHaveLength(0);
+});
+
+const openJourney = (providerId: string, createdRecord: boolean) => ({
+  id: `j-${providerId}`,
+  org_id: ORG_ID,
+  provider_id: providerId,
+  created_record: createdRecord,
+  opened_at: "2026-11-01T00:00:00Z",
+  submitted_at: null,
+  admitted_at: null,
+  cancelled_at: null,
+});
+
+const HOLD_SENTENCE =
+  "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.";
+
+test("PM decision 11: a provider the invite created waits for Admit; a gap-fill journey holds nothing", async ({
+  context,
+  page,
+}) => {
+  // Nia's invite created her record and she has a location, so only the hold
+  // keeps her out. Brooke is an existing provider invited to fill gaps.
+  const f = baseFixtures("g-ob", "Outer Banks Rehab Group LLC");
+  f.providers = [
+    providerRow("pr-1", "Brooke", "Ostrander"),
+    providerRow("pr-nia", "Nia", "Brooks"),
+  ];
+  f.provider_group_assignments = [
+    groupAssignment("pr-1", "g-ob"),
+    groupAssignment("pr-nia", "g-ob"),
+  ];
+  f.provider_facility_assignments = [
+    facilityAssignment("pr-1", "f-1"),
+    facilityAssignment("pr-nia", "f-1"),
+  ];
+  f.payer_network_targets = [target("p1", "g-ob"), target("p2", "g-ob")];
+  f.provider_onboardings = [openJourney("pr-1", false), openJourney("pr-nia", true)];
+  const { handler, writes } = makeHandler(f);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+
+  await page.goto("/generation?group=g-ob");
+  await expect(page.getByTestId("grid-reconciliation")).toHaveText(
+    "Create 2 — 2 of 2 accounted for",
+    { timeout: 30000 },
+  );
+  await expect(page.getByLabel("Include Brooke Ostrander — Aetna NC")).toBeVisible();
+  await expect(page.getByLabel(/^Include Nia Brooks/)).toHaveCount(0);
+
+  await expect(page.getByText("2 provider × targets not generating")).toBeVisible();
+  const niaSkips = page.getByRole("listitem").filter({ hasText: "Nia Brooks" });
+  await expect(niaSkips).toHaveCount(2);
+  await expect(niaSkips.first()).toContainText(
+    "Onboarding not finished. Admit & assign on the provider's page first",
+  );
+  await expect(niaSkips.first().getByRole("link", { name: "Open provider" })).toHaveAttribute(
+    "href",
+    "/providers/pr-nia",
+  );
+
+  await page.getByRole("button", { name: "Confirm & create 2 cases" }).click();
+  await page.waitForURL(/\/cases\?.*run=/, { timeout: 30000 });
+  const rpcProviders = writes
+    .filter((w) => w.method === "RPC" && w.path === "create_case_with_tasks")
+    .map((w) => (w.body as { p_input: Record<string, unknown> }).p_input.provider_id);
+  expect(rpcProviders).toEqual(["pr-1", "pr-1"]);
+  expect(ledgerRows(writes).some((r) => r.provider_id === "pr-nia")).toBe(false);
+});
+
+test("PM decision 11: a group whose only provider waits for Admit still says why nothing generates", async ({
+  context,
+  page,
+}) => {
+  // A new practice's first hire: her invite created the record and Admit is
+  // what gives her a location, so the grid has no row at all.
+  const f = baseFixtures("g-ob", "Outer Banks Rehab Group LLC");
+  f.providers = [providerRow("pr-nia", "Nia", "Brooks")];
+  f.provider_group_assignments = [groupAssignment("pr-nia", "g-ob")];
+  f.provider_facility_assignments = [];
+  f.payer_network_targets = [target("p1", "g-ob")];
+  f.provider_onboardings = [openJourney("pr-nia", true)];
+  const { handler } = makeHandler(f);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+
+  await page.goto("/generation?group=g-ob");
+  await expect(page.getByText("Nothing to review here yet")).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText("1 provider × target not generating")).toBeVisible();
+  const skip = page.getByRole("listitem").filter({ hasText: "Nia Brooks" });
+  await expect(skip).toContainText(
+    "Onboarding not finished. Admit & assign on the provider's page first",
+  );
+  await expect(skip.getByRole("link", { name: "Open provider" })).toHaveAttribute(
+    "href",
+    "/providers/pr-nia",
+  );
+});
+
+test("PM decision 11 backstop: an invite that lands after the preview loaded is refused in plain words", async ({
+  context,
+  page,
+}) => {
+  const f = baseFixtures("g-ob", "Outer Banks Rehab Group LLC");
+  f.providers = [providerRow("pr-nia", "Nia", "Brooks")];
+  f.provider_group_assignments = [groupAssignment("pr-nia", "g-ob")];
+  f.provider_facility_assignments = [facilityAssignment("pr-nia", "f-1")];
+  f.payer_network_targets = [target("p1", "g-ob")];
+  const { handler, writes } = makeHandler(f, { heldProviderIds: ["pr-nia"] });
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context);
+
+  await page.goto("/generation?group=g-ob");
+  await expect(page.getByTestId("grid-reconciliation")).toHaveText(
+    "Create 1 — 1 of 1 accounted for",
+    { timeout: 30000 },
+  );
+  await page.getByRole("button", { name: "Confirm & create 1 case" }).click();
+  await expect(page.getByText(/1 row failed: Nia Brooks — Aetna NC/)).toBeVisible({
+    timeout: 30000,
+  });
+  const failed = ledgerRows(writes).filter((r) => r.disposition === "failed");
+  expect(failed).toHaveLength(1);
+  expect(failed[0].reason).toBe(HOLD_SENTENCE);
+  expect(f.credential_cases).toHaveLength(0);
 });

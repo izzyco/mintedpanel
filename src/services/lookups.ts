@@ -123,6 +123,10 @@ export interface CreateNoteInput {
   content: string;
 }
 
+// Staff notes always carry their author. A provider note with none is a help
+// request she sent from the onboarding form (request_intake_help).
+const ONBOARDING_FORM_AUTHOR = "Provider (onboarding form)";
+
 export async function getNotesFor(entityType: NoteEntityType, entityId: string): Promise<Note[]> {
   const orgId = requireActiveOrg();
   const { data, error } = await supabase
@@ -152,7 +156,11 @@ export async function getNotesFor(entityType: NoteEntityType, entityId: string):
 
   const merged = rows.map((n) => ({
     ...n,
-    author_name: n.author_id ? (nameMap.get(n.author_id as string) ?? null) : null,
+    author_name: n.author_id
+      ? (nameMap.get(n.author_id as string) ?? null)
+      : entityType === "provider"
+        ? ONBOARDING_FORM_AUTHOR
+        : null,
   }));
   return camelizeRow<Note[]>(merged);
 }

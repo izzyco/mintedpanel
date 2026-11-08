@@ -365,6 +365,32 @@ export function checkDocumentFile(file: {
   return null;
 }
 
+export type StoredObjectProblem = "missing" | "size_limit" | "size_mismatch" | "type_mismatch";
+
+/** The finalize check on an object Storage listed (TE-4): it exists, its
+ * size is inside the cap, and it has the declared type. With `sizeBytes`
+ * its size must also be exactly that. Other metadata Storage leaves out is
+ * not held against the object. */
+export function checkStoredObject(
+  object: { metadata?: Record<string, unknown> | null } | undefined,
+  expected: { maxBytes: number; mimeType: string; sizeBytes?: number },
+): { ok: true; size: number | null } | { ok: false; problem: StoredObjectProblem } {
+  if (!object) return { ok: false, problem: "missing" };
+  const meta = object.metadata ?? {};
+  const size = typeof meta.size === "number" ? meta.size : null;
+  const mimetype = typeof meta.mimetype === "string" ? meta.mimetype : null;
+  if (size !== null && (size <= 0 || size > expected.maxBytes)) {
+    return { ok: false, problem: "size_limit" };
+  }
+  if (expected.sizeBytes !== undefined && size !== expected.sizeBytes) {
+    return { ok: false, problem: "size_mismatch" };
+  }
+  if (mimetype !== null && mimetype !== expected.mimeType) {
+    return { ok: false, problem: "type_mismatch" };
+  }
+  return { ok: true, size };
+}
+
 /** Collapse a user filename to a storage-safe key segment. Never empty. */
 export function safeFileName(raw: string): string {
   const trimmed = raw

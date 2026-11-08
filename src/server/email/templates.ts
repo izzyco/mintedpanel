@@ -15,6 +15,11 @@ export interface TemplateDataMap {
   test: { practiceName: string };
   provider_invitation: { practiceName: string; firstName: string; link: string };
   intake_code: { practiceName: string; code: string };
+  // To her after Submit. Nothing she sent is echoed back.
+  intake_submitted: { practiceName: string; firstName: string };
+  // To ONBOARDING_OPS_EMAIL when she submits or asks for help: the practice
+  // and a link to the record, never her name or anything she entered.
+  onboarding_ops_alert: { practiceName: string; kind: "submitted" | "help"; link: string };
   // MINT-108: the coordinator follow-up digest (daily, weekly or twice a
   // day; the key keeps its first name). The key is the
   // catalog's (src/lib/notificationTemplates.ts); the data is built by
@@ -252,5 +257,42 @@ export const TEMPLATES: { [K in TemplateKey]: (data: TemplateDataMap[K]) => Rend
       ].join(""),
     ),
   }),
+  intake_submitted: ({ practiceName, firstName }) => {
+    const thanks = "Thank you for sending your credentialing details.";
+    const next = `${practiceName} has them and will be in touch if anything else is needed.`;
+    const changed = `If something has changed, contact ${practiceName}.`;
+    return {
+      subject: `${practiceName} has your credentialing details`,
+      text: [
+        `Hi ${plainInline(firstName)},`,
+        `${thanks} ${plainInline(next)}`,
+        plainInline(changed),
+        sentOnBehalf(plainInline(practiceName)),
+      ].join("\n\n"),
+      html: emailShell(
+        practiceName,
+        [
+          `<p style="${GAP}">Hi ${escapeHtml(firstName)},</p>`,
+          `<p style="${GAP}">${thanks} ${escapeHtml(next)}</p>`,
+          `<p style="${GAP}${MUTED}">${escapeHtml(changed)}</p>`,
+        ].join(""),
+      ),
+    };
+  },
+  onboarding_ops_alert: ({ practiceName, kind, link }) => {
+    const what =
+      kind === "submitted"
+        ? "submitted the onboarding form"
+        : "asked for help with the onboarding form";
+    const line = `A provider at ${practiceName} ${what}.`;
+    return {
+      subject:
+        kind === "submitted"
+          ? `Onboarding form submitted at ${practiceName}`
+          : `Onboarding help requested at ${practiceName}`,
+      text: `${plainInline(line)}\n\nOpen the provider record: ${link}`,
+      html: `<p>${escapeHtml(line)}</p><p><a href="${escapeHtml(link)}">Open the provider record</a></p>`,
+    };
+  },
   followup_digest_daily: followUpDigest,
 };

@@ -1,9 +1,10 @@
 // Provider onboarding slice 1: a staff writer invites a provider (canvas board
 // 1's modal). The server creates the onboarding provider and emails the link;
-// a duplicate comes back as the existing provider with a Resend offer.
+// a duplicate comes back as the existing provider with a Resend offer. A match
+// outside the chosen group joins that group on the existing record, with no
+// email.
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -17,24 +18,24 @@ import { InviteFields } from "@/components/providers/InviteFields";
 import { EMPTY_INVITE, inviteFieldsReady } from "@/lib/inviteFields";
 import { useProviderGroups } from "@/hooks/useLookups";
 import { useCreateProviderInvite, useResendProviderInvite } from "@/hooks/useProviderInvites";
-import type { InviteDelivery } from "@/services/providerInvites";
+import { inviteErrorMessage, notifyDelivery } from "@/components/providers/inviteFeedback";
+import type { ProviderInviteResult } from "@/services/providerInvites";
 
-function notifyDelivery(delivery: InviteDelivery, sentMessage: string) {
-  if (delivery === "sent") toast.success(sentMessage);
-  else if (delivery === "sandbox")
-    toast.warning("Invite saved. Email is in sandbox mode, so nothing was delivered.");
-  else toast.warning("Invite saved, but the email didn't send. Resend it in 10 minutes.");
-}
+type Match = Extract<ProviderInviteResult, { outcome: "already_exists" | "added_group" }>;
 
 export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
   const groups = useProviderGroups();
   const invite = useCreateProviderInvite();
   const resend = useResendProviderInvite();
   const [values, setValues] = useState(EMPTY_INVITE);
-  const [existingId, setExistingId] = useState<string | null>(null);
+  const [match, setMatch] = useState<Match | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const ready = inviteFieldsReady(values);
+  const groupOptions = (groups.data ?? [])
+    .filter((g) => g.isActive)
+    .map((g) => ({ id: g.id, name: g.name }));
+  const groupName = groupOptions.find((g) => g.id === values.groupId)?.name ?? "the group";
 
   async function onSend() {
     setError(null);
@@ -48,26 +49,26 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
         npi: npi.trim() || undefined,
         startDate: startDate || undefined,
       });
-      if (result.outcome === "already_exists") {
-        setExistingId(result.providerId);
+      if (result.outcome !== "created") {
+        setMatch(result);
         return;
       }
       notifyDelivery(result.delivery, `Invite sent to ${email.trim()}`);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The invite couldn't be sent.");
+      setError(inviteErrorMessage(err, "The invite couldn't be sent."));
     }
   }
 
   async function onResend() {
-    if (!existingId) return;
+    if (!match) return;
     setError(null);
     try {
-      const { delivery, email: sentTo } = await resend.mutateAsync(existingId);
+      const { delivery, email: sentTo } = await resend.mutateAsync(match.providerId);
       notifyDelivery(delivery, `Invite sent to ${sentTo}`);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "The invite couldn't be resent.");
+      setError(inviteErrorMessage(err, "The invite couldn't be resent."));
     }
   }
 
@@ -81,7 +82,26 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
           </DialogDescription>
         </DialogHeader>
 
-        {existingId ? (
+        {match?.outcome === "added_group" ? (
+          <div className="space-y-2 text-[13px]">
+            <p>
+              A provider with this email or NPI was already in this organization. Their record now
+              includes {groupName}.
+            </p>
+            <p className="text-muted-foreground">
+              No email was sent. To review their details, open their{" "}
+              <Link
+                to="/providers/$id"
+                params={{ id: match.providerId }}
+                className="underline"
+                onClick={onClose}
+              >
+                provider record
+              </Link>
+              .
+            </p>
+          </div>
+        ) : match ? (
           <div className="space-y-2 text-[13px]">
             <p>A provider with this email or NPI is already in this organization.</p>
             <p className="text-muted-foreground">
@@ -89,7 +109,7 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
               or correct their details first, open their{" "}
               <Link
                 to="/providers/$id"
-                params={{ id: existingId }}
+                params={{ id: match.providerId }}
                 className="underline"
                 onClick={onClose}
               >
@@ -99,13 +119,7 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
             </p>
           </div>
         ) : (
-          <InviteFields
-            values={values}
-            onChange={setValues}
-            groups={(groups.data ?? [])
-              .filter((g) => g.isActive)
-              .map((g) => ({ id: g.id, name: g.name }))}
-          />
+          <InviteFields values={values} onChange={setValues} groups={groupOptions} />
         )}
 
         {error ? (
@@ -115,17 +129,23 @@ export function InviteProviderDialog({ onClose }: { onClose: () => void }) {
         ) : null}
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
-          {existingId ? (
-            <Button onClick={onResend} disabled={resend.isPending}>
-              {resend.isPending ? "Sending…" : "Send them an invite"}
-            </Button>
+          {match?.outcome === "added_group" ? (
+            <Button onClick={onClose}>Done</Button>
           ) : (
-            <Button onClick={onSend} disabled={!ready || invite.isPending}>
-              {invite.isPending ? "Sending…" : "Send invite"}
-            </Button>
+            <>
+              <Button variant="outline" onClick={onClose}>
+                Cancel
+              </Button>
+              {match ? (
+                <Button onClick={onResend} disabled={resend.isPending}>
+                  {resend.isPending ? "Sending…" : "Send them an invite"}
+                </Button>
+              ) : (
+                <Button onClick={onSend} disabled={!ready || invite.isPending}>
+                  {invite.isPending ? "Sending…" : "Send invite"}
+                </Button>
+              )}
+            </>
           )}
         </DialogFooter>
       </DialogContent>

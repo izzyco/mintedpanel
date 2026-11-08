@@ -9,18 +9,11 @@ import {
 import { fmtDate } from "@/lib/format";
 import { canResend, deriveStage, deriveWaitingOn, isBeforeSubmit } from "@/lib/providerOnboarding";
 import { cn } from "@/lib/utils";
-import type { OnboardingHire, OnboardingStage } from "@/types/providerOnboarding";
-import { WAITING_ON_INK, WAITING_ON_RING, waitingOnLine } from "./hireCopy";
+import type { OnboardingHire } from "@/types/providerOnboarding";
+import { STAGE_STEPS, WAITING_ON_INK, waitingOnLine } from "./hireCopy";
+import { StageTracker } from "./StageTracker";
 
 export type HireCommand = "resend" | "mark_contacted" | "fix_email" | "cancel" | "start_date";
-
-const STEPS: { stage: OnboardingStage; label: string }[] = [
-  { stage: "invited", label: "Invited" },
-  { stage: "started", label: "Started" },
-  { stage: "submitted", label: "Submitted" },
-  { stage: "ready", label: "Ready for credentialing" },
-  { stage: "in_credentialing", label: "In credentialing" },
-];
 
 // Disabled, but its text keeps full contrast: the dashed border says "not now".
 export const SENT_LOOK =
@@ -48,38 +41,6 @@ export function ResendButton({
     <Button variant="outline" disabled className={cn(SENT_LOOK, className)}>
       Sent · resend in 10 min
     </Button>
-  );
-}
-
-function Tracker({ hire }: { hire: OnboardingHire }) {
-  const current = STEPS.findIndex((s) => s.stage === deriveStage(hire.events));
-  const ring = WAITING_ON_RING[deriveWaitingOn(hire.events)];
-  return (
-    <div className="relative grid grid-cols-5 items-center">
-      <div
-        aria-hidden="true"
-        className="absolute inset-x-[10%] top-1/2 border-t-2 border-[var(--mp-border)]"
-      />
-      <div
-        aria-hidden="true"
-        className="absolute left-[10%] top-1/2 border-t-2 border-primary"
-        style={{ width: `${current * 20}%` }}
-      />
-      {STEPS.map((step, i) => (
-        <div key={step.stage} className="flex justify-center">
-          <span
-            aria-hidden="true"
-            className={cn(
-              "relative z-[1] size-[14px] rounded-full",
-              i < current && "bg-primary",
-              i === current && cn("border-[3px] bg-card", ring),
-              i > current && "border-2 border-[var(--mp-border)] bg-card",
-            )}
-          />
-        </div>
-      ))}
-      <span className="sr-only">Stage: {STEPS[current].label}</span>
-    </div>
   );
 }
 
@@ -131,7 +92,7 @@ export function HireTable({
               Hire
             </div>
             <div role="columnheader" className="grid grid-cols-5 gap-1 text-center leading-tight">
-              {STEPS.map((s) => (
+              {STAGE_STEPS.map((s) => (
                 <span key={s.stage}>{s.label}</span>
               ))}
             </div>
@@ -166,7 +127,7 @@ export function HireTable({
                   <HireLine hire={hire} onAddStartDate={() => onCommand("start_date", hire)} />
                 </div>
                 <div role="cell">
-                  <Tracker hire={hire} />
+                  <StageTracker stage={deriveStage(hire.events)} waitingOn={who} />
                 </div>
                 <div role="cell" className="text-[12px]">
                   <span className={cn("font-semibold", WAITING_ON_INK[who])}>{line.who}</span>

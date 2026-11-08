@@ -1256,3 +1256,217 @@ Also new: `normalize_lifecycle_state(text)`, `org_is_writable(uuid)`,
 has no ON DELETE action, so an organization with Mission Control ledger rows
 cannot be hard-deleted; offboard it instead. The teardown SQL in `docs/ops/`
 predates this.
+
+## Provider onboarding (repository-only)
+
+Slice 1 is `20261025120000` (applied on staging). R1 is ten migrations,
+`20261106200000` through `20261107040000`, repo-only until an operator applies
+them in filename order after Mission Control M3
+(`docs/provider-onboarding/r1-operator-steps.md`). Each file's header holds
+its verify queries, and each has a rolled-back smoke in `scripts/sql/`.
+`docs/provider-onboarding/data-map.md` says what every datum is and where it
+lands.
+
+Every table here has RLS on and no client write grant. Writes go only through
+SECURITY DEFINER RPCs, which write their own audit rows. Child tables carry
+`org_id` and reach their journey through an `(org_id, onboarding_id)` foreign
+key, so a row can't name another org's journey. Every tenant table is under
+the offboarded write freeze.
+
+### provider_intake_invites, provider_intake_codes, provider_intake_sessions (slice 1)
+
+The link, the emailed code and the session, each stored as a sha256 hash
+only. An invite lasts 30 days, with one unrevoked invite per provider
+(partial unique). A code lasts 10 minutes and allows 5 attempts, at most 3
+codes per 10 minutes and 10 per day. A session lasts 2 hours, fixed.
+service_role only. R1 adds:
+
+- `provider_intake_invites.onboarding_id uuid NULL` → `provider_onboardings`,
+  backfilled for invites sent before the table existed.
+- `provider_intake_invites.delivery` and `provider_intake_codes.delivery`
+  (`text NULL`, CHECK `sent | sandbox | failed`) record what happened to the
+  email. `record_intake_email_delivery` writes each once.
+
+An invite is revoked by a resend, by a change to the record's email (case and
+spaces ignored), by termination (both through the AFTER UPDATE OF email,
+status trigger `revoke_intake_on_provider_change` on `providers`), by Admit
+and by Cancel. A
+revoked invite's sessions read nothing.
+
+### provider_onboardings (the journey)
+
+`id, org_id, provider_id, source (staff | practice | api), external_ref,
+created_record, locked_fields text[], created_by, opened_at,
+first_signed_in_at, consented_at, ssn_stored_at, submitted_at,
+submitted_email_delivery (sent | sandbox | failed), admitted_at, admitted_by,
+admitted_facility_id, cancelled_at, cancelled_by, last_help_at,
+last_contacted_at`. One row per onboarding journey. "Onboarding open" means
+`admitted_at` and `cancelled_at` are both null, and it lives here, never in
+`providers.status`.
+
+- `created_record` is true when the invite created the provider. Only such a
+  journey holds case creation until Admit or Cancel.
+- `locked_fields` is a subset of `ssn`, `npi` and `date_of_birth`. It names the
+  values on file when the journey opened. The intake RPCs never write them.
+- `provider_onboardings_one_open` is a partial unique index on `provider_id` for
+  open journeys. `(org_id, source, external_ref)` is unique when `external_ref`
+  is set. CHECK `provider_onboardings_one_ending` keeps a journey from being
+  both admitted and cancelled.
+- `(org_id, provider_id)` cascades from `providers`.
+  `(org_id, admitted_facility_id)` references `facilities`.
+- Member SELECT under RLS. service_role holds the table grants; the RPCs are
+  the only writers.
+- The backfill opened one journey per provider that already had an invite, with
+  `created_record = false` and no locks. `first_signed_in_at` is backfilled
+  from her earliest session.
+
+Stage and waiting-on are derived from the timestamps
+(`src/lib/providerOnboarding.ts`, `src/lib/onboardingCard.ts`), never stored.
+
+### provider_intake_settings
+
+One row (`id boolean` PK, CHECK `id`), `paused boolean NOT NULL DEFAULT false`.
+While it is true, `intake_paused()` returns true and every `/api/intake/*`
+route and both invite routes answer 503 `intake_paused`. The intake routes ask
+`intake_link_paused(p_token_hash)`, which is also true for a link whose org is
+not writable (`org_is_writable`). The operator flips it
+with `UPDATE public.provider_intake_settings SET paused = true;`. service_role
+SELECT only. Not org-scoped.
+
+### provider_intake_drafts, provider_intake_consents
+
+Drafts: `onboarding_id` PK, `org_id`, `answers jsonb` (an object in the
+`IntakeAnswers` shape from `src/lib/intakeAnswers.ts`), `step`
+(`form | documents`, where signing in resumes), `version int` (above 0),
+`updated_at`. One row per journey. `answers` never holds the SSN, a password or
+a locked field, because `save_intake_draft` drops those keys. A save with a
+stale version is a conflict. service_role only. No audit row per save.
+
+Consents: `id, org_id, onboarding_id, text_version int, typed_name (1 to 200
+characters), signed_at (server time), session_id` → `provider_intake_sessions`.
+The table is append-only. service_role holds SELECT and INSERT only. The first signature
+sets `provider_onboardings.consented_at`. Signing again appends a row. Both
+tables cascade with the journey.
+
+### provider_portal_credentials
+
+`provider_id, portal (caqh | pecos), org_id, username, password_ciphertext
+bytea, key_version, onboarding_id, created_by, created_at, updated_by,
+updated_at`, PK `(provider_id, portal)`. The CAQH and PECOS logins a provider
+saves during intake.
+
+- `username` is in the clear (1 to 100 characters). The password is
+  encrypted with pgcrypto `pgp_sym_encrypt` under `_portal_credentials_key()`:
+  the Supabase Vault secret `portal_credentials_key`, else the GUC
+  `app.settings.portal_credentials_key`. It is never the SSN key. With
+  neither set, every store and reveal raises.
+- `onboarding_id` (→ `provider_onboardings`, ON DELETE SET NULL) is the
+  journey that wrote the row, so Cancel can remove it.
+  `(org_id, provider_id)` cascades from `providers`.
+- Zero-trust like `provider_ssn_vault`: RLS on, no policies, and no table
+  grant to anon, authenticated or service_role. Only three RPCs reach it:
+  `store_intake_portal_login`, `read_intake_state` (which portals are on
+  file) and `reveal_portal_credential`.
+
+### provider_intake_uploads and the provider-intake-uploads bucket
+
+The bucket `provider-intake-uploads` is private, 25 MiB
+(`file_size_limit` 26214400), PDF, PNG and JPEG only. No `storage.objects`
+policy names it, so only the service role reaches it.
+
+`id, org_id, onboarding_id, slot_key, doc_type, file_name, size_bytes,
+content_type, object_path, expires_on, created_at, finalized_at, removed_at`.
+One row per file she sent before Submit.
+
+- `slot_key` is `cv`, `diploma`, `board_cert`, `coi`, `other` or
+  `license:XX`. `doc_type` is pinned to the slot (`state_license` for a
+  license slot).
+- `file_name` is storage-safe (`^[A-Za-z0-9._-]{1,100}$`). `size_bytes` is at
+  most 10485760. `object_path` is unique and CHECK-pinned to
+  `org/<org>/onboarding/<journey>/<id>/<file_name>`.
+- `expires_on` is allowed on a COI only. A license copy takes its expiry from
+  the license.
+- At most one live (not removed) row per `(onboarding_id, slot_key)`. Removed
+  rows stay as the trail.
+- service_role SELECT only. Written by `begin_intake_upload`,
+  `finish_intake_upload`, `remove_intake_upload` and
+  `set_intake_upload_expiry`; read by `read_intake_upload` and
+  `read_intake_state`. No audit row per upload.
+- The rows cascade with the journey, but the objects don't. Whoever deletes a
+  journey deletes its prefix first.
+
+Submit copies each finished upload into `provider-documents` at
+`org/<org>/provider/<provider>/<upload id>/1/<file_name>` and inserts its
+`provider_documents` row with the upload id as the document id and the family
+id (version 1), so a retried Submit converges.
+
+### provider_onboarding_checks
+
+`id, org_id, onboarding_id, check_key (caqh_login | pecos_login |
+caqh_attestation), outcome (confirmed | problem), note (NULL, or 1 to 500
+characters), checked_by, checked_by_name, checked_at`. The person checks staff
+record on a journey. Automatic checks are computed on read and never stored.
+Append-only. The latest row per key is the answer. The keys mirror
+`PERSON_CHECK_KEYS` in `src/lib/onboardingCard.ts`. Member SELECT under RLS;
+written only by `record_onboarding_check`.
+
+### RPCs and triggers
+
+- **Invite RPCs** are granted to service_role, and the route passes the org
+  and actor. `create_provider_intake_invite` and
+  `resend_provider_intake_invite` both run the match rule
+  `_match_onboarding_provider`. `record_intake_email_delivery` stores a send
+  outcome, and `intake_paused()` reads the off switch.
+  `intake_link_paused(p_token_hash)` adds the link's org: true while that org
+  is not writable, so an offboarded org's link sends no code.
+- **Sign-in RPCs** are granted to service_role and start from the link hash.
+  They are `read_intake_link`, `issue_intake_code`, `verify_intake_code` (it
+  also sets `first_signed_in_at` once) and `revoke_intake_session`.
+  `read_intake_session` (slice 1) remains, but no route calls it.
+  `read_intake_state` replaced it.
+- **After sign-in**, every RPC is granted to service_role and never takes an
+  id from the browser. Each resolves the session, invite, journey, provider
+  and org through `_intake_session_context`, from the session hash and the
+  link hash together. They are `read_intake_state`, `save_intake_draft`,
+  `sign_intake_consent`, `store_intake_ssn`, `store_intake_portal_login`,
+  `begin_intake_upload`, `read_intake_upload`, `finish_intake_upload`,
+  `remove_intake_upload`, `set_intake_upload_expiry`,
+  `submit_provider_intake` and `request_intake_help`.
+  - `store_intake_ssn` writes `provider_ssn_vault` through
+    `_ssn_vault_upsert` and refuses a locked SSN.
+  - `submit_provider_intake` puts her answers onto `providers` and
+    `state_licenses`, inserts the document rows and sets `submitted_at`, in
+    one transaction. It never writes a locked field, `email` or `status`.
+  - `request_intake_help` writes a provider note and `last_help_at`.
+- **`cancel_provider_onboarding(p_org_id, p_actor_id, p_actor_name, p_provider_id)`**
+  is granted to service_role and works before Submit only. It revokes her
+  invites and sessions. Then it deletes a record the invite created with nothing
+  else on it, or closes the journey and removes what it wrote. It returns the
+  Storage prefixes the route deletes. The DELETE audit row of a deleted record
+  keeps each consent's `text_version` and `signed_at`, never the typed name.
+- **`onboarding_orphan_files(p_cutoff, p_limit)`** is granted to service_role
+  and read by the `onboarding-file-cleanup` job. It reads `storage.objects`
+  and names, oldest first, the onboarding files older than the cutoff that no
+  step reads again: holding-bucket files of a removed or missing upload or an
+  ended journey, and vault files under an ended journey's upload folder with
+  no `provider_documents` row of that upload's id.
+- **Staff RPCs** are granted to authenticated.
+  `read_provider_onboarding(p_provider_id)` answers any member of her org,
+  with booleans and counts only, never a secret. It returns NULL for a
+  provider with no journey, a missing provider, or one outside the caller's
+  orgs (`20261107030000`). `record_onboarding_check`,
+  `mark_onboarding_contacted` and `admit_provider_onboarding` need an admin
+  or specialist of the journey's org, checked NULL-safe by
+  `_onboarding_for_writer`. A non-member gets `onboarding_not_found` from
+  those three.
+  `reveal_portal_credential(p_provider_id, p_portal, p_justification)` needs
+  an admin of her org and a reason. It writes one READ audit row with the
+  admin's name, the portal and the reason, never the login.
+- `admit_provider_onboarding` writes her `provider_facility_assignments` row
+  for the location when she has none there, makes it primary when she has no
+  primary, sets `admitted_*` and revokes her invites and sessions. It never
+  changes `providers.status`.
+- `block_case_until_onboarding_admitted`, a BEFORE INSERT trigger on
+  `credential_cases`, raises `onboarding_not_admitted` (P0001) for a provider
+  whose open journey has `created_record = true`. Like the generation stage
+  gate, it applies to sessions with JWT claims only.

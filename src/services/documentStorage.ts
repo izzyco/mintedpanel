@@ -29,6 +29,7 @@ import {
   DOCUMENT_MAX_BYTES,
   DOCUMENT_MIME_TYPES,
   DOWNLOAD_URL_TTL_SECONDS,
+  checkStoredObject,
   documentFamilyPrefix,
   documentObjectPath,
   expirationDateError,
@@ -41,6 +42,7 @@ import {
   safeFileName,
   signedDateError,
   utcTodayIso,
+  type StoredObjectProblem,
 } from "@/lib/documents";
 import type { DocumentKind, DocumentOwnerType, ProviderDocument } from "@/types";
 
@@ -337,6 +339,13 @@ export async function createDocumentUploadIntent(
   };
 }
 
+const STORED_OBJECT_MESSAGES: Record<StoredObjectProblem, string> = {
+  missing: "The uploaded file was not found in storage",
+  size_limit: "The uploaded file exceeds the size limit",
+  size_mismatch: "The uploaded file does not match its declared size",
+  type_mismatch: "The uploaded file does not match its declared type",
+};
+
 export async function finalizeDocument(
   ctx: DocumentStorageServiceCtx,
   input: FinalizeDocumentInput,
@@ -405,22 +414,12 @@ export async function finalizeDocument(
     .from(DOCUMENT_BUCKET)
     .list(parent, { search: storedName });
   if (listErr) throw listErr;
-  const object = (objects ?? []).find((o) => o.name === storedName);
-  if (!object) {
-    return { kind: "rejected", status: 422, message: "The uploaded file was not found in storage" };
-  }
-  const objectMeta = (object.metadata ?? {}) as { size?: number; mimetype?: string };
-  const size = typeof objectMeta.size === "number" ? objectMeta.size : null;
-  const mimetype = typeof objectMeta.mimetype === "string" ? objectMeta.mimetype : null;
-  if (size !== null && (size <= 0 || size > DOCUMENT_MAX_BYTES)) {
-    return { kind: "rejected", status: 422, message: "The uploaded file exceeds the size limit" };
-  }
-  if (mimetype !== null && mimetype !== input.mimeType) {
-    return {
-      kind: "rejected",
-      status: 422,
-      message: "The uploaded file does not match its declared type",
-    };
+  const stored = checkStoredObject(
+    (objects ?? []).find((o) => o.name === storedName),
+    { maxBytes: DOCUMENT_MAX_BYTES, mimeType: input.mimeType },
+  );
+  if (!stored.ok) {
+    return { kind: "rejected", status: 422, message: STORED_OBJECT_MESSAGES[stored.problem] };
   }
 
   const head = currentVersions(family)[0] ?? null;

@@ -142,7 +142,7 @@ export async function sendEmail<K extends TemplateKey>(
 
   let response: Response;
   try {
-    response = await doFetch(SENDGRID_URL, {
+    response = await doFetch(env.apiUrl ?? SENDGRID_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload),

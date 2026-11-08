@@ -111,8 +111,13 @@ export interface DocumentSlot {
 export interface VerificationCheck {
   key: string;
   label: string;
-  status: "confirmed" | "pending";
+  status: "confirmed" | "pending" | "problem";
   method: "auto" | "person";
-  confirmedBy: string | null; // person checks only
+  confirmedBy: string | null; // person checks only: who recorded the latest answer
   action: "test_login" | "confirm" | null;
+  /** One line under the label: what is missing, the record's value, or a problem note. */
+  detail?: string | null;
+  checkedAt?: string | null; // person checks only
+  /** The record tab where an automatic check is fixed. */
+  section?: "identity" | "licenses" | "documents";
 }

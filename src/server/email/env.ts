@@ -6,6 +6,8 @@ export interface EmailEnv {
   fromEmail?: string;
   fromName: string;
   sandbox: boolean;
+  /** Set only under `vite dev`: a local mail capture that stands in for SendGrid. */
+  apiUrl?: string;
 }
 
 function pick(name: string): string | undefined {
@@ -20,5 +22,8 @@ export function resolveEmailEnv(): EmailEnv {
     fromName: pick("SENDGRID_FROM_NAME") ?? "Minted Panel",
     // Delivers unless exactly "true". The CLI forces sandbox on its own.
     sandbox: pick("SENDGRID_SANDBOX") === "true",
+    // A build replaces DEV with false, so no deployed server can be pointed
+    // away from SendGrid. Node (the CLI) has no import.meta.env at all.
+    apiUrl: import.meta.env?.DEV === true ? pick("SENDGRID_API_URL") : undefined,
   };
 }

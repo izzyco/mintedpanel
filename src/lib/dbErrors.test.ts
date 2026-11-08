@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { ONBOARDING_HOLD_MESSAGE } from "./providerOnboarding";
 import {
   errorMessage,
   isMissingNotificationSequenceTablesError,
+  isMissingProviderOnboardingsError,
   toError,
   translateDbError,
   UniqueViolationError,
@@ -223,6 +226,24 @@ describe("translateDbError — everything else passes through", () => {
     );
   });
 
+  it("turns the case backstop's onboarding_not_admitted into the plain sentence", () => {
+    const raised = {
+      code: "P0001",
+      message: "onboarding_not_admitted",
+      details: "Any detail the database sends.",
+    };
+    expect(messageOf(translateDbError(raised))).toBe(ONBOARDING_HOLD_MESSAGE);
+    expect(errorMessage(raised, "Could not create the case.")).toBe(ONBOARDING_HOLD_MESSAGE);
+  });
+
+  it("raises the same sentence from the database as its DETAIL", () => {
+    const sql = readFileSync(
+      "supabase/migrations/20261107020000_cases_wait_for_onboarding_admit.sql",
+      "utf8",
+    );
+    expect(sql.replaceAll("''", "'")).toContain(`DETAIL = '${ONBOARDING_HOLD_MESSAGE}'`);
+  });
+
   it("translates sop_portal_binding_ambiguous into a friendly domain message", () => {
     const result = translateDbError({
       code: "P0001",
@@ -290,5 +311,38 @@ describe("isMissingNotificationSequenceTablesError (MINT-107 deploy order)", () 
     ).toBe(false);
     expect(isMissingNotificationSequenceTablesError(new Error("Failed to fetch"))).toBe(false);
     expect(isMissingNotificationSequenceTablesError(null)).toBe(false);
+  });
+});
+
+describe("isMissingProviderOnboardingsError (20261106200000 deploy order)", () => {
+  it("recognises the schema-cache and statement errors for provider_onboardings", () => {
+    expect(
+      isMissingProviderOnboardingsError({
+        code: "PGRST205",
+        message: "Could not find the table 'public.provider_onboardings' in the schema cache",
+      }),
+    ).toBe(true);
+    expect(
+      isMissingProviderOnboardingsError({
+        code: "42P01",
+        message: 'relation "public.provider_onboardings" does not exist',
+      }),
+    ).toBe(true);
+  });
+
+  it("lets every other failure through", () => {
+    expect(
+      isMissingProviderOnboardingsError({
+        code: "PGRST205",
+        message: "Could not find the table 'public.provider_onboarding_checks' in the schema cache",
+      }),
+    ).toBe(false);
+    expect(
+      isMissingProviderOnboardingsError({
+        code: "42501",
+        message: "permission denied for table provider_onboardings",
+      }),
+    ).toBe(false);
+    expect(isMissingProviderOnboardingsError(new Error("Failed to fetch"))).toBe(false);
   });
 });

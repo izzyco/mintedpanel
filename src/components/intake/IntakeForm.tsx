@@ -1,5 +1,6 @@
 // Boards 5a (first visit) and 5a-2 (a re-invited provider reviews what is on
 // file). The SSN and the logins are write-only: their inputs are uncontrolled,
+// each goes from its input straight to the vault when she leaves the field,
 // and only the last 4 digits or an "on file" flag ever reach the draft.
 import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
 import { Check, ChevronDown, Eye, EyeOff } from "lucide-react";
@@ -17,6 +18,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
+import {
+  INTAKE_ANSWER_MAX_LENGTH,
+  INTAKE_PASSWORD_MAX_LENGTH,
+  INTAKE_USERNAME_MAX_LENGTH,
+  type IntakePortal,
+  type SaveLoginResult,
+  type SaveSsnResult,
+} from "@/lib/intakeAnswers";
 import type { HelpReason } from "@/lib/intakeFlow";
 import { isValidNpi } from "@/lib/providerIdentity";
 import {
@@ -36,7 +45,7 @@ import {
   thingsLeft,
   type FieldError,
 } from "@/lib/intakeForm";
-import { canContinue, sectionProgress } from "@/lib/providerOnboarding";
+import { sectionProgress } from "@/lib/providerOnboarding";
 import { PROVIDER_TAXONOMY_OPTIONS, taxonomyLabel } from "@/lib/providerTaxonomy";
 import { US_STATES } from "@/lib/usStates";
 import { cn } from "@/lib/utils";
@@ -52,20 +61,38 @@ const SECTIONS = [
 export function FormStep({
   practiceName,
   draft,
+  status,
   onChange,
   onContinue,
   onFinishLater,
   onHelp,
+  onSaveSsn,
+  onSaveLogin,
+  showMissing = false,
 }: {
   practiceName: string;
   draft: IntakeDraft;
-  onChange: (draft: IntakeDraft) => void;
-  onContinue: () => void;
+  /** Whether her answers are saved, shown above the buttons. */
+  status?: ReactNode;
+  /** Applied to the latest draft, which may be newer than this render's. */
+  onChange: (update: (draft: IntakeDraft) => IntakeDraft) => void;
+  /** False when something is still missing, so the form shows what. */
+  onContinue: () => Promise<boolean>;
   onFinishLater: () => void;
   onHelp: (reason: HelpReason) => void;
+  /** Throws on a server or network failure. */
+  onSaveSsn: (full: string) => Promise<SaveSsnResult>;
+  /** Throws on a server or network failure. */
+  onSaveLogin: (
+    portal: IntakePortal,
+    username: string,
+    password: string,
+  ) => Promise<SaveLoginResult>;
+  /** Opens with the summary of what is missing, as after a Continue. */
+  showMissing?: boolean;
 }) {
   const today = localTodayIso();
-  const [tries, setTries] = useState(0);
+  const [tries, setTries] = useState(showMissing ? 1 : 0);
   // Removing a row shifts the rows below it; a new run remounts them so a
   // date half-typed in one row can't land in another.
   const [licenseRun, setLicenseRun] = useState(0);
@@ -84,7 +111,7 @@ export function FormStep({
   };
 
   const set = (path: FieldPath, value: string | null) =>
-    onChange(setField(draft, path, value, today));
+    onChange((latest) => setField(latest, path, value, today));
   const note = (field: FieldValue<string>) => provenance(field.source, today);
   const progress = sectionProgress(draft);
   const { identity, contact } = draft;
@@ -210,6 +237,7 @@ export function FormStep({
             note={note(identity.ssn)}
             error={errorAt("identity.ssn")}
             onLast4={(last4) => set(["identity", "ssn"], last4)}
+            onSave={onSaveSsn}
           />
         )}
       </Section>
@@ -258,6 +286,7 @@ export function FormStep({
               autoComplete={autoComplete}
               value={address[key].value ?? ""}
               onChange={(e) => set(["address", key], e.target.value)}
+              maxLength={INTAKE_ANSWER_MAX_LENGTH}
               className={BOX}
               {...ariaFor(memberError("contact.address", fieldId("address", key)))}
             />
@@ -279,6 +308,7 @@ export function FormStep({
               autoComplete="postal-code"
               value={address.zip.value ?? ""}
               onChange={(e) => set(["address", "zip"], e.target.value)}
+              maxLength={INTAKE_ANSWER_MAX_LENGTH}
               className={BOX}
               {...ariaFor(memberError("contact.address", fieldId("address", "zip")))}
             />
@@ -297,7 +327,7 @@ export function FormStep({
             type="button"
             variant="outline"
             className="h-11 border-[#D6D3CE] px-3 text-[13px] font-normal"
-            onClick={() => onChange(addLicense(draft))}
+            onClick={() => onChange(addLicense)}
             {...ariaFor(errorAt("licenses.none"))}
           >
             + Add a state
@@ -316,7 +346,7 @@ export function FormStep({
             onRemove={
               draft.licenses.length > 1
                 ? () => {
-                    onChange(removeLicense(draft, i));
+                    onChange((latest) => removeLicense(latest, i));
                     setLicenseRun((run) => run + 1);
                   }
                 : undefined
@@ -338,7 +368,7 @@ export function FormStep({
               login={login}
               onFile={draft.logins[login.flag]}
               error={errorAt(`logins.${login.key}`)}
-              onSave={() => onChange({ ...draft, logins: { ...draft.logins, [login.flag]: true } })}
+              onSave={onSaveLogin}
             />
           </div>
         ))}
@@ -346,6 +376,7 @@ export function FormStep({
 
       <HelpLine onHelp={onHelp} />
 
+      {status}
       <div className="flex gap-2">
         <Button
           type="button"
@@ -358,7 +389,11 @@ export function FormStep({
         <Button
           type="button"
           className="h-12 flex-1 text-[15px]"
-          onClick={() => (canContinue(draft) ? onContinue() : setTries((t) => t + 1))}
+          onClick={() =>
+            void onContinue().then((went) => {
+              if (!went) setTries((t) => t + 1);
+            })
+          }
         >
           Continue
         </Button>
@@ -435,6 +470,7 @@ function TextField({
         id={id}
         value={field.value ?? ""}
         onChange={(e) => onSet(path, e.target.value)}
+        maxLength={INTAKE_ANSWER_MAX_LENGTH}
         className={BOX}
         {...input}
         {...ariaFor(error)}
@@ -670,6 +706,7 @@ function LicenseRow({
             id={idOf("number")}
             value={row.number.value ?? ""}
             onChange={(e) => onSet("number", e.target.value)}
+            maxLength={INTAKE_ANSWER_MAX_LENGTH}
             autoComplete="off"
             className={BOX}
             {...ariaFor(errorFor("number"))}
@@ -716,19 +753,28 @@ function SavedRow({
   );
 }
 
+const SSN_NOT_SAVED =
+  "We couldn't save your Social Security number just now. Move to another field to try again.";
+const SSN_LOCKED =
+  "Your Social Security number is already on file and can't be changed here. Ask your practice to fix it.";
+
 // The input is uncontrolled, so the full number lives only in the field while
-// she is on this step (Show reveals it) and never in React state. The draft
-// keeps the last 4; leaving the step drops the field, and with it the number.
+// she is on this step (Show reveals it) and never in React state. Leaving the
+// field sends it to the vault; the draft keeps the last 4 the vault answers.
+// Leaving changes nothing on screen until the vault answers: leaving by
+// pressing Continue must not move Continue out from under the pointer.
 function SsnField({
   last4,
   note,
   error,
   onLast4,
+  onSave,
 }: {
   last4: string | null;
   note: string | null;
   error: FieldError | null;
   onLast4: (last4: string | null) => void;
+  onSave: (full: string) => Promise<SaveSsnResult>;
 }) {
   const id = fieldId("identity", "ssn");
   const toggleId = `${id}-show`;
@@ -738,6 +784,8 @@ function SsnField({
   const [kept, setKept] = useState<string | null>(null);
   const [visible, setVisible] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // Typed since the vault last took it, so leaving an unchanged field sends nothing.
+  const changed = useRef(false);
 
   if (last4 && !entering) {
     return (
@@ -745,7 +793,7 @@ function SsnField({
         id={id}
         label="Social Security number"
         required
-        note={`${note ? `${note}. ` : ""}Only the last 4 digits are kept.`}
+        note={`${note ? `${note}. ` : ""}Stored securely. Only the last 4 digits are shown.`}
       >
         <SavedRow
           changeLabel="Change your Social Security number"
@@ -766,16 +814,36 @@ function SsnField({
     );
   }
 
+  // A number the vault didn't take doesn't count as given.
+  async function save(full: string) {
+    try {
+      const result = await onSave(full);
+      if (result.kind === "stored") {
+        changed.current = false;
+        setProblem(null);
+      }
+      if (result.kind === "locked") {
+        setProblem(SSN_LOCKED);
+        onLast4(null);
+      }
+    } catch {
+      setProblem(SSN_NOT_SAVED);
+      onLast4(null);
+    }
+  }
+
   function blur(e: FocusEvent<HTMLInputElement>) {
     if ((e.relatedTarget as HTMLElement | null)?.id === toggleId) return;
     const value = e.currentTarget.value;
     const digits = value.replace(/\D/g, "");
     const flagged = ssnProblem(value);
     setVisible(false);
-    setProblem(flagged);
     if (digits.length === 9 && !flagged) {
-      onLast4(digits.slice(5));
-    } else if (digits.length === 0 && kept) {
+      if (changed.current) void save(value);
+      return;
+    }
+    setProblem(flagged);
+    if (digits.length === 0 && kept) {
       onLast4(kept);
       setEntering(false);
     } else {
@@ -793,7 +861,7 @@ function SsnField({
       note={
         kept
           ? `Leave it empty to keep •••-••-${kept}.`
-          : "Only the last 4 digits are kept once you continue."
+          : "Saved securely when you leave this field. Only the last 4 digits are shown."
       }
     >
       <div className="relative">
@@ -807,6 +875,7 @@ function SsnField({
           autoFocus={Boolean(kept)}
           onInput={(e) => {
             e.currentTarget.value = typeSsn(e.currentTarget.value);
+            changed.current = true;
           }}
           onBlur={blur}
           className={cn(
@@ -836,8 +905,10 @@ function SsnField({
   );
 }
 
-// Saved as a pair: once both are filled and focus leaves the pair, the inputs
-// are cleared and only "on file" is kept.
+// Saved as a pair: once both are filled and focus leaves the pair, they go to
+// the vault. Only after it takes them are the inputs cleared and the login
+// shown as on file; a failed save leaves them in place to try again. As with
+// the SSN, leaving changes nothing on screen until the vault answers.
 function LoginFields({
   login,
   onFile,
@@ -847,9 +918,10 @@ function LoginFields({
   login: (typeof LOGINS)[number];
   onFile: boolean;
   error: FieldError | null;
-  onSave: () => void;
+  onSave: (portal: IntakePortal, username: string, password: string) => Promise<SaveLoginResult>;
 }) {
   const [replacing, setReplacing] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const userRef = useRef<HTMLInputElement>(null);
   const passRef = useRef<HTMLInputElement>(null);
   const userId = fieldId("logins", login.key, "username");
@@ -866,20 +938,30 @@ function LoginFields({
     );
   }
 
-  function blur(e: FocusEvent<HTMLInputElement>) {
+  async function blur(e: FocusEvent<HTMLInputElement>) {
     const user = userRef.current;
     const pass = passRef.current;
     if (!user || !pass || e.relatedTarget === user || e.relatedTarget === pass) return;
-    if (user.value.trim() && pass.value) {
-      user.value = "";
-      pass.value = "";
-      setReplacing(false);
-      onSave();
+    const username = user.value.trim();
+    if (username && pass.value) {
+      try {
+        if ((await onSave(login.key, username, pass.value)) === "stored") {
+          user.value = "";
+          pass.value = "";
+          setProblem(null);
+          setReplacing(false);
+        }
+      } catch {
+        setProblem(
+          `We couldn't save your ${login.title} login just now. Move to another field to try again.`,
+        );
+      }
     } else if (!user.value && !pass.value) {
       setReplacing(false);
     }
   }
 
+  const shown = problem ? { id: `${passId}-save`, message: problem } : error;
   return (
     <div className="flex flex-col gap-3">
       <Field id={userId} label={login.userLabel} required>
@@ -888,9 +970,10 @@ function LoginFields({
           ref={userRef}
           autoComplete="off"
           autoFocus={replacing}
-          onBlur={blur}
+          maxLength={INTAKE_USERNAME_MAX_LENGTH}
+          onBlur={(e) => void blur(e)}
           className={BOX}
-          {...ariaFor(error)}
+          {...ariaFor(shown)}
         />
       </Field>
       <Field id={passId} label="Password" required>
@@ -899,12 +982,13 @@ function LoginFields({
           ref={passRef}
           type="password"
           autoComplete="off"
-          onBlur={blur}
+          maxLength={INTAKE_PASSWORD_MAX_LENGTH}
+          onBlur={(e) => void blur(e)}
           className={BOX}
-          {...ariaFor(error)}
+          {...ariaFor(shown)}
         />
       </Field>
-      <ErrorText error={error} />
+      <ErrorText error={shown} />
     </div>
   );
 }

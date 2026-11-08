@@ -131,6 +131,9 @@ export interface GenerationPreviewInput {
   payers: readonly GenerationLookupInput[];
   existingCases: readonly GenerationExistingCaseInput[];
   exclusions: readonly GenerationExclusionInput[];
+  /** Providers whose cases wait for Admit (`onboardingHeldProviderIds`).
+   * Never candidates; the skip list names them. Absent holds nobody. */
+  onboardingHeldProviderIds?: ReadonlySet<string>;
 }
 
 // ---------- output ----------
@@ -246,6 +249,7 @@ export function buildGenerationPreview(input: GenerationPreviewInput): Generatio
 
     for (const providerId of members) {
       if (!atClinic.has(providerId)) continue;
+      if (input.onboardingHeldProviderIds?.has(providerId)) continue;
       const provider = providerById.get(providerId);
       if (!provider) continue; // terminated / unknown providers never produce rows
 
@@ -370,11 +374,13 @@ export function generationPreviewSummary(
  * Why a group member under an active target never became a preview row.
  * Does NOT change candidacy math — only explains drops that were silent.
  */
-export type GenerationSkipReason = "no_facility" | "pending_verification";
+export type GenerationSkipReason =
+  "no_facility" | "pending_verification" | "onboarding_not_admitted";
 
 export const GENERATION_SKIP_REASON_LABELS: Record<GenerationSkipReason, string> = {
   no_facility: "No facility assignment under this group",
   pending_verification: "Pending verification — not yet eligible to generate",
+  onboarding_not_admitted: "Onboarding not finished. Admit & assign on the provider's page first",
 };
 
 export interface GenerationRosterProviderInput {
@@ -406,7 +412,9 @@ export function generationSkipKey(
 
 /**
  * Emit one skip row per active target × group member that candidacy drops
- * with no preview row: pending_verification (facts fence) or no_facility
+ * with no preview row: onboarding_not_admitted (her invite created the
+ * record and nobody has admitted her yet; first, because Admit is also what
+ * assigns her location), pending_verification (facts fence) or no_facility
  * (member of group, no clinic under that group). Out-of-state (no license
  * and no clinic in the target state) is not a skip — those keys are simply
  * not candidates. A license gap on a state they DO work in still rides
@@ -455,7 +463,9 @@ export function buildGenerationSkips(
       let reason: GenerationSkipReason | null = null;
       const providerName = rosterRow?.providerName ?? factsById.get(providerId)?.providerName;
 
-      if (rosterRow?.pendingVerification) {
+      if (input.onboardingHeldProviderIds?.has(providerId)) {
+        reason = "onboarding_not_admitted";
+      } else if (rosterRow?.pendingVerification) {
         reason = "pending_verification";
       } else if (factsById.has(providerId) && !atClinic.has(providerId)) {
         reason = "no_facility";

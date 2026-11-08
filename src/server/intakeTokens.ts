@@ -52,6 +52,22 @@ export function isJsonRequest(request: Request): boolean {
   return type.split(";")[0].trim().toLowerCase() === "application/json";
 }
 
+// A browser names the page that sent a request in Origin. A state-changing
+// intake request from any other host is refused, on top of SameSite=Strict
+// and the JSON-only rule; a request with no Origin is not a browser's
+// cross-site request. Hosts are compared, not whole origins: srvx trusts no
+// proxy headers by default, so behind Vercel the request URL can read as http
+// while the page is https.
+export function originMatchesHost(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (origin === null) return true;
+  try {
+    return new URL(origin).host === new URL(request.url).host;
+  } catch {
+    return false;
+  }
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NPI = /^\d{10}$/;
 

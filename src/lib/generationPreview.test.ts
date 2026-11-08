@@ -482,3 +482,54 @@ describe("buildGenerationSkips — GEN-SILENT", () => {
     ).toEqual([]);
   });
 });
+
+describe("onboarding hold — cases wait for Admit (PM decision 11)", () => {
+  const rosterRow = (providerId: string, providerName: string, skipEligible = true) => ({
+    providerId,
+    providerName,
+    pendingVerification: false,
+    skipEligible,
+  });
+
+  it("a held provider is never a candidate, and the others are untouched", () => {
+    const input = baseInput({ onboardingHeldProviderIds: new Set(["jane"]) });
+    expect(buildGenerationPreview(input).map(previewRowKey)).toEqual([
+      "amir|g2|bcbs-ks|KS",
+      "amir|g2|bcbs-nc|NC",
+    ]);
+  });
+
+  it("names the hold for every target of her group, ahead of the missing location", () => {
+    // An invite-created hire: a member of g1 with no location until Admit.
+    const input = baseInput({
+      groupAssignments: [...baseInput().groupAssignments, { providerId: "nia", groupId: "g1" }],
+      providers: [...baseInput().providers, { providerId: "nia", providerName: "Nia Brooks" }],
+      onboardingHeldProviderIds: new Set(["nia"]),
+    });
+    const skips = buildGenerationSkips(input, [
+      rosterRow("jane", "Jane Whitaker"),
+      rosterRow("amir", "Amir Patel"),
+      rosterRow("nia", "Nia Brooks"),
+    ]);
+    expect(skips.map(generationSkipKey)).toEqual(["nia|g1|bcbs-nc|NC|onboarding_not_admitted"]);
+    expect(skips[0]?.reasonLabel).toBe(
+      "Onboarding not finished. Admit & assign on the provider's page first",
+    );
+  });
+
+  it("holds a provider who already has a location, so her rows leave the grid for the list", () => {
+    const input = baseInput({ onboardingHeldProviderIds: new Set(["amir"]) });
+    expect(buildGenerationPreview(input).some((r) => r.providerId === "amir")).toBe(false);
+    expect(
+      buildGenerationSkips(input, [rosterRow("amir", "Amir Patel")]).map(generationSkipKey),
+    ).toEqual([
+      "amir|g2|bcbs-ks|KS|onboarding_not_admitted",
+      "amir|g2|bcbs-nc|NC|onboarding_not_admitted",
+    ]);
+  });
+
+  it("says nothing about a held provider who is terminated or reference-only", () => {
+    const input = baseInput({ onboardingHeldProviderIds: new Set(["amir"]) });
+    expect(buildGenerationSkips(input, [rosterRow("amir", "Amir Patel", false)])).toEqual([]);
+  });
+});

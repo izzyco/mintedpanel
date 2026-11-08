@@ -7,7 +7,9 @@ import {
   deriveStage,
   deriveWaitingOn,
   documentSlots,
+  intakeSlotRule,
   needsPractice,
+  onboardingHeldProviderIds,
   sectionProgress,
   validateUpload,
   verificationSummary,
@@ -229,10 +231,32 @@ describe("validateUpload", () => {
       validateUpload({ name: "a.pdf", type: "application/pdf", size: INTAKE_MAX_BYTES + 1 }),
     ).toMatch(/10 MB/);
   });
+
+  it("rejects an empty file", () => {
+    expect(validateUpload({ name: "a.pdf", type: "application/pdf", size: 0 })).toMatch(/empty/);
+  });
+});
+
+describe("intakeSlotRule", () => {
+  it("names the kind of every slot the documents screen shows", () => {
+    const draft = completeDraft();
+    for (const slot of documentSlots(draft, {})) {
+      expect(intakeSlotRule(slot.key), slot.key).toEqual({
+        kind: slot.kind,
+        needsExpiration: slot.needsExpiration,
+      });
+    }
+  });
+
+  it("knows no other slot", () => {
+    for (const key of ["license:nc", "license:NCX", "license:", "dea", "w9", "CV", " cv"]) {
+      expect(intakeSlotRule(key), key).toBeNull();
+    }
+  });
 });
 
 describe("verificationSummary", () => {
-  it("counts confirmed and pending checks", () => {
+  it("counts confirmed, problem and pending checks", () => {
     const check = (key: string, status: VerificationCheck["status"]): VerificationCheck => ({
       key,
       label: key,
@@ -246,8 +270,9 @@ describe("verificationSummary", () => {
         check("a", "confirmed"),
         check("b", "confirmed"),
         check("c", "pending"),
+        check("d", "problem"),
       ]),
-    ).toEqual({ confirmed: 2, pending: 1, total: 3 });
+    ).toEqual({ confirmed: 2, problem: 1, pending: 1, total: 4 });
   });
 });
 
@@ -273,6 +298,7 @@ describe("preview fixtures", () => {
     expect(progress.licenses).toEqual({ done: 0, total: 1 });
     expect(verificationSummary(VERIFICATION_CHECKS)).toEqual({
       confirmed: 10,
+      problem: 0,
       pending: 3,
       total: 13,
     });
@@ -340,5 +366,25 @@ describe("classifyInvite", () => {
       byEmail: people[1],
       byNpi: people[0],
     });
+  });
+});
+
+describe("onboardingHeldProviderIds", () => {
+  const journey = (providerId: string, createdRecord: boolean) => ({
+    id: `j-${providerId}`,
+    providerId,
+    openedAt: "2026-11-01T00:00:00Z",
+    submittedAt: null,
+    createdRecord,
+  });
+
+  it("holds only providers whose open journey created the record", () => {
+    expect(
+      onboardingHeldProviderIds([journey("new-hire", true), journey("gap-fill", false)]),
+    ).toEqual(new Set(["new-hire"]));
+  });
+
+  it("holds nobody when no journey is open", () => {
+    expect(onboardingHeldProviderIds([])).toEqual(new Set());
   });
 });

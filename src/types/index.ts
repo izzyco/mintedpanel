@@ -355,6 +355,13 @@ export interface SsnRevealResult {
   ssnLast4: string;
 }
 
+// reveal_portal_credential returns one CAQH or PECOS login once, the same
+// posture as SsnRevealResult. Never persisted, never cached, never logged.
+export interface PortalCredentialRevealResult {
+  username: string;
+  password: string;
+}
+
 // Inbound "contact us" lead (redesign E0.5 / F0.5.5). NOT an org until a P1
 // converts it — triaged in a shared internal queue.
 export type InboundLeadStatus = "new" | "converted" | "dismissed";
@@ -2566,4 +2573,94 @@ export interface SmsConsent {
   revokedAt: string | null;
   revokedSource: SmsConsentRevokedSource | null;
   createdAt: string;
+}
+
+export type ProviderOnboardingSource = "staff" | "practice" | "api";
+export type ProviderOnboardingLockedField = "ssn" | "npi" | "date_of_birth";
+
+/** provider_onboardings: one onboarding journey for one provider, from the
+ * invite that opened it to Admit or Cancel. At most one open per provider. */
+export interface ProviderOnboarding {
+  id: string;
+  orgId: string;
+  providerId: string;
+  source: ProviderOnboardingSource;
+  /** The outside system's own id for this journey, when one opened it. */
+  externalRef: string | null;
+  /** The invite created the provider record. */
+  createdRecord: boolean;
+  /** On file when the journey opened, so the provider can't change them. */
+  lockedFields: ProviderOnboardingLockedField[];
+  createdBy: string | null;
+  openedAt: string;
+  consentedAt: string | null;
+  ssnStoredAt: string | null;
+  submittedAt: string | null;
+  admittedAt: string | null;
+  admittedBy: string | null;
+  admittedFacilityId: string | null;
+  cancelledAt: string | null;
+  cancelledBy: string | null;
+  lastHelpAt: string | null;
+  lastContactedAt: string | null;
+  submittedEmailDelivery: "sent" | "sandbox" | "failed" | null;
+  /** Her first sign-in on this journey: the tracker's Started step. */
+  firstSignedInAt: string | null;
+}
+
+/** A staff check on a journey, from provider_onboarding_checks. Append-only;
+ * the latest row per key is the answer. */
+export interface ProviderOnboardingCheck {
+  checkKey: "caqh_login" | "pecos_login" | "caqh_attestation";
+  outcome: "confirmed" | "problem";
+  note: string | null;
+  checkedByName: string | null;
+  checkedAt: string;
+}
+
+/** read_provider_onboarding: the provider's latest journey and what the
+ * Onboarding card needs beside it. Secrets appear only as booleans. */
+export interface ProviderOnboardingRead {
+  journey: Pick<
+    ProviderOnboarding,
+    | "id"
+    | "source"
+    | "createdRecord"
+    | "lockedFields"
+    | "openedAt"
+    | "firstSignedInAt"
+    | "consentedAt"
+    | "ssnStoredAt"
+    | "submittedAt"
+    | "admittedAt"
+    | "admittedFacilityId"
+    | "cancelledAt"
+    | "lastHelpAt"
+    | "lastContactedAt"
+  > & { admittedByName: string | null };
+  /** The journey's latest invite. `sends` counts every invite it has had. */
+  invite: {
+    email: string;
+    lastSentAt: string;
+    delivery: "sent" | "sandbox" | "failed" | null;
+    sends: number;
+  } | null;
+  checks: ProviderOnboardingCheck[];
+  loginsOnFile: { caqh: boolean; pecos: boolean };
+  ssnOnFile: boolean;
+  /** Finished uploads still on her form. Submit copies them into the vault. */
+  heldUploads: number;
+  hasCase: boolean;
+  /** Another provider in the org has her NPI. */
+  npiInUse: boolean;
+}
+
+/** An open journey as the roster reads it under RLS. */
+export interface OpenProviderOnboarding {
+  id: string;
+  providerId: string;
+  openedAt: string;
+  submittedAt: string | null;
+  /** The invite created her record, so her cases wait for Admit (D3). */
+  createdRecord: boolean;
 }

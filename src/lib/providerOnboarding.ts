@@ -1,6 +1,7 @@
 // Pure provider-onboarding derivations (docs/provider-onboarding/r1-ui-spec.md §6).
 // Stage, waiting-on and progress are computed from events and the draft on
 // every read; nothing here is stored.
+import type { OpenProviderOnboarding } from "@/types";
 import type {
   DocumentSlot,
   FieldValue,
@@ -16,7 +17,21 @@ import type {
 } from "@/types/providerOnboarding";
 
 export const INTAKE_MAX_BYTES = 10 * 1024 * 1024;
+/** Where her files wait until Submit copies them into the vault (D8). */
+export const INTAKE_UPLOAD_BUCKET = "provider-intake-uploads";
 export const RESEND_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** Why a case can't be created for a held provider. The database backstop
+ * (migration 20261107020000) raises the same sentence as its DETAIL. */
+export const ONBOARDING_HOLD_MESSAGE =
+  "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.";
+
+/** Providers whose cases wait for Admit (PM decision 11, D3): an open journey
+ * whose invite created the record. A gap-fill invite to a provider already on
+ * file never pauses her cases. */
+export function onboardingHeldProviderIds(open: readonly OpenProviderOnboarding[]): Set<string> {
+  return new Set(open.filter((o) => o.createdRecord).map((o) => o.providerId));
+}
 
 // Highest rank first. Timestamps are ignored: a later milestone can't be undone.
 const STAGE_MILESTONES: [OnboardingEventType, OnboardingStage][] = [
@@ -108,6 +123,14 @@ export function canContinue(draft: IntakeDraft): boolean {
 
 type SlotFile = DocumentSlot["file"];
 
+const CV_SLOT: Omit<DocumentSlot, "file"> = {
+  key: "cv",
+  kind: "cv",
+  label: "CV",
+  required: true,
+  needsExpiration: false,
+};
+
 const OPTIONAL_SLOTS: Omit<DocumentSlot, "file">[] = [
   { key: "diploma", kind: "diploma", label: "Diploma", required: false, needsExpiration: false },
   {
@@ -138,7 +161,7 @@ export function documentSlots(draft: IntakeDraft, files: Record<string, SlotFile
     ),
   ];
   const slots: Omit<DocumentSlot, "file">[] = [
-    { key: "cv", kind: "cv", label: "CV", required: true, needsExpiration: false },
+    CV_SLOT,
     // The license copy takes its expiration date from the form.
     ...states.map((state) => ({
       key: `license:${state}`,
@@ -153,10 +176,23 @@ export function documentSlots(draft: IntakeDraft, files: Record<string, SlotFile
   return slots.map((slot) => ({ ...slot, file: files[slot.key] ?? null }));
 }
 
+const LICENSE_SLOT_KEY = /^license:[A-Z]{2}$/;
+
+/** What a slot key holds, or null for a key no slot has. The server checks
+ * an upload against it, so the form and the routes agree on every slot. */
+export function intakeSlotRule(
+  slotKey: string,
+): Pick<DocumentSlot, "kind" | "needsExpiration"> | null {
+  if (LICENSE_SLOT_KEY.test(slotKey)) return { kind: "state_license", needsExpiration: false };
+  const slot = [CV_SLOT, ...OPTIONAL_SLOTS].find((s) => s.key === slotKey);
+  return slot ? { kind: slot.kind, needsExpiration: slot.needsExpiration } : null;
+}
+
 const INTAKE_FILE_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 
 export function validateUpload(file: { name: string; type: string; size: number }): string | null {
   if (!INTAKE_FILE_TYPES.includes(file.type)) return "Upload a PDF, JPG or PNG file.";
+  if (file.size <= 0) return "This file is empty. Choose another file.";
   if (file.size > INTAKE_MAX_BYTES) {
     return "This file is over 10 MB. Try a photo of each page instead.";
   }
@@ -189,36 +225,8 @@ export function classifyInvite(
   return { kind: kind[person.journey], person, matchedOn };
 }
 
-// The draft the form opens with on the live link: only her name and verified
-// email are known, both from the invitation.
-export function draftFromInvitation(me: {
-  firstName: string;
-  lastName: string;
-  email: string;
-}): IntakeDraft {
-  const empty = { value: null, source: null };
-  const invitation = { label: "From your invitation", asOf: null };
-  return {
-    identity: {
-      firstName: { value: me.firstName, source: invitation },
-      lastName: { value: me.lastName, source: invitation },
-      npi: empty,
-      taxonomyCode: empty,
-      dateOfBirth: empty,
-      caqhId: empty,
-      ssn: empty,
-    },
-    contact: {
-      email: me.email,
-      mobile: empty,
-      homeAddress: { street: empty, city: empty, state: empty, zip: empty },
-    },
-    licenses: [{ state: empty, number: empty, expiresOn: empty }],
-    logins: { caqhOnFile: false, pecosOnFile: false },
-  };
-}
-
 export function verificationSummary(checks: VerificationCheck[]) {
   const confirmed = checks.filter((c) => c.status === "confirmed").length;
-  return { confirmed, pending: checks.length - confirmed, total: checks.length };
+  const problem = checks.filter((c) => c.status === "problem").length;
+  return { confirmed, problem, pending: checks.length - confirmed - problem, total: checks.length };
 }

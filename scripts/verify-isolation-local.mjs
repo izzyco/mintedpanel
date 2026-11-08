@@ -39,11 +39,12 @@ function runGate(baseUrl) {
         SOUTHPARK_FIELDMAP_ID: FIXTURES.SOUTHPARK_FIELDMAP_ID,
         SOUTHPARK_CASE_ID: FIXTURES.SOUTHPARK_CASE_ID,
         SOUTHPARK_FACILITY_ID: FIXTURES.SOUTHPARK_FACILITY_ID,
-        // Provider onboarding slice 1 (35-35d) — always set here; optional in
-        // the real gate.
+        // Provider onboarding (35-35e) — always set here; optional in the real
+        // gate.
         KANSAS_GROUP_ID: FIXTURES.KANSAS_GROUP_ID,
         SOUTHPARK_GROUP_ID: FIXTURES.SOUTHPARK_GROUP_ID,
         KANSAS_INTAKE_TOKEN: FIXTURES.KANSAS_INTAKE_TOKEN,
+        SOUTHPARK_INTAKE_TOKEN: FIXTURES.SOUTHPARK_INTAKE_TOKEN,
         // Assertion 13 (task-ownership isolation) fixtures — always set here so
         // the mock run exercises it; optional in the real gate.
         KANSAS_CASE_ID: FIXTURES.KANSAS_CASE_ID,
@@ -161,8 +162,21 @@ const EXPECTED_FAILS = {
   // Provider onboarding slice 1: an invite lands in another org's group (35b)
   // and a resend reaches another org's provider (35c).
   providerinvites: ["35b", "35c"],
+  // Staff cancel another org's provider's onboarding (35j).
+  providercancel: ["35j"],
   // A provider intake session reads another org's provider (35d).
   intakesession: ["35d"],
+  // A provider intake session reads and saves under another org's link (35e).
+  intakelink: ["35e"],
+  // A provider intake session stores an SSN and a login under another org's
+  // link (35f).
+  intakesecrets: ["35f"],
+  // A provider intake session begins, finishes and removes an upload under
+  // another org's link (35g).
+  intakeuploads: ["35g"],
+  // A provider intake session submits and asks for help under another org's
+  // link (35h).
+  intakesubmit: ["35h"],
   // Workbench directory: another org's groups and locations in the lists
   // (39b), its location (39c) and group (39d) cards, its records in the list
   // search (39e), and on a provider card's related lists (39j).

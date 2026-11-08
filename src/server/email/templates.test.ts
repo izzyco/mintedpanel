@@ -63,6 +63,54 @@ describe("intake_code", () => {
   });
 });
 
+describe("intake_submitted", () => {
+  const email = TEMPLATES.intake_submitted({
+    practiceName: "Shelby <Sports> Rehab",
+    firstName: 'An"ita',
+  });
+
+  it("tells her the practice has her details and will be in touch, in both parts", () => {
+    expect(email.subject).toBe("Shelby <Sports> Rehab has your credentialing details");
+    expect(email.text).toContain('Hi An"ita,');
+    expect(email.text).toContain("Shelby <Sports> Rehab has them and will be in touch");
+    expect(email.html).toContain("Hi An&quot;ita,");
+    expect(email.html).toContain("Shelby &lt;Sports&gt; Rehab has them and will be in touch");
+    expect(email.html).not.toContain("<Sports>");
+  });
+
+  it("echoes nothing she sent and carries no link", () => {
+    expect(email.text + email.html).not.toMatch(/href|https?:|NPI|license|SSN/i);
+  });
+
+  it("uses the practice header and footer", () => {
+    expect(email.html).toContain(">Shelby &lt;Sports&gt; Rehab</td>");
+    expect(email.text).toContain("Sent by Minted Panel on behalf of Shelby <Sports> Rehab");
+  });
+});
+
+describe("onboarding_ops_alert", () => {
+  const link = "https://staging.example.test/providers/5f0c1d2e-3a4b-4c5d-8e6f-7a8b9c0d1e2f";
+  const submitted = TEMPLATES.onboarding_ops_alert({
+    practiceName: "Shelby <Sports> Rehab",
+    kind: "submitted",
+    link,
+  });
+  const help = TEMPLATES.onboarding_ops_alert({ practiceName: "Shelby", kind: "help", link });
+
+  it("says what happened and where, with the record link in both parts", () => {
+    expect(submitted.subject).toBe("Onboarding form submitted at Shelby <Sports> Rehab");
+    expect(help.subject).toBe("Onboarding help requested at Shelby");
+    expect(submitted.text).toContain("submitted the onboarding form");
+    expect(help.text).toContain("asked for help with the onboarding form");
+    for (const email of [submitted, help]) {
+      expect(email.text).toContain(link);
+      expect(email.html).toContain(`href="${link}"`);
+    }
+    expect(submitted.html).toContain("Shelby &lt;Sports&gt; Rehab");
+    expect(submitted.html).not.toContain("<Sports>");
+  });
+});
+
 describe("practiceInitial", () => {
   it("is the first letter of the practice name, uppercased", () => {
     expect(practiceInitial("Shelby Sports Rehab")).toBe("S");

@@ -1,6 +1,8 @@
 # Provider onboarding R1: UI pass plan and spec
 
-Status: v4, Oct 25, 2026 (grill-me round folded in: decisions 17–21). Nov 2: every Stage 1 screen is built, in memory only (nothing saved), on `/intake/$token` and `/dev/provider-onboarding`; the redrawn boards are https://claude.ai/artifact/Ff1JvSf4QVA8txnyB2x75u. Revised after a Fable review and a zen (gpt-5.5) review. The six UI-blocking questions are answered (decisions 9–16). Built so far: §10 step 1 (types, fixtures, pure derivations and their tests) and, through `slice-1-invite-to-form.md`, the provider identify → code → consent → form screens as the real `/intake/$token` route. The `/dev/provider-onboarding` preview shell (decision 18) is not built; the fixtures' only consumer today is `src/lib/providerOnboarding.test.ts`.
+**Current state.** R1 is built end to end (Nov 6, 2026), and every step persists: sign-in, consent, answers, the SSN and logins, documents, Submit, help, Cancel and Admit. For what is true now, read `data-map.md`. This page is the UI plan as written, kept for its decisions.
+
+Status: v4, Oct 25, 2026 (grill-me round folded in: decisions 17–21). Nov 2: every Stage 1 screen is built, in memory only (nothing saved), on `/intake/$token` and `/dev/provider-onboarding`; the redrawn boards are https://claude.ai/artifact/Ff1JvSf4QVA8txnyB2x75u. Revised after a Fable review and a zen (gpt-5.5) review. The six UI-blocking questions are answered (decisions 9–16). Built so far: §10 step 1 (types, fixtures, pure derivations and their tests) and, through `slice-1-invite-to-form.md`, the provider identify → code → consent → form screens as the real `/intake/$token` route. On Oct 25 the `/dev/provider-onboarding` preview shell (decision 18) was not built. It is built now, on a fake gateway.
 
 ## 1. Goal
 
@@ -84,7 +86,7 @@ Screens use the canvas numbering. The audience decides the shell.
 - **Collapsed state.** After hand-off the section collapses to one line of history (`RecordOnboarding.dc.html` comment).
 - **Readiness.** Readiness is a card inside the Cases tab (`src/routes/providers.$id.index.tsx`), not a tab. It is hidden while she's onboarding.
 - **Activity.** It uses the existing notes surface.
-- **"Test…" on a login check.** It opens a typed-reason dialog (R1.26). In the mock, it reveals nothing and marks the check confirmed.
+- **"Test…" on a login check.** It opens a typed-reason dialog (R1.26). In the mock, it reveals nothing and marks the check confirmed. The built card is admin-only and reveals the login through `reveal_portal_credential`.
 
 `/onboarding/*` is not used. It is the existing staff org-intake wizard (`src/routes/onboarding.index.tsx`, `onboarding.wizard.tsx`). New files use a `providerOnboarding*` or `intake*` prefix so they don't collide with `onboardingProgress.ts` or `useOnboardingWizard.ts`.
 
@@ -224,6 +226,8 @@ interface VerificationCheck {
 - `VITE_ENABLE_PROVIDER_ONBOARDING === "true"` mounts the new routes, the 6a toggle and the 6b section. The mechanism follows `VITE_ENABLE_EXACT_WORK_V2`.
 - The flag stays unset in `vercel.json`'s single env block, which means off everywhere deployed.
 - It must stay off in production until the placeholder copy (§8) is final.
+
+This flag was never built. The real routes mount wherever the code runs, and `provider_intake_settings.paused` is the off switch (`data-map.md`).
 
 **Practice route `/new-hires`:**
 

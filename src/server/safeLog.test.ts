@@ -9,6 +9,7 @@ import { handleApiRequest } from "./api";
 import serverEntry from "../server";
 import { describeError } from "@/lib/errorIdentifiers";
 import { logServerError, REQUEST_ID_HEADER, requestSite, routeTemplate } from "./safeLog";
+import { INTAKE_ACTION_NAMES } from "./providerIntakeRoutes";
 
 // SEC-03 sentinels: none of these may ever reach a production log line.
 const SENTINELS = ["1961-04-12", "742 Evergreen Terrace", "AB1234563"];
@@ -92,11 +93,21 @@ describe("routeTemplate / requestSite", () => {
     expect(routeTemplate("/api/rosters/mappings/m1/preview")).toBe(
       "/api/rosters/mappings/:param/preview",
     );
+    expect(routeTemplate("/api/provider-invites/5b2c0e4e-0000-4000-a000-000000000001/cancel")).toBe(
+      "/api/provider-invites/:param/cancel",
+    );
   });
 
   it("collapses a lowercase slug in an id slot, not only ids with digits", () => {
     expect(routeTemplate("/api/providers/jane-doe")).toBe("/api/providers/:param");
     expect(routeTemplate("/api/intake/evergreen")).toBe("/api/intake/:param");
+  });
+
+  it("keeps every provider intake action by name", () => {
+    expect(INTAKE_ACTION_NAMES).toContain("upload-finalize");
+    for (const action of INTAKE_ACTION_NAMES) {
+      expect(routeTemplate(`/api/intake/${action}`)).toBe(`/api/intake/${action}`);
+    }
   });
 
   it("never carries the query string", () => {

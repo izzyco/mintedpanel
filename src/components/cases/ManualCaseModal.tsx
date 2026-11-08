@@ -11,6 +11,10 @@
 // the existing case; the swapped DB constraint stays the backstop (a 23505
 // race surfaces the TE-4 duplicate message).
 //
+// A provider whose invite created her record waits for Admit (PM decision 11):
+// she can be picked, and the modal says why Create stays off. The database
+// refuses the insert too (migration 20261107020000).
+//
 // Payer defaults: once a group is picked (Enrollment), the payer picker opens
 // on that group's active network with a visible "Show all payers" escape
 // (`manualCasePayerOptions`). Contract keeps the full catalog. The filter only
@@ -44,6 +48,8 @@ import { useFacilities, useProviderGroups } from "@/hooks/useLookups";
 import { usePayers, useSops } from "@/hooks/useAdmin";
 import { usePayerNetworkTargets } from "@/hooks/usePayerNetworkTargets";
 import { useTemplatePayerForms } from "@/hooks/usePayerForms";
+import { useOpenProviderOnboardings } from "@/hooks/useProviderOnboardings";
+import { ONBOARDING_HOLD_MESSAGE, onboardingHeldProviderIds } from "@/lib/providerOnboarding";
 import { resolveCaseFacilityId } from "@/lib/caseFacility";
 import { hydratePayerFormTasks, payerFormsByFamily } from "@/lib/payerForms";
 import { manualCasePayers } from "@/lib/payerSetup";
@@ -80,6 +86,7 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
   // and never blocks or disables Create.
   const targetsQ = usePayerNetworkTargets();
   const casesQ = useCases();
+  const onboardingsQ = useOpenProviderOnboardings();
   const createCase = useCreateCase();
   const canWrite = useCanWrite();
   const isAdmin = useIsAdmin();
@@ -144,6 +151,10 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
     const assignedProviderIds = new Set(currentProviderAssignments.map((a) => a.providerId));
     return roster.filter((p) => assignedProviderIds.has(p.id));
   }, [currentProviderAssignments, roster]);
+  const providerHeld = useMemo(
+    () => providerId !== NONE && onboardingHeldProviderIds(onboardingsQ.data ?? []).has(providerId),
+    [providerId, onboardingsQ.data],
+  );
   const payers = useMemo(() => manualCasePayers(payersQ.data ?? []), [payersQ.data]);
   const payerPicker = useMemo(
     () =>
@@ -219,7 +230,8 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
         facilityAssignmentsQ.isLoading ||
         facilitiesQ.isLoading ||
         templatesQ.isLoading ||
-        casesQ.isLoading));
+        casesQ.isLoading ||
+        onboardingsQ.isLoading));
   const failed =
     groupsQ.isError ||
     payersQ.isError ||
@@ -229,7 +241,8 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
         facilityAssignmentsQ.isError ||
         facilitiesQ.isError ||
         templatesQ.isError ||
-        casesQ.isError));
+        casesQ.isError ||
+        onboardingsQ.isError));
   const payerFormsLoading = effectiveTemplate !== null && payerFormsQ.isLoading;
   const payerFormsFailed = effectiveTemplate !== null && payerFormsQ.isError;
   const prerequisitesReady =
@@ -294,6 +307,7 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
     void payersQ.refetch();
     void templatesQ.refetch();
     void casesQ.refetch();
+    void onboardingsQ.refetch();
     void payerFormsQ.refetch();
   };
 
@@ -302,6 +316,7 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
       caseType !== "enrollment" ||
       !selection ||
       blockingCase ||
+      providerHeld ||
       templateOptions.length === 0 ||
       (templateOptions.length > 1 && autoTemplate === null && selectedTemplateId === null) ||
       (effectiveTemplateId !== NONE && !effectiveTemplate)
@@ -490,6 +505,22 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
                     ))}
                   </SelectContent>
                 </Select>
+                {providerHeld ? (
+                  <div
+                    className="rounded-md border border-[#FDE68A] bg-[#FEF3C7] p-3 text-[13px] text-[#92400E]"
+                    role="alert"
+                  >
+                    {ONBOARDING_HOLD_MESSAGE}{" "}
+                    <Link
+                      to="/providers/$id"
+                      params={{ id: providerId }}
+                      className="font-medium underline underline-offset-2"
+                      onClick={onClose}
+                    >
+                      Open provider
+                    </Link>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
@@ -697,6 +728,7 @@ export function ManualCaseModal({ onClose }: ManualCaseModalProps) {
               !prerequisitesReady ||
               !selection ||
               Boolean(blockingCase) ||
+              providerHeld ||
               templateOptions.length === 0 ||
               (templateOptions.length > 1 &&
                 autoTemplate === null &&

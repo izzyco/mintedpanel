@@ -1,4 +1,5 @@
 // Boards 5x (after "I need help" or "Wrong? Tell us") and 5c (after Submit).
+// HelpSent shows only once the server has her request.
 import { CircleCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { HelpReason, LockedField } from "@/lib/intakeFlow";
@@ -32,6 +33,28 @@ export function HelpSent({
           : "Your practice administrator will reach out."}
       </p>
       <Button type="button" className="h-12 w-full text-[15px]" onClick={onBack}>
+        Back to your form
+      </Button>
+    </div>
+  );
+}
+
+export function HelpNotSent({ onRetry, onBack }: { onRetry: () => void; onBack: () => void }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <h1 className="text-[18px] leading-snug font-semibold">We couldn't send your request</h1>
+      <p role="alert" className="text-[13px] leading-normal text-[var(--mp-danger-ink)]">
+        Check your connection and try again.
+      </p>
+      <Button type="button" className="h-12 w-full text-[15px]" onClick={onRetry}>
+        Try again
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        className="h-12 w-full border-[#D6D3CE] text-[15px]"
+        onClick={onBack}
+      >
         Back to your form
       </Button>
     </div>

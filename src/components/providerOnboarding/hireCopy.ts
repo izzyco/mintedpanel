@@ -3,7 +3,7 @@
 import { fmtDate } from "@/lib/format";
 import { openHelpRequest } from "@/lib/newHires";
 import { deriveStage } from "@/lib/providerOnboarding";
-import type { OnboardingHire, WaitingOn } from "@/types/providerOnboarding";
+import type { OnboardingHire, OnboardingStage, WaitingOn } from "@/types/providerOnboarding";
 
 export function firstName(displayName: string): string {
   return displayName.trim().split(/\s+/)[0];
@@ -14,6 +14,15 @@ export function shortGroupName(groupName: string, practiceName: string): string 
   const prefix = `${practiceName} · `;
   return groupName.startsWith(prefix) ? groupName.slice(prefix.length) : groupName;
 }
+
+// The five tracker steps, shared by board 0 and board 6b.
+export const STAGE_STEPS: { stage: OnboardingStage; label: string }[] = [
+  { stage: "invited", label: "Invited" },
+  { stage: "started", label: "Started" },
+  { stage: "submitted", label: "Submitted" },
+  { stage: "ready", label: "Ready for credentialing" },
+  { stage: "in_credentialing", label: "In credentialing" },
+];
 
 export const WAITING_ON_INK: Record<WaitingOn, string> = {
   practice: "text-[var(--mp-danger-ink)]",

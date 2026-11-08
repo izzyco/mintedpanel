@@ -50,7 +50,16 @@
 //   learning   AI mapping promotion ignores writer/evidence checks          (20b, 20c)
 //   providerinvites a provider invite is created in another org's group, and
 //               a resend reaches another org's provider              (35b, 35c)
+//   providercancel staff cancel another org's provider's onboarding  (35j)
 //   intakesession a provider intake session reads another org's provider (35d)
+//   intakelink  a provider intake session is honored under another org's
+//               link: it reads that provider's state and saves her draft (35e)
+//   intakesecrets a provider intake session stores an SSN and a login under
+//               another org's link                                     (35f)
+//   intakeuploads a provider intake session begins, finishes and removes an
+//               upload under another org's link                        (35g)
+//   intakesubmit a provider intake session submits and asks for help under
+//               another org's link                                     (35h)
 //   npiregistry the NPI Registry proxy serves an anonymous caller and a billing
 //               member                                      (36b, 36c, 37b, 38c)
 //   npibatch    the batch NPI check serves an anonymous caller and a billing
@@ -96,12 +105,14 @@ export const FIXTURES = {
   // ROLE (admin-only writes), not tenancy.
   PAYER_FORM_TEMPLATE_ID: "b7a90000-0000-4000-a000-0000000000f1",
   PAYER_FORM_ID: "b7a90000-0000-4000-a000-0000000000f2",
-  // Provider onboarding slice 1 (35-35d). The groups are the mock's own ids;
-  // the intake token stands in for an emailed link, and code 000000 for the
-  // emailed code, because the mock sends no mail.
+  // Provider onboarding (35-35e). The groups are the mock's own ids; the
+  // intake tokens stand in for emailed links, and code 000000 for the emailed
+  // code, because the mock sends no mail.
   KANSAS_GROUP_ID: "k-group-1",
   SOUTHPARK_GROUP_ID: "sp-group-1",
   KANSAS_INTAKE_TOKEN: "mock-intake-kansas",
+  SOUTHPARK_INTAKE_TOKEN: "mock-intake-southpark",
+  KANSAS_UPLOAD_ID: "c4c40000-0000-4000-a000-0000000000c4",
   KANSAS_EMAIL: "testkansas@minted.com",
   SPVIEW_EMAIL: "testsouthpark@minted.com",
   EXPLICIT_SELECTION_PORTAL_KEY: "bcbs_ks_enrollment_explicit",
@@ -144,7 +155,12 @@ export const LEAK_MODES = [
   "payerformwrite",
   "e613isolation",
   "providerinvites",
+  "providercancel",
   "intakesession",
+  "intakelink",
+  "intakesecrets",
+  "intakeuploads",
+  "intakesubmit",
   "npiregistry",
   "npibatch",
   "registrypulls",
@@ -772,10 +788,13 @@ export async function createMockApiServer(options = {}) {
     }
     if (url.pathname === "/api/health") return envelope(res, 200, "ok");
 
-    // --- /api/intake/* (provider onboarding slice 1): no JWT, an HttpOnly
-    // cookie instead. A right code for the Kansas link opens a Kansas session;
-    // /me must return only that invite's provider. Leak "intakesession" serves
-    // a South Park provider from a Kansas session.
+    // --- /api/intake/* (provider onboarding): no JWT, an HttpOnly cookie
+    // instead. A right code for the Kansas link opens a Kansas session, which
+    // reads and saves only under that link. Leak "intakesession" serves a
+    // South Park provider from a Kansas session; leak "intakelink" honors the
+    // Kansas session under South Park's link, and leaks "intakesecrets" and
+    // "intakeuploads" do the same for the SSN and login stores and for her
+    // documents, and "intakesubmit" for Submit and help.
     if (url.pathname === "/api/intake/session" && method === "POST") {
       const body = (await readBody(req)) ?? {};
       if (body.t !== FIXTURES.KANSAS_INTAKE_TOKEN || body.code !== "000000") {
@@ -787,23 +806,110 @@ export async function createMockApiServer(options = {}) {
       );
       return envelope(res, 200, { signedIn: true });
     }
-    if (url.pathname === "/api/intake/me" && method === "POST") {
+    if (
+      (url.pathname === "/api/intake/state" || url.pathname === "/api/intake/draft") &&
+      method === "POST"
+    ) {
       const cookie = req.headers.cookie ?? "";
       const body = (await readBody(req)) ?? {};
-      if (
-        !cookie.includes("mp_intake=mock-session-kansas") ||
-        body.t !== FIXTURES.KANSAS_INTAKE_TOKEN
-      ) {
+      const links =
+        leak === "intakelink"
+          ? [FIXTURES.KANSAS_INTAKE_TOKEN, FIXTURES.SOUTHPARK_INTAKE_TOKEN]
+          : [FIXTURES.KANSAS_INTAKE_TOKEN];
+      res.setHeader("cache-control", "no-store");
+      if (!cookie.includes("mp_intake=mock-session-kansas") || !links.includes(body.t)) {
         return envelope(res, 401, null, "signed_out");
       }
-      const sp = leak === "intakesession";
-      res.setHeader("cache-control", "no-store");
+      if (url.pathname === "/api/intake/draft") {
+        return envelope(res, 200, { version: 1 });
+      }
+      const sp = leak === "intakesession" || body.t === FIXTURES.SOUTHPARK_INTAKE_TOKEN;
       return envelope(res, 200, {
         practiceName: sp ? "South Park Physician Group" : "Kansas Fitness Physio",
-        firstName: sp ? "South" : "Kay",
-        lastName: sp ? "Park" : "One",
         email: sp ? "sp.provider@example.test" : "kay.one@example.test",
+        record: { firstName: sp ? "South" : "Kay", lastName: sp ? "Park" : "One", licenses: [] },
+        lockedFields: [],
+        ssnLast4: null,
+        loginsOnFile: { caqh: false, pecos: false },
+        consent: { signed: false, textVersion: null },
+        draft: null,
+        uploads: [],
+        submitted: false,
       });
+    }
+
+    if (
+      (url.pathname === "/api/intake/ssn" || url.pathname === "/api/intake/login") &&
+      method === "POST"
+    ) {
+      const cookie = req.headers.cookie ?? "";
+      const body = (await readBody(req)) ?? {};
+      const links =
+        leak === "intakesecrets"
+          ? [FIXTURES.KANSAS_INTAKE_TOKEN, FIXTURES.SOUTHPARK_INTAKE_TOKEN]
+          : [FIXTURES.KANSAS_INTAKE_TOKEN];
+      res.setHeader("cache-control", "no-store");
+      if (!cookie.includes("mp_intake=mock-session-kansas") || !links.includes(body.t)) {
+        return envelope(res, 401, null, "signed_out");
+      }
+      return url.pathname === "/api/intake/ssn"
+        ? envelope(res, 200, { ssnLast4: String(body.ssn ?? "").slice(-4) })
+        : envelope(res, 200, { portal: body.portal, onFile: true });
+    }
+
+    if (url.pathname.startsWith("/api/intake/upload-") && method === "POST") {
+      const cookie = req.headers.cookie ?? "";
+      const body = (await readBody(req)) ?? {};
+      const links =
+        leak === "intakeuploads"
+          ? [FIXTURES.KANSAS_INTAKE_TOKEN, FIXTURES.SOUTHPARK_INTAKE_TOKEN]
+          : [FIXTURES.KANSAS_INTAKE_TOKEN];
+      res.setHeader("cache-control", "no-store");
+      if (!cookie.includes("mp_intake=mock-session-kansas") || !links.includes(body.t)) {
+        return envelope(res, 401, null, "signed_out");
+      }
+      switch (url.pathname) {
+        case "/api/intake/upload-intent":
+          return envelope(res, 200, {
+            uploadId: FIXTURES.KANSAS_UPLOAD_ID,
+            uploadUrl: "http://127.0.0.1/storage/v1/object/upload/sign/mock?token=up",
+          });
+        case "/api/intake/upload-finalize":
+          return envelope(res, 200, {
+            upload: {
+              id: body.uploadId,
+              slotKey: "cv",
+              kind: "cv",
+              fileName: "gate.pdf",
+              sizeBytes: 1024,
+              expiresOn: null,
+            },
+          });
+        case "/api/intake/upload-remove":
+          return envelope(res, 200, { removed: true });
+        case "/api/intake/upload-expiry":
+          return envelope(res, 200, { expiresOn: body.expiresOn ?? null });
+      }
+      return envelope(res, 404, null, "Not found");
+    }
+
+    if (
+      (url.pathname === "/api/intake/submit" || url.pathname === "/api/intake/help") &&
+      method === "POST"
+    ) {
+      const cookie = req.headers.cookie ?? "";
+      const body = (await readBody(req)) ?? {};
+      const links =
+        leak === "intakesubmit"
+          ? [FIXTURES.KANSAS_INTAKE_TOKEN, FIXTURES.SOUTHPARK_INTAKE_TOKEN]
+          : [FIXTURES.KANSAS_INTAKE_TOKEN];
+      res.setHeader("cache-control", "no-store");
+      if (!cookie.includes("mp_intake=mock-session-kansas") || !links.includes(body.t)) {
+        return envelope(res, 401, null, "signed_out");
+      }
+      return url.pathname === "/api/intake/submit"
+        ? envelope(res, 200, { submitted: true })
+        : envelope(res, 200, { sent: true });
     }
 
     // --- MINT-110 PR 2 leak "npibatch", part 1: the batch NPI check answers
@@ -1848,6 +1954,19 @@ export async function createMockApiServer(options = {}) {
         delivery: "sent",
         email: `${target.firstName}.${target.lastName}@example.test`.toLowerCase(),
       });
+    }
+    // Cancel: writer-only, POST only; another org's provider is a 404 before
+    // any write. Leak "providercancel" cancels it anyway.
+    const cancelMatch = url.pathname.match(/^\/api\/provider-invites\/([^/]+)\/cancel\/?$/);
+    if (cancelMatch) {
+      if (method !== "POST") return envelope(res, 405, null, "Method not allowed");
+      if (user.role === "billing")
+        return envelope(res, 403, null, "Only admins and specialists can cancel an onboarding");
+      const target = PROVIDERS.find((row) => row.id === cancelMatch[1]);
+      if (!target || (target.orgId !== orgId && leak !== "providercancel")) {
+        return envelope(res, 404, null, "Onboarding not found");
+      }
+      return envelope(res, 200, { outcome: "closed" });
     }
 
     if (url.pathname === "/api/payer-forms/upload-intent" && method === "POST") {

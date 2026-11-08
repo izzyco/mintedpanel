@@ -23,6 +23,15 @@ export interface ApiMeta {
   // failure so the extension can show a loud empty-state instead of treating
   // the tab as an unrecognized page.
   registry_empty?: boolean;
+  // POST /api/intake/draft with 409 draft_conflict only: the version saved on
+  // the server, which the draft she sent was not based on.
+  draft_version?: number;
+  // POST /api/intake/ssn with 422 ssn_invalid, and /api/intake/upload-intent
+  // with 422 invalid_file, only: the sentence to show her.
+  message?: string;
+  // POST /api/intake/submit with 422 intake_incomplete only: the keys of the
+  // form's summary items still missing (src/lib/intakeForm.ts).
+  missing?: string[];
   // GET /api/cases?q= only, always sent there: true when more cases matched
   // than `data` holds (the first `limit` in provider/payer/state order);
   // `total` counts every match. A client says the list is partial ("Showing
@@ -68,6 +77,6 @@ export function ok<T>(data: T, meta: ApiMeta | null = null, status = 200): Respo
   return jsonResponse(status, { data, error: null, meta });
 }
 
-export function fail(status: number, message: string): Response {
-  return jsonResponse(status, { data: null, error: message, meta: null });
+export function fail(status: number, message: string, meta: ApiMeta | null = null): Response {
+  return jsonResponse(status, { data: null, error: message, meta });
 }

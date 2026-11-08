@@ -3612,6 +3612,372 @@ export type Database = {
           },
         ];
       };
+      provider_intake_consents: {
+        Row: {
+          id: string;
+          onboarding_id: string;
+          org_id: string;
+          session_id: string;
+          signed_at: string;
+          text_version: number;
+          typed_name: string;
+        };
+        Insert: {
+          id?: string;
+          onboarding_id: string;
+          org_id: string;
+          session_id: string;
+          signed_at?: string;
+          text_version: number;
+          typed_name: string;
+        };
+        Update: {
+          id?: string;
+          onboarding_id?: string;
+          org_id?: string;
+          session_id?: string;
+          signed_at?: string;
+          text_version?: number;
+          typed_name?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_intake_consents_onboarding_fkey";
+            columns: ["org_id", "onboarding_id"];
+            isOneToOne: false;
+            referencedRelation: "provider_onboardings";
+            referencedColumns: ["org_id", "id"];
+          },
+          {
+            foreignKeyName: "provider_intake_consents_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_intake_consents_session_id_fkey";
+            columns: ["session_id"];
+            isOneToOne: false;
+            referencedRelation: "provider_intake_sessions";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      provider_intake_drafts: {
+        Row: {
+          answers: Json;
+          onboarding_id: string;
+          org_id: string;
+          step: string;
+          updated_at: string;
+          version: number;
+        };
+        Insert: {
+          answers: Json;
+          onboarding_id: string;
+          org_id: string;
+          step?: string;
+          updated_at?: string;
+          version?: number;
+        };
+        Update: {
+          answers?: Json;
+          onboarding_id?: string;
+          org_id?: string;
+          step?: string;
+          updated_at?: string;
+          version?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_intake_drafts_onboarding_fkey";
+            columns: ["org_id", "onboarding_id"];
+            isOneToOne: false;
+            referencedRelation: "provider_onboardings";
+            referencedColumns: ["org_id", "id"];
+          },
+          {
+            foreignKeyName: "provider_intake_drafts_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      provider_intake_uploads: {
+        Row: {
+          content_type: string;
+          created_at: string;
+          doc_type: string;
+          expires_on: string | null;
+          file_name: string;
+          finalized_at: string | null;
+          id: string;
+          object_path: string;
+          onboarding_id: string;
+          org_id: string;
+          removed_at: string | null;
+          size_bytes: number;
+          slot_key: string;
+        };
+        Insert: {
+          content_type: string;
+          created_at?: string;
+          doc_type: string;
+          expires_on?: string | null;
+          file_name: string;
+          finalized_at?: string | null;
+          id?: string;
+          object_path: string;
+          onboarding_id: string;
+          org_id: string;
+          removed_at?: string | null;
+          size_bytes: number;
+          slot_key: string;
+        };
+        Update: {
+          content_type?: string;
+          created_at?: string;
+          doc_type?: string;
+          expires_on?: string | null;
+          file_name?: string;
+          finalized_at?: string | null;
+          id?: string;
+          object_path?: string;
+          onboarding_id?: string;
+          org_id?: string;
+          removed_at?: string | null;
+          size_bytes?: number;
+          slot_key?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_intake_uploads_onboarding_fkey";
+            columns: ["org_id", "onboarding_id"];
+            isOneToOne: false;
+            referencedRelation: "provider_onboardings";
+            referencedColumns: ["org_id", "id"];
+          },
+          {
+            foreignKeyName: "provider_intake_uploads_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      provider_onboarding_checks: {
+        Row: {
+          check_key: string;
+          checked_at: string;
+          checked_by: string;
+          checked_by_name: string | null;
+          id: string;
+          note: string | null;
+          onboarding_id: string;
+          org_id: string;
+          outcome: string;
+        };
+        Insert: {
+          check_key: string;
+          checked_at?: string;
+          checked_by: string;
+          checked_by_name?: string | null;
+          id?: string;
+          note?: string | null;
+          onboarding_id: string;
+          org_id: string;
+          outcome: string;
+        };
+        Update: {
+          check_key?: string;
+          checked_at?: string;
+          checked_by?: string;
+          checked_by_name?: string | null;
+          id?: string;
+          note?: string | null;
+          onboarding_id?: string;
+          org_id?: string;
+          outcome?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_onboarding_checks_onboarding_fkey";
+            columns: ["org_id", "onboarding_id"];
+            isOneToOne: false;
+            referencedRelation: "provider_onboardings";
+            referencedColumns: ["org_id", "id"];
+          },
+          {
+            foreignKeyName: "provider_onboarding_checks_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      provider_onboardings: {
+        Row: {
+          admitted_at: string | null;
+          admitted_by: string | null;
+          admitted_facility_id: string | null;
+          cancelled_at: string | null;
+          cancelled_by: string | null;
+          consented_at: string | null;
+          created_by: string | null;
+          created_record: boolean;
+          external_ref: string | null;
+          first_signed_in_at: string | null;
+          id: string;
+          last_contacted_at: string | null;
+          last_help_at: string | null;
+          locked_fields: string[];
+          opened_at: string;
+          org_id: string;
+          provider_id: string;
+          source: string;
+          ssn_stored_at: string | null;
+          submitted_at: string | null;
+          submitted_email_delivery: string | null;
+        };
+        Insert: {
+          admitted_at?: string | null;
+          admitted_by?: string | null;
+          admitted_facility_id?: string | null;
+          cancelled_at?: string | null;
+          cancelled_by?: string | null;
+          consented_at?: string | null;
+          created_by?: string | null;
+          created_record?: boolean;
+          external_ref?: string | null;
+          first_signed_in_at?: string | null;
+          id?: string;
+          last_contacted_at?: string | null;
+          last_help_at?: string | null;
+          locked_fields?: string[];
+          opened_at?: string;
+          org_id: string;
+          provider_id: string;
+          source?: string;
+          ssn_stored_at?: string | null;
+          submitted_at?: string | null;
+          submitted_email_delivery?: string | null;
+        };
+        Update: {
+          admitted_at?: string | null;
+          admitted_by?: string | null;
+          admitted_facility_id?: string | null;
+          cancelled_at?: string | null;
+          cancelled_by?: string | null;
+          consented_at?: string | null;
+          created_by?: string | null;
+          created_record?: boolean;
+          external_ref?: string | null;
+          first_signed_in_at?: string | null;
+          id?: string;
+          last_contacted_at?: string | null;
+          last_help_at?: string | null;
+          locked_fields?: string[];
+          opened_at?: string;
+          org_id?: string;
+          provider_id?: string;
+          source?: string;
+          ssn_stored_at?: string | null;
+          submitted_at?: string | null;
+          submitted_email_delivery?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_onboardings_admitted_facility_fkey";
+            columns: ["org_id", "admitted_facility_id"];
+            isOneToOne: false;
+            referencedRelation: "facilities";
+            referencedColumns: ["org_id", "id"];
+          },
+          {
+            foreignKeyName: "provider_onboardings_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_onboardings_provider_fkey";
+            columns: ["org_id", "provider_id"];
+            isOneToOne: false;
+            referencedRelation: "providers";
+            referencedColumns: ["org_id", "id"];
+          },
+        ];
+      };
+      provider_portal_credentials: {
+        Row: {
+          created_at: string;
+          created_by: string | null;
+          key_version: number;
+          onboarding_id: string | null;
+          org_id: string;
+          password_ciphertext: string;
+          portal: string;
+          provider_id: string;
+          updated_at: string;
+          updated_by: string | null;
+          username: string;
+        };
+        Insert: {
+          created_at?: string;
+          created_by?: string | null;
+          key_version?: number;
+          onboarding_id?: string | null;
+          org_id: string;
+          password_ciphertext: string;
+          portal: string;
+          provider_id: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          username: string;
+        };
+        Update: {
+          created_at?: string;
+          created_by?: string | null;
+          key_version?: number;
+          onboarding_id?: string | null;
+          org_id?: string;
+          password_ciphertext?: string;
+          portal?: string;
+          provider_id?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          username?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "provider_portal_credentials_onboarding_id_fkey";
+            columns: ["onboarding_id"];
+            isOneToOne: false;
+            referencedRelation: "provider_onboardings";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_portal_credentials_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "provider_portal_credentials_provider_fkey";
+            columns: ["org_id", "provider_id"];
+            isOneToOne: false;
+            referencedRelation: "providers";
+            referencedColumns: ["org_id", "id"];
+          },
+        ];
+      };
       provider_registry_pulls: {
         Row: {
           confirmed: boolean;
@@ -5102,7 +5468,126 @@ export type Database = {
         };
         Returns: Json;
       };
+      cancel_provider_onboarding: {
+        Args: {
+          p_actor_id: string;
+          p_actor_name: string;
+          p_org_id: string;
+          p_provider_id: string;
+        };
+        Returns: Json;
+      };
+      record_onboarding_check: {
+        Args: {
+          p_check_key: string;
+          p_note: string | null;
+          p_onboarding_id: string;
+          p_outcome: string;
+        };
+        Returns: Json;
+      };
+      mark_onboarding_contacted: { Args: { p_onboarding_id: string }; Returns: Json };
+      admit_provider_onboarding: {
+        Args: { p_facility_id: string; p_onboarding_id: string };
+        Returns: Json;
+      };
+      read_provider_onboarding: { Args: { p_provider_id: string }; Returns: Json };
       revoke_intake_session: { Args: { p_session_hash: string }; Returns: undefined };
+      intake_paused: { Args: never; Returns: boolean };
+      intake_link_paused: { Args: { p_token_hash: string }; Returns: boolean };
+      onboarding_orphan_files: { Args: { p_cutoff: string; p_limit: number }; Returns: Json };
+      record_intake_email_delivery: {
+        Args: { p_delivery: string; p_id: string; p_kind: string };
+        Returns: boolean;
+      };
+      read_intake_state: {
+        Args: { p_session_hash: string; p_token_hash: string };
+        Returns: Json;
+      };
+      begin_intake_upload: {
+        Args: {
+          p_content_type: string;
+          p_doc_type: string;
+          p_expires_on: string | null;
+          p_file_name: string;
+          p_session_hash: string;
+          p_size_bytes: number;
+          p_slot_key: string;
+          p_token_hash: string;
+        };
+        Returns: Json;
+      };
+      read_intake_upload: {
+        Args: {
+          p_session_hash: string;
+          p_token_hash: string;
+          p_upload_id: string;
+        };
+        Returns: Json;
+      };
+      finish_intake_upload: {
+        Args: {
+          p_session_hash: string;
+          p_size_bytes: number;
+          p_token_hash: string;
+          p_upload_id: string;
+        };
+        Returns: Json;
+      };
+      remove_intake_upload: {
+        Args: {
+          p_session_hash: string;
+          p_token_hash: string;
+          p_upload_id: string;
+        };
+        Returns: Json;
+      };
+      set_intake_upload_expiry: {
+        Args: {
+          p_expires_on: string | null;
+          p_session_hash: string;
+          p_token_hash: string;
+          p_upload_id: string;
+        };
+        Returns: Json;
+      };
+      submit_provider_intake: {
+        Args: {
+          p_documents: Json;
+          p_expected_version: number;
+          p_session_hash: string;
+          p_token_hash: string;
+        };
+        Returns: Json;
+      };
+      request_intake_help: {
+        Args: {
+          p_field: string | null;
+          p_kind: string;
+          p_session_hash: string;
+          p_token_hash: string;
+        };
+        Returns: Json;
+      };
+      save_intake_draft: {
+        Args: {
+          p_answers: Json;
+          p_expected_version: number;
+          p_session_hash: string;
+          p_step: string;
+          p_token_hash: string;
+        };
+        Returns: Json;
+      };
+      sign_intake_consent: {
+        Args: {
+          p_session_hash: string;
+          p_text_version: number;
+          p_token_hash: string;
+          p_typed_name: string;
+        };
+        Returns: Json;
+      };
       verify_intake_code: {
         Args: {
           p_code_hash: string;
@@ -5738,6 +6223,10 @@ export type Database = {
         Args: { p_actor_user_id: string; p_audience?: string; p_org_id?: string };
         Returns: Json;
       };
+      reveal_portal_credential: {
+        Args: { p_justification: string; p_portal: string; p_provider_id: string };
+        Returns: Json;
+      };
       reveal_ssn: {
         Args: { p_justification: string; p_provider_id: string };
         Returns: Json;
@@ -5827,6 +6316,20 @@ export type Database = {
       stage_import_rows: {
         Args: { p_rows: Json; p_run_id: string };
         Returns: undefined;
+      };
+      store_intake_portal_login: {
+        Args: {
+          p_password: string;
+          p_portal: string;
+          p_session_hash: string;
+          p_token_hash: string;
+          p_username: string;
+        };
+        Returns: Json;
+      };
+      store_intake_ssn: {
+        Args: { p_session_hash: string; p_ssn: string; p_token_hash: string };
+        Returns: Json;
       };
       store_ssn: {
         Args: { p_provider_id: string; p_ssn: string };

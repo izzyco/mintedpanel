@@ -1064,3 +1064,58 @@ test("manual case distinguishes prerequisite query failures from empty data", as
   await expect(dialog.getByRole("combobox", { name: "Provider" })).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Create case" })).toBeDisabled();
 });
+
+test("manual case refuses a provider whose invite created her record until Admit; a gap-fill journey holds nothing", async ({
+  context,
+  page,
+}) => {
+  const fixtures = makeFixtures();
+  fixtures.providers.push(providerRow("pr-nia", "Nia", "Brooks"));
+  fixtures.provider_group_assignments.push(groupAssignment("pr-nia", "g-1", true));
+  fixtures.provider_facility_assignments.push(facilityAssignment("pr-nia", "f-g1-nc"));
+  const journey = (providerId: string, createdRecord: boolean) => ({
+    id: `j-${providerId}`,
+    org_id: ORG_SHELBY,
+    provider_id: providerId,
+    created_record: createdRecord,
+    opened_at: "2026-11-01T00:00:00Z",
+    submitted_at: null,
+    admitted_at: null,
+    cancelled_at: null,
+  });
+  fixtures.provider_onboardings = [journey("pr-nia", true), journey("pr-jane", false)];
+  const { handler, writes } = makeHandler(fixtures);
+  await context.route(/\/(rest|auth)\/v1\//, handler);
+  await seedAuth(context, ORG_SHELBY);
+
+  await page.goto("/cases");
+  await page.getByRole("button", { name: "New case" }).click();
+  const dialog = page.getByRole("dialog");
+  const hold = dialog.getByText(
+    "This provider's onboarding isn't finished. Admit & assign on the provider's page before creating a case.",
+  );
+
+  await dialog.getByRole("combobox", { name: "Provider" }).click();
+  await page.getByRole("option", { name: "Nia Brooks" }).click();
+  await expect(hold).toBeVisible();
+  await expect(dialog.getByRole("link", { name: "Open provider" })).toHaveAttribute(
+    "href",
+    "/providers/pr-nia",
+  );
+  await dialog.getByRole("combobox", { name: "Group" }).click();
+  await page.getByRole("option", { name: "Group 1" }).click();
+  await dialog.getByRole("button", { name: "Show all payers (new contracting)" }).click();
+  await dialog.getByRole("combobox", { name: "Payer" }).click();
+  await page.getByRole("option", { name: "Cigna-NC" }).click();
+  await dialog.getByRole("combobox", { name: "State" }).click();
+  await page.getByRole("option", { name: "NC", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Create case" })).toBeDisabled();
+
+  await dialog.getByRole("combobox", { name: "Provider" }).click();
+  await page.getByRole("option", { name: "Jane Whitaker" }).click();
+  await expect(hold).toHaveCount(0);
+  await dialog.getByRole("combobox", { name: "Group" }).click();
+  await page.getByRole("option", { name: "Group 1" }).click();
+  await expect(dialog.getByRole("button", { name: "Create case" })).toBeEnabled();
+  expect(writes.filter((w) => w.table === "rpc/create_case_with_tasks")).toHaveLength(0);
+});

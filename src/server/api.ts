@@ -106,9 +106,10 @@ const PAYER_FORM_UPLOAD_INTENT_ROUTE = /^\/api\/payer-forms\/upload-intent\/?$/;
 const PAYER_FORM_FINALIZE_ROUTE = /^\/api\/payer-forms\/finalize\/?$/;
 const PAYER_FORM_DOWNLOAD_ROUTE = /^\/api\/payer-forms\/([^/]+)\/download\/?$/;
 const ROSTER_ROUTE = /^\/api\/rosters(?:\/.*)?\/?$/;
-// Provider onboarding slice 1: staff create and resend provider invites.
+// Provider onboarding: staff create, resend and cancel provider invites.
 const PROVIDER_INVITES_ROUTE = /^\/api\/provider-invites\/?$/;
 const PROVIDER_INVITE_RESEND_ROUTE = /^\/api\/provider-invites\/([^/]+)\/resend\/?$/;
+const PROVIDER_INVITE_CANCEL_ROUTE = /^\/api\/provider-invites\/([^/]+)\/cancel\/?$/;
 // MINT-110: staff search and verify NPIs in the NPI Registry (NPPES).
 const NPI_REGISTRY_ROUTE = /^\/api\/npi-registry\/(search|lookup)\/?$/;
 // MINT-110 PR 2: the import review checks new providers' NPIs a batch at a time.
@@ -225,7 +226,9 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     try {
       const routes = await loadProviderIntakeRoutes();
       return withCors(
-        await routes.handleIntakeRequest(request, () => readBoundedJsonBody(request, 4096)),
+        await routes.handleIntakeRequest(request, (maxBytes) =>
+          readBoundedJsonBody(request, maxBytes),
+        ),
         request,
       );
     } catch (error) {
@@ -503,6 +506,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
   const isRosterRoute = ROSTER_ROUTE.test(pathname);
   const isProviderInvites = PROVIDER_INVITES_ROUTE.test(pathname);
   const providerInviteResendMatch = pathname.match(PROVIDER_INVITE_RESEND_ROUTE);
+  const providerInviteCancelMatch = pathname.match(PROVIDER_INVITE_CANCEL_ROUTE);
   const npiRegistryMatch = pathname.match(NPI_REGISTRY_ROUTE);
   const isNpiRegistryBatch = NPI_REGISTRY_BATCH_ROUTE.test(pathname);
   const isNpiRegistryPulls = NPI_REGISTRY_PULLS_ROUTE.test(pathname);
@@ -545,6 +549,7 @@ async function routeApiRequest(request: Request): Promise<Response> {
     !isRosterRoute &&
     !isProviderInvites &&
     !providerInviteResendMatch &&
+    !providerInviteCancelMatch &&
     !npiRegistryMatch &&
     !isNpiRegistryBatch &&
     !isNpiRegistryPulls &&
@@ -877,6 +882,11 @@ async function routeApiRequest(request: Request): Promise<Response> {
       if (method !== "POST") return fail(405, "Method not allowed");
       const routes = await loadProviderIntakeRoutes();
       return await routes.handleResendProviderInvite(providerInviteResendMatch[1], ctx);
+    }
+    if (providerInviteCancelMatch) {
+      if (method !== "POST") return fail(405, "Method not allowed");
+      const routes = await loadProviderIntakeRoutes();
+      return await routes.handleCancelProviderOnboarding(providerInviteCancelMatch[1], ctx);
     }
     if (npiRegistryMatch) {
       if (method !== "POST") return fail(405, "Method not allowed");

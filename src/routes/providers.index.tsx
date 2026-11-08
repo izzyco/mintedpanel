@@ -41,6 +41,7 @@ import { downloadCsvText } from "@/lib/csv";
 import { fmtDate } from "@/lib/format";
 import type { Provider } from "@/types";
 import { InviteProviderDialog } from "@/components/providers/InviteProviderDialog";
+import { useOpenProviderOnboardings } from "@/hooks/useProviderOnboardings";
 
 export const Route = createFileRoute("/providers/")({
   component: ProvidersRoster,
@@ -70,6 +71,20 @@ function GapPill({ providerId, gap }: { providerId: string; gap: ProviderGap }) 
   );
 }
 
+function OnboardingPill({ providerId }: { providerId: string }) {
+  return (
+    <Link
+      to="/providers/$id"
+      params={{ id: providerId }}
+      hash="onboarding"
+      className="inline-flex"
+      aria-label="Onboarding not complete, open the record's Onboarding card"
+    >
+      <StatusPill status="blue" label="Onboarding not complete" />
+    </Link>
+  );
+}
+
 function ProvidersRoster() {
   const navigate = useNavigate();
   const canWrite = useCanWrite();
@@ -79,11 +94,15 @@ function ProvidersRoster() {
   const licensesQ = useOrgStateLicenses();
   const groupsQ = useProviderGroups();
   const casesQ = useCases();
+  // Not one of the reads rows wait for: while it loads, or if it fails, the
+  // roster shows no onboarding pill or toggle and everything else as usual.
+  const onboardingsQ = useOpenProviderOnboardings();
 
   const [search, setSearch] = useState("");
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [stateFilter, setStateFilter] = useState<string>("all");
   const [gapsOnly, setGapsOnly] = useState(false);
+  const [onboardingOnly, setOnboardingOnly] = useState(false);
   const [inviting, setInviting] = useState(false);
 
   const today = localTodayIso();
@@ -165,6 +184,14 @@ function ProvidersRoster() {
     today,
   ]);
 
+  const onboardingIds = useMemo(
+    () => new Set((onboardingsQ.data ?? []).map((o) => o.providerId)),
+    [onboardingsQ.data],
+  );
+  const onboardingCount = (rows ?? []).filter(
+    (r) => r.provider.status !== "terminated" && onboardingIds.has(r.provider.id),
+  ).length;
+
   const filtered = useMemo(() => {
     if (!rows) return undefined;
     const term = search.trim().toLowerCase();
@@ -181,9 +208,10 @@ function ProvidersRoster() {
       }
       if (stateFilter !== "all" && !r.licenseStates.includes(stateFilter)) return false;
       if (gapsOnly && r.gaps.length === 0) return false;
+      if (onboardingOnly && !onboardingIds.has(r.provider.id)) return false;
       return true;
     });
-  }, [rows, search, groupFilter, stateFilter, gapsOnly]);
+  }, [rows, search, groupFilter, stateFilter, gapsOnly, onboardingOnly, onboardingIds]);
 
   const reference = useMemo(
     () => (filtered ?? []).filter((r) => r.provider.referenceOnly),
@@ -333,6 +361,9 @@ function ProvidersRoster() {
               </td>
               <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                 <span className="inline-flex flex-wrap gap-1">
+                  {onboardingIds.has(r.provider.id) ? (
+                    <OnboardingPill providerId={r.provider.id} />
+                  ) : null}
                   {r.gaps.map((g) => (
                     <GapPill key={g.key} providerId={r.provider.id} gap={g} />
                   ))}
@@ -419,6 +450,18 @@ function ProvidersRoster() {
         >
           {gapsOnly ? "Showing gaps only" : "Has gaps"}
         </Button>
+        {onboardingCount > 0 || onboardingOnly ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8"
+            aria-pressed={onboardingOnly}
+            onClick={() => setOnboardingOnly((v) => !v)}
+          >
+            {onboardingOnly ? "Showing onboarding only" : "Onboarding"}{" "}
+            <span className="font-semibold tabular-nums">{onboardingCount}</span>
+          </Button>
+        ) : null}
       </div>
 
       {/* E6.4 — imports live with their data: the provider CSV (one row per

@@ -124,8 +124,13 @@ two file surfaces: the browser documents and payer-forms services call their
 `/api/*` signing endpoints, because a signed Storage URL cannot be minted
 client-side. Metadata reads (and the payer-form soft retire) stay on RLS.
 Provider onboarding adds two more for the same kind of reason: staff invites
-(`/api/provider-invites`, the server sends the email) and the provider intake
-(`/api/intake/*`, the provider has no Supabase session).
+and cancel (`/api/provider-invites`, `/api/provider-invites/:providerId/cancel`;
+the server sends the email and deletes the onboarding's Storage files, which
+no browser role can reach) and the provider intake (`/api/intake/*`, the
+provider has no Supabase session). Every other staff onboarding read and
+write (the Onboarding card, person checks, Mark contacted, Admit & assign, the
+login reveal) is an authenticated `SECURITY DEFINER` RPC called from a browser
+service.
 
 Routes get built only when a real consumer pulls them. Don't migrate existing
 screens to `/api`.
@@ -202,6 +207,24 @@ adding one. Callers name a registered template (no free-form body), take the
 recipient from a server lookup, never resend on a retry, and write their own
 audit row. Keep the module's imports relative `.ts` so the CLI runs.
 
+### Scheduled jobs (`src/server/jobs/`)
+
+`GET /api/jobs/<name>` runs a job from `JOB_REGISTRY` (`registry.ts`) for a
+caller with `Authorization: Bearer <CRON_SECRET>`, and answers its integer
+counts. Each job has one daily cron in `vercel.json` (Vercel Hobby allows no
+more), and `crons.test.ts` pins both lists. There is no run ledger; each job
+keeps its own idempotency.
+
+- `followup-digest` (`followupDigest.ts`) emails coordinators their overdue
+  and due-today follow-ups. Vercel calls it at 18:00 UTC; the hourly GitHub
+  Actions tick is manual-dispatch only.
+- `onboarding-file-cleanup` (`onboardingFileCleanup.ts`, 18:30 UTC) deletes up
+  to 500 onboarding Storage files older than 3 hours that
+  `onboarding_orphan_files` names: holding-bucket files of a removed or
+  missing upload or an ended journey, and vault copies under an ended
+  journey's upload folder that no document row has. It refuses a list naming
+  any other path.
+
 ### The routes
 
 Org-scoped (full `authenticate()`):
@@ -232,37 +255,108 @@ User-scoped (`authenticateUser()`, no org resolution):
 | `GET/PUT /api/me/view-prefs`                                                                                                  | quick-card layout follows the user across orgs; `?card=group\|provider\|location` reads/writes a directory card layout instead |
 | `GET/POST /api/shared-field-maps`, `GET /api/shared-portals`, `POST /api/shared-portals/prove`, `POST /api/shared-test-fills` | the shared training tier belongs to **no org**; global rows only, so there is nothing to widen to                              |
 
-**Provider onboarding** (`docs/provider-onboarding/slice-1-invite-to-form.md`).
-There is no on/off switch: the routes and the Invite button are live wherever
-the code runs, and need the migration plus the email env. Each write is one `SECURITY DEFINER` RPC granted to
-`service_role` only, which writes its own audit rows.
+**Provider onboarding.** `docs/provider-onboarding/data-map.md` holds the
+current state, datum by datum, and
+`docs/provider-onboarding/r1-operator-steps.md` holds the apply steps. Every
+step persists, from invite to Admit. Each write is one `SECURITY DEFINER` RPC
+that writes its own audit rows, so no route calls `writeAudit`. The routes
+need the ten R1 migrations (Database below) and the email env. The off
+switch is `provider_intake_settings.paused`, flipped by operator SQL. While it
+is set, every intake and invite route answers 503 `intake_paused` before it
+writes anything, and the provider's page says her form is paused. An intake
+link whose org is offboarded (not writable) is paused the same way: every
+intake route asks `intake_link_paused` with the link's hash first, so no code
+goes out for a sign-in the write freeze would refuse. Cancel and
+her signout skip that check, because each only takes access away. No
+route logs a body, answer, email, code, token, SSN, login, file name or
+object path. The `onboarding-file-cleanup` job (Scheduled jobs below)
+deletes the Storage files onboarding leaves behind.
 
 - `POST /api/provider-invites`, `POST /api/provider-invites/:providerId/resend`
-  (full `authenticate()`, writers): create the onboarding provider + primary
-  group assignment + invite and email the link; a duplicate returns
-  `outcome: "already_exists"`; resend has a 10-minute cooldown, serializes on
-  the provider id (advisory lock), sends to the record's **current** email
-  (returned as `email`), and gives a provider with an email but no open
-  invite a first one. Both report `delivery: "sent" | "sandbox" | "failed"` —
-  a failed send is never an error, the invite is already saved. Missing email
-  env or a non-origin `APP_BASE_URL` → 500 before any write.
-- `POST /api/intake/{link,code,session,me,signout}` (no JWT; POST + JSON
-  only; dispatched before operation-context resolution): the code always goes
-  to the invited address, `code` answers `sent` for every link state (a
-  missing email env is the one 500), a right code sets the `mp_intake` cookie
-  (`HttpOnly; SameSite=Strict; Path=/api/intake`, 2 hours), and `me` takes
-  `{ t }` so a session reads back only under its own link. Tokens and codes
-  are hashed before they reach SQL.
+  (full `authenticate()`, writers). The match rule
+  (`_match_onboarding_provider`) runs first. One provider with that email or
+  NPI in the group is `outcome: "already_exists"`, one outside the group is
+  `added_group` (that group joins her record, no email), and more than one is
+  a 409 that writes nothing. Otherwise the RPC creates the provider, its
+  primary group assignment, the invite and the journey
+  (`provider_onboardings`, `created_record = true`) and the route emails the
+  link. Resend has a 10-minute cooldown, serializes on the provider id
+  (advisory lock), sends to the record's **current** email (returned as
+  `email`), gives a provider with an email but no open invite a first one,
+  and opens a journey when none is open (`created_record = false`,
+  `locked_fields` = which of SSN, NPI and DOB are on file then). Both report
+  `delivery: "sent" | "sandbox" | "failed"` and store it once on the invite.
+  A failed send is never an error, the invite is already saved. Missing email
+  env or a non-origin `APP_BASE_URL` is a 500 before any write.
+- `POST /api/provider-invites/:providerId/cancel` (full `authenticate()`,
+  writers). It works before Submit only. After Submit it answers 409
+  `already_submitted`, and it answers a 404 when the caller's org has no open
+  journey for her. `cancel_provider_onboarding` revokes her invites and
+  sessions, then deletes a record the invite created with nothing else on it
+  (`outcome: "deleted"`) or closes the journey and removes what it wrote
+  (`"closed"`). The route then deletes the Storage prefixes the RPC names. A
+  Storage failure is logged with identifiers only and still answers 200.
+- `POST /api/intake/<action>` (no JWT; POST + JSON only; `no-store`; dispatched
+  before operation-context resolution). Actions (`INTAKE_ACTIONS` in
+  `src/server/providerIntakeRoutes.ts`): `link`, `code`, `session`, `state`,
+  `draft`, `consent`, `ssn`, `login`, `upload-intent`, `upload-finalize`,
+  `upload-remove`, `upload-expiry`, `submit`, `help`, `signout`. Each has its
+  own body bound, 32 KB for `draft` and 4 KB for the rest. Every action but
+  `link` and `state` refuses a request whose `Origin` host is not the request's
+  host (403 `forbidden_origin`). The code always goes to the invited address,
+  `code` answers `sent` for every link state (a missing email env is the one
+  500), its send outcome is stored on the code, and a right code sets the
+  `mp_intake` cookie (`HttpOnly; SameSite=Strict; Path=/api/intake`, 2 hours).
+  After sign-in every action sends `{ t }`, and its RPC resolves her journey
+  from the cookie and the link together (`_intake_session_context`), so a
+  session acts only under its own link (401 `signed_out` otherwise). `state` (it
+  replaced `me`) returns what the form opens with. `draft` is version-checked
+  (409 `draft_conflict`, the form reloads). `ssn` and `login` write straight to
+  the vaults and answer only the last 4 or "on file". Uploads go through a
+  signed URL to the private `provider-intake-uploads` bucket and wait there
+  until Submit. `submit` reruns the form's rules on the server
+  (`intakeSubmission`, answering 422 `intake_incomplete` with `meta.missing` or
+  409 `npi_in_use`), copies each held file into the vault, then merges her
+  answers in one RPC (never a locked field, her email or `providers.status`). A
+  retried Submit converges and sends nothing again. A Submit whose RPC does not
+  commit, or that throws, deletes the vault copies it made or found unless a
+  document row has the upload's id; a Submit that commits also deletes the
+  vault copies of her uploads that did not go in. Submit emails her once
+  (outcome in `provider_onboardings.submitted_email_delivery`), and Submit and
+  `help` email `ONBOARDING_OPS_EMAIL` when it is set. Tokens and codes are
+  hashed before they reach SQL.
 - The provider's screens (canvas Stage 1: confirm → code → consent → form →
   documents → thank you) are one reducer, `src/lib/intakeFlow.ts`, rendered
-  by `src/components/intake/IntakeFlow.tsx` through an `IntakeGateway`. Only
-  sign-in is real. Consent, answers, file names, help requests and Submit
-  live in page memory and are never sent; the live link shows a notice
-  saying so. The full SSN and passwords never enter React state (the draft
-  keeps the last 4 and an on-file flag). Form rules: `src/lib/intakeForm.ts`.
+  by `src/components/intake/IntakeFlow.tsx` through an `IntakeGateway`.
+  Signing in resumes at consent, at her saved step, or at thank you. Answers
+  save about a second after she stops typing (`useDraftAutosave`). The full
+  SSN and passwords never enter React state (the draft keeps the last 4 and
+  an on-file flag). Form rules live in `src/lib/intakeForm.ts`. The answers
+  shape that the form, the routes and the saved draft share lives in
+  `src/lib/intakeAnswers.ts`, and the documents screen's state in
+  `src/lib/intakeUploads.ts`.
+- On `/providers/$id`, the staff Onboarding card
+  (`src/components/providerOnboarding/OnboardingCard.tsx`, pure
+  `src/lib/onboardingCard.ts`, read through `read_provider_onboarding`) leads
+  the record while a journey is open. It shows the stage tracker, Waiting on,
+  Resend, Cancel and Mark contacted. After Submit it adds the Verification block
+  (automatic checks derived on read, person checks stored, Test… for an admin)
+  and Admit & assign, which offers the locations of her groups and warns, but
+  never blocks, on one outside her license states. After Admit it collapses to
+  one line. Readiness on the Cases tab is hidden while the journey is open. The
+  roster's Onboarding toggle and pill read open journeys under RLS
+  (`listOpenProviderOnboardings`); `GET /api/providers` is unchanged.
+- Case creation waits for Admit only for a journey whose invite created the
+  record (`created_record`). `/generation` skips her with
+  `onboarding_not_admitted` (`buildGenerationSkips`), `ManualCaseModal`
+  refuses her, and the BEFORE INSERT trigger
+  `block_case_until_onboarding_admitted` on `credential_cases` is the
+  backstop (JWT sessions only). The one rule is `onboardingHeldProviderIds`
+  in `src/lib/providerOnboarding.ts`. A gap-fill journey holds nothing.
 - `/dev/provider-onboarding` (dev flag, chromeless in `__root.tsx`) runs the
-  same flow on a fake gateway (code 123456, scenarios incl. a re-invited
-  provider with locked SSN/NPI/DOB) and the practice's New hires view
+  same flow on a fake gateway that keeps what she saves in memory under the
+  live routes' rules (code 123456, scenarios incl. a re-invited provider with
+  locked SSN/NPI/DOB) and the practice's New hires view
   (`src/components/providerOnboarding/`, reducer `src/lib/newHires.ts`) on
   sample data. Practice users have no login yet, so New hires exists only
   there. The staff Invite dialog and the practice's share `InviteFields`.
@@ -374,6 +468,73 @@ before any schema work.
   (three token tables + seven RPCs). Applied on staging 2026-10-30 (ledger
   `20261030031837`, smoke passed); production unverified. Verify: `pg_proc.proname = 'verify_intake_code'` exists, then run
   `scripts/sql/provider-intake-smoke.sql` (every RPC, rolled back).
+- `20261106200000` through `20261107040000` are provider onboarding R1, ten
+  files, repo-only. Apply all ten in filename order, after slice 1 and after
+  Mission Control M3 (five of them end with
+  `SELECT public.apply_offboarded_write_freeze();`), and **before** deploying
+  the code. Every invite route calls `intake_paused()` and every intake route
+  `intake_link_paused()` before it writes, so a deploy ahead of the apply
+  turns them all into 500s.
+  `20261106220000` needs a new Supabase Vault secret `portal_credentials_key`,
+  whose value must differ from `ssn_vault_key`. Until it exists, every login
+  save and reveal raises. It adds one server env var, `ONBOARDING_OPS_EMAIL`
+  (optional). Each file's header holds its exact verify queries. Each smoke is
+  one rolled-back transaction in `scripts/sql/`, run as `postgres`. The secrets,
+  cancel, staff and generation smokes need both Vault secrets. Steps:
+  `docs/provider-onboarding/r1-operator-steps.md`.
+  - `20261106200000_provider_onboardings.sql` adds `provider_onboardings`,
+    `provider_intake_settings`, `onboarding_id` and `delivery` on invites,
+    `delivery` on codes, the match rule and the trigger
+    `revoke_intake_on_provider_change` on `providers`. Verify: both tables,
+    the three columns, four functions and the trigger, then run
+    `provider-onboarding-smoke.sql`.
+  - `20261106210000_provider_intake_drafts.sql` adds `provider_intake_drafts`,
+    `provider_intake_consents`, `_intake_session_context`, `read_intake_state`,
+    `save_intake_draft` and `sign_intake_consent`. Verify: both tables and
+    four functions, then run `provider-intake-drafts-smoke.sql`.
+  - `20261106220000_provider_intake_secrets.sql` adds
+    `provider_portal_credentials`, `_portal_credentials_key`,
+    `store_intake_ssn`, `store_intake_portal_login` and
+    `reveal_portal_credential`. Verify: the table and four functions, then run
+    `provider-intake-secrets-smoke.sql`.
+  - `20261106230000_provider_intake_uploads.sql` adds the private
+    `provider-intake-uploads` bucket (`file_size_limit` 26214400),
+    `provider_intake_uploads` and five upload RPCs. Verify: the table, the
+    bucket row and five functions, then run
+    `provider-intake-uploads-smoke.sql`.
+  - `20261106233000_provider_intake_submit.sql` adds `submit_provider_intake`
+    and `request_intake_help`, and `held_object_paths` in
+    `read_intake_state`. Verify: two functions and the `read_intake_state`
+    body, then run `provider-intake-submit-smoke.sql`.
+  - `20261107000000_cancel_provider_onboarding.sql` adds
+    `cancel_provider_onboarding`. Verify: the function, then run
+    `provider-onboarding-cancel-smoke.sql`.
+  - `20261107010000_provider_onboarding_staff.sql` adds
+    `provider_onboardings.first_signed_in_at`, `provider_onboarding_checks`,
+    `record_onboarding_check`, `mark_onboarding_contacted`,
+    `admit_provider_onboarding`, `read_provider_onboarding` and
+    `_onboarding_for_writer`, and makes `verify_intake_code` set the first
+    sign-in. Verify: the table, the column, five functions and the
+    `verify_intake_code` body, then run
+    `provider-onboarding-staff-smoke.sql`.
+  - `20261107020000_cases_wait_for_onboarding_admit.sql` adds the trigger
+    `block_case_until_onboarding_admitted` on `credential_cases`. Verify: the
+    trigger, then run `provider-onboarding-generation-smoke.sql`.
+  - `20261107030000_read_provider_onboarding_missing_is_null.sql` makes
+    `read_provider_onboarding` return NULL for a missing or other-org
+    provider instead of raising `onboarding_not_found`. Verify: its `prosrc`
+    no longer contains `onboarding_not_found`, then run
+    `provider-onboarding-staff-smoke.sql`.
+  - `20261107040000_onboarding_review_fixes.sql` adds `intake_link_paused`
+    and `onboarding_orphan_files` (both service_role only), puts the consent
+    evidence (text version and signed time) in `cancel_provider_onboarding`'s
+    DELETE audit row, and the caller's name in `reveal_portal_credential`'s
+    READ row. Verify: `SELECT count(*) FROM pg_proc WHERE proname IN
+('intake_link_paused', 'onboarding_orphan_files')` is 2, and the
+    `prosrc` of `cancel_provider_onboarding` contains `consents` and of
+    `reveal_portal_credential` contains `user_name`; then run
+    `provider-onboarding-cleanup-smoke.sql`, and the cancel, secrets and
+    staff smokes again (they check what it changed).
 - `20261017120000_case_creation_primary_location.sql` — **needs PM
   sign-off.** `create_case_with_tasks` writes the primary `case_facilities`
   row, plus a backfill of cases that have only the `facility_id` mirror (36
@@ -477,6 +638,26 @@ All are repo migrations unless noted.
   recomputed counts in one round trip.
 - **`store_ssn` / `reveal_ssn` / `release_ssn_for_fill`** — the vault. No client
   table grant exists; the RPCs are the only access.
+- **Provider onboarding RPCs** (`docs/provider-onboarding/data-map.md`). The
+  intake RPCs are granted to `service_role` only and never take an id from the
+  browser. `read_intake_link`, `issue_intake_code` and `verify_intake_code`
+  start from the link hash. Every later one (`read_intake_state`,
+  `save_intake_draft`, `sign_intake_consent`, `store_intake_ssn`,
+  `store_intake_portal_login`, the five upload RPCs, `submit_provider_intake`,
+  `request_intake_help`) resolves the session, invite, journey, provider and org
+  through `_intake_session_context`, from the session hash and the link hash
+  together. `create_provider_intake_invite`, `resend_provider_intake_invite`
+  (both through `_match_onboarding_provider`) and `cancel_provider_onboarding`
+  are `service_role` too, and take the org and actor the route resolved. The
+  staff RPCs, granted to `authenticated`, are `read_provider_onboarding` (any
+  member, booleans and counts only, never a secret) and
+  `record_onboarding_check`, `mark_onboarding_contacted` and
+  `admit_provider_onboarding` (admin or specialist, checked NULL-safe in
+  `_onboarding_for_writer`). `read_provider_onboarding` answers NULL for a
+  missing or other-org provider, as for one with no journey; the writer RPCs
+  give a non-member `onboarding_not_found`.
+  `reveal_portal_credential` is admin-only, needs a reason and writes one READ
+  audit row, the `reveal_ssn` posture. `intake_paused()` reads the off switch.
 - **`get_sop_field_tokens()`** — the token **catalog** (which fields exist and
   where), not values. **Not curated** — it reads `information_schema.columns`
   over nine tables, so any new column on a card-eligible table becomes a token
@@ -755,7 +936,9 @@ a license on file for it) lives in **`src/lib/providerFootprint.ts`** and is
 shared with the provider Readiness card — one definition, so the two surfaces
 can never disagree about which states a provider belongs in. Build the index
 once per derivation with `buildFootprintIndex`, then ask
-`hasStateFootprint` / `providerFootprintFor` per row.
+`hasStateFootprint` / `providerFootprintFor` per row. A provider whose open
+onboarding journey created her record is never a candidate until Admit, and
+`ManualCaseModal` refuses her too (The routes › Provider onboarding).
 Buckets (candidate / enrolled / existing / excluded) are pure
 (`src/lib/generationGrid.ts`), and the confirm bar states a sum invariant —
 every candidate is accounted for.
@@ -984,8 +1167,23 @@ control silently dates a break to a fill that never touched it.**
   client-side navigation. Guarded routes need a render-time `useRole()` backstop.
 - MSO routing matching was exact and case-sensitive; the engine is deleted
   app-side and the tables are dormant.
-- `supabase/seed.sql` pre-resolved `tasks` rows carry `sop_content` in a legacy
-  shape (not what `SOPStep` expects) — cosmetic on local rebuild.
+- **A local `supabase start` needs four workarounds**, found Nov 6 while
+  building onboarding R1. The repo's `supabase/config.toml` has none of them:
+  - `supabase/seed.sql` fails to load against the migrated schema (an
+    insert puts a boolean into a `created_at` column), so a local rebuild has
+    no seed data. Set `[db.seed] enabled = false`. Its `tasks` rows also carry
+    `sop_content` in a legacy shape, not what `SOPStep` expects.
+  - Two migrations share version `20260903210000` (`delete_case_rpc`,
+    `delete_org_sop_template`), and the migration ledger rejects the second
+    (23505). Give the second one a new version in a local copy only.
+  - `20260925035408` and `20261101090000` grant roles `WITH ... SET TRUE`,
+    which Postgres 15 rejects. Set `[db] major_version = 17`.
+  - Two grants a fresh local stack lacks, because the migrations run as
+    `postgres`, which can't grant on the `auth` schema there. Without the
+    second, `resolve_enrollment_context` (read on every org-scoped `/api`
+    request) fails and those routes answer 500. Run both once as
+    `supabase_admin`, in the local database only:
+    `GRANT USAGE ON SCHEMA auth TO minted_e612_authz_owner; GRANT SELECT ON auth.users TO service_role;`
 - `Touch.source` includes `"email"` in TS, but the live
   `touches_source_check` constraint does **not**. No current path writes it —
   an inbound-email writer must ship a constraint migration **before** inserting.

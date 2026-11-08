@@ -14,6 +14,7 @@ import {
   ssnProblem,
   typeDate,
   typeSsn,
+  withLoginOnFile,
   type FieldPath,
 } from "./intakeForm";
 import { canContinue, documentSlots, sectionProgress } from "./providerOnboarding";
@@ -124,6 +125,18 @@ describe("setField", () => {
     ]);
     expect(next.licenses[0].state.value).toBe("NC");
     expect(sectionProgress(next).licenses).toEqual({ done: 1, total: 1 });
+  });
+});
+
+describe("withLoginOnFile", () => {
+  it("puts that portal's login on file and only that one, which is what Continue needs", () => {
+    const filled = apply(initialDraft(EMAIL), EVERY_FIELD);
+    const caqh = withLoginOnFile(filled, "caqh");
+    expect(caqh.logins).toEqual({ caqhOnFile: true, pecosOnFile: false });
+    expect(missingFields(caqh).map((m) => m.key)).toEqual(["logins.pecos"]);
+    const both = withLoginOnFile(caqh, "pecos");
+    expect(canContinue(both)).toBe(true);
+    expect({ ...both, logins: filled.logins }).toEqual(filled);
   });
 });
 

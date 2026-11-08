@@ -5,6 +5,7 @@
 // returned unchanged so existing error handling keeps working — services
 // `throw translateDbError(error)` instead of `throw error` on constrained
 // write paths.
+import { ONBOARDING_HOLD_MESSAGE } from "@/lib/providerOnboarding";
 
 interface PgErrorLike {
   code?: string;
@@ -181,6 +182,9 @@ export function translateDbError(error: unknown): unknown {
         : "A selected portal configuration matches multiple configurations. Use a unique portal key before publishing.",
     );
   }
+  if (haystack.includes("onboarding_not_admitted")) {
+    return new Error(ONBOARDING_HOLD_MESSAGE);
+  }
   if (pg?.code === "23505") {
     const friendly = matchFragment(haystack, UNIQUE_MESSAGES);
     return new UniqueViolationError(friendly ?? "This record already exists.");
@@ -246,6 +250,20 @@ export function isMissingNotificationSequenceTablesError(error: unknown): boolea
   const row = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
   const namesTable = [row.message, row.details, row.hint].some(
     (value) => typeof value === "string" && value.includes("notification_sequence"),
+  );
+  return namesTable && (row.code === "PGRST205" || row.code === "42P01");
+}
+
+/** Deploy-order safety for READS: true when PostgREST says
+ * `provider_onboardings` does not exist, i.e. migration 20261106200000 is not
+ * applied to this database yet (PGRST205 from the schema cache, or Postgres
+ * 42P01). With no table there is no open journey, so nothing is held and the
+ * reader returns an empty list. Any other error must propagate. */
+export function isMissingProviderOnboardingsError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const row = error as { code?: unknown; message?: unknown; details?: unknown; hint?: unknown };
+  const namesTable = [row.message, row.details, row.hint].some(
+    (value) => typeof value === "string" && /\bprovider_onboardings\b/.test(value),
   );
   return namesTable && (row.code === "PGRST205" || row.code === "42P01");
 }

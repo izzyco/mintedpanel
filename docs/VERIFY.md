@@ -107,6 +107,7 @@ npx playwright test e2e/<spec>.spec.ts
 | Wizard — Payer Network section                             | `payer-network.spec.ts`                                     |
 | `/providers/new` (Add Provider wizard, Review step)        | `provider-add-wizard.spec.ts`, `providers-area.spec.ts`     |
 | Provider record — Readiness section (relocated 2026-07-21) | `provider-readiness.spec.ts`                                |
+| Provider record Onboarding card, roster Onboarding toggle  | `provider-onboarding-staff.spec.ts`                         |
 | Import review NPI checks (mocked `verify-batch`)           | `import-npi-verification.spec.ts`                           |
 
 ### Reporting & portfolio
@@ -137,6 +138,8 @@ npx playwright test e2e/<spec>.spec.ts
 | ------------------------------------------------------------------------ | --------------------------------- |
 | `/generation` preview + exclusions                                       | `generation-preview.spec.ts`      |
 | Generation confirm & create (4-part key, `/work?run=` landing)           | `case-creation.spec.ts`           |
+| Onboarding hold on `/generation` (waits for Admit)                       | `decoupled-generation.spec.ts`    |
+| Onboarding hold in the New case modal                                    | `case-creation.spec.ts`           |
 | `/generation/runs`, run detail, case provenance                          | `generation-traceability.spec.ts` |
 | SOP stamping + "Using generic SOP" chip (`/cases`, case detail)          | `sop-stamping.spec.ts`            |
 | `/work` next-best-action queue                                           | `next-best-action-queue.spec.ts`  |
@@ -192,3 +195,74 @@ VITE_MINTED_EXTENSION_ID=abcdefghijklmnopabcdefghijklmnop npm run dev &
   attempt there is not news; a red retry is.
 - Cloud sandboxes cannot reach `*.supabase.co` — the e2e suite runs entirely
   on its mock harness (see CLAUDE.md "Running and verifying" for the recipe).
+
+## 6. Provider onboarding smokes and the local-stack run
+
+The e2e specs above run on mocks. Three more checks cover the database and the
+real stack.
+
+**SQL smokes.** Each onboarding migration has a smoke in `scripts/sql/`. A
+smoke is one transaction, rolled back, that raises on the first failed check. Run it as the
+`postgres` user after the migration is applied, on a local stack or in the
+staging SQL editor:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/<smoke>.sql
+```
+
+| Migration                                        | Smoke                                      |
+| ------------------------------------------------ | ------------------------------------------ |
+| `20261025120000_provider_intake_invites`         | `provider-intake-smoke.sql`                |
+| `20261106200000_provider_onboardings`            | `provider-onboarding-smoke.sql`            |
+| `20261106210000_provider_intake_drafts`          | `provider-intake-drafts-smoke.sql`         |
+| `20261106220000_provider_intake_secrets`         | `provider-intake-secrets-smoke.sql`        |
+| `20261106230000_provider_intake_uploads`         | `provider-intake-uploads-smoke.sql`        |
+| `20261106233000_provider_intake_submit`          | `provider-intake-submit-smoke.sql`         |
+| `20261107000000_cancel_provider_onboarding`      | `provider-onboarding-cancel-smoke.sql`     |
+| `20261107010000_provider_onboarding_staff`       | `provider-onboarding-staff-smoke.sql`      |
+| `20261107020000_cases_wait_for_onboarding_admit` | `provider-onboarding-generation-smoke.sql` |
+| `20261107040000_onboarding_review_fixes`         | `provider-onboarding-cleanup-smoke.sql`    |
+
+The secrets, cancel, staff and generation smokes need both Vault secrets
+(`ssn_vault_key` and `portal_credentials_key`). Each smoke expects every
+migration in the table to be applied: `20261107040000` changes what the
+secrets, cancel and staff smokes check.
+
+**Isolation gate.** A change to `/api/provider-invites*` or `/api/intake/*`
+runs `node scripts/verify-isolation-local.mjs`. Assertions 35 to 35j cover
+them, with leak modes `providerinvites`, `providercancel`, `intakesession`,
+`intakelink`, `intakesecrets`, `intakeuploads` and `intakesubmit`.
+
+**The local-stack run (opt-in).** `e2e/onboarding-local-stack.spec.ts` walks
+onboarding in a real browser against a local Supabase stack: the staff
+invite, her intake, Submit and Admit, plus Cancel and a help request. It
+checks each step on the screen and in the database. Without
+`E2E_LOCAL_STACK=1` every test in it skips, so CI and the mock suite never run
+it. Each run makes its own org, staff user, group, location and payer, so runs
+don't collide and leave nothing to clean up. The runner sets the flag. Build
+the stack once, then run it:
+
+```sh
+bash scripts/e2e/local-stack-setup.sh
+SUPABASE_WORKDIR=~/.minted-local-supabase bash scripts/e2e/onboarding-local-stack.sh
+```
+
+A plain `supabase start` from this repo fails (CLAUDE.md "Known warts").
+`local-stack-setup.sh` keeps its own project in `~/.minted-local-supabase`
+(Postgres 17, seed off, Studio on), links the repo's migrations in with the
+duplicate version renumbered, creates both Vault secrets, and runs the
+local-only auth grants as `supabase_admin`. Rerun it after new migrations.
+It applies only those. `psql` and the `supabase` CLI must be on `PATH`.
+
+The runner reads the
+stack's URL and keys from `supabase status` and refuses an API or database
+that is not on this machine. It starts `scripts/e2e/mail-capture.mjs` in
+place of SendGrid (through the dev-only `SENDGRID_API_URL`) and `vite dev`,
+then runs Playwright with `playwright.local-stack.config.ts`. Logs and
+screenshots go to `test-results/onboarding-local-stack/`.
+
+With `--serve`, the runner starts the same two servers with a sample practice
+and a fixed staff login and stays up instead of running Playwright.
+[`provider-onboarding/local-verification.md`](provider-onboarding/local-verification.md)
+is the step-by-step runbook: setup, every check in this section, a manual
+walk-through in two browser windows, and a SQL query after each step.

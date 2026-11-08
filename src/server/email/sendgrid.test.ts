@@ -70,6 +70,14 @@ describe("sendEmail", () => {
     });
   });
 
+  it("posts to the env's capture URL when one is set", async () => {
+    const fetchMock = okFetch();
+    const apiUrl = "http://127.0.0.1:8092/v3/mail/send";
+    await sendEmail(INPUT, { env: { ...ENV, apiUrl }, fetch: fetchMock });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(apiUrl);
+  });
+
   it("sends plain text before html, with every tracker off and only the template key as metadata", async () => {
     const fetchMock = okFetch();
     await sendEmail(INPUT, { env: ENV, fetch: fetchMock });

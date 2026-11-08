@@ -3,6 +3,7 @@
 // sectionProgress, so the summary and the progress chips never disagree.
 // Every time arrives as an argument.
 import { fmtDate } from "@/lib/format";
+import type { IntakePortal } from "@/lib/intakeAnswers";
 import { SSN_NOT_ISSUED_MESSAGE, isPossibleSsn, isValidNpi } from "@/lib/providerIdentity";
 import type {
   DocumentSlot,
@@ -44,7 +45,19 @@ export const LOGINS = [
     userLabel: "User ID",
     message: "Add your PECOS user ID and password.",
   },
-] as const;
+] as const satisfies readonly {
+  key: IntakePortal;
+  flag: keyof IntakeDraft["logins"];
+  title: string;
+  userLabel: string;
+  message: string;
+}[];
+
+/** The draft once the vault holds her login for that portal. */
+export function withLoginOnFile(draft: IntakeDraft, portal: IntakePortal): IntakeDraft {
+  const login = LOGINS.find((l) => l.key === portal);
+  return login ? { ...draft, logins: { ...draft.logins, [login.flag]: true } } : draft;
+}
 
 /** An error message and the id an input's aria-describedby points at. */
 export interface FieldError {
@@ -52,7 +65,8 @@ export interface FieldError {
   message: string;
 }
 
-const ENTERED = "You entered this";
+/** The source label of a value she typed. A saved answer comes back with it too. */
+export const ENTERED = "You entered this";
 const EMPTY: FieldValue<string> = { value: null, source: null };
 
 export function fieldId(...parts: (string | number)[]): string {

@@ -1,5 +1,5 @@
-// Sample data for the planned /dev/provider-onboarding preview (r1-ui-spec
-// decision 18; not built yet — the derivation tests are the only consumer).
+// Sample data for the /dev/provider-onboarding preview (r1-ui-spec decision
+// 18) and the onboarding derivation tests.
 // Synthetic canvas names only, no real PHI. Every count a screen shows is
 // computed from these rows, never typed in separately.
 import type {
@@ -10,6 +10,7 @@ import type {
   VerificationCheck,
 } from "@/types/providerOnboarding";
 import { deriveStage } from "@/lib/providerOnboarding";
+import type { IntakeAnswers, IntakeState } from "@/lib/intakeAnswers";
 export { CONSENT } from "@/lib/intakeConsent";
 
 export const PRACTICE = {
@@ -160,6 +161,65 @@ export function reviewDraft(email: string): IntakeDraft {
     ],
     logins: { caqhOnFile: true, pecosOnFile: false },
   };
+}
+
+const NO_ANSWERS: IntakeAnswers = {
+  firstName: null,
+  lastName: null,
+  npi: null,
+  taxonomyCode: null,
+  dateOfBirth: null,
+  caqhId: null,
+  mobile: null,
+  homeStreet: null,
+  homeCity: null,
+  homeState: null,
+  homeZip: null,
+  licenses: [],
+};
+
+function intakeState(email: string, patch: Partial<IntakeState>): IntakeState {
+  return {
+    practiceName: PRACTICE.name,
+    email,
+    record: NO_ANSWERS,
+    lockedFields: [],
+    ssnLast4: null,
+    loginsOnFile: { caqh: false, pecos: false },
+    consent: { signed: false, textVersion: null },
+    draft: null,
+    uploads: [],
+    submitted: false,
+    ...patch,
+  };
+}
+
+// What /api/intake/state answers for the preview's two people before they
+// start: Anita's record holds only her invited name; Priya's is a full record
+// whose SSN, NPI and date of birth lock.
+export function newHireState(email: string): IntakeState {
+  return intakeState(email, { record: { ...NO_ANSWERS, firstName: "Anita", lastName: "Rao" } });
+}
+
+export function reviewState(email: string): IntakeState {
+  return intakeState(email, {
+    record: {
+      ...NO_ANSWERS,
+      firstName: "Priya",
+      lastName: "Shah",
+      npi: "1730195835",
+      taxonomyCode: "225100000X",
+      dateOfBirth: "1988-07-21",
+      caqhId: "12345678",
+      homeStreet: "18 Elm St",
+      homeCity: "Charlotte",
+      homeState: "NC",
+      homeZip: "28203",
+      licenses: [{ state: "NC", number: "PT-48213", expiresOn: "2027-12-31" }],
+    },
+    lockedFields: ["ssn", "npi", "dateOfBirth"],
+    ssnLast4: "6789",
+  });
 }
 
 // Everyone an invite can match (board 1b): the hires above plus providers
