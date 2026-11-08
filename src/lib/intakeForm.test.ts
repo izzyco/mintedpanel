@@ -3,7 +3,6 @@ import {
   addLicense,
   fieldId,
   formatBytes,
-  isValidNpi,
   npiProblem,
   isoToUsDate,
   missingDocuments,
@@ -57,22 +56,6 @@ function expectAgreement(draft: IntakeDraft) {
   }
   expect(missing.length === 0).toBe(canContinue(draft));
 }
-
-describe("isValidNpi", () => {
-  it("accepts an NPI whose check digit matches (Luhn over the 80840 prefix)", () => {
-    expect(isValidNpi("1234567893")).toBe(true);
-    expect(isValidNpi("1588667638")).toBe(true);
-    expect(isValidNpi("1730195835")).toBe(true);
-  });
-
-  it("rejects a one-digit typo, a short number and anything not digits", () => {
-    expect(isValidNpi("1234567890")).toBe(false);
-    expect(isValidNpi("1234567839")).toBe(false);
-    expect(isValidNpi("123456789")).toBe(false);
-    expect(isValidNpi("12345678930")).toBe(false);
-    expect(isValidNpi("12345a7893")).toBe(false);
-  });
-});
 
 describe("npiProblem", () => {
   it("catches a short NPI and a typo while she is still on the field", () => {
@@ -340,5 +323,11 @@ describe("ssnProblem", () => {
   it("says how many digits she has entered", () => {
     expect(ssnProblem("123-45-678")).toBe("An SSN has 9 digits. You've entered 8.");
     expect(ssnProblem("1")).toBe("An SSN has 9 digits. You've entered 1.");
+  });
+
+  it("catches nine digits the SSA never issues", () => {
+    const invalid = "This isn't a valid Social Security number. Check each digit for a typo.";
+    expect(ssnProblem("000-12-3456")).toBe(invalid);
+    expect(ssnProblem("078-05-1120")).toBe(invalid);
   });
 });

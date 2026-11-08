@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE } from "@/lib/providerIdentity";
 import {
   INTAKE_COOKIE,
   clearSessionCookie,
@@ -115,5 +116,16 @@ describe("validateInviteInput", () => {
     ]) {
       expect(validateInviteInput(body)).toMatchObject({ ok: false });
     }
+  });
+
+  it("rejects an NPI that is not 10 digits or fails its check digit", () => {
+    expect(validateInviteInput({ ...good, npi: "12345" })).toEqual({
+      ok: false,
+      error: NPI_FORMAT_MESSAGE,
+    });
+    expect(validateInviteInput({ ...good, npi: "1234567890" })).toEqual({
+      ok: false,
+      error: NPI_CHECK_DIGIT_MESSAGE,
+    });
   });
 });

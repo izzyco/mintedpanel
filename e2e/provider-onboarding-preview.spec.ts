@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { NPI_CHECK_DIGIT_MESSAGE } from "../src/lib/providerIdentity";
 
 // The Stage 1 onboarding preview (/dev/provider-onboarding): the practice's New
 // hires view and the provider flow on sample data, with no session and no
@@ -33,6 +34,30 @@ test("a practice invites a new hire and sees the row and its counts", async ({ p
   await expect(dialog.getByText("Invitation sent")).toBeVisible();
   await dialog.getByRole("button", { name: "Done" }).click();
   await expect(page.getByRole("table", { name: "Every new hire" })).toContainText("Sam Lee");
+});
+
+test("an NPI with a wrong check digit holds the invite until it is fixed", async ({ page }) => {
+  await openPreview(page, "Practice");
+  await page.getByRole("button", { name: "Invite", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("First name").fill("Sam");
+  await dialog.getByLabel("Last name").fill("Lee");
+  await dialog.getByLabel("Email", { exact: true }).fill("sam.lee@example.test");
+  await dialog.getByLabel("Group").click();
+  await page.getByRole("option", { name: "Shelby Sports Rehab · Charlotte" }).click();
+  const send = dialog.getByRole("button", { name: "Send invite" });
+  await expect(send).toBeEnabled();
+
+  await dialog.getByText("NPI and start date (optional)").click();
+  const npi = dialog.getByLabel("NPI", { exact: true });
+  await npi.fill("1234567890");
+  await expect(dialog.getByText(NPI_CHECK_DIGIT_MESSAGE)).toBeVisible();
+  await expect(npi).toHaveAttribute("aria-invalid", "true");
+  await expect(send).toBeDisabled();
+
+  await npi.fill("1234567893");
+  await expect(dialog.getByText(NPI_CHECK_DIGIT_MESSAGE)).toHaveCount(0);
+  await expect(send).toBeEnabled();
 });
 
 test("inviting someone already in another group adds the group and sends nothing", async ({

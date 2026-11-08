@@ -18,11 +18,11 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { localTodayIso } from "@/hooks/useEnrollmentReadiness";
 import type { HelpReason } from "@/lib/intakeFlow";
+import { isValidNpi } from "@/lib/providerIdentity";
 import {
   LOGINS,
   addLicense,
   fieldId,
-  isValidNpi,
   missingFields,
   npiProblem,
   provenance,
@@ -770,9 +770,10 @@ function SsnField({
     if ((e.relatedTarget as HTMLElement | null)?.id === toggleId) return;
     const value = e.currentTarget.value;
     const digits = value.replace(/\D/g, "");
+    const flagged = ssnProblem(value);
     setVisible(false);
-    setProblem(ssnProblem(value));
-    if (digits.length === 9) {
+    setProblem(flagged);
+    if (digits.length === 9 && !flagged) {
       onLast4(digits.slice(5));
     } else if (digits.length === 0 && kept) {
       onLast4(kept);

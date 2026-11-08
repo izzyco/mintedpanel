@@ -1,5 +1,6 @@
 // The field block of an invite (board 1), shared by the staff dialog and the
 // practice's New hires dialog. Each caller owns sending and what comes back.
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -10,10 +11,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { NO_GROUP, type InviteFieldValues } from "@/lib/inviteFields";
+import { NO_GROUP, inviteNpiProblem, type InviteFieldValues } from "@/lib/inviteFields";
 
 const LABEL = "text-[12px]";
 const HINT = "text-[11px] text-muted-foreground";
+const ERROR = "text-[11px] text-destructive";
 
 export function InviteFields({
   values,
@@ -25,6 +27,8 @@ export function InviteFields({
   groups: { id: string; name: string }[];
 }) {
   const set = (patch: Partial<InviteFieldValues>) => onChange({ ...values, ...patch });
+  const [npiTouched, setNpiTouched] = useState(false);
+  const npiError = npiTouched || values.npi.length === 10 ? inviteNpiProblem(values.npi) : null;
 
   return (
     <div className="grid gap-4">
@@ -101,13 +105,21 @@ export function InviteFields({
               id="invite-npi"
               inputMode="numeric"
               placeholder="10 digits"
-              aria-describedby="invite-npi-hint"
+              aria-describedby={npiError ? "invite-npi-error" : "invite-npi-hint"}
+              aria-invalid={npiError !== null}
               value={values.npi}
               onChange={(e) => set({ npi: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+              onBlur={() => setNpiTouched(true)}
             />
-            <p id="invite-npi-hint" className={HINT}>
-              Fills in the form. The provider can correct it before submitting.
-            </p>
+            {npiError ? (
+              <p id="invite-npi-error" className={ERROR}>
+                {npiError}
+              </p>
+            ) : (
+              <p id="invite-npi-hint" className={HINT}>
+                Fills in the form. The provider can correct it before submitting.
+              </p>
+            )}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="invite-start" className={LABEL}>

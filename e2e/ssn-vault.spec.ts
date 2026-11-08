@@ -18,12 +18,18 @@ import {
 //          the intake-link lockdown states
 //
 // FAKE test SSN only (900-55-6789 — the 900 area is never issued). Never a real SSN.
+// The two ingress forms refuse never-issued numbers, so what they submit is the
+// placeholder 123-45-6789, and 000-12-3456 is the number they must refuse.
 
 const AUTH_KEY = "sb-example-auth-token";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const ORG_ID = "22222222-2222-4222-8222-222222222222";
 const PROVIDER_ID = "33333333-3333-4333-8333-333333333333";
 const FAKE_SSN = "900556789";
+const TYPED_SSN = "123456789";
+const NOT_ISSUED_SSN = "000123456";
+const SSN_NOT_ISSUED_MESSAGE =
+  "This isn't a valid Social Security number. Check each digit for a typo.";
 
 const SESSION = {
   access_token: "fake-access-token",
@@ -262,13 +268,40 @@ test.describe("E4.4 authenticated vault surfaces", () => {
     await page.getByRole("menuitem", { name: "Enter full SSN securely" }).click();
 
     await expect(page.getByRole("heading", { name: "Enter full SSN securely" })).toBeVisible();
-    await page.locator("#ssn-store-input").fill("900556789");
+    await page.locator("#ssn-store-input").fill(TYPED_SSN);
     await page.getByRole("button", { name: "Save securely" }).click();
 
     // The dialog closes on success; store_ssn carried the full value (only here).
     await expect(page.getByRole("heading", { name: "Enter full SSN securely" })).toHaveCount(0);
     const store = rec.rpcCalls.find((c) => c.name === "store_ssn");
-    expect(store?.body).toMatchObject({ p_provider_id: PROVIDER_ID, p_ssn: "900556789" });
+    expect(store?.body).toMatchObject({ p_provider_id: PROVIDER_ID, p_ssn: TYPED_SSN });
+  });
+
+  test("TS-87: the internal secure modal refuses a number the SSA never issues", async ({
+    context,
+    page,
+  }) => {
+    const rec = await mountAuth(
+      context,
+      makeFixtures("specialist", providerRow({ ssn_last4: null })),
+      {},
+    );
+    await openProviderDetail(page);
+
+    await page.getByRole("button", { name: "Manage SSN" }).click();
+    await page.getByRole("menuitem", { name: "Enter full SSN securely" }).click();
+
+    const input = page.locator("#ssn-store-input");
+    const save = page.getByRole("button", { name: "Save securely" });
+    await input.fill(NOT_ISSUED_SSN);
+    await expect(page.getByText(SSN_NOT_ISSUED_MESSAGE)).toBeVisible();
+    await expect(input).toHaveAttribute("aria-invalid", "true");
+    await expect(save).toBeDisabled();
+
+    await input.fill(TYPED_SSN);
+    await expect(page.getByText(SSN_NOT_ISSUED_MESSAGE)).toHaveCount(0);
+    await expect(save).toBeEnabled();
+    expect(rec.rpcCalls.some((c) => c.name === "store_ssn")).toBe(false);
   });
 });
 
@@ -327,13 +360,34 @@ test.describe("E4.4 public SSN intake route (TS-87)", () => {
     });
     await expect(page.getByText("Brooke Ostrander", { exact: false })).toBeVisible();
 
-    await page.locator("#ssn-intake-value").fill("900556789");
+    await page.locator("#ssn-intake-value").fill(TYPED_SSN);
     await page.getByRole("button", { name: "Submit securely" }).click();
 
     await expect(page.getByText("Thank you — you're all set")).toBeVisible();
-    expect(rec.submitted).toMatchObject({ p_token: "testtoken123", p_ssn: "900556789" });
+    expect(rec.submitted).toMatchObject({ p_token: "testtoken123", p_ssn: TYPED_SSN });
     // The value is never rendered back on the confirmation.
-    await expect(page.locator("body")).not.toContainText("900-55-6789");
+    await expect(page.locator("body")).not.toContainText("123-45-6789");
+  });
+
+  test("active link refuses a number the SSA never issues and submits nothing", async ({
+    context,
+    page,
+  }) => {
+    const { handler, rec } = publicMock(ACTIVE_INTAKE);
+    await context.route(/\/(rest|auth)\/v1\//, handler);
+    await page.goto("/ssn-intake/testtoken123");
+    await expect(page.getByRole("heading", { name: "Enter Social Security Number" })).toBeVisible({
+      timeout: 30000,
+    });
+
+    const input = page.locator("#ssn-intake-value");
+    await input.fill(NOT_ISSUED_SSN);
+    await page.getByRole("button", { name: "Submit securely" }).click();
+
+    await expect(page.getByRole("alert")).toHaveText(SSN_NOT_ISSUED_MESSAGE);
+    await expect(input).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByText("Thank you — you're all set")).toHaveCount(0);
+    expect(rec.submitted).toBeNull();
   });
 
   test("a used link shows the already-completed lockdown", async ({ context, page }) => {

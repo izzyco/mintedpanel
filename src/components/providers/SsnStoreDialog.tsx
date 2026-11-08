@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useStoreSsn } from "@/hooks/useSsnVault";
+import { SSN_NOT_ISSUED_MESSAGE, isPossibleSsn } from "@/lib/providerIdentity";
 import { formatFullSsn } from "@/lib/ssnMask";
 
 export function SsnStoreDialog({
@@ -44,7 +45,8 @@ export function SsnStoreDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const complete = digits.length === 9;
+  const complete = isPossibleSsn(digits);
+  const notIssued = digits.length === 9 && !complete;
   async function onSave() {
     if (!complete) return;
     try {
@@ -77,12 +79,22 @@ export function SsnStoreDialog({
             autoComplete="off"
             placeholder="123-45-6789"
             className="font-mono tracking-widest"
-            aria-describedby="ssn-store-help"
+            aria-describedby={notIssued ? "ssn-store-help ssn-store-invalid" : "ssn-store-help"}
+            aria-invalid={notIssued}
             autoFocus
           />
           <p id="ssn-store-help" className="text-[12px] text-muted-foreground">
             Enter all nine digits. Encrypted on save; the last four are all that's ever displayed.
           </p>
+          {notIssued ? (
+            <div
+              id="ssn-store-invalid"
+              role="alert"
+              className="rounded-md border border-[#FCA5A5] bg-[#FEF2F2] px-3 py-2 text-[12px] text-[#B91C1C]"
+            >
+              {SSN_NOT_ISSUED_MESSAGE}
+            </div>
+          ) : null}
           {store.error ? (
             <div
               role="alert"

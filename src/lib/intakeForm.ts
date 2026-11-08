@@ -3,6 +3,7 @@
 // sectionProgress, so the summary and the progress chips never disagree.
 // Every time arrives as an argument.
 import { fmtDate } from "@/lib/format";
+import { SSN_NOT_ISSUED_MESSAGE, isPossibleSsn, isValidNpi } from "@/lib/providerIdentity";
 import type {
   DocumentSlot,
   FieldValue,
@@ -123,18 +124,6 @@ export function removeLicense(draft: IntakeDraft, index: number): IntakeDraft {
   return { ...draft, licenses: draft.licenses.filter((_, i) => i !== index) };
 }
 
-// Luhn over the card-issuer prefix 80840 plus all ten digits.
-export function isValidNpi(npi: string): boolean {
-  if (!/^\d{10}$/.test(npi)) return false;
-  const digits = `80840${npi}`.split("").map(Number).reverse();
-  const sum = digits.reduce((total, d, i) => {
-    if (i % 2 === 0) return total + d;
-    const doubled = d * 2;
-    return total + (doubled > 9 ? doubled - 9 : doubled);
-  }, 0);
-  return sum % 10 === 0;
-}
-
 // The SSN as she types it: digits only, at most nine, dashed as 123-45-6789.
 export function typeSsn(value: string): string {
   const d = value.replace(/\D/g, "").slice(0, 9);
@@ -144,9 +133,11 @@ export function typeSsn(value: string): string {
 }
 
 export function ssnProblem(value: string): string | null {
-  const count = value.replace(/\D/g, "").length;
-  if (count === 0 || count === 9) return null;
-  return `An SSN has 9 digits. You've entered ${count}.`;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 0) return null;
+  if (digits.length !== 9) return `An SSN has 9 digits. You've entered ${digits.length}.`;
+  if (!isPossibleSsn(digits)) return SSN_NOT_ISSUED_MESSAGE;
+  return null;
 }
 
 export function npiProblem(npi: string): string | null {

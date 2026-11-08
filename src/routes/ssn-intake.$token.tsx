@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { validateSsnIntakeToken, submitSsnIntake } from "@/services/ssnVault";
+import { SSN_NOT_ISSUED_MESSAGE, isPossibleSsn } from "@/lib/providerIdentity";
 import { formatFullSsn } from "@/lib/ssnMask";
 import { fmtDateTime } from "@/lib/format";
 import type { SsnIntakeTokenState } from "@/types";
@@ -107,12 +108,18 @@ function SsnIntakePage() {
   // Never leave the entered value lingering once the page unmounts.
   useEffect(() => () => setDigits(""), []);
 
-  const complete = digits.length === 9;
+  const valid = isPossibleSsn(digits);
+  const fieldError =
+    showError && !valid
+      ? digits.length === 9
+        ? SSN_NOT_ISSUED_MESSAGE
+        : "Enter all nine digits of the SSN."
+      : null;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitError(null);
-    if (!complete) {
+    if (!valid) {
       setShowError(true);
       return;
     }
@@ -204,15 +211,15 @@ function SsnIntakePage() {
                 placeholder="123-45-6789"
                 className="font-mono tracking-widest"
                 aria-describedby="ssn-intake-help"
-                aria-invalid={showError && !complete}
+                aria-invalid={fieldError !== null}
                 autoFocus
               />
               <p id="ssn-intake-help" className="text-[12px] text-muted-foreground">
                 Enter all nine digits.
               </p>
-              {showError && !complete ? (
+              {fieldError ? (
                 <p role="alert" className="text-[12px] text-[#B91C1C]">
-                  Enter all nine digits of the SSN.
+                  {fieldError}
                 </p>
               ) : null}
             </div>

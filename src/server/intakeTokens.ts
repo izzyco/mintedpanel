@@ -1,6 +1,7 @@
 // Provider intake helpers (docs/provider-onboarding/slice-1-invite-to-form.md).
 // Tokens and codes are made here; only their sha256 hashes go to the database.
 import { createHash, randomBytes, randomInt } from "node:crypto";
+import { NPI_CHECK_DIGIT_MESSAGE, NPI_FORMAT_MESSAGE, isValidNpi } from "@/lib/providerIdentity";
 import { isEmailAddress } from "./email/sendgrid";
 
 export const INTAKE_COOKIE = "mp_intake";
@@ -88,7 +89,8 @@ export function validateInviteInput(
   if (!firstName || !lastName) return { ok: false, error: "First and last name are required" };
   if (!isEmailAddress(email)) return { ok: false, error: "Enter a valid email address" };
   if (!UUID.test(groupId)) return { ok: false, error: "Choose a group" };
-  if (npi && !NPI.test(npi)) return { ok: false, error: "NPI must be 10 digits" };
+  if (npi && !NPI.test(npi)) return { ok: false, error: NPI_FORMAT_MESSAGE };
+  if (npi && !isValidNpi(npi)) return { ok: false, error: NPI_CHECK_DIGIT_MESSAGE };
   if (startDate && !isCalendarDate(startDate)) return { ok: false, error: "Start date is invalid" };
 
   return {

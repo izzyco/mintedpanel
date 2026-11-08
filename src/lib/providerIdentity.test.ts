@@ -1,9 +1,12 @@
 // MINT-7 / CRUD-01 — the shared provider identity rules: NPI check digit,
 // strict ISO calendar dates, and the existing-data change rule.
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   identityFieldChanged,
   isIsoDate,
+  isPossibleSsn,
   isValidNpi,
   npiCheckDigit,
   stripNpiSeparators,
@@ -16,10 +19,12 @@ describe("isValidNpi", () => {
     expect(isValidNpi(1234567893)).toBe(true);
     expect(isValidNpi("1902833742")).toBe(true);
     expect(isValidNpi("1093817462")).toBe(true);
+    expect(isValidNpi("1588667638")).toBe(true);
+    expect(isValidNpi("1730195835")).toBe(true);
   });
 
   it("rejects a format-valid NPI with a wrong check digit", () => {
-    for (const value of ["1234567890", "1234567894", "1093817465", "1111111111"]) {
+    for (const value of ["1234567890", "1234567894", "1234567839", "1093817465", "1111111111"]) {
       expect(isValidNpi(value)).toBe(false);
     }
   });
@@ -30,6 +35,7 @@ describe("isValidNpi", () => {
       "123456789",
       "12345678934",
       "123-456-7893",
+      "12345a7893",
       "abcdefghij",
       null,
       undefined,
@@ -45,6 +51,32 @@ describe("isValidNpi", () => {
     for (let i = 0; i < 25; i += 1) {
       const first9 = String(100000000 + i * 7919);
       expect(isValidNpi(`${first9}${npiCheckDigit(first9)}`)).toBe(true);
+    }
+  });
+});
+
+describe("isPossibleSsn", () => {
+  it("accepts a number the SSA could issue", () => {
+    expect(isPossibleSsn("123456789")).toBe(true);
+    expect(isPossibleSsn("001010001")).toBe(true);
+  });
+
+  it("rejects the areas, group and serial the SSA never issues", () => {
+    for (const value of ["000123456", "666123456", "900123456", "999123456"]) {
+      expect(isPossibleSsn(value), value).toBe(false);
+    }
+    expect(isPossibleSsn("123001234")).toBe(false);
+    expect(isPossibleSsn("123450000")).toBe(false);
+  });
+
+  it("rejects the two published sample numbers", () => {
+    expect(isPossibleSsn("078051120")).toBe(false);
+    expect(isPossibleSsn("219099999")).toBe(false);
+  });
+
+  it("rejects anything that is not exactly nine digits", () => {
+    for (const value of ["12345678", "1234567890", "123-45-6789", ""]) {
+      expect(isPossibleSsn(value), value).toBe(false);
     }
   });
 });
@@ -117,5 +149,30 @@ describe("identityFieldChanged", () => {
     expect(identityFieldChanged("123-456-7890", "1234567890", digits)).toBe(false);
     expect(identityFieldChanged("1234567891", "1234567890")).toBe(true);
     expect(identityFieldChanged("1234567893", null)).toBe(true);
+  });
+});
+
+describe("one implementation of the identifier checks", () => {
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full, out);
+      else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry)) out.push(full);
+    }
+    return out;
+  }
+
+  it("declares isValidNpi, npiCheckDigit and isPossibleSsn only in providerIdentity.ts", () => {
+    const declares = /\b(?:function|const|let|var)\s+(?:isValidNpi|npiCheckDigit|isPossibleSsn)\b/;
+    const offenders = walk(join(process.cwd(), "src"))
+      .map((full) => full.slice(process.cwd().length + 1).replaceAll("\\", "/"))
+      .filter((rel) => rel !== "src/lib/providerIdentity.ts")
+      .filter((rel) => {
+        const code = readFileSync(rel, "utf8")
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/\/\/.*$/gm, "");
+        return declares.test(code);
+      });
+    expect(offenders).toEqual([]);
   });
 });

@@ -1,47 +1,34 @@
-# NPI and SSN checks: plan
+# NPI and SSN checks
 
-Status: plan only, Nov 2, 2026. Nothing here is built. Ivan flagged both intake inputs as needing review.
+Status: local checks built, Nov 6, 2026. Every screen that takes an NPI or an SSN uses the shared rule. Registry lookup and SSN verification are later work.
 
 ## Goal
 
-A provider who types a wrong NPI or SSN on the intake form finds out on the spot, and every surface that takes either number applies the same rule. Ship a strict local check now; add registry checks later behind the same seam, without changing the screens.
+A provider who types a wrong NPI or SSN on the intake form finds out on the spot, and every surface that takes either number applies the same rule. Registry checks can come later without changing the screens.
 
-## How the inputs are checked today
+## How the inputs are checked now
 
-**NPI. Four different rules.**
+**NPI. One rule.** `isValidNpi` in `src/lib/providerIdentity.ts` (MINT-7) takes exactly 10 digits whose last digit is the Luhn check digit over the CMS `80840` prefix. Add Provider, the roster form, the provider record's inline edit, the import dedupe, roster export, the provider intake form (`npiProblem` in `src/lib/intakeForm.ts`) and the invite route (`validateInviteInput` in `src/server/intakeTokens.ts`) all call it. The invite route answers 422 with `NPI_FORMAT_MESSAGE` for a number that is not 10 digits and `NPI_CHECK_DIGIT_MESSAGE` for a bad check digit. The invite dialog checks the NPI in the field first. `inviteNpiProblem` in `src/lib/inviteFields.ts` gives the same two messages, and `InviteFields` shows the message under the NPI input once the field is left or holds 10 digits. Send stays disabled until it clears, because `inviteFieldsReady` requires it. The staff dialog and the practice's dialog share that field block. The staff dialog still shows the route's text above its buttons if a request gets past the field check. So a practice can no longer invite with an NPI the provider's form then rejects. The group Type 2 NPI stays length-only (`isTenDigitNpi` in `src/lib/providerGroup.ts`).
 
-| Where                        | Rule                                        | File                                               |
-| ---------------------------- | ------------------------------------------- | -------------------------------------------------- |
-| Intake form (provider)       | 10 digits + Luhn check digit (80840 prefix) | `src/lib/intakeForm.ts` `isValidNpi`               |
-| Roster import/export         | 10 digits + Luhn check digit                | `src/lib/rosterTransforms.ts` `isValidNpi`         |
-| Staff roster and group forms | Length 10 only                              | `src/lib/providerGroup.ts` `isValidNpi`            |
-| Invite route (server)        | `/^\d{10}$/` only                           | `src/server/intakeTokens.ts` `validateInviteInput` |
+**SSN. One issuance check.** `isPossibleSsn` in `src/lib/providerIdentity.ts` takes 9 digits. It rejects area 000, 666 or 900-999, group 00, serial 0000, and the two published sample numbers 078-05-1120 and 219-09-9999. Every SSN screen shows `SSN_NOT_ISSUED_MESSAGE` for 9 digits that fail it: "This isn't a valid Social Security number. Check each digit for a typo."
 
-So a practice can invite with an NPI the provider's form then rejects, and a typo passes the staff forms.
+- On the intake form, `ssnProblem` returns it. A flagged number keeps no last 4, the same as a number that is too short.
+- The `/ssn-intake/$token` page submits only a number that passes. It shows the message in the same slot as "Enter all nine digits of the SSN."
+- The staff Store SSN dialog (`SsnStoreDialog`) shows the message under the input and keeps Save disabled.
 
-**SSN. Length only.** The intake form keeps the last 4 once 9 digits are typed (`SsnField` in `src/components/intake/IntakeForm.tsx`). The vault RPC (`20260717120000_ssn_vault.sql`) also checks only `char_length = 9`. Numbers the SSA never issues (area 000, 666 or 900–999, group 00, serial 0000) pass everywhere.
+**SSN field.** `SsnField` in `src/components/intake/IntakeForm.tsx` is a password input with a Show/Hide toggle while she types. It formats the value as `123-45-6789` (`typeSsn`), keeps only the last 4 once she leaves the field, and never puts the full value in React state.
 
-**UX problems in the SSN field.** The input is a password field that masks as soon as focus leaves it, with no show toggle and no way to re-read the value. A transposed digit can't be caught by the provider, and the screen shows `•••-••-1234` while the rest of the app shows `***--1234` (`src/lib/ssnMask.ts`).
+**No group NPI warning.** CMS describes the NPI as intelligence-free, so its first digit does not reliably tell an individual from a group.
 
-## Plan
+## Open follow-ups
 
-### Now (one PR, pure code, no backend)
+- The vault RPC (`20260717120000_ssn_vault.sql`) checks length only (`char_length = 9`).
+- The intake form saves nothing yet. When saving ships, the server re-checks both numbers before the vault write.
+- The intake form shows an on-file SSN as `•••-••-1234`, while the rest of the app shows `***--1234` (`maskSsn` in `src/lib/ssnMask.ts`).
 
-1. **One rule module.** Add `src/lib/identifiers.ts` with `checkNpi(value)` and `checkSsn(value)`. Each returns `{ level: "ok" | "block" | "warn", message?: string }`, which is the seam later checks plug into.
-   - `checkNpi`: 10 digits, Luhn with the 80840 prefix, and a Type 1 hint (an individual's NPI starts with 1; a 2 is a group NPI, so warn "This looks like a group NPI").
-   - `checkSsn`: 9 digits, and block the structurally impossible: area 000, 666 or 900–999; group 00; serial 0000; plus the well-known sample numbers (078-05-1120, 219-09-9999).
-2. **Migrate every caller, then delete the copies.** The intake form, roster transforms, staff forms and the invite route all call `checkNpi`. Delete the other three `isValidNpi` functions in the same PR. A test greps `src/` so a fourth copy fails the suite.
-3. **Server re-checks.** The invite route uses `checkNpi` (server copy of the same module; it is pure). When saving ships, the intake submit RPC caller re-checks both numbers before the vault write.
-4. **SSN field UX.**
-   - Add a Show/Hide toggle while typing, so she can read it back.
-   - Format as `123-45-6789` while typing.
-   - Keep only the last 4 after leaving the field.
-   - Show the on-file value with the shared `maskSsn` format.
-   - Keep the full value out of React state as today.
+## Later
 
-### Later (behind the same seam)
-
-5. **NPI registry lookup.** Add a server route, `POST /api/intake/npi-check`, that calls the public NPPES NPI Registry API (`https://npiregistry.cms.hhs.gov/api/?version=2.1&number=…`). It goes through the server because the registry likely doesn't allow browser calls (to confirm). The registry adds four results:
+1. **NPI registry lookup for the provider.** Staff already have registry search and verification (MINT-110, `/api/npi-registry/*`, writer-only). It runs on the server because the NPPES API sends no CORS headers. The provider has no Supabase session, so the intake form needs its own route, such as `POST /api/intake/npi-check`, over the same registry client. The registry adds four results:
    - `not_found` blocks;
    - `deactivated` blocks;
    - `name_mismatch` warns, because maiden and legal names differ;
@@ -49,23 +36,21 @@ So a practice can invite with an NPI the provider's form then rejects, and a typ
 
    It can also prefill specialty (taxonomy) and license numbers from the registry. It needs an isolation-gate entry and a rate limit.
 
-6. **SSN verification.** There is no public SSN registry. Options for the PM:
+2. **SSN verification.** There is no public SSN registry. Options for the PM:
    - **SSA CBSV.** Consent Based SSN Verification is paid, needs SSA enrollment and the signed SSA-89 consent, which our consent step could carry. To confirm.
    - **Vendor check.** A background-check vendor's SSN trace at Admit.
    - **Staff check.** Keep it a person check in the 6b Verification block.
 
-   Whichever it is, it returns the same `{ level, message }` shape.
+## Tests
 
-## Tests (write first)
+- `src/lib/providerIdentity.test.ts` pins known-good and bad NPIs, every SSN the SSA never issues, the sample numbers, and that no file under `src/` other than `providerIdentity.ts` declares `isValidNpi`, `npiCheckDigit` or `isPossibleSsn`.
+- `src/lib/intakeForm.test.ts` pins the provider-facing NPI and SSN messages.
+- `src/server/intakeTokens.test.ts` pins both invite-route NPI messages.
+- `src/lib/inviteFields.test.ts` pins `inviteNpiProblem` and that a wrong NPI keeps the invite from being ready.
+- `e2e/ssn-vault.spec.ts` drives the Store SSN dialog and the `/ssn-intake/$token` page with a number the SSA never issues.
+- `e2e/provider-onboarding-preview.spec.ts` drives the practice's invite dialog with a wrong NPI check digit.
 
-- Known-good NPIs pass. One wrong check digit blocks. A Type 2 NPI warns.
-- SSNs with area 000, 666 or 9xx, group 00 or serial 0000 block. The sample numbers block. A normal number passes.
-- The invite route rejects a bad check digit with a 422.
-- The SSN field shows the typed digits only while Show is on, and the draft never holds more than the last 4.
-- A grep test fails if any file other than `src/lib/identifiers.ts` defines an NPI or SSN check.
-
-## Risks and open questions
+## Risks
 
 - **Locked fields.** NPI, SSN and DOB lock once on file, so a wrong value that slipped in before these checks needs the "Wrong? Tell us" path and a staff fix.
-- **Existing rows.** Some may fail the stricter NPI rule. Roster import already applies it, but staff-entered and invite-entered rows may not. Count them on staging before the PR (read-only query).
-- **What Ivan saw.** Which inputs looked wrong, and how? A rejected real NPI, a typo that passed, or the SSN masking? That decides whether step 4 or step 1 goes first.
+- **Existing rows.** Rows stored before the check digit rule may fail it. Staff edits check a stored NPI only when it changes (`recheckStoredOnEdit` defaults to false), so those rows never block an unrelated save. Count them on staging (read-only query) before deciding on a fix.

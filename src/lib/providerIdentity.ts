@@ -1,10 +1,12 @@
 // Provider identity rules (MINT-7 / audit CRUD-01): the ONE implementation of
-// the NPI check digit and the strict ISO calendar-date check. Pure and
-// I/O-free; the Add Provider form, the roster form, the provider record's
-// inline edit, the import dedupe (new identities only), and roster export call
+// the NPI check digit, the SSN issuance check and the strict ISO calendar-date
+// check. Pure and I/O-free; the Add Provider form, the roster form, the
+// provider record's inline edit, the import dedupe (new identities only),
+// roster export, the provider intake form and the provider invite route call
 // these instead of re-declaring regexes. Blank-value policy stays with each
-// caller (NPI is optional on Add Provider and the provider import, required on
-// the roster form). The DEA checksum comes with its import call (MINT-137).
+// caller (NPI is optional on Add Provider, the provider import and the invite,
+// required on the roster form). The DEA checksum comes with its import call
+// (MINT-137).
 //
 // The checks themselves are facts about the number and never configurable.
 // What a platform or organization may configure, only ever stricter, is
@@ -18,6 +20,8 @@ export const NPI_CHECK_DIGIT_MESSAGE = "NPI check digit is invalid — re-check 
 /** Every form that takes a typed NPI says this when it is not ten digits once
  * separators are stripped (Add Provider, the roster form, the record page). */
 export const NPI_FORMAT_MESSAGE = "NPI must be 10 digits";
+export const SSN_NOT_ISSUED_MESSAGE =
+  "This isn't a valid Social Security number. Check each digit for a typo.";
 
 /** The NPI check digit for its first nine digits: Luhn over the CMS `80840`
  * card-issuer prefix. Null when `first9` is not exactly nine digits. */
@@ -61,6 +65,16 @@ export function isValidNpi(value: unknown): boolean {
   const digits = String(value).trim();
   if (!NPI_DIGITS_RE.test(digits)) return false;
   return npiCheckDigit(digits.slice(0, 9)) === Number(digits[9]);
+}
+
+// The SSA never issues area 000, 666 or 900-999, group 00 or serial 0000, and
+// 078-05-1120 and 219-09-9999 are published sample numbers.
+export function isPossibleSsn(digits: string): boolean {
+  if (!/^\d{9}$/.test(digits)) return false;
+  const area = digits.slice(0, 3);
+  if (area === "000" || area === "666" || area[0] === "9") return false;
+  if (digits.slice(3, 5) === "00" || digits.slice(5) === "0000") return false;
+  return digits !== "078051120" && digits !== "219099999";
 }
 
 /** Strict `YYYY-MM-DD` that names a real calendar date (no Feb 30, no month 13). */
